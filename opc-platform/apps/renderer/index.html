@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="color-scheme" content="light dark" />
+    <title>OPC Agent 工作台</title>
+    <script>
+      // Pre-paint boot: apply persisted appearance before React mounts to avoid a flash.
+      (function () {
+        try {
+          // The preload runs before page scripts, so the shell can be tagged pre-paint.
+          if (window.opc) {
+            document.documentElement.dataset.shell = 'electron';
+            document.documentElement.dataset.platform =
+              window.opc.platform === 'darwin' ? 'macos' : window.opc.platform === 'win32' ? 'windows' : 'linux';
+          }
+          var raw = localStorage.getItem('opc.ui.v1');
+          var prefs = raw ? (JSON.parse(raw).state || {}) : {};
+          var mode = prefs.themeMode || 'system';
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.dataset.theme = dark ? 'dark' : 'light';
+          var scale = prefs.fontScale || 'md';
+          var scaleMap = { sm: 0.9, md: 1, lg: 1.08, xl: 1.16 };
+          root.style.fontSize = (scaleMap[scale] || 1) * 100 + '%';
+          if (prefs.locale) root.lang = prefs.locale;
+          if (prefs.fontFamilyId) root.dataset.font = prefs.fontFamilyId;
+          if (prefs.background && prefs.background.kind) {
+            root.dataset.bg = prefs.background.kind;
+          }
+        } catch (error) {
+          /* first run or blocked storage: fall back to defaults */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

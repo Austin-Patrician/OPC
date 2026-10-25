@@ -1,0 +1,10 @@
+{
+  "description": "An IM platform for OPC teams to hire AI agents, build company org charts, and coordinate work through direct messages and group chats.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

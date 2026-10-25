@@ -1,0 +1,12 @@
+{
+  "name": "@opc/main",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@opc/shared": "workspace:*"
+  }
+}

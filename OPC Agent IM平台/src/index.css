@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --background: #EBEBEC;
+  --foreground: #1C1C1E;
+  --card: #FFFFFF;
+  --card-foreground: #1C1C1E;
+  --primary: #0099FF;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F2F2F3;
+  --secondary-foreground: #1C1C1E;
+  --muted: #EDEDEF;
+  --muted-foreground: #8E8E93;
+  --accent: #D2ECFF;
+  --accent-foreground: #1C1C1E;
+  --border: #E5E5E7;
+  --ring: #0099FF;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Inter", "Microsoft YaHei", sans-serif;
+    background-color: #DCDCE0;
+    color: var(--foreground);
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, pre, .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* Subtle macOS-like scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.26);
+}

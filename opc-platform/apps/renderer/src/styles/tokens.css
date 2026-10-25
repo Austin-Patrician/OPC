@@ -1,0 +1,125 @@
+/*
+ * Design tokens — single source of truth for color, type and layout.
+ * Values are copied 1:1 from the Figma reference; every size is expressed in
+ * rem so that the "interface scale" preference (html font-size) scales the
+ * whole shell instead of only the text.
+ *
+ * Names are semantic, never literal: components must use `text-ink`,
+ * `bg-surface`, `border-line`… so a new theme is a token change, not a refactor.
+ */
+:root {
+  color-scheme: light;
+
+  /* ── Surfaces ─────────────────────────────────────────────── */
+  --app-bg: #dcdce0;
+  --chrome-bg-base: #ebebec;
+  --rail-bg-base: #f2f2f3;
+  --sidebar-bg-base: #f9f9fa;
+  --panel-bg-base: #f2f2f3;
+  /* Derivable so [data-bg] can mix them with transparent (see index.css). */
+  --chrome-bg: var(--chrome-bg-base);
+  --rail-bg: var(--rail-bg-base);
+  --sidebar-bg: var(--sidebar-bg-base);
+  --panel-bg: var(--panel-bg-base);
+  --surface: #ffffff;
+  --surface-muted: #efeff1;
+  --surface-hover: #efeff1;
+  --surface-active: #e5e5e7;
+
+  /* ── Lines ────────────────────────────────────────────────── */
+  --border: #e5e5e7;
+  --border-strong: #dcdce0;
+
+  /* ── Text ─────────────────────────────────────────────────── */
+  --text-primary: #1c1c1e;
+  --text-secondary: #555558;
+  --text-tertiary: #8e8e93;
+  --text-quaternary: #9e9ea3;
+
+  /* ── Brand / state ────────────────────────────────────────── */
+  --accent: #0099ff;
+  --accent-hover: #0088e6;
+  --accent-soft: rgba(0, 153, 255, 0.12);
+  --accent-text: #0077cc;
+  --danger: #ff4d4f;
+  --success: #27c93f;
+  --warning: #f5a623;
+
+  /* ── Message bubbles ──────────────────────────────────────── */
+  --bubble-user: #d2ecff;
+  --bubble-user-text: #1c1c1e;
+  --bubble-agent: #ffffff;
+
+  /* ── Elevation ────────────────────────────────────────────── */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.14);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.14);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.26);
+
+  /* ── Typography (rem = px / 16) ───────────────────────────── */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono-ui: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --app-bg: #0d0e10;
+  --chrome-bg-base: #17191c;
+  --rail-bg-base: #121417;
+  --sidebar-bg-base: #16181b;
+  --panel-bg-base: #101114;
+  --surface: #1c1f23;
+  --surface-muted: #23262b;
+  --surface-hover: #23262b;
+  --surface-active: #2b2f35;
+
+  --border: #262a30;
+  --border-strong: #33383f;
+
+  --text-primary: #f2f3f5;
+  --text-secondary: #c2c6cc;
+  --text-tertiary: #8f959d;
+  --text-quaternary: #767c84;
+
+  --accent: #2f9bff;
+  --accent-hover: #4aa8ff;
+  --accent-soft: rgba(47, 155, 255, 0.16);
+  --accent-text: #6cb9ff;
+  --danger: #ff6369;
+  --success: #3ecf5a;
+  --warning: #f7b955;
+
+  --bubble-user: #12354f;
+  --bubble-user-text: #eaf5ff;
+  --bubble-agent: #1c1f23;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+/*
+ * Optional font stacks. Only locally available families are referenced so the
+ * app never blocks on a font CDN (desktop, offline, and Windows/Linux parity).
+ */
+[data-font='system'] {
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+}
+[data-font='inter'] {
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+}
+[data-font='noto'] {
+  --font-ui: 'Noto Sans SC', 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+[data-font='serif'] {
+  --font-ui: 'Source Han Serif SC', 'Songti SC', 'SimSun', Georgia, 'Times New Roman', serif;
+}
+[data-font='mono'] {
+  --font-ui: var(--font-mono-ui);
+}

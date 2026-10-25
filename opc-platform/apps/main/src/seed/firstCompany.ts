@@ -1,0 +1,144 @@
+import type { Agent, HireInput } from '@opc/shared/domain';
+import type { OrgService } from '../org/orgService';
+
+/**
+ * The company a fresh install actually starts with: two departments and a handful
+ * of real employees, created through the same `hire` path the UI uses. No fixtures,
+ * no fake conversations — delete the database and you get exactly this; everything
+ * else (tasks, chats, artefacts) is created by using the product.
+ *
+ * Models are left empty on purpose: they inherit whatever provider the boss
+ * configures, because a made-up model id would be a lie the runtime cannot honour.
+ */
+const STAFF = [
+  {
+    department: { name: '产品部', code: 'PD-01', description: '把老板的想法变成可验收的交付物。' },
+    head: {
+      name: '林岚',
+      role: '产品负责人',
+      level: 'P7',
+      skills: ['需求拆解', '验收标准', '原型'],
+      persona: '你要把模糊需求拆成可验收的条目，每条都要能被脚本判定。',
+    },
+    members: [
+      {
+        name: '周叙',
+        role: '产品经理',
+        level: 'P5',
+        skills: ['用户故事', '竞品分析'],
+        persona: '先写清交付物形态，再动手做；不确定就写下假设。',
+      },
+      {
+        name: '陶然',
+        role: '内容与文案',
+        level: 'P4',
+        skills: ['文案', '排版'],
+        persona: '文字要短、要具体，不说空话。',
+      },
+    ],
+  },
+  {
+    department: { name: '工程部', code: 'EN-01', description: '把交付物做成能跑起来的东西。' },
+    head: {
+      name: '沈聿',
+      role: '技术负责人',
+      level: 'P7',
+      skills: ['Node.js', '架构', '评审'],
+      persona: '只交付可运行、可复现的代码，并给出验证方式。',
+    },
+    members: [
+      {
+        name: '李雷',
+        role: '全栈工程师',
+        level: 'P5',
+        skills: ['Node.js', 'SQLite', '前端'],
+        persona: '用最小的依赖实现，交付前先自己跑一遍。',
+      },
+      {
+        name: '韩梅梅',
+        role: '测试工程师',
+        level: 'P4',
+        skills: ['测试用例', '自动化'],
+        persona: '为每个交付写一条能失败的检查，再让它通过。',
+      },
+    ],
+  },
+];
+
+/** Idempotent: does nothing once the company has departments. */
+export function ensureFirstCompany(org: OrgService): {
+  created: boolean;
+  departments: number;
+  employees: number;
+} {
+  const existing = org.list();
+  if (existing.length > 0) {
+    return {
+      created: false,
+      departments: existing.length,
+      employees: existing.flatMap((department) => department.members).length,
+    };
+  }
+
+  for (const unit of STAFF) {
+    const department = org.createDepartment(unit.department);
+    const head = org.hire({
+      name: unit.head.name,
+      role: unit.head.role,
+      level: unit.head.level,
+      departmentId: department.id,
+      isHead: true,
+      skills: unit.head.skills,
+      persona: unit.head.persona,
+    } satisfies HireInput);
+
+    for (const member of unit.members) {
+      org.hire({
+        name: member.name,
+        role: member.role,
+        level: member.level,
+        departmentId: department.id,
+        reportsToEmployeeId: head.id,
+        skills: member.skills,
+        persona: member.persona,
+      } satisfies HireInput);
+    }
+  }
+
+  const departments = org.list();
+  org.ensureDistinctColors();
+  return {
+    created: true,
+    departments: departments.length,
+    employees: departments.flatMap((department) => department.members).length,
+  };
+}
+
+/** Chat/pi need `Agent` rows; they come from the org table, not from fixtures. */
+export function agentsFromOrg(org: OrgService): Agent[] {
+  return org.list().flatMap((department) =>
+    department.members.map((member) => ({
+      id: member.id,
+      name: member.name,
+      role: member.role,
+      level: member.level,
+      departmentId: department.id,
+      model: member.model,
+      status: 'online' as const,
+      skills: member.skills,
+      briefMd: member.persona,
+    })),
+  );
+}
+
+export function chatDepartmentsFromOrg(org: OrgService) {
+  return org.list().map((department) => ({
+    id: department.id,
+    name: department.name,
+    code: department.code,
+    color: department.color,
+    description: department.description,
+    leadAgentId: department.headEmployeeId ?? '',
+    groupConversationId: '',
+  }));
+}
