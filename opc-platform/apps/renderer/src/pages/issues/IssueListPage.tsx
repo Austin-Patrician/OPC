@@ -13,6 +13,7 @@ import { cn } from '@/shared/lib/cn';
 
 import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTransitions';
 import { isOverdue, sortIssues, type IssueSort } from './issueSort';
+import { buildTimeline, spendByDay } from './issueTimeline';
 
 type Group = BoardGroup;
 
@@ -53,7 +54,8 @@ export function IssueListPage() {
   const [assignee, setAssignee] = useState('');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<'ledger' | 'board'>('ledger');
+  const [mode, setMode] = useState<'ledger' | 'board' | 'timeline'>('ledger');
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [sort, setSort] = useState<IssueSort>('created');
@@ -117,7 +119,7 @@ export function IssueListPage() {
   const handleDrop = async (taskId: string, target: Group) => {
     const task = tasks.find((entry) => entry.id === taskId);
     if (!task) return;
-    const decision = decideDrop(task.status, target);
+    const decision = decideDrop(task.status, target, task.blockedBy);
     if (!decision.allowed || !decision.action) {
       setNotice(decision.reason ?? '不允许的操作');
       return;
@@ -144,7 +146,7 @@ export function IssueListPage() {
             <span className="font-mono text-2xs text-ink-quaternary">{tasks.length}</span>
             <span className="flex-1" />
             <div className="flex items-center gap-0.5 rounded-md bg-surface-muted p-0.5">
-              {(['ledger', 'board'] as const).map((key) => (
+              {(['ledger', 'board', 'timeline'] as const).map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -237,6 +239,58 @@ export function IssueListPage() {
           </div>
         </header>
 
+        {picked.size > 0 ? (
+          <div
+            data-testid="issue-bulk"
+            className="flex shrink-0 items-center gap-2 border-b border-line bg-accent-soft/60 px-8 py-1.5 text-2xs text-ink-secondary"
+          >
+            <span className="font-mono">{t('issues.picked', { count: picked.size })}</span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              data-testid="bulk-run"
+              onClick={async () => {
+                for (const taskId of picked) {
+                  const task = tasks.find((entry) => entry.id === taskId);
+                  if (!task) continue;
+                  const decision = decideDrop(task.status, 'doing', task.blockedBy);
+                  if (decision.allowed && decision.action) await runAction(task, decision.action).catch(() => undefined);
+                }
+                setPicked(new Set());
+                setTasks(await window.opc!.work.listTasks(500));
+              }}
+              className="rounded bg-accent px-2 py-0.5 font-medium text-white"
+            >
+              {t('issues.bulkRun')}
+            </button>
+            <select
+              aria-label={t('issues.bulkPriority')}
+              defaultValue=""
+              onChange={async (event) => {
+                if (!event.target.value) return;
+                for (const taskId of picked) {
+                  await window.opc!.work.setIssueMeta(taskId, {
+                    priority: event.target.value as 'P0',
+                  });
+                }
+                setPicked(new Set());
+                setTasks(await window.opc!.work.listTasks(500));
+              }}
+              className="rounded border border-line bg-surface px-1 py-0.5 text-2xs"
+            >
+              <option value="">{t('issues.bulkPriority')}</option>
+              {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+            <button type="button" onClick={() => setPicked(new Set())} className="text-ink-quaternary hover:text-ink">
+              ✕
+            </button>
+          </div>
+        ) : null}
+
         {notice ? (
           <div
             data-testid="issue-notice"
@@ -246,6 +300,65 @@ export function IssueListPage() {
             <button type="button" onClick={() => setNotice(null)} className="text-ink-quaternary hover:text-ink">
               ✕
             </button>
+          </div>
+        ) : null}
+
+        {mode === 'timeline' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-8 py-4">
+            {(() => {
+              const { bars, from, to } = buildTimeline(ordered);
+              const spend = spendByDay(tasks);
+              const peak = Math.max(0.000001, ...spend.map((entry) => entry.usd));
+              if (bars.length === 0) {
+                return <p className="py-16 text-center text-sm text-ink-quaternary">{t('issues.timelineEmpty')}</p>;
+              }
+              return (
+                <>
+                  <div className="mb-4 flex items-center justify-between text-2xs text-ink-quaternary">
+                    <span className="font-semibold">{t('issues.timelineTitle')}</span>
+                    <span className="font-mono">
+                      {new Date(from).toLocaleString()} → {new Date(to).toLocaleString()}
+                    </span>
+                  </div>
+                  <ol data-testid="issue-timeline" className="space-y-1">
+                    {bars.map(({ task, start, end, open }) => (
+                      <li key={task.id} className="flex items-center gap-3">
+                        <span className="w-20 shrink-0 font-mono text-3xs text-ink-quaternary">
+                          {task.issueKey ?? '—'}
+                        </span>
+                        <span className="relative h-4 min-w-0 flex-1 rounded bg-surface-muted">
+                          <span
+                            className={cn('absolute inset-y-0 rounded', open && 'opacity-70')}
+                            style={{
+                              left: `${start * 100}%`,
+                              width: `${Math.max(0.5, (end - start) * 100)}%`,
+                              background: RAIL[GROUP_OF(task.status)],
+                            }}
+                          />
+                        </span>
+                        <span className="w-24 shrink-0 truncate text-3xs text-ink-quaternary">
+                          {task.assigneeName}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+
+                  <div className="mt-8">
+                    <div className="mb-2 text-2xs font-semibold text-ink-quaternary">{t('issues.spendTitle')}</div>
+                    <div className="flex h-20 items-end gap-1">
+                      {spend.map((entry) => (
+                        <span
+                          key={entry.day}
+                          title={`${entry.day} · $${entry.usd.toFixed(4)}`}
+                          className="flex-1 rounded-t bg-accent/70"
+                          style={{ height: `${Math.max(2, (entry.usd / peak) * 100)}%` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         ) : null}
 
@@ -302,7 +415,12 @@ export function IssueListPage() {
                           </div>
                           <div className="mt-0.5 line-clamp-2 text-xs text-ink">{task.title}</div>
                           <div className="mt-1.5 flex items-center justify-between text-3xs text-ink-quaternary">
-                            <span className="truncate">{task.assigneeName}</span>
+                            <span className="truncate">
+                              {task.assigneeName}
+                              {task.blockedBy.length > 0 ? (
+                                <span className="ml-1 text-warning">⛓{task.blockedBy.length}</span>
+                              ) : null}
+                            </span>
                             <span className="font-mono text-success">${task.costUsd.toFixed(2)}</span>
                           </div>
                         </article>
@@ -316,7 +434,7 @@ export function IssueListPage() {
         ) : null}
 
         {/* Rows, grouped by state — the rail does the colouring */}
-        <div className={cn('min-h-0 flex-1 overflow-y-auto', mode === 'board' && 'hidden')}>
+        <div className={cn('min-h-0 flex-1 overflow-y-auto', mode !== 'ledger' && 'hidden')}>
           {ordered.length === 0 ? (
             <p className="px-8 py-16 text-center text-sm text-ink-quaternary">{t('issues.empty')}</p>
           ) : (
@@ -345,6 +463,23 @@ export function IssueListPage() {
                       )}
                     >
                       <span aria-hidden className="h-8 w-[3px] shrink-0" style={{ background: RAIL[group] }} />
+                      <input
+                        type="checkbox"
+                        aria-label={t('issues.pick')}
+                        data-testid="issue-pick"
+                        checked={picked.has(task.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          setPicked((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(task.id);
+                            else next.delete(task.id);
+                            return next;
+                          });
+                        }}
+                        className="shrink-0"
+                      />
                       <span className="w-20 shrink-0 font-mono text-2xs text-ink-tertiary">
                         {task.issueKey ?? '—'}
                       </span>
@@ -383,6 +518,14 @@ export function IssueListPage() {
                               {label}
                             </span>
                           ))}
+                          {task.blockedBy.length > 0 ? (
+                            <span
+                              data-testid="issue-blocked"
+                              className="shrink-0 rounded bg-warning/10 px-1 text-3xs text-warning"
+                            >
+                              {t('issues.blockedBy', { count: task.blockedBy.length })}
+                            </span>
+                          ) : null}
                           {isOverdue(task) ? (
                             <span className="shrink-0 rounded bg-danger/10 px-1 text-3xs text-danger">
                               {t('issues.overdue')}
@@ -410,12 +553,29 @@ export function IssueListPage() {
         </div>
       </div>
 
-      {selected ? <IssueDetail task={selected} onClose={() => setSelectedId(null)} /> : null}
+      {selected ? (
+        <IssueDetail
+          task={selected}
+          allTasks={tasks}
+          onReload={setTasks}
+          onClose={() => setSelectedId(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function IssueDetail({ task, onClose }: { task: WorkTask; onClose: () => void }) {
+function IssueDetail({
+  task,
+  allTasks,
+  onReload,
+  onClose,
+}: {
+  task: WorkTask;
+  allTasks: WorkTask[];
+  onReload: (tasks: WorkTask[]) => void;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const evidence = task.acceptance?.evidence;
 
@@ -497,6 +657,41 @@ function IssueDetail({ task, onClose }: { task: WorkTask; onClose: () => void })
               className="h-7 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none"
             />
           </label>
+        </section>
+
+        <section>
+          <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
+            {t('issues.blockers')} · {task.blockedBy.length}
+          </h3>
+          {task.blockedBy.length === 0 ? (
+            <p className="text-2xs text-ink-quaternary">{t('issues.noBlockers')}</p>
+          ) : (
+            <ul className="space-y-1">
+              {task.blockedBy.map((link) => (
+                <li key={link.taskId} className="flex items-center gap-1.5 text-2xs">
+                  <span className="font-mono text-ink-quaternary">{link.issueKey ?? '—'}</span>
+                  <span className="min-w-0 flex-1 truncate text-ink-secondary">{link.title}</span>
+                  <span className="text-ink-quaternary">{t(`task.status.${link.status}`)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <input
+            data-testid="issue-blocker-input"
+            placeholder={t('issues.blockerHint')}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              const key = event.currentTarget.value.trim().toUpperCase();
+              const target = allTasks.find((entry) => (entry.issueKey ?? '').toUpperCase() === key);
+              if (!target) return;
+              void window.opc!.work
+                .linkTasks(target.id, task.id, 'blocks')
+                .then(() => window.opc!.work.listTasks(500))
+                .then(onReload);
+              event.currentTarget.value = '';
+            }}
+            className="mt-1.5 h-7 w-full rounded-md border border-line bg-surface px-1.5 font-mono text-2xs text-ink outline-none focus:border-accent"
+          />
         </section>
 
         <section>

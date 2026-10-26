@@ -1,5 +1,6 @@
 import type {
   Agent,
+  LinkType,
   Budget,
   BudgetError,
   CreateTaskInput,
@@ -233,6 +234,16 @@ export class WorkService {
 
   /** One-time backfill for rows created before issue keys existed. */
   backfillIssueKeys = (): number => this.repository.ensureIssueKeys();
+
+  linkTasks = (fromId: string, toId: string, type: LinkType = 'blocks'): WorkTask => {
+    this.repository.link(fromId, toId, type);
+    return this.repository.getTask(toId) as WorkTask;
+  };
+
+  unlinkTasks = (fromId: string, toId: string, type: LinkType = 'blocks'): WorkTask => {
+    this.repository.unlink(fromId, toId, type);
+    return this.repository.getTask(toId) as WorkTask;
+  };
 
   /** Edits the issue fields the boss owns (priority / labels / due date). */
   setIssueMeta = (
@@ -548,10 +559,21 @@ export class WorkService {
     this.runTask(originalId);
   };
 
-  /** Fire-and-forget: the UI follows `subscribe()`. */
-  runTask = (taskId: string): void => {
+  /**
+   * Reasons a task must not start: no usable model, or an unfinished blocker.
+   * Both fail the task with a readable message instead of leaving it hanging —
+   * "stuck in 进行中" is the worst state a ledger can show.
+   */
+  private refuseToStart(taskId: string): boolean {
     try {
       this.assertModelUsable();
+      if (this.repository.isBlocked(taskId)) {
+        const blockers = this.repository.getTask(taskId)?.blockedBy ?? [];
+        throw new Error(
+          `还有未完成的前置任务：${blockers.map((link) => link.issueKey ?? link.title).join('、')}`,
+        );
+      }
+      return false;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.repository.addStep(taskId, message);
@@ -560,8 +582,13 @@ export class WorkService {
       this.emitBudgetChange();
       const failed = this.repository.getTask(taskId);
       if (failed) this.emit(failed);
-      return;
+      return true;
     }
+  }
+
+  /** Fire-and-forget: the UI follows `subscribe()`. */
+  runTask = (taskId: string): void => {
+    if (this.refuseToStart(taskId)) return;
     const task = this.repository.getTask(taskId);
     if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
     void this.runner.run(taskId).catch((error) => {
@@ -573,7 +600,8 @@ export class WorkService {
     });
   };
 
-  runTaskAndWait = (taskId: string): Promise<WorkTask> => {
+  runTaskAndWait = async (taskId: string): Promise<WorkTask> => {
+    if (this.refuseToStart(taskId)) return this.repository.getTask(taskId) as WorkTask;
     const task = this.repository.getTask(taskId);
     if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
     return this.runner.run(taskId).finally(() => {

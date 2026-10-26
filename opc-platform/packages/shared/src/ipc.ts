@@ -111,6 +111,7 @@ export const IPC = {
     listTasks: 'work:listTasks',
     bossDecision: 'work:bossDecision',
     setIssueMeta: 'work:setIssueMeta',
+    linkTasks: 'work:linkTasks',
     subtasks: 'work:subtasks',
     createTask: 'work:createTask',
     runTask: 'work:runTask',
@@ -208,6 +209,8 @@ export interface WorkBridge {
     taskId: string,
     patch: { priority?: 'P0' | 'P1' | 'P2' | 'P3'; labels?: string[]; dueAt?: number | null },
   ): Promise<WorkTask>;
+  /** `fromId blocks toId`; pass an empty `fromId` to remove the link. */
+  linkTasks(fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates'): Promise<WorkTask>;
   onTaskChanged(listener: (task: WorkTask) => void): () => void;
   onBudgetsChanged(listener: (budgets: Budget[]) => void): () => void;
 }

@@ -35,6 +35,16 @@ describe('issue board drops', () => {
     });
   });
 
+  it('refuses to start work with an unfinished blocker', () => {
+    const decision = decideDrop('open', 'doing', [{ issueKey: 'ENG-1', title: '前置' }]);
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toContain('ENG-1');
+  });
+
+  it('starts once the blockers are finished', () => {
+    expect(decideDrop('open', 'doing', []).allowed).toBe(true);
+  });
+
   it('sends accepted work back to doing only as an explicit rejection', () => {
     expect(decideDrop('accepted', 'doing')).toEqual({
       allowed: true,

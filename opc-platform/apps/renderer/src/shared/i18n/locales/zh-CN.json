@@ -670,7 +670,8 @@
     "activity": "活动",
     "mode": {
       "ledger": "台账",
-      "board": "看板"
+      "board": "看板",
+      "timeline": "时间线"
     },
     "priority": "优先级",
     "allPriorities": "所有优先级",
@@ -683,6 +684,17 @@
     "fields": "字段",
     "due": "截止日期",
     "labels": "标签",
-    "labelsHint": "逗号分隔，例如 增长, 前端"
+    "labelsHint": "逗号分隔，例如 增长, 前端",
+    "blockedBy": "被 {{count}} 个阻塞",
+    "blockers": "前置任务",
+    "noBlockers": "没有前置任务",
+    "blockerHint": "输入前置任务的 KEY 后回车",
+    "picked": "已选 {{count}} 项",
+    "bulkRun": "批量开始",
+    "bulkPriority": "批量设优先级",
+    "pick": "选择",
+    "timelineTitle": "时间线",
+    "spendTitle": "每日花费（近 14 天）",
+    "timelineEmpty": "还没有可绘制的工作项"
   }
 }

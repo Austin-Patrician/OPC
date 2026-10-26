@@ -47,6 +47,8 @@ const isBudgetProbe = process.env.OPC_BUDGET_PROBE === "1";
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
+/** `OPC_BLOCKER_PROBE=1`: a task with an unfinished blocker refuses to start. */
+const isBlockerProbe = process.env.OPC_BLOCKER_PROBE === '1';
 /** `OPC_ISSUE_META_PROBE=1`: priority / labels / due date round-trip through the repo. */
 const isIssueMetaProbe = process.env.OPC_ISSUE_META_PROBE === '1';
 /** `OPC_PRICING_PROBE=1`: decorated model ids map onto pi's official prices. */
@@ -383,6 +385,7 @@ const isHeadlessMode =
   isWorkProbe ||
   isBudgetProbe ||
   isModelProbe ||
+  isBlockerProbe ||
   isIssueMetaProbe ||
   isPricingProbe ||
   isProjectProbe ||
@@ -410,6 +413,63 @@ if (!hasLock) {
 
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
+
+    if (isBlockerProbe) {
+      process.env.OPC_BRAIN_VARIANT ??= 'ok';
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-blocker-')));
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const org = new OrgService(db);
+      ensureFirstCompany(org);
+      const member = org.list().flatMap((department) => department.members)[0]!;
+      const work = new WorkService({
+        db,
+        paths: appPaths,
+        agents: agentsFromOrg(org),
+        upsertTaskCard: () => undefined,
+        org,
+      });
+
+      const dispatch = (title: string) => {
+        const created = work.createTask({
+          title,
+          brief: 'b',
+          deliverableSpec: 'server.js 返回 200',
+          assigneeId: member.id,
+          estTokens: 1000,
+          acceptanceCommand: [],
+          acceptanceTemplate: 'http-ok',
+        });
+        if (!created.ok) throw new Error('创建失败');
+        return created.task;
+      };
+
+      const blocker = dispatch('前置任务');
+      const blocked = dispatch('被阻塞的任务');
+      work.linkTasks(blocker.id, blocked.id, 'blocks');
+
+      const linked = work.getTask(blocked.id)!;
+      await work.runTaskAndWait(blocked.id);
+      const refused = work.getTask(blocked.id)!;
+
+      await work.runTaskAndWait(blocker.id);
+      await work.runTaskAndWait(blocked.id);
+      const afterBlockerDone = work.getTask(blocked.id)!;
+
+      process.stdout.write(
+        JSON.stringify({
+          probe: 'blocker',
+          blockedBy: linked.blockedBy.map((link) => `${link.issueKey}:${link.status}`),
+          refusedStatus: refused.status,
+          refusedError: refused.error,
+          afterBlockerDone: afterBlockerDone.status,
+        }) + '\n',
+      );
+      app.exit(
+        refused.status === 'failed' && afterBlockerDone.status === 'accepted' ? 0 : 1,
+      );
+      return;
+    }
 
     if (isIssueMetaProbe) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';

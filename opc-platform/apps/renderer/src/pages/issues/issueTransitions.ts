@@ -42,12 +42,23 @@ export function groupOf(status: TaskStatus): BoardGroup {
   return GROUP_OF[status];
 }
 
-export function decideDrop(status: TaskStatus, target: BoardGroup): DropDecision {
+export function decideDrop(
+  status: TaskStatus,
+  target: BoardGroup,
+  blockedBy: readonly { issueKey?: string; title: string }[] = [],
+): DropDecision {
   const from = GROUP_OF[status];
   if (from === target) return { allowed: false, reason: '同一列，无需移动' };
 
   if (target === 'doing') {
     if (status === 'open' || status === 'rejected' || status === 'failed') {
+      // A blocker that has not finished wins: the work cannot be real work yet.
+      if (blockedBy.length > 0) {
+        return {
+          allowed: false,
+          reason: `还有未完成的前置任务：${blockedBy.map((link) => link.issueKey ?? link.title).join('、')}`,
+        };
+      }
       return { allowed: true, action: { kind: 'run' } };
     }
     if (status === 'accepted' || status === 'delivered') {

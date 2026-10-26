@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -475,7 +475,24 @@ ALTER TABLE task ADD COLUMN due_at INTEGER;
 CREATE INDEX IF NOT EXISTS idx_task_priority ON task(priority, status);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5];
+/**
+ * V6: links between work items. `blocks` is the one that changes behaviour (a task
+ * with an unfinished blocker refuses to start); the other two are notes for humans.
+ */
+const V6 = `
+CREATE TABLE IF NOT EXISTS task_link (
+  id           TEXT PRIMARY KEY,
+  from_task_id TEXT NOT NULL,
+  to_task_id   TEXT NOT NULL,
+  type         TEXT NOT NULL DEFAULT 'blocks',
+  created_at   INTEGER NOT NULL,
+  UNIQUE (from_task_id, to_task_id, type)
+);
+CREATE INDEX IF NOT EXISTS idx_link_from ON task_link(from_task_id);
+CREATE INDEX IF NOT EXISTS idx_link_to ON task_link(to_task_id);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {

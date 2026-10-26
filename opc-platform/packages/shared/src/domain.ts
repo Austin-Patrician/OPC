@@ -87,6 +87,15 @@ export type MessageKind = 'text' | 'deliverable' | 'system' | 'task';
 
 export type IssuePriority = 'P0' | 'P1' | 'P2' | 'P3';
 
+export type LinkType = 'blocks' | 'duplicates' | 'relates';
+
+export interface IssueLink {
+  taskId: string;
+  issueKey?: string;
+  title: string;
+  status: TaskStatus;
+}
+
 export type TaskStatus =
   | 'open'
   | 'running'
@@ -142,6 +151,8 @@ export interface WorkTask {
   priority: IssuePriority;
   labels: string[];
   dueAt?: number;
+  /** Unfinished blockers: the task is not allowed to start until they are done. */
+  blockedBy: IssueLink[];
   /** Set when a task is the manager sign-off of another task. */
   reviewOfTaskId?: string;
   /** Review tasks are judged by the boss, never by another manager review. */

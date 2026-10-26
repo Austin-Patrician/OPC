@@ -1,6 +1,8 @@
 import type {
   Agent,
   AcceptanceTemplate,
+  IssueLink,
+  LinkType,
   TaskAcceptance,
   TaskStatus,
   WorkTask,
@@ -164,6 +166,50 @@ export class TaskRepository {
     return `${prefix}-${lastSeq + 1}`;
   }
 
+  /** Blockers of one task, with the fields an issue row needs to explain itself. */
+  private linksOf(taskId: string): IssueLink[] {
+    return this.db
+      .prepare(
+        `SELECT t.id, t.issue_key, t.title, t.status
+           FROM task_link l JOIN task t ON t.id = l.from_task_id
+          WHERE l.to_task_id = ? AND l.type = 'blocks'
+          ORDER BY t.created_at`,
+      )
+      .all(taskId)
+      .map((raw) => {
+        const row = raw as { id: string; issue_key: string | null; title: string; status: TaskStatus };
+        return {
+          taskId: row.id,
+          issueKey: row.issue_key ?? undefined,
+          title: row.title,
+          status: row.status,
+        };
+      });
+  }
+
+  /** Links are directional: `fromId blocks toId`. */
+  link = (fromId: string, toId: string, type: LinkType = 'blocks'): void => {
+    if (fromId === toId) throw new Error('不能把任务连到自己');
+    const exists = (id: string) => Boolean(this.db.prepare('SELECT id FROM task WHERE id = ?').get(id));
+    if (!exists(fromId) || !exists(toId)) throw new Error('任务不存在');
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO task_link (id, from_task_id, to_task_id, type, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(`link-${crypto.randomUUID()}`, fromId, toId, type, Date.now());
+  };
+
+  unlink = (fromId: string, toId: string, type: LinkType = 'blocks'): void => {
+    this.db
+      .prepare('DELETE FROM task_link WHERE from_task_id = ? AND to_task_id = ? AND type = ?')
+      .run(fromId, toId, type);
+  };
+
+  /** A blocker only blocks while it is unfinished. */
+  isBlocked = (taskId: string): boolean =>
+    this.linksOf(taskId).some((link) => link.status !== 'accepted' && link.status !== 'delivered');
+
   /** Priority / labels / due date: the fields the boss edits after dispatch. */
   setIssueMeta = (
     taskId: string,
@@ -273,6 +319,7 @@ export class TaskRepository {
       assigneeName: row.employee_name,
       issueKey: row.issue_key ?? undefined,
       priority: (row.priority as WorkTask['priority']) ?? 'P2',
+      blockedBy: this.linksOf(row.id),
       labels: JSON.parse(row.labels || '[]') as string[],
       dueAt: row.due_at ?? undefined,
       parentTaskId: row.parent_task_id ?? undefined,

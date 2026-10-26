@@ -196,6 +196,23 @@
             new MouseEvent('click', { bubbles: true }),
           );
           await new Promise((r) => setTimeout(r, 300));
+          document.querySelector('[data-testid="issue-mode-timeline"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 400));
+          const issueTimelineBars = document.querySelectorAll('[data-testid="issue-timeline"] li').length;
+          document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 300));
+          const pickBox = document.querySelector('[data-testid="issue-pick"]');
+          pickBox?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 300));
+          const issueBulkBar = Boolean(document.querySelector('[data-testid="issue-bulk"]'));
+          document.querySelector('[data-testid="issue-mode-board"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 300));
           const issueColumns = document.querySelectorAll('[data-testid^="issue-column-"]').length;
           const issueCards = document.querySelectorAll('[data-testid="issue-card"]').length;
           // A drop that would impersonate the manager must be refused (drag events are
@@ -416,6 +433,8 @@
             issueDetailOpen,
             issueFilteredRows,
             issuePriorityShown,
+            issueTimelineBars,
+            issueBulkBar,
             issueColumns,
             issueCards,
             issueRefusalShown,

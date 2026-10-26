@@ -670,7 +670,8 @@
     "activity": "Activity",
     "mode": {
       "ledger": "Ledger",
-      "board": "Board"
+      "board": "Board",
+      "timeline": "Timeline"
     },
     "priority": "Priority",
     "allPriorities": "All priorities",
@@ -683,6 +684,17 @@
     "fields": "Fields",
     "due": "Due",
     "labels": "Labels",
-    "labelsHint": "comma separated, e.g. growth, frontend"
+    "labelsHint": "comma separated, e.g. growth, frontend",
+    "blockedBy": "{{count}} blocker(s)",
+    "blockers": "Blockers",
+    "noBlockers": "No blockers",
+    "blockerHint": "Type a blocker KEY and press Enter",
+    "picked": "{{count}} selected",
+    "bulkRun": "Start selected",
+    "bulkPriority": "Set priority",
+    "pick": "Select",
+    "timelineTitle": "Timeline",
+    "spendTitle": "Spend, last 14 days",
+    "timelineEmpty": "Nothing to draw yet"
   }
 }

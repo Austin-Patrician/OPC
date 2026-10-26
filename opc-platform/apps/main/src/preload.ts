@@ -176,6 +176,8 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.work.bossDecision, taskId, decision, reason) as Promise<WorkTask>,
     setIssueMeta: (taskId: string, patch: unknown) =>
       ipcRenderer.invoke(IPC.work.setIssueMeta, taskId, patch) as Promise<WorkTask>,
+    linkTasks: (fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates') =>
+      ipcRenderer.invoke(IPC.work.linkTasks, fromId, toId, type) as Promise<WorkTask>,
     listBudgets: () => ipcRenderer.invoke(IPC.work.listBudgets) as Promise<Budget[]>,
     subtasks: (taskId: string) => ipcRenderer.invoke(IPC.work.subtasks, taskId) as Promise<WorkTask[]>,
     onBudgetsChanged: (listener: (budgets: Budget[]) => void) => {

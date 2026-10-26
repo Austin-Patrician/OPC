@@ -519,6 +519,16 @@ export function registerIpc({
       dueAt: dueAt === null ? null : typeof dueAt === 'number' ? dueAt : undefined,
     });
   });
+  ipcMain.handle(IPC.work.linkTasks, (_event, fromId: unknown, toId: unknown, type: unknown) => {
+    if (typeof fromId !== 'string' || typeof toId !== 'string') {
+      throw new Error('work:linkTasks 参数非法');
+    }
+    const kind = type === 'duplicates' || type === 'relates' ? type : 'blocks';
+    // An empty fromId unlinks — one channel, no separate delete verb to get wrong.
+    return fromId === ''
+      ? work.unlinkTasks('', toId, kind)
+      : work.linkTasks(fromId, toId, kind);
+  });
   ipcMain.handle(IPC.work.listTasks, (_event, limit: unknown) =>
     work.listTasks(typeof limit === 'number' ? limit : undefined),
   );
@@ -558,6 +568,7 @@ export function registerIpc({
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);
     ipcMain.removeHandler(IPC.work.setIssueMeta);
+    ipcMain.removeHandler(IPC.work.linkTasks);
     ipcMain.removeHandler(IPC.work.bossDecision);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
