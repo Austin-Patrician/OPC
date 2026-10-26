@@ -121,6 +121,24 @@ const REBUILDABLE = new Set(['budget_reservation', 'budget_ledger']);
 export function repairLegacyColumns(db: CompanyDatabase): string[] {
   const repaired: string[] = [];
   const rebuilt: string[] = [];
+
+  // Columns added by later migrations (`ALTER TABLE … ADD COLUMN …`) are applied
+  // here first, idempotently. A migration that blindly ALTERs fails on any database
+  // that already has the column — which is every database this app has upgraded.
+  const addColumn = /ALTER TABLE (\w+) ADD COLUMN (\w+) ([^;]+);/g;
+  for (const sql of MIGRATIONS.slice(1)) {
+    let match: RegExpExecArray | null;
+    while ((match = addColumn.exec(sql)) !== null) {
+      const [, table, column, definition] = match;
+      const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(table);
+      if (!exists) continue;
+      const present = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (present.some((entry) => entry.name === column)) continue;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      repaired.push(`${table}.${column}`);
+    }
+  }
+
   for (const { table, columns } of declaredTables(MIGRATIONS[0] ?? '')) {
     const exists = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -186,7 +204,16 @@ function migrate(db: CompanyDatabase): void {
       for (let step = current; step < SCHEMA_VERSION; step += 1) {
         const sql = MIGRATIONS[step];
         if (!sql) throw new Error(`缺少迁移步骤 ${step + 1}`);
-        for (const statement of splitStatements(sql)) db.exec(statement);
+        for (const statement of splitStatements(sql)) {
+          try {
+            db.exec(statement);
+          } catch (error) {
+            // `repairLegacyColumns` may already have added this column; a migration
+            // must be a no-op then, not a rollback of the whole step.
+            if (/duplicate column name/i.test(String(error))) continue;
+            throw error;
+          }
+        }
       }
       db.pragma(`user_version = ${SCHEMA_VERSION}`);
       db.exec('COMMIT');

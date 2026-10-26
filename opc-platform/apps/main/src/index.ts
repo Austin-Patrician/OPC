@@ -292,6 +292,15 @@ function bootstrap(): void {
     comm,
   });
 
+  // Rows created before issue keys existed get one now; new tasks allocate at insert.
+  // Runs in headless mode too, so probes and the issue list see the same data.
+  try {
+    const filled = work.backfillIssueKeys();
+    if (filled > 0) console.warn(`backfilled ${filled} issue keys`);
+  } catch (error) {
+    console.warn('issue key backfill failed', error);
+  }
+
   disposeIpc = registerIpc({
     chat,
     work,

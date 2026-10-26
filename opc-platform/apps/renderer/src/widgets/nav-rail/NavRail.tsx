@@ -8,6 +8,7 @@ import {
   Smartphone,
   Star,
   UsersRound,
+  SquareKanban,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { NavLink } from 'react-router-dom';
@@ -15,6 +16,7 @@ import { cn } from '@/shared/lib/cn';
 
 const PRIMARY_NAV = [
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
+  { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
   { to: '/org', icon: UsersRound, labelKey: 'nav.org' },
   { to: '/market', icon: Star, labelKey: 'nav.market', dot: true },
   { to: '/channels', icon: Hash, labelKey: 'nav.channels' },

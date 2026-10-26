@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -454,7 +454,16 @@ CREATE INDEX IF NOT EXISTS idx_guard_open ON guard_event(employee_id, dismissed_
  * Append-only migration steps. `MIGRATIONS[n - 1]` upgrades a database from
  * version `n - 1` to `n`; step 1 is the initial schema.
  */
-export const MIGRATIONS: readonly string[] = [V1, V2, V3];
+/**
+ * V4: `issue_key` — a stable human handle per task (ENG-12), so a row can be
+ * referred to in chat, commits and issue lists without a UUID.
+ */
+const V4 = `
+ALTER TABLE task ADD COLUMN issue_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_issue_key ON task(issue_key);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {

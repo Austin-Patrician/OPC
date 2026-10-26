@@ -194,7 +194,7 @@ export interface ChatBridge {
 }
 
 export interface WorkBridge {
-  listTasks(): Promise<WorkTask[]>;
+  listTasks(limit?: number): Promise<WorkTask[]>;
   /** Direct subtasks of one task (the decomposition tree). */
   subtasks(taskId: string): Promise<WorkTask[]>;
   listBudgets(): Promise<Budget[]>;

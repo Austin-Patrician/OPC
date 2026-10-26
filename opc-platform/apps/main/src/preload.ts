@@ -169,7 +169,7 @@ const bridge: OpcBridge = {
     setThinking: (level: string) => ipcRenderer.invoke(IPC.models.setThinking, level),
   },
   work: {
-    listTasks: () => ipcRenderer.invoke(IPC.work.listTasks) as Promise<WorkTask[]>,
+    listTasks: (limit?: number) => ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,
     createTask: (input: CreateTaskInput) => ipcRenderer.invoke(IPC.work.createTask, input),
     runTask: (taskId: string) => ipcRenderer.invoke(IPC.work.runTask, taskId),
     bossDecision: (taskId: string, decision: 'approve' | 'reject', reason?: string) =>

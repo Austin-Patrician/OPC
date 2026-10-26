@@ -134,6 +134,8 @@ export interface WorkTask {
   assigneeId: string;
   assigneeName: string;
   parentTaskId?: string;
+  /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
+  issueKey?: string;
   /** Set when a task is the manager sign-off of another task. */
   reviewOfTaskId?: string;
   /** Review tasks are judged by the boss, never by another manager review. */

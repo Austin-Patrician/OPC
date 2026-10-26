@@ -57,6 +57,7 @@ interface TaskRow {
   employee_name: string;
   parent_task_id: string | null;
   review_of_task_id: string | null;
+  issue_key: string | null;
   is_review: number;
   depth: number;
   est_tokens: number;
@@ -142,6 +143,38 @@ export class TaskRepository {
     run();
   };
 
+  /**
+   * `ENG-12`: prefix from the assignee's department code so a key says where the
+   * work belongs; the sequence is per prefix. Allocation happens inside the same
+   * write as the insert, so two tasks cannot take the same key.
+   */
+  private nextIssueKey(employeeId: string): string {
+    const department = this.statement(
+      `SELECT d.code AS code FROM position p JOIN department d ON d.id = p.department_id
+        WHERE p.employee_id = ? AND p.deleted_at IS NULL`,
+    ).get(employeeId) as { code: string } | undefined;
+    const prefix = (department?.code ?? 'OPC').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || 'OPC';
+    const last = this.statement(
+      "SELECT issue_key FROM task WHERE issue_key LIKE ? ORDER BY LENGTH(issue_key) DESC, issue_key DESC LIMIT 1",
+    ).get(`${prefix}-%`) as { issue_key: string } | undefined;
+    const lastSeq = last ? Number(last.issue_key.split('-').pop()) || 0 : 0;
+    return `${prefix}-${lastSeq + 1}`;
+  }
+
+  /** One-time backfill for rows that predate keys; idempotent. */
+  ensureIssueKeys = (): number => {
+    const rows = this.db
+      .prepare('SELECT id, employee_id FROM task WHERE issue_key IS NULL ORDER BY created_at')
+      .all() as { id: string; employee_id: string }[];
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare('UPDATE task SET issue_key = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const row of rows) update.run(this.nextIssueKey(row.employee_id), row.id);
+    })();
+    return rows.length;
+  };
+
   createTask = (
     draft: CreateTaskDraft,
     workspaceRelPath: string,
@@ -160,8 +193,8 @@ export class TaskRepository {
       `INSERT INTO task (id, title, brief, deliverable_spec, employee_id, employee_name,
                          parent_task_id, review_of_task_id, is_review, depth, est_tokens,
                          acceptance_command, acceptance_template, status, workspace_rel_path,
-                         attempts, tokens_used, cost_usd, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?)`,
+                         attempts, tokens_used, cost_usd, issue_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
     ).run(
       taskId,
       draft.title,
@@ -175,6 +208,7 @@ export class TaskRepository {
       JSON.stringify(draft.acceptanceCommand),
       draft.acceptanceTemplate,
       workspaceRelPath,
+      this.nextIssueKey(assignee.id),
       now,
       now,
     );
@@ -213,6 +247,7 @@ export class TaskRepository {
       deliverableSpec: row.deliverable_spec,
       assigneeId: row.employee_id,
       assigneeName: row.employee_name,
+      issueKey: row.issue_key ?? undefined,
       parentTaskId: row.parent_task_id ?? undefined,
       reviewOfTaskId: row.review_of_task_id ?? undefined,
       isReview: row.is_review === 1,
@@ -258,7 +293,8 @@ export class TaskRepository {
     };
   };
 
-  listTasks = (): WorkTask[] => this.selectIds('SELECT id FROM task ORDER BY created_at DESC');
+  listTasks = (limit = 20): WorkTask[] =>
+    this.selectIds(`SELECT id FROM task ORDER BY created_at DESC LIMIT ${Math.max(1, Math.min(1000, limit))}`);
 
   listChildren = (taskId: string): WorkTask[] =>
     this.selectIds('SELECT id FROM task WHERE parent_task_id = ? ORDER BY created_at', taskId);

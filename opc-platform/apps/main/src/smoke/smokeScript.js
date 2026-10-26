@@ -150,6 +150,24 @@
           const customModelForm = Boolean(document.querySelector('[data-testid="custom-model-id"]'));
           // A built-in provider must advertise that it cannot be deleted.
           const builtinProtected = Boolean(document.querySelector('[data-testid="builtin-protected"]'));
+          // Issues: every task carries a human key, rows group by state, detail opens.
+          location.hash = '#/issues';
+          await new Promise((r) => setTimeout(r, 800));
+          const issueRows = document.querySelectorAll('[data-testid="issue-row"]').length;
+          const firstRowText = document.querySelector('[data-testid="issue-row"]')?.textContent ?? '';
+          const issueKeyLooksRight = /[A-Z0-9]{2,8}-\d+/.test(firstRowText);
+          document.querySelector('[data-testid="issue-row"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 400));
+          const issueDetailOpen = Boolean(document.querySelector('[data-testid="issue-detail-close"]'));
+          document.querySelector('[data-testid="issue-detail-close"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 200));
+          document.querySelector('[data-testid="issue-filter-done"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 300));
+          const issueFilteredRows = document.querySelectorAll('[data-testid="issue-row"]').length;
+          location.hash = '#/settings';
+          await new Promise((r) => setTimeout(r, 500));
           const providerRows = document.querySelectorAll('[data-testid="provider-row"]').length;
           const providerIcons = document.querySelectorAll('img[src*="provider-icons"]').length;
           const llmTableScrollable = Boolean(
@@ -344,6 +362,10 @@
             uniqueColors,
             boardColumns,
             boardDimmed,
+            issueRows,
+            issueKeyLooksRight,
+            issueDetailOpen,
+            issueFilteredRows,
             providerRows,
             fetchModelsButton,
             addModelButton,

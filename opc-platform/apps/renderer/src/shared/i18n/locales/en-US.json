@@ -20,7 +20,8 @@
     "skills": "Skills & tools",
     "mail": "Notifications",
     "device": "Mobile device",
-    "menu": "Settings"
+    "menu": "Settings",
+    "issues": "Issues"
   },
   "titleBar": {
     "defaultSignature": "Edit your signature",
@@ -644,5 +645,28 @@
       "capability": "Capability",
       "confirm": "Confirm"
     }
+  },
+  "issues": {
+    "title": "Issues",
+    "all": "All",
+    "summary": "{{doing}} in progress · {{review}} awaiting your sign-off · {{stuck}} stuck",
+    "assignee": "Assignee",
+    "allAssignees": "All assignees",
+    "search": "Search KEY / title / brief",
+    "group": {
+      "todo": "To do",
+      "doing": "In progress",
+      "review": "Awaiting review",
+      "done": "Accepted",
+      "blocked": "Needs attention"
+    },
+    "empty": "No work items yet. Dispatch a task in IM and it shows up here with a key.",
+    "reviewTask": "review",
+    "attempts": "attempt {{count}}",
+    "brief": "Brief",
+    "deliverable": "Deliverable",
+    "artifacts": "Artifacts",
+    "evidence": "Acceptance evidence",
+    "activity": "Activity"
   }
 }

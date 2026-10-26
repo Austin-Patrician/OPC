@@ -505,7 +505,9 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.work.listTasks, () => work.listTasks());
+  ipcMain.handle(IPC.work.listTasks, (_event, limit: unknown) =>
+    work.listTasks(typeof limit === 'number' ? limit : undefined),
+  );
   ipcMain.handle(IPC.work.bossDecision, (_event, taskId: unknown, decision: unknown, reason: unknown) => {
     if (typeof taskId !== 'string' || (decision !== 'approve' && decision !== 'reject')) {
       throw new Error('work:bossDecision 参数非法');

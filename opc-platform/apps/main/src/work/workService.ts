@@ -226,7 +226,13 @@ export class WorkService {
     });
   }
 
-  listTasks = (): WorkTask[] => this.repository.listTasks();
+  listTasks = (limit?: number): WorkTask[] => this.repository.listTasks(limit);
+
+  /** Everything, newest first — the issue list needs the whole set, not a page. */
+  listAllTasks = (limit = 500): WorkTask[] => this.repository.listTasks(limit);
+
+  /** One-time backfill for rows created before issue keys existed. */
+  backfillIssueKeys = (): number => this.repository.ensureIssueKeys();
 
   getTask = (taskId: string): WorkTask | undefined => this.repository.getTask(taskId);
 
@@ -343,6 +349,23 @@ export class WorkService {
    * Reservation happens before the row exists: refusing a task must cost nothing
    * and must not leave an orphan task the boss thinks is running.
    */
+  /**
+   * A configured-but-unusable default LLM used to make the harness wait on the
+   * network until the task timed out ("stuck in 进行中" with no explanation).
+   * Refuse up front with a message the boss can act on.
+   */
+  private assertModelUsable(): void {
+    const config = this.deps.modelConfig;
+    if (!config) return;
+    const llm = config.getDefaults().llm;
+    if (!llm) return; // nothing configured: the scripted brain still works offline
+    const provider = config.listProviders().find((entry) => entry.id === llm.providerId);
+    if (!provider) throw new Error(`默认模型指向不存在的 provider：${llm.providerId}`);
+    if (!provider.hasKey) {
+      throw new Error(`默认模型 ${provider.name} / ${llm.modelId} 没有可用的 API Key，任务未启动`);
+    }
+  }
+
   createTask = (input: CreateTaskInput): CreateTaskResult => {
     const taskId = `task-${crypto.randomUUID()}`;
     const workspaceRelPath = taskWorkspaceRelPath(taskId);
@@ -516,6 +539,18 @@ export class WorkService {
 
   /** Fire-and-forget: the UI follows `subscribe()`. */
   runTask = (taskId: string): void => {
+    try {
+      this.assertModelUsable();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.repository.addStep(taskId, message);
+      this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: message });
+      this.budgets.release(taskId);
+      this.emitBudgetChange();
+      const failed = this.repository.getTask(taskId);
+      if (failed) this.emit(failed);
+      return;
+    }
     const task = this.repository.getTask(taskId);
     if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
     void this.runner.run(taskId).catch((error) => {

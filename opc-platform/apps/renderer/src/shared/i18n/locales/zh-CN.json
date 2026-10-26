@@ -20,7 +20,8 @@
     "skills": "技能与工具",
     "mail": "站内通知",
     "device": "移动端设备",
-    "menu": "设置与总控"
+    "menu": "设置与总控",
+    "issues": "工作项"
   },
   "titleBar": {
     "defaultSignature": "编辑个性签名",
@@ -644,5 +645,28 @@
       "capability": "能力",
       "confirm": "确认"
     }
+  },
+  "issues": {
+    "title": "工作项",
+    "all": "全部",
+    "summary": "进行中 {{doing}} · 待你终审 {{review}} · 卡住 {{stuck}}",
+    "assignee": "负责人",
+    "allAssignees": "所有负责人",
+    "search": "搜索 KEY / 标题 / 描述",
+    "group": {
+      "todo": "待办",
+      "doing": "进行中",
+      "review": "待验收",
+      "done": "已验收",
+      "blocked": "需要处理"
+    },
+    "empty": "还没有工作项。在 IM 里给员工派第一个任务，它会带着 KEY 出现在这里。",
+    "reviewTask": "验收任务",
+    "attempts": "第 {{count}} 次",
+    "brief": "任务说明",
+    "deliverable": "验收标准",
+    "artifacts": "交付物",
+    "evidence": "验收证据",
+    "activity": "活动"
   }
 }
