@@ -14,7 +14,15 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import { ModelConfigRepository } from '../data/modelConfigRepository';
 import { decryptSecret, encryptSecret } from './keyCipher';
 import type { FileCredentialStore } from './credentialStore';
+import { matchBuiltinModel, type BuiltinModelEntry } from './pricingMatch';
 import { ModelRuntime, PROVIDER_PRESETS } from './runtime';
+
+/** What "use official pricing" actually managed to map. */
+export interface ApplyPricingResult {
+  providers: ProviderConfig[];
+  matched: number;
+  unmatched: string[];
+}
 
 const DEFAULT_LLM_KEY = 'default.llm';
 const DEFAULT_IMAGE_KEY = 'default.image';
@@ -130,45 +138,84 @@ export class ModelConfigService {
   };
 
   /**
-   * Copies pi's built-in `ModelCost` (input/output/cacheRead/cacheWrite + tiers)
-   * onto the provider's models. Authoritative prices beat hand-typed ones, and
-   * they include context-bucket tiers we could not guess.
+   * Fills prices from pi's built-in catalogue. Exact ids win; otherwise the matcher
+   * normalises gateway/date/vendor decoration. Unmatched models keep price 0
+   * ("unknown") and are reported back, so the UI can say what it could not map
+   * instead of leaving a silently half-filled table.
    */
-  applyBuiltinPricing = async (providerId: string): Promise<ProviderConfig[]> => {
+  applyBuiltinPricing = async (providerId: string): Promise<ApplyPricingResult> => {
     const provider = this.repository.getProvider(providerId);
     if (!provider) throw new Error('未知 provider');
 
-    const { getBuiltinModel } = await import('@earendil-works/pi-ai/providers/all');
+    const catalogue = await this.builtinCatalogue();
+    const unmatched: string[] = [];
+    let matched = 0;
+
     const models = provider.models.map((model) => {
-      const builtin = getBuiltinModel as unknown as (
-        p: string,
-        m: string,
-      ) => { cost?: { input: number; output: number; cacheRead: number; cacheWrite: number; tiers?: { inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }[] } } | undefined;
-      let cost;
-      try {
-        cost = builtin(providerId, model.id)?.cost;
-      } catch {
+      const builtin = matchBuiltinModel(catalogue, { providerId, modelId: model.id });
+      if (!builtin) {
+        unmatched.push(model.id);
         return model;
       }
-      if (!cost) return model;
+      matched += 1;
       return {
         ...model,
-        inputUsdPerM: cost.input,
-        outputUsdPerM: cost.output,
-        cacheReadUsdPerM: cost.cacheRead,
-        cacheWriteUsdPerM: cost.cacheWrite,
-        tiers: cost.tiers?.map((tier) => ({
-          inputTokensAbove: tier.inputTokensAbove,
-          inputUsdPerM: tier.input,
-          outputUsdPerM: tier.output,
-          cacheReadUsdPerM: tier.cacheRead,
-          cacheWriteUsdPerM: tier.cacheWrite,
-        })),
+        contextWindow: model.contextWindow || builtin.contextWindow || 0,
+        inputUsdPerM: builtin.inputUsdPerM,
+        outputUsdPerM: builtin.outputUsdPerM,
+        cacheReadUsdPerM: builtin.cacheReadUsdPerM,
+        cacheWriteUsdPerM: builtin.cacheWriteUsdPerM,
       };
     });
 
     this.repository.saveModels(providerId, models);
-    return this.listProviders();
+    return { providers: this.listProviders(), matched, unmatched };
+  };
+
+  /** Built once per process: 42 providers × their models, read from pi, not typed in. */
+  private catalogue: BuiltinModelEntry[] | null = null;
+
+  private builtinCatalogue = async (): Promise<BuiltinModelEntry[]> => {
+    if (this.catalogue) return this.catalogue;
+    const { builtinProviders } = await import('@earendil-works/pi-ai/providers/all');
+    const entries: BuiltinModelEntry[] = [];
+
+    for (const provider of builtinProviders()) {
+      const list = provider as unknown as {
+        id: string;
+        getAllModels?: () => Promise<unknown[]>;
+      };
+      if (typeof list.getAllModels !== 'function') continue;
+      // Some providers expose a synchronous list, others a promise; accept both.
+      const maybe = (() => {
+        try {
+          return list.getAllModels!();
+        } catch {
+          return [] as unknown[];
+        }
+      })();
+      const models = Array.isArray(maybe) ? maybe : await (maybe as Promise<unknown[]>).catch(() => []);
+      for (const raw of models) {
+        const model = raw as {
+          id?: string;
+          cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+          contextWindow?: number;
+        };
+        if (!model.id || !model.cost) continue;
+        entries.push({
+          providerId: list.id,
+          modelId: model.id,
+          inputUsdPerM: model.cost.input ?? 0,
+          outputUsdPerM: model.cost.output ?? 0,
+          cacheReadUsdPerM: model.cost.cacheRead ?? 0,
+          cacheWriteUsdPerM: model.cost.cacheWrite ?? 0,
+          contextWindow: model.contextWindow,
+        });
+      }
+    }
+
+    this.catalogue = entries;
+    return entries;
   };
 
   getThinking = (): string => this.repository.getSetting(THINKING_KEY) ?? 'medium';

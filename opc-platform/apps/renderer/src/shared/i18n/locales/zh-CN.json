@@ -288,7 +288,8 @@
       "input": "输入",
       "output": "输出",
       "cacheRead": "缓存读",
-      "cacheWrite": "缓存写"
+      "cacheWrite": "缓存写",
+      "applied": "已按 pi 官方价格匹配 {{matched}} 个模型；{{unmatched}} 个未找到官方价格（保持未知，不会编造）"
     },
     "auth": {
       "title": "登录与凭证",

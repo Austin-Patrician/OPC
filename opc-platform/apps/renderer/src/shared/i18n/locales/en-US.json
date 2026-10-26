@@ -288,7 +288,8 @@
       "input": "input",
       "output": "output",
       "cacheRead": "cache read",
-      "cacheWrite": "cache write"
+      "cacheWrite": "cache write",
+      "applied": "Matched {{matched}} models against pi's official pricing; {{unmatched}} had no match (left unknown, never invented)"
     },
     "auth": {
       "title": "Sign-in & credentials",

@@ -234,7 +234,11 @@ export interface ModelsBridge {
   /** Replaces a provider's model list (used when importing the pi catalog). */
   setModels(providerId: string, models: ModelOption[]): Promise<ProviderConfig[]>;
   /** Copies pi's built-in cost (cache + context tiers) onto every model. */
-  applyBuiltinPricing(providerId: string): Promise<ProviderConfig[]>;
+  applyBuiltinPricing(providerId: string): Promise<{
+    providers: ProviderConfig[];
+    matched: number;
+    unmatched: string[];
+  }>;
   /** USD per 1M tokens; drives the ledger's money column. */
   setModelPricing(
     providerId: string,

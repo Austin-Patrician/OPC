@@ -47,6 +47,8 @@ const isBudgetProbe = process.env.OPC_BUDGET_PROBE === "1";
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
+/** `OPC_PRICING_PROBE=1`: decorated model ids map onto pi's official prices. */
+const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
 /** `OPC_PROJECT_PROBE=1`: project assignment scopes facts; other projects stay out. */
 const isProjectProbe = process.env.OPC_PROJECT_PROBE === '1';
 /** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
@@ -370,6 +372,7 @@ const isHeadlessMode =
   isWorkProbe ||
   isBudgetProbe ||
   isModelProbe ||
+  isPricingProbe ||
   isProjectProbe ||
   isFactProbe ||
   isArchiveProbe ||
@@ -395,6 +398,41 @@ if (!hasLock) {
 
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
+
+    if (isPricingProbe) {
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-pricing-')));
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
+      const modelConfig = new ModelConfigService(db, credentialStore);
+
+      modelConfig.saveProvider({
+        id: 'probe-gateway',
+        name: 'Probe Gateway',
+        api: 'openai-completions',
+        baseUrl: 'https://example.invalid/v1',
+        models: [],
+      } as never);
+      const providerId = 'probe-gateway';
+      for (const id of ['openai/gpt-4o-2024-08-06', 'claude-sonnet-4-5-20250929', 'brand-new-model']) {
+        modelConfig.addModel(providerId, { id });
+      }
+
+      const result = await modelConfig.applyBuiltinPricing(providerId);
+      const priced = result.providers
+        .find((provider) => provider.id === providerId)!
+        .models.map((model) => `${model.id}=${model.inputUsdPerM}`);
+      process.stdout.write(
+        JSON.stringify({
+          probe: 'pricing',
+          matched: result.matched,
+          unmatched: result.unmatched,
+          prices: priced,
+        }) + '\n',
+      );
+      app.exit(result.matched >= 2 && result.unmatched.includes('brand-new-model') ? 0 : 1);
+      return;
+    }
 
     if (isProjectProbe) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';
