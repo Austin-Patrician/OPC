@@ -76,6 +76,12 @@ export const IPC = {
     list: 'facts:list',
     write: 'facts:write',
   },
+  projects: {
+    list: 'projects:list',
+    create: 'projects:create',
+    assign: 'projects:assign',
+    archive: 'projects:archive',
+  },
   org: {
     list: 'org:list',
     unplaced: 'org:unplaced',
@@ -289,6 +295,23 @@ export interface OrgFactView {
   validFrom: number;
 }
 
+export interface ProjectView {
+  id: string;
+  name: string;
+  code: string;
+  description: string;
+  departmentId: string;
+  status: 'active' | 'archived';
+  members: { employeeId: string; name: string; role: string }[];
+}
+
+export interface ProjectsBridge {
+  list(): Promise<ProjectView[]>;
+  create(input: { name: string; code?: string; description?: string; departmentId?: string }): Promise<ProjectView[]>;
+  assign(projectId: string, employeeId: string, role?: string): Promise<ProjectView[]>;
+  archive(projectId: string): Promise<ProjectView[]>;
+}
+
 export interface FactsBridge {
   /** Current facts: by employee (org + their department) or by department. */
   list(filter?: { employeeId?: string; departmentId?: string }): Promise<OrgFactView[]>;
@@ -346,6 +369,7 @@ export interface OpcBridge {
   artifacts: ArtifactsBridge;
   org: OrgBridge;
   facts: FactsBridge;
+  projects: ProjectsBridge;
   market: MarketBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;

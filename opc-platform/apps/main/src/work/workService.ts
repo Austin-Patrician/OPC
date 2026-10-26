@@ -24,6 +24,7 @@ import type { ImageService } from '../models/imageService';
 import type { OrgService } from '../org/orgService';
 import type { MemoryService } from '../memory/memoryService';
 import type { OrgFactService } from '../memory/orgFactService';
+import type { ProjectService } from '../org/projectService';
 import { validateDecomposition } from './decomposition';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { BudgetBlockedError, BudgetService } from './budgetService';
@@ -61,6 +62,7 @@ export interface WorkServiceDeps {
   org?: OrgService;
   memory?: MemoryService;
   facts?: OrgFactService;
+  projects?: ProjectService;
 }
 
 const REAPER_INTERVAL_MS = 10 * 60 * 1000;
@@ -170,6 +172,11 @@ export class WorkService {
             const scopes = [
               { type: 'personal' as const },
               ...(departmentId ? [{ type: 'department' as const, id: departmentId }] : []),
+              // Only the projects this employee is on — never every project.
+              ...(this.deps.projects?.activeProjectIdsOf(task.assigneeId) ?? []).map((id) => ({
+                type: 'project' as const,
+                id,
+              })),
             ];
             const snippets = await this.deps.memory!.retrieve({
               employeeId: task.assigneeId,
@@ -193,6 +200,10 @@ export class WorkService {
             const scopes = [
               { type: 'org' as const },
               ...(member?.departmentId ? [{ type: 'department' as const, id: member.departmentId }] : []),
+              ...(this.deps.projects?.activeProjectIdsOf(task.assigneeId) ?? []).map((id) => ({
+                type: 'project' as const,
+                id,
+              })),
             ];
             return this.deps.facts!.current(scopes).map((fact) => ({
               statement: fact.statement,

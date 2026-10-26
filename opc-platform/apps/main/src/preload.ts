@@ -61,6 +61,13 @@ const bridge: OpcBridge = {
       input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean },
     ) => ipcRenderer.invoke(IPC.market.hireCandidate, candidateId, input),
   },
+  projects: {
+    list: () => ipcRenderer.invoke(IPC.projects.list),
+    create: (input: unknown) => ipcRenderer.invoke(IPC.projects.create, input),
+    assign: (projectId: string, employeeId: string, role?: string) =>
+      ipcRenderer.invoke(IPC.projects.assign, projectId, employeeId, role),
+    archive: (projectId: string) => ipcRenderer.invoke(IPC.projects.archive, projectId),
+  },
   facts: {
     list: (filter?: { employeeId?: string; departmentId?: string }) =>
       ipcRenderer.invoke(IPC.facts.list, filter),

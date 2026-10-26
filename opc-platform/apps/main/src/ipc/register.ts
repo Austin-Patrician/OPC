@@ -15,6 +15,7 @@ import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
 import type { MarketService } from '../market/marketService';
 import type { OrgFactService } from '../memory/orgFactService';
+import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
 import type { OrgService } from '../org/orgService';
 import { readImageArtifact } from '../work/artifacts';
@@ -33,6 +34,7 @@ interface RegisterOptions {
   org: OrgService;
   market: MarketService;
   facts: OrgFactService;
+  projects: ProjectService;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -46,6 +48,7 @@ export function registerIpc({
   org,
   market,
   facts,
+  projects,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -193,6 +196,32 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.org.list, () => org.list());
+  ipcMain.handle(IPC.projects.list, () => projects.list());
+  ipcMain.handle(IPC.projects.create, (_event, input: unknown) => {
+    if (typeof input !== 'object' || input === null) throw new Error('projects:create 参数非法');
+    const { name, code, description, departmentId } = input as Record<string, unknown>;
+    if (typeof name !== 'string') throw new Error('projects:create 需要 name');
+    projects.create({
+      name,
+      code: typeof code === 'string' ? code : undefined,
+      description: typeof description === 'string' ? description : undefined,
+      departmentId: typeof departmentId === 'string' ? departmentId : undefined,
+    });
+    return projects.list();
+  });
+  ipcMain.handle(IPC.projects.assign, (_event, projectId: unknown, employeeId: unknown, role: unknown) => {
+    if (typeof projectId !== 'string' || typeof employeeId !== 'string') {
+      throw new Error('projects:assign 参数非法');
+    }
+    projects.assign(projectId, employeeId, typeof role === 'string' ? role : '');
+    return projects.list();
+  });
+  ipcMain.handle(IPC.projects.archive, (_event, projectId: unknown) => {
+    if (typeof projectId !== 'string') throw new Error('projects:archive 参数非法');
+    projects.archive(projectId);
+    return projects.list();
+  });
+
   ipcMain.handle(IPC.facts.list, (_event, filter: unknown) => {
     const parsed = (typeof filter === 'object' && filter !== null ? filter : {}) as {
       employeeId?: unknown;
