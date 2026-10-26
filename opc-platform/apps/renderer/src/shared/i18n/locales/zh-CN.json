@@ -671,7 +671,8 @@
     "mode": {
       "ledger": "台账",
       "board": "看板",
-      "timeline": "时间线"
+      "timeline": "时间线",
+      "people": "按人"
     },
     "priority": "优先级",
     "allPriorities": "所有优先级",
@@ -695,6 +696,16 @@
     "pick": "选择",
     "timelineTitle": "时间线",
     "spendTitle": "每日花费（近 14 天）",
-    "timelineEmpty": "还没有可绘制的工作项"
+    "timelineEmpty": "还没有可绘制的工作项",
+    "burndownTitle": "剩余工作（近 14 天）",
+    "burndownActual": "实际",
+    "burndownIdeal": "理想线",
+    "remainingNow": "当前剩余 {{count}}",
+    "peopleTitle": "按人聚合",
+    "col": {
+      "total": "总数",
+      "lead": "平均耗时",
+      "spend": "花费"
+    }
   }
 }

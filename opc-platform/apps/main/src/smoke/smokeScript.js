@@ -201,6 +201,12 @@
           );
           await new Promise((r) => setTimeout(r, 400));
           const issueTimelineBars = document.querySelectorAll('[data-testid="issue-timeline"] li').length;
+          const issueBurndown = Boolean(document.querySelector('[data-testid="issue-burndown"]'));
+          document.querySelector('[data-testid="issue-mode-people"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 400));
+          const issuePeopleRows = document.querySelectorAll('[data-testid="issue-person-row"]').length;
           document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
             new MouseEvent('click', { bubbles: true }),
           );
@@ -434,6 +440,8 @@
             issueFilteredRows,
             issuePriorityShown,
             issueTimelineBars,
+            issueBurndown,
+            issuePeopleRows,
             issueBulkBar,
             issueColumns,
             issueCards,

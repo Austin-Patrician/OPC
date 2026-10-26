@@ -14,6 +14,7 @@ import { cn } from '@/shared/lib/cn';
 import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTransitions';
 import { isOverdue, sortIssues, type IssueSort } from './issueSort';
 import { buildTimeline, spendByDay } from './issueTimeline';
+import { buildBurndown, summariseByPerson } from './issueBurndown';
 
 type Group = BoardGroup;
 
@@ -54,7 +55,7 @@ export function IssueListPage() {
   const [assignee, setAssignee] = useState('');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<'ledger' | 'board' | 'timeline'>('ledger');
+  const [mode, setMode] = useState<'ledger' | 'board' | 'timeline' | 'people'>('ledger');
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -146,7 +147,7 @@ export function IssueListPage() {
             <span className="font-mono text-2xs text-ink-quaternary">{tasks.length}</span>
             <span className="flex-1" />
             <div className="flex items-center gap-0.5 rounded-md bg-surface-muted p-0.5">
-              {(['ledger', 'board', 'timeline'] as const).map((key) => (
+              {(['ledger', 'board', 'timeline', 'people'] as const).map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -344,6 +345,65 @@ export function IssueListPage() {
                   </ol>
 
                   <div className="mt-8">
+                    <div className="mb-2 flex items-center justify-between text-2xs font-semibold text-ink-quaternary">
+                      <span>{t('issues.burndownTitle')}</span>
+                      <span className="flex items-center gap-3 font-normal">
+                        <span className="flex items-center gap-1">
+                          <span aria-hidden className="h-px w-4 bg-accent" />
+                          {t('issues.burndownActual')}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span aria-hidden className="h-px w-4 border-t border-dashed border-ink-quaternary" />
+                          {t('issues.burndownIdeal')}
+                        </span>
+                      </span>
+                    </div>
+                    {(() => {
+                      const points = buildBurndown(tasks);
+                      const peak = Math.max(1, ...points.map((point) => point.remaining));
+                      const toPath = (value: (point: (typeof points)[number]) => number) =>
+                        points
+                          .map((point, index) => {
+                            const x = (index / Math.max(1, points.length - 1)) * 100;
+                            const y = 100 - (value(point) / peak) * 100;
+                            return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+                          })
+                          .join(' ');
+                      return (
+                        <svg
+                          data-testid="issue-burndown"
+                          viewBox="0 0 100 100"
+                          preserveAspectRatio="none"
+                          className="h-28 w-full overflow-visible"
+                        >
+                          <path
+                            d={toPath((point) => point.ideal)}
+                            fill="none"
+                            stroke="var(--text-quaternary)"
+                            strokeWidth="0.6"
+                            strokeDasharray="2 2"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          <path
+                            d={toPath((point) => point.remaining)}
+                            fill="none"
+                            stroke="var(--accent)"
+                            strokeWidth="1"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      );
+                    })()}
+                    <div className="mt-1 flex justify-between font-mono text-3xs text-ink-quaternary">
+                      <span>{buildBurndown(tasks)[0]?.day}</span>
+                      <span>{t('issues.remainingNow', {
+                        count: buildBurndown(tasks).at(-1)?.remaining ?? 0,
+                      })}</span>
+                      <span>{buildBurndown(tasks).at(-1)?.day}</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-8">
                     <div className="mb-2 text-2xs font-semibold text-ink-quaternary">{t('issues.spendTitle')}</div>
                     <div className="flex h-20 items-end gap-1">
                       {spend.map((entry) => (
@@ -359,6 +419,52 @@ export function IssueListPage() {
                 </>
               );
             })()}
+          </div>
+        ) : null}
+
+        {mode === 'people' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-8 py-4">
+            <div className="mb-2 flex items-center gap-3 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
+              <span className="flex-1">{t('issues.peopleTitle')}</span>
+              <span className="w-10 text-right">{t('issues.col.total')}</span>
+              <span className="w-10 text-right">{t('issues.group.doing')}</span>
+              <span className="w-10 text-right">{t('issues.group.manager-review')}</span>
+              <span className="w-10 text-right">{t('issues.group.delivered')}</span>
+              <span className="w-10 text-right">{t('issues.group.blocked')}</span>
+              <span className="w-14 text-right">{t('issues.col.lead')}</span>
+              <span className="w-14 text-right">{t('issues.col.spend')}</span>
+            </div>
+            <ol data-testid="issue-people">
+              {summariseByPerson(ordered).map((person) => (
+                <li key={person.assignee} className="border-t border-line/60">
+                  <button
+                    type="button"
+                    data-testid="issue-person-row"
+                    onClick={() => {
+                      setAssignee(person.assignee);
+                      setMode('ledger');
+                    }}
+                    className="flex w-full items-center gap-3 py-2 text-left text-xs hover:bg-surface-hover"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-ink">{person.assignee}</span>
+                    <span className="w-10 text-right font-mono text-ink-secondary">{person.total}</span>
+                    <span className="w-10 text-right font-mono text-accent">{person.doing}</span>
+                    <span className="w-10 text-right font-mono text-warning">{person.waiting}</span>
+                    <span className="w-10 text-right font-mono text-success">{person.done}</span>
+                    <span className="w-10 text-right font-mono text-danger">{person.stuck}</span>
+                    <span className="w-14 text-right font-mono text-ink-quaternary">
+                      {person.avgLeadHours === null ? '—' : `${person.avgLeadHours.toFixed(1)}h`}
+                    </span>
+                    <span className="w-14 text-right font-mono text-success">
+                      ${person.usd.toFixed(2)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+            {ordered.length === 0 ? (
+              <p className="py-16 text-center text-sm text-ink-quaternary">{t('issues.empty')}</p>
+            ) : null}
           </div>
         ) : null}
 

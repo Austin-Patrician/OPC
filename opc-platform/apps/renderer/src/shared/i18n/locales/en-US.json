@@ -671,7 +671,8 @@
     "mode": {
       "ledger": "Ledger",
       "board": "Board",
-      "timeline": "Timeline"
+      "timeline": "Timeline",
+      "people": "People"
     },
     "priority": "Priority",
     "allPriorities": "All priorities",
@@ -695,6 +696,16 @@
     "pick": "Select",
     "timelineTitle": "Timeline",
     "spendTitle": "Spend, last 14 days",
-    "timelineEmpty": "Nothing to draw yet"
+    "timelineEmpty": "Nothing to draw yet",
+    "burndownTitle": "Remaining work (14 days)",
+    "burndownActual": "Actual",
+    "burndownIdeal": "Ideal",
+    "remainingNow": "{{count}} remaining",
+    "peopleTitle": "By person",
+    "col": {
+      "total": "Total",
+      "lead": "Avg lead",
+      "spend": "Spend"
+    }
   }
 }
