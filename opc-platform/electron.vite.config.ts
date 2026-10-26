@@ -1,3 +1,4 @@
+import { copyFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
@@ -13,7 +14,20 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
  */
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@opc/shared'] })],
+    plugins: [
+      externalizeDepsPlugin({ exclude: ['@opc/shared'] }),
+      {
+        // The smoke script is read at runtime, not bundled: ship it verbatim next to
+        // the main bundle so `loadSmokeScript()` works in dev and in the packaged app.
+        name: 'copy-smoke-script',
+        closeBundle() {
+          copyFileSync(
+            resolve(__dirname, 'apps/main/src/smoke/smokeScript.js'),
+            resolve(__dirname, 'out/main/smokeScript.js'),
+          );
+        },
+      },
+    ],
     build: {
       outDir: resolve(__dirname, 'out/main'),
       rollupOptions: { input: resolve(__dirname, 'apps/main/src/index.ts') },

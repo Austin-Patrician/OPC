@@ -289,6 +289,14 @@
       "submit": "提交",
       "hint": "OAuth 由 pi 的 provider 实现完成（PKCE / 设备码）；凭证保存在本机 credentials.json，请求时由 pi 解析。",
       "loggedOut": "已退出登录"
+    },
+    "facts": {
+      "title": "公司事实",
+      "desc": "写在这里的规定会进入每位员工的提示词；同一主题再写会替换旧值（历史保留）。",
+      "empty": "还没有公司级事实。",
+      "subject": "主题，如 Q4目标",
+      "object": "内容，如 先做留存",
+      "save": "保存"
     }
   },
   "org": {

@@ -289,6 +289,14 @@
       "submit": "Submit",
       "hint": "OAuth is implemented by pi's provider (PKCE / device codes); credentials are stored locally in credentials.json and resolved by pi per request.",
       "loggedOut": "Signed out"
+    },
+    "facts": {
+      "title": "Company facts",
+      "desc": "Facts written here enter every employee's prompt; writing the same subject supersedes the old value (history kept).",
+      "empty": "No company facts yet.",
+      "subject": "Subject, e.g. Q4 goal",
+      "object": "Value, e.g. retention first",
+      "save": "Save"
     }
   },
   "org": {

@@ -169,4 +169,9 @@ export default tseslint.config(
     },
   },
   ...layerRules,
+  {
+    // The smoke script is renderer code executed by Electron; it needs browser globals.
+    files: ['apps/main/src/smoke/smokeScript.js'],
+    languageOptions: { globals: { ...globals.browser } },
+  },
 );
