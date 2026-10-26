@@ -667,6 +667,10 @@
     "deliverable": "验收标准",
     "artifacts": "交付物",
     "evidence": "验收证据",
-    "activity": "活动"
+    "activity": "活动",
+    "mode": {
+      "ledger": "台账",
+      "board": "看板"
+    }
   }
 }

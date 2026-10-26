@@ -667,6 +667,10 @@
     "deliverable": "Deliverable",
     "artifacts": "Artifacts",
     "evidence": "Acceptance evidence",
-    "activity": "Activity"
+    "activity": "Activity",
+    "mode": {
+      "ledger": "Ledger",
+      "board": "Board"
+    }
   }
 }

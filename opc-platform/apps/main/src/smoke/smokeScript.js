@@ -166,6 +166,32 @@
           );
           await new Promise((r) => setTimeout(r, 300));
           const issueFilteredRows = document.querySelectorAll('[data-testid="issue-row"]').length;
+          document.querySelector('[data-testid="issue-filter-all"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          document.querySelector('[data-testid="issue-mode-board"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 400));
+          const issueColumns = document.querySelectorAll('[data-testid^="issue-column-"]').length;
+          const issueCards = document.querySelectorAll('[data-testid="issue-card"]').length;
+          // A drop that would impersonate the manager must be refused (drag events are
+          // synthesised: dragstart on a card, drop on the manager-review column).
+          const card = document.querySelector('[data-testid="issue-card"]');
+          const reviewColumn = document.querySelector('[data-testid="issue-column-manager-review"]');
+          if (card && reviewColumn) {
+            card.dispatchEvent(new Event('dragstart', { bubbles: true }));
+            // React sets the dragging id through state, so let it commit first.
+            await new Promise((r) => setTimeout(r, 200));
+            const drop = new Event('drop', { bubbles: true, cancelable: true });
+            reviewColumn.dispatchEvent(drop);
+          }
+          await new Promise((r) => setTimeout(r, 300));
+          const issueRefusalShown = Boolean(document.querySelector('[data-testid="issue-notice"]'));
+          document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 300));
           location.hash = '#/settings';
           await new Promise((r) => setTimeout(r, 500));
           const providerRows = document.querySelectorAll('[data-testid="provider-row"]').length;
@@ -366,6 +392,9 @@
             issueKeyLooksRight,
             issueDetailOpen,
             issueFilteredRows,
+            issueColumns,
+            issueCards,
+            issueRefusalShown,
             providerRows,
             fetchModelsButton,
             addModelButton,

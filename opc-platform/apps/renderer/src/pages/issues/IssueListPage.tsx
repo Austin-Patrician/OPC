@@ -11,34 +11,28 @@ import { cn } from '@/shared/lib/cn';
  * accent is spent only on the state that needs the boss (待你终审 / 卡住).
  */
 
-type Group = 'todo' | 'doing' | 'review' | 'done' | 'blocked';
+import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTransitions';
 
-const GROUP_OF: Record<TaskStatus, Group> = {
-  open: 'todo',
-  running: 'doing',
-  review: 'review',
-  accepted: 'done',
-  delivered: 'done',
-  rejected: 'blocked',
-  failed: 'blocked',
-  cancelled: 'todo',
-};
+type Group = BoardGroup;
 
-const GROUP_ORDER: Group[] = ['blocked', 'review', 'doing', 'todo', 'done'];
+const GROUP_OF = (status: TaskStatus): Group => groupOf(status);
+
+const GROUP_ORDER: Group[] = ['blocked', 'manager-review', 'boss-review', 'doing', 'todo', 'delivered'];
 
 const RAIL: Record<Group, string> = {
   blocked: 'var(--danger)',
-  review: 'var(--warning)',
+  'manager-review': 'var(--warning)',
+  'boss-review': 'var(--accent)',
   doing: 'var(--accent)',
   todo: 'var(--text-quaternary)',
-  done: 'var(--success)',
+  delivered: 'var(--success)',
 };
 
 function groupIcon(group: Group) {
   if (group === 'blocked') return ShieldAlert;
-  if (group === 'review') return Stamp;
+  if (group === 'manager-review' || group === 'boss-review') return Stamp;
   if (group === 'doing') return Loader2;
-  if (group === 'done') return CheckCircle2;
+  if (group === 'delivered') return CheckCircle2;
   return CircleDashed;
 }
 
@@ -58,6 +52,9 @@ export function IssueListPage() {
   const [assignee, setAssignee] = useState('');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mode, setMode] = useState<'ledger' | 'board'>('ledger');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -77,7 +74,7 @@ export function IssueListPage() {
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return tasks.filter((task) => {
-      if (status !== 'all' && GROUP_OF[task.status] !== status) return false;
+      if (status !== 'all' && GROUP_OF(task.status) !== status) return false;
       if (assignee && task.assigneeName !== assignee) return false;
       if (!needle) return true;
       return (
@@ -89,13 +86,46 @@ export function IssueListPage() {
   }, [tasks, status, assignee, query]);
 
   const counts = useMemo(() => {
-    const base: Record<Group, number> = { todo: 0, doing: 0, review: 0, done: 0, blocked: 0 };
-    for (const task of tasks) base[GROUP_OF[task.status]] += 1;
+    const base: Record<Group, number> = {
+      todo: 0,
+      doing: 0,
+      'manager-review': 0,
+      'boss-review': 0,
+      delivered: 0,
+      blocked: 0,
+    };
+    for (const task of tasks) base[GROUP_OF(task.status)] += 1;
     return base;
   }, [tasks]);
 
+  const runAction = async (task: WorkTask, action: DropAction) => {
+    if (action.kind === 'run') await window.opc!.work.runTask(task.id);
+    if (action.kind === 'approve') await window.opc!.work.bossDecision(task.id, 'approve');
+    if (action.kind === 'reject-and-redo') {
+      await window.opc!.work.bossDecision(task.id, 'reject');
+      await window.opc!.work.runTask(task.id);
+    }
+    setTasks(await window.opc!.work.listTasks(500));
+  };
+
+  const handleDrop = async (taskId: string, target: Group) => {
+    const task = tasks.find((entry) => entry.id === taskId);
+    if (!task) return;
+    const decision = decideDrop(task.status, target);
+    if (!decision.allowed || !decision.action) {
+      setNotice(decision.reason ?? '不允许的操作');
+      return;
+    }
+    setNotice(null);
+    try {
+      await runAction(task, decision.action);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const selected = filtered.find((task) => task.id === selectedId) ?? tasks.find((task) => task.id === selectedId);
-  const waiting = counts.review;
+  const waiting = counts['boss-review'];
   const stuck = counts.blocked;
 
   return (
@@ -107,6 +137,23 @@ export function IssueListPage() {
             <h1 className="text-xl font-semibold tracking-tight text-ink">{t('issues.title')}</h1>
             <span className="font-mono text-2xs text-ink-quaternary">{tasks.length}</span>
             <span className="flex-1" />
+            <div className="flex items-center gap-0.5 rounded-md bg-surface-muted p-0.5">
+              {(['ledger', 'board'] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  data-testid={`issue-mode-${key}`}
+                  aria-pressed={mode === key}
+                  onClick={() => setMode(key)}
+                  className={cn(
+                    'h-6 rounded px-2 text-2xs transition-colors',
+                    mode === key ? 'bg-surface font-medium text-ink shadow-xs' : 'text-ink-tertiary hover:text-ink',
+                  )}
+                >
+                  {t(`issues.mode.${key}`)}
+                </button>
+              ))}
+            </div>
             <span className="text-xs text-ink-tertiary">
               {t('issues.summary', { doing: counts.doing, review: waiting, stuck })}
             </span>
@@ -158,14 +205,82 @@ export function IssueListPage() {
           </div>
         </header>
 
+        {notice ? (
+          <div
+            data-testid="issue-notice"
+            className="flex shrink-0 items-center gap-2 border-b border-line bg-warning/10 px-8 py-1.5 text-2xs text-ink-secondary"
+          >
+            <span className="flex-1">{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} className="text-ink-quaternary hover:text-ink">
+              ✕
+            </button>
+          </div>
+        ) : null}
+
+        {mode === 'board' ? (
+          <div className="min-h-0 flex-1 overflow-x-auto">
+            <div className="flex h-full gap-3 px-8 py-4">
+              {GROUP_ORDER.map((group) => {
+                const rows = filtered.filter((task) => GROUP_OF(task.status) === group);
+                return (
+                  <section
+                    key={group}
+                    data-testid={`issue-column-${group}`}
+                    onDragOver={(event) => {
+                      if (!draggingId) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (draggingId) void handleDrop(draggingId, group);
+                      setDraggingId(null);
+                    }}
+                    className="flex min-h-0 w-[15rem] shrink-0 flex-col rounded-xl bg-surface-muted"
+                  >
+                    <header className="flex items-center gap-1.5 px-3 py-2">
+                      <span aria-hidden className="h-3 w-[3px] rounded" style={{ background: RAIL[group] }} />
+                      <span className="text-2xs font-semibold text-ink-secondary">{t(`issues.group.${group}`)}</span>
+                      <span className="font-mono text-3xs text-ink-quaternary">{rows.length}</span>
+                    </header>
+                    <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2 pb-2">
+                      {rows.map((task) => (
+                        <article
+                          key={task.id}
+                          draggable
+                          data-testid="issue-card"
+                          onDragStart={() => setDraggingId(task.id)}
+                          onDragEnd={() => setDraggingId(null)}
+                          onClick={() => setSelectedId(task.id)}
+                          className={cn(
+                            'cursor-grab rounded-lg border border-line bg-surface px-2.5 py-2 active:cursor-grabbing',
+                            draggingId === task.id && 'opacity-40',
+                          )}
+                        >
+                          <div className="font-mono text-3xs text-ink-quaternary">{task.issueKey ?? '—'}</div>
+                          <div className="mt-0.5 line-clamp-2 text-xs text-ink">{task.title}</div>
+                          <div className="mt-1.5 flex items-center justify-between text-3xs text-ink-quaternary">
+                            <span className="truncate">{task.assigneeName}</span>
+                            <span className="font-mono text-success">${task.costUsd.toFixed(2)}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         {/* Rows, grouped by state — the rail does the colouring */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className={cn('min-h-0 flex-1 overflow-y-auto', mode === 'board' && 'hidden')}>
           {filtered.length === 0 ? (
             <p className="px-8 py-16 text-center text-sm text-ink-quaternary">{t('issues.empty')}</p>
           ) : (
-            GROUP_ORDER.filter((group) => filtered.some((task) => GROUP_OF[task.status] === group)).map((group) => {
+            GROUP_ORDER.filter((group) => filtered.some((task) => GROUP_OF(task.status) === group)).map((group) => {
               const Icon = groupIcon(group);
-              const rows = filtered.filter((task) => GROUP_OF[task.status] === group);
+              const rows = filtered.filter((task) => GROUP_OF(task.status) === group);
               return (
                 <section key={group} data-testid={`issue-group-${group}`}>
                   <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-panel/95 px-8 py-1.5 backdrop-blur">
