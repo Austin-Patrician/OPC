@@ -216,7 +216,13 @@ export interface ModelsBridge {
   /** Write-only: the key never travels back to the renderer. */
   setKey(providerId: string, apiKey: string): Promise<ProviderConfig[]>;
   test(providerId: string): Promise<ProviderTestResult>;
-  refreshModels(providerId: string): Promise<ProviderConfig[]>;
+  refreshModels(providerId: string): Promise<{
+    providers: ProviderConfig[];
+    ok: boolean;
+    message: string;
+    added: string[];
+    total: number;
+  }>;
   addModel(
     providerId: string,
     input: { id: string; name?: string; contextWindow?: number; api?: string },

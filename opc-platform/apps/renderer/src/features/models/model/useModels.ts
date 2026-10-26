@@ -79,7 +79,20 @@ export function useModels() {
     saveProvider: (draft: ProviderDraft) => run(() => bridge?.saveProvider(draft)),
     removeProvider: (providerId: string) => run(() => bridge?.removeProvider(providerId)),
     setKey: (providerId: string, apiKey: string) => run(() => bridge?.setKey(providerId, apiKey)),
-    refreshModels: (providerId: string) => run(() => bridge?.refreshModels(providerId)),
+    // Returns the outcome (ok/message/added) instead of void, so the page can report it.
+    refreshModels: async (providerId: string) => {
+      try {
+        const result = await bridge?.refreshModels(providerId);
+        setState((previous) => ({ ...previous, error: null }));
+        return result;
+      } catch (error) {
+        setState((previous) => ({
+          ...previous,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        return undefined;
+      }
+    },
     addModel: (
       providerId: string,
       input: { id: string; name?: string; contextWindow?: number; api?: string },

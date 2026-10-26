@@ -17,6 +17,17 @@ import type { FileCredentialStore } from './credentialStore';
 import { matchBuiltinModel, type BuiltinModelEntry } from './pricingMatch';
 import { ModelRuntime, PROVIDER_PRESETS } from './runtime';
 
+/** What a model-list refresh actually did, in words the UI can show. */
+export interface RefreshModelsResult {
+  providers: ProviderConfig[];
+  ok: boolean;
+  message: string;
+  /** Ids that were not present before this refresh. */
+  added: string[];
+  /** Size of the list the provider returned. */
+  total: number;
+}
+
 /** What "use official pricing" actually managed to map. */
 export interface ApplyPricingResult {
   providers: ProviderConfig[];
@@ -64,7 +75,15 @@ export class ModelConfigService {
     return this.listProviders();
   };
 
+  /**
+   * Only providers this app created can be deleted. pi's built-in providers are
+   * part of the product (and carry OAuth/builtin pricing), so deleting one would
+   * leave a hole the UI cannot explain — they are refused, not hidden.
+   */
   removeProvider = (providerId: string): ProviderConfig[] => {
+    const provider = this.repository.getProvider(providerId);
+    if (!provider) throw new Error('未知 provider');
+    if (!provider.isCustom) throw new Error('pi 内置提供商不可删除（只能清空 API Key）');
     this.repository.removeProvider(providerId);
     return this.listProviders();
   };
@@ -125,16 +144,49 @@ export class ModelConfigService {
     return Boolean(builtin?.auth && (builtin.auth as { oauth?: unknown }).oauth);
   };
 
-  /** Test + import the model list, so the user picks from real ids. */
-  refreshModels = async (providerId: string): Promise<ProviderConfig[]> => {
+  /**
+   * Fetch the provider's model list and import it, reporting what changed.
+   *
+   * Many OpenAI-compatible gateways have no `/models` endpoint (or answer with an
+   * error page), so the caller must be able to say "this endpoint cannot list
+   * models" instead of leaving the user staring at an unchanged table.
+   */
+  refreshModels = async (providerId: string): Promise<RefreshModelsResult> => {
     const config = this.repository.getProvider(providerId);
     if (!config) throw new Error('未知 provider');
 
+    const before = new Set(config.models.map((model) => model.id));
     const result = await this.runtime.testProvider(config);
-    if (result.ok && result.models && result.models.length > 0) {
-      this.repository.saveModels(providerId, result.models);
+    const listed = result.models ?? [];
+
+    if (!result.ok) {
+      return {
+        providers: this.listProviders(),
+        ok: false,
+        message: result.message,
+        added: [],
+        total: config.models.length,
+      };
     }
-    return this.listProviders();
+    if (listed.length === 0) {
+      return {
+        providers: this.listProviders(),
+        ok: false,
+        message: '该服务商没有返回模型列表（接口不支持或需要额外权限）',
+        added: [],
+        total: config.models.length,
+      };
+    }
+
+    this.repository.saveModels(providerId, listed);
+    const added = listed.filter((model) => !before.has(model.id)).map((model) => model.id);
+    return {
+      providers: this.listProviders(),
+      ok: true,
+      message: `拉取到 ${listed.length} 个模型`,
+      added,
+      total: listed.length,
+    };
   };
 
   /**

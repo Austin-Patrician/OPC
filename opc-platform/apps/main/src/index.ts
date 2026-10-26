@@ -418,6 +418,14 @@ if (!hasLock) {
         modelConfig.addModel(providerId, { id });
       }
 
+      // A gateway with no usable /models must report that, not pretend.
+      const refresh = await modelConfig.refreshModels(providerId);
+      let builtinDeleteRefused = false;
+      try {
+        modelConfig.removeProvider('anthropic');
+      } catch (error) {
+        builtinDeleteRefused = String(error).includes('内置提供商不可删除');
+      }
       const result = await modelConfig.applyBuiltinPricing(providerId);
       const priced = result.providers
         .find((provider) => provider.id === providerId)!
@@ -425,6 +433,9 @@ if (!hasLock) {
       process.stdout.write(
         JSON.stringify({
           probe: 'pricing',
+          refreshOk: refresh.ok,
+          refreshMessage: refresh.message,
+          builtinDeleteRefused,
           matched: result.matched,
           unmatched: result.unmatched,
           prices: priced,

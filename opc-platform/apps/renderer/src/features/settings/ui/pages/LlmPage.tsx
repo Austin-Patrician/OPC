@@ -429,6 +429,32 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                       </div>
                     </div>
 
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-2xs text-ink-quaternary">
+                        {selectedConfig?.isCustom
+                          ? t('settings.llm.customProvider')
+                          : t('settings.llm.builtinProvider')}
+                      </span>
+                      {selectedConfig?.isCustom ? (
+                        <button
+                          type="button"
+                          data-testid="remove-provider"
+                          onClick={async () => {
+                            if (!window.confirm(t('settings.llm.removeConfirm', { name: selected.name }))) return;
+                            await models.removeProvider(selected.id);
+                            setSelectedId('');
+                          }}
+                          className="text-xs text-danger hover:underline"
+                        >
+                          {t('settings.llm.removeProvider')}
+                        </button>
+                      ) : (
+                        <span data-testid="builtin-protected" className="text-2xs text-ink-quaternary">
+                          {t('settings.llm.builtinProtected')}
+                        </span>
+                      )}
+                    </div>
+
                     <div>
                       <div className="mb-1.5 flex items-center justify-between gap-2">
                         <span className="text-sm font-medium text-ink-secondary">{t('settings.llm.tableTitle')}</span>
@@ -438,9 +464,20 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                             data-testid="refresh-models"
                             onClick={async () => {
                               await ensureProvider(selected);
-                              const before = chatModels.length;
-                              await models.refreshModels(selected.id);
-                              setModelNotice(t('settings.llm.fetchRequested', { before }));
+                              const result = await models.refreshModels(selected.id);
+                              setModelNotice(
+                                !result
+                                  ? null
+                                  : result.ok
+                                    ? `${result.message}${result.added.length > 0 ? t('settings.llm.fetchAdded', {
+                                      ids: result.added.slice(0, 5).join('、'),
+                                      more:
+                                        result.added.length > 5
+                                          ? `${t('settings.llm.more')} ${result.added.length - 5}`
+                                          : '',
+                                    }) : t('settings.llm.fetchNothingNew')}`
+                                    : `${result.message}`,
+                              );
                             }}
                             className="text-xs text-accent-ink hover:text-accent"
                           >

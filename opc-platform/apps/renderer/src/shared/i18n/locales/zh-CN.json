@@ -189,7 +189,7 @@
       "vision": "支持图片输入",
       "catalogFootnote": "完整目录可在 pi 中通过 /model 查看。",
       "addProvider": "添加 Provider",
-      "customProvider": "自定义 Provider",
+      "customProvider": "自定义提供商",
       "customProviderHint": "自定义 OpenAI 兼容 / Anthropic 兼容端点",
       "addModel": "+ 自定义模型",
       "addModelPlaceholder": "模型 id，例如 vendor/model-1",
@@ -211,7 +211,14 @@
       "added": "模型已添加",
       "modelId": "模型 ID",
       "nameOptional": "显示名（可选）",
-      "apiKeyOnly": "该服务商使用 API Key 登录，无需 OAuth"
+      "apiKeyOnly": "该服务商使用 API Key 登录，无需 OAuth",
+      "fetchAdded": "；新增 {{ids}}{{more}}",
+      "fetchNothingNew": "；没有新增模型",
+      "more": " 等",
+      "builtinProvider": "pi 内置提供商",
+      "builtinProtected": "内置提供商不可删除",
+      "removeProvider": "删除此提供商",
+      "removeConfirm": "删除「{{name}}」及其模型与密钥？此操作不可撤销。"
     },
     "compaction": {
       "desc": "上下文接近模型上限时，自动把较早的对话总结成摘要。阈值按所选模型的上下文窗口计算。",

@@ -148,6 +148,8 @@
             ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise((r) => setTimeout(r, 300));
           const customModelForm = Boolean(document.querySelector('[data-testid="custom-model-id"]'));
+          // A built-in provider must advertise that it cannot be deleted.
+          const builtinProtected = Boolean(document.querySelector('[data-testid="builtin-protected"]'));
           const providerRows = document.querySelectorAll('[data-testid="provider-row"]').length;
           const providerIcons = document.querySelectorAll('img[src*="provider-icons"]').length;
           const llmTableScrollable = Boolean(
@@ -347,6 +349,7 @@
             addModelButton,
             apiKeyOnlyHint,
             customModelForm,
+            builtinProtected,
             providerIcons,
             llmTableScrollable,
             saveBox,

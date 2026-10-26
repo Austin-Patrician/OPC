@@ -211,7 +211,14 @@
       "added": "Model added",
       "modelId": "Model ID",
       "nameOptional": "Display name (optional)",
-      "apiKeyOnly": "This provider logs in with an API key — no OAuth"
+      "apiKeyOnly": "This provider logs in with an API key — no OAuth",
+      "fetchAdded": "; added {{ids}}{{more}}",
+      "fetchNothingNew": "; nothing new",
+      "more": " and more",
+      "builtinProvider": "pi built-in provider",
+      "builtinProtected": "Built-in providers cannot be deleted",
+      "removeProvider": "Delete this provider",
+      "removeConfirm": "Delete “{{name}}” with its models and key? This cannot be undone."
     },
     "compaction": {
       "desc": "When the context approaches the model limit, older turns are summarized. Thresholds are relative to the selected model's window.",
