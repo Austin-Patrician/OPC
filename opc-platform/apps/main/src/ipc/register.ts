@@ -505,6 +505,20 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(IPC.work.setIssueMeta, (_event, taskId: unknown, patch: unknown) => {
+    if (typeof taskId !== 'string' || typeof patch !== 'object' || patch === null) {
+      throw new Error('work:setIssueMeta 参数非法');
+    }
+    const { priority, labels, dueAt } = patch as Record<string, unknown>;
+    return work.setIssueMeta(taskId, {
+      priority:
+        typeof priority === 'string' && ['P0', 'P1', 'P2', 'P3'].includes(priority)
+          ? (priority as 'P0' | 'P1' | 'P2' | 'P3')
+          : undefined,
+      labels: Array.isArray(labels) ? labels.filter((label): label is string => typeof label === 'string') : undefined,
+      dueAt: dueAt === null ? null : typeof dueAt === 'number' ? dueAt : undefined,
+    });
+  });
   ipcMain.handle(IPC.work.listTasks, (_event, limit: unknown) =>
     work.listTasks(typeof limit === 'number' ? limit : undefined),
   );
@@ -543,6 +557,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.listBudgets);
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);
+    ipcMain.removeHandler(IPC.work.setIssueMeta);
     ipcMain.removeHandler(IPC.work.bossDecision);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);

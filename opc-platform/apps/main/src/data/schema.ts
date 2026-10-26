@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -463,7 +463,19 @@ ALTER TABLE task ADD COLUMN issue_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_issue_key ON task(issue_key);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4];
+/**
+ * V5: issue metadata the boss actually prioritises with. Kept on `task` (not a new
+ * table) because every task is an issue; `repairLegacyColumns` applies the ALTERs
+ * idempotently for existing databases.
+ */
+const V5 = `
+ALTER TABLE task ADD COLUMN priority TEXT NOT NULL DEFAULT 'P2';
+ALTER TABLE task ADD COLUMN labels TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE task ADD COLUMN due_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_task_priority ON task(priority, status);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {

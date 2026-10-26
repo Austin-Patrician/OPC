@@ -47,6 +47,8 @@ const isBudgetProbe = process.env.OPC_BUDGET_PROBE === "1";
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
+/** `OPC_ISSUE_META_PROBE=1`: priority / labels / due date round-trip through the repo. */
+const isIssueMetaProbe = process.env.OPC_ISSUE_META_PROBE === '1';
 /** `OPC_PRICING_PROBE=1`: decorated model ids map onto pi's official prices. */
 const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
 /** `OPC_PROJECT_PROBE=1`: project assignment scopes facts; other projects stay out. */
@@ -381,6 +383,7 @@ const isHeadlessMode =
   isWorkProbe ||
   isBudgetProbe ||
   isModelProbe ||
+  isIssueMetaProbe ||
   isPricingProbe ||
   isProjectProbe ||
   isFactProbe ||
@@ -407,6 +410,53 @@ if (!hasLock) {
 
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
+
+    if (isIssueMetaProbe) {
+      process.env.OPC_BRAIN_VARIANT ??= 'ok';
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-meta-')));
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const org = new OrgService(db);
+      ensureFirstCompany(org);
+      const member = org.list().flatMap((department) => department.members)[0]!;
+      const work = new WorkService({
+        db,
+        paths: appPaths,
+        agents: agentsFromOrg(org),
+        upsertTaskCard: () => undefined,
+        org,
+      });
+      const created = work.createTask({
+        title: '优先级探针',
+        brief: 'b',
+        deliverableSpec: 'server.js 返回 200',
+        assigneeId: member.id,
+        estTokens: 1000,
+        acceptanceCommand: [],
+        acceptanceTemplate: 'http-ok',
+      });
+      if (!created.ok) throw new Error('创建失败');
+      const before = work.getTask(created.task.id)!;
+      const updated = work.setIssueMeta(created.task.id, {
+        priority: 'P0',
+        labels: ['增长', '前端'],
+        dueAt: Date.now() - 60_000,
+      });
+      const reread = work.getTask(created.task.id)!;
+
+      process.stdout.write(
+        JSON.stringify({
+          probe: 'issue-meta',
+          defaultPriority: before.priority,
+          priority: updated.priority,
+          labels: reread.labels,
+          overdueInThePast: reread.dueAt !== undefined && reread.dueAt < Date.now(),
+          issueKey: before.issueKey,
+        }) + '\n',
+      );
+      app.exit(updated.priority === 'P0' && reread.labels.length === 2 && reread.dueAt !== undefined ? 0 : 1);
+      return;
+    }
 
     if (isPricingProbe) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-pricing-')));

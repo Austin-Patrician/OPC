@@ -58,6 +58,9 @@ interface TaskRow {
   parent_task_id: string | null;
   review_of_task_id: string | null;
   issue_key: string | null;
+  priority: string | null;
+  labels: string | null;
+  due_at: number | null;
   is_review: number;
   depth: number;
   est_tokens: number;
@@ -161,6 +164,27 @@ export class TaskRepository {
     return `${prefix}-${lastSeq + 1}`;
   }
 
+  /** Priority / labels / due date: the fields the boss edits after dispatch. */
+  setIssueMeta = (
+    taskId: string,
+    patch: { priority?: WorkTask['priority']; labels?: string[]; dueAt?: number | null },
+  ): void => {
+    const current = this.db
+      .prepare('SELECT priority, labels, due_at FROM task WHERE id = ?')
+      .get(taskId) as { priority: string; labels: string; due_at: number | null } | undefined;
+    if (!current) throw new Error('任务不存在');
+
+    this.db
+      .prepare('UPDATE task SET priority = ?, labels = ?, due_at = ?, updated_at = ? WHERE id = ?')
+      .run(
+        patch.priority ?? current.priority,
+        JSON.stringify(patch.labels ?? (JSON.parse(current.labels || '[]') as string[])),
+        patch.dueAt === undefined ? current.due_at : patch.dueAt,
+        Date.now(),
+        taskId,
+      );
+  };
+
   /** One-time backfill for rows that predate keys; idempotent. */
   ensureIssueKeys = (): number => {
     const rows = this.db
@@ -248,6 +272,9 @@ export class TaskRepository {
       assigneeId: row.employee_id,
       assigneeName: row.employee_name,
       issueKey: row.issue_key ?? undefined,
+      priority: (row.priority as WorkTask['priority']) ?? 'P2',
+      labels: JSON.parse(row.labels || '[]') as string[],
+      dueAt: row.due_at ?? undefined,
       parentTaskId: row.parent_task_id ?? undefined,
       reviewOfTaskId: row.review_of_task_id ?? undefined,
       isReview: row.is_review === 1,

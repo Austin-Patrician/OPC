@@ -173,6 +173,29 @@
             new MouseEvent('click', { bubbles: true }),
           );
           await new Promise((r) => setTimeout(r, 400));
+          // Priority reaches the ledger row after being set through the bridge.
+          const sampleTask = (await window.opc.work.listTasks(1))[0];
+          if (sampleTask) {
+            await window.opc.work.setIssueMeta(sampleTask.id, { priority: 'P0', labels: ['smoke'] });
+            document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
+              new MouseEvent('click', { bubbles: true }),
+            );
+            await new Promise((r) => setTimeout(r, 300));
+            location.hash = '#/issues';
+            await new Promise((r) => setTimeout(r, 500));
+            document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
+              new MouseEvent('click', { bubbles: true }),
+            );
+            await new Promise((r) => setTimeout(r, 300));
+          }
+          // Read the ledger (the board hides these rows), then switch modes.
+          const issuePriorityShown = [...document.querySelectorAll('[data-testid="issue-priority"]')].some(
+            (node) => node.textContent === 'P0',
+          );
+          document.querySelector('[data-testid="issue-mode-board"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 300));
           const issueColumns = document.querySelectorAll('[data-testid^="issue-column-"]').length;
           const issueCards = document.querySelectorAll('[data-testid="issue-card"]').length;
           // A drop that would impersonate the manager must be refused (drag events are
@@ -392,6 +415,7 @@
             issueKeyLooksRight,
             issueDetailOpen,
             issueFilteredRows,
+            issuePriorityShown,
             issueColumns,
             issueCards,
             issueRefusalShown,

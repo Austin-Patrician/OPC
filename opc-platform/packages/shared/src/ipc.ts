@@ -110,6 +110,7 @@ export const IPC = {
   work: {
     listTasks: 'work:listTasks',
     bossDecision: 'work:bossDecision',
+    setIssueMeta: 'work:setIssueMeta',
     subtasks: 'work:subtasks',
     createTask: 'work:createTask',
     runTask: 'work:runTask',
@@ -203,6 +204,10 @@ export interface WorkBridge {
   runTask(taskId: string): Promise<void>;
   /** Boss sign-off: approve → delivered, reject → parked with a reason. */
   bossDecision(taskId: string, decision: 'approve' | 'reject', reason?: string): Promise<WorkTask>;
+  setIssueMeta(
+    taskId: string,
+    patch: { priority?: 'P0' | 'P1' | 'P2' | 'P3'; labels?: string[]; dueAt?: number | null },
+  ): Promise<WorkTask>;
   onTaskChanged(listener: (task: WorkTask) => void): () => void;
   onBudgetsChanged(listener: (budgets: Budget[]) => void): () => void;
 }

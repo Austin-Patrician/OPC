@@ -671,6 +671,18 @@
     "mode": {
       "ledger": "台账",
       "board": "看板"
-    }
+    },
+    "priority": "优先级",
+    "allPriorities": "所有优先级",
+    "sort": "排序",
+    "sortCreated": "最新创建",
+    "sortPriority": "按优先级",
+    "sortDue": "按截止",
+    "sortCost": "按花费",
+    "overdue": "逾期",
+    "fields": "字段",
+    "due": "截止日期",
+    "labels": "标签",
+    "labelsHint": "逗号分隔，例如 增长, 前端"
   }
 }

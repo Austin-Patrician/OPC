@@ -85,6 +85,8 @@ export type MessageKind = 'text' | 'deliverable' | 'system' | 'task';
 
 /** ── Work / task pipeline (Phase 0) ─────────────────────────────────────── */
 
+export type IssuePriority = 'P0' | 'P1' | 'P2' | 'P3';
+
 export type TaskStatus =
   | 'open'
   | 'running'
@@ -136,6 +138,10 @@ export interface WorkTask {
   parentTaskId?: string;
   /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
   issueKey?: string;
+  /** P0 (do it now) … P3 (someday). Defaults to P2. */
+  priority: IssuePriority;
+  labels: string[];
+  dueAt?: number;
   /** Set when a task is the manager sign-off of another task. */
   reviewOfTaskId?: string;
   /** Review tasks are judged by the boss, never by another manager review. */

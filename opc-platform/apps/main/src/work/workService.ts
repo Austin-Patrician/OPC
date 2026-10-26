@@ -234,6 +234,17 @@ export class WorkService {
   /** One-time backfill for rows created before issue keys existed. */
   backfillIssueKeys = (): number => this.repository.ensureIssueKeys();
 
+  /** Edits the issue fields the boss owns (priority / labels / due date). */
+  setIssueMeta = (
+    taskId: string,
+    patch: { priority?: WorkTask['priority']; labels?: string[]; dueAt?: number | null },
+  ): WorkTask => {
+    this.repository.setIssueMeta(taskId, patch);
+    const updated = this.repository.getTask(taskId) as WorkTask;
+    this.emit(updated);
+    return updated;
+  };
+
   getTask = (taskId: string): WorkTask | undefined => this.repository.getTask(taskId);
 
   listSubtasks = (taskId: string): WorkTask[] => this.repository.listChildren(taskId);

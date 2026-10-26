@@ -12,6 +12,7 @@ import { cn } from '@/shared/lib/cn';
  */
 
 import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTransitions';
+import { isOverdue, sortIssues, type IssueSort } from './issueSort';
 
 type Group = BoardGroup;
 
@@ -55,6 +56,8 @@ export function IssueListPage() {
   const [mode, setMode] = useState<'ledger' | 'board'>('ledger');
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [sort, setSort] = useState<IssueSort>('created');
+  const [priority, setPriority] = useState<'all' | 'P0' | 'P1' | 'P2' | 'P3'>('all');
 
   useEffect(() => {
     let alive = true;
@@ -76,6 +79,7 @@ export function IssueListPage() {
     return tasks.filter((task) => {
       if (status !== 'all' && GROUP_OF(task.status) !== status) return false;
       if (assignee && task.assigneeName !== assignee) return false;
+      if (priority !== 'all' && task.priority !== priority) return false;
       if (!needle) return true;
       return (
         task.title.toLowerCase().includes(needle) ||
@@ -83,7 +87,9 @@ export function IssueListPage() {
         task.brief.toLowerCase().includes(needle)
       );
     });
-  }, [tasks, status, assignee, query]);
+  }, [tasks, status, assignee, priority, query]);
+
+  const ordered = useMemo(() => sortIssues(filtered, sort), [filtered, sort]);
 
   const counts = useMemo(() => {
     const base: Record<Group, number> = {
@@ -195,6 +201,32 @@ export function IssueListPage() {
               ))}
             </select>
 
+            <select
+              aria-label={t('issues.priority')}
+              value={priority}
+              onChange={(event) => setPriority(event.target.value as typeof priority)}
+              className="h-6 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink-secondary outline-none"
+            >
+              <option value="all">{t('issues.allPriorities')}</option>
+              {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+
+            <select
+              aria-label={t('issues.sort')}
+              value={sort}
+              onChange={(event) => setSort(event.target.value as IssueSort)}
+              className="h-6 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink-secondary outline-none"
+            >
+              <option value="created">{t('issues.sortCreated')}</option>
+              <option value="priority">{t('issues.sortPriority')}</option>
+              <option value="due">{t('issues.sortDue')}</option>
+              <option value="cost">{t('issues.sortCost')}</option>
+            </select>
+
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -221,7 +253,7 @@ export function IssueListPage() {
           <div className="min-h-0 flex-1 overflow-x-auto">
             <div className="flex h-full gap-3 px-8 py-4">
               {GROUP_ORDER.map((group) => {
-                const rows = filtered.filter((task) => GROUP_OF(task.status) === group);
+                const rows = ordered.filter((task) => GROUP_OF(task.status) === group);
                 return (
                   <section
                     key={group}
@@ -257,7 +289,17 @@ export function IssueListPage() {
                             draggingId === task.id && 'opacity-40',
                           )}
                         >
-                          <div className="font-mono text-3xs text-ink-quaternary">{task.issueKey ?? '—'}</div>
+                          <div className="flex items-center gap-1 font-mono text-3xs text-ink-quaternary">
+                            <span>{task.issueKey ?? '—'}</span>
+                            <span
+                              className={cn(
+                                task.priority === 'P0' && 'text-danger',
+                                task.priority === 'P1' && 'text-warning',
+                              )}
+                            >
+                              {task.priority}
+                            </span>
+                          </div>
                           <div className="mt-0.5 line-clamp-2 text-xs text-ink">{task.title}</div>
                           <div className="mt-1.5 flex items-center justify-between text-3xs text-ink-quaternary">
                             <span className="truncate">{task.assigneeName}</span>
@@ -275,12 +317,12 @@ export function IssueListPage() {
 
         {/* Rows, grouped by state — the rail does the colouring */}
         <div className={cn('min-h-0 flex-1 overflow-y-auto', mode === 'board' && 'hidden')}>
-          {filtered.length === 0 ? (
+          {ordered.length === 0 ? (
             <p className="px-8 py-16 text-center text-sm text-ink-quaternary">{t('issues.empty')}</p>
           ) : (
-            GROUP_ORDER.filter((group) => filtered.some((task) => GROUP_OF(task.status) === group)).map((group) => {
+            GROUP_ORDER.filter((group) => ordered.some((task) => GROUP_OF(task.status) === group)).map((group) => {
               const Icon = groupIcon(group);
-              const rows = filtered.filter((task) => GROUP_OF(task.status) === group);
+              const rows = ordered.filter((task) => GROUP_OF(task.status) === group);
               return (
                 <section key={group} data-testid={`issue-group-${group}`}>
                   <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-panel/95 px-8 py-1.5 backdrop-blur">
@@ -306,6 +348,17 @@ export function IssueListPage() {
                       <span className="w-20 shrink-0 font-mono text-2xs text-ink-tertiary">
                         {task.issueKey ?? '—'}
                       </span>
+                      <span
+                        data-testid="issue-priority"
+                        className={cn(
+                          'w-7 shrink-0 rounded text-center font-mono text-3xs',
+                          task.priority === 'P0' && 'bg-danger/15 text-danger',
+                          task.priority === 'P1' && 'bg-warning/15 text-warning',
+                          task.priority !== 'P0' && task.priority !== 'P1' && 'text-ink-quaternary',
+                        )}
+                      >
+                        {task.priority}
+                      </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5">
                           <span className="truncate text-sm text-ink">{task.title}</span>
@@ -320,8 +373,21 @@ export function IssueListPage() {
                             </span>
                           ) : null}
                         </span>
-                        <span className="mt-0.5 block truncate text-2xs text-ink-quaternary">
-                          {task.deliverableSpec}
+                        <span className="mt-0.5 flex items-center gap-1.5">
+                          <span className="truncate text-2xs text-ink-quaternary">{task.deliverableSpec}</span>
+                          {task.labels.slice(0, 3).map((label) => (
+                            <span
+                              key={label}
+                              className="shrink-0 rounded bg-surface-muted px-1 text-3xs text-ink-tertiary"
+                            >
+                              {label}
+                            </span>
+                          ))}
+                          {isOverdue(task) ? (
+                            <span className="shrink-0 rounded bg-danger/10 px-1 text-3xs text-danger">
+                              {t('issues.overdue')}
+                            </span>
+                          ) : null}
                         </span>
                       </span>
                       <span className="w-24 shrink-0 truncate text-2xs text-ink-secondary">{task.assigneeName}</span>
@@ -377,6 +443,62 @@ function IssueDetail({ task, onClose }: { task: WorkTask; onClose: () => void })
       </header>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 text-xs">
+        <section>
+          <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
+            {t('issues.fields')}
+          </h3>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
+              {t('issues.priority')}
+              <select
+                data-testid="issue-priority-select"
+                defaultValue={task.priority}
+                onChange={(event) =>
+                  void window.opc!.work.setIssueMeta(task.id, { priority: event.target.value as 'P0' })
+                }
+                className="h-7 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none"
+              >
+                {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
+              {t('issues.due')}
+              <input
+                type="date"
+                data-testid="issue-due"
+                defaultValue={task.dueAt ? new Date(task.dueAt).toISOString().slice(0, 10) : ''}
+                onChange={(event) =>
+                  void window.opc!.work.setIssueMeta(task.id, {
+                    dueAt: event.target.value ? new Date(`${event.target.value}T23:59:59`).getTime() : null,
+                  })
+                }
+                className="h-7 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none"
+              />
+            </label>
+          </div>
+          <label className="mt-2 flex flex-col gap-1 text-2xs text-ink-tertiary">
+            {t('issues.labels')}
+            <input
+              data-testid="issue-labels"
+              defaultValue={task.labels.join(', ')}
+              onBlur={(event) =>
+                void window.opc!.work.setIssueMeta(task.id, {
+                  labels: event.target.value
+                    .split(',')
+                    .map((label) => label.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder={t('issues.labelsHint')}
+              className="h-7 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none"
+            />
+          </label>
+        </section>
+
         <section>
           <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
             {t('issues.brief')}

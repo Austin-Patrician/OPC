@@ -671,6 +671,18 @@
     "mode": {
       "ledger": "Ledger",
       "board": "Board"
-    }
+    },
+    "priority": "Priority",
+    "allPriorities": "All priorities",
+    "sort": "Sort",
+    "sortCreated": "Newest",
+    "sortPriority": "By priority",
+    "sortDue": "By due date",
+    "sortCost": "By spend",
+    "overdue": "Overdue",
+    "fields": "Fields",
+    "due": "Due",
+    "labels": "Labels",
+    "labelsHint": "comma separated, e.g. growth, frontend"
   }
 }
