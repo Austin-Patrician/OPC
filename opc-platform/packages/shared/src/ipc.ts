@@ -51,6 +51,8 @@ export const IPC = {
     setKey: 'models:setKey',
     test: 'models:test',
     refreshModels: 'models:refreshModels',
+    addModel: 'models:addModel',
+    supportsOauth: 'models:supportsOauth',
     getDefaults: 'models:getDefaults',
     setDefault: 'models:setDefault',
     importFromPi: 'models:importFromPi',
@@ -215,6 +217,12 @@ export interface ModelsBridge {
   setKey(providerId: string, apiKey: string): Promise<ProviderConfig[]>;
   test(providerId: string): Promise<ProviderTestResult>;
   refreshModels(providerId: string): Promise<ProviderConfig[]>;
+  addModel(
+    providerId: string,
+    input: { id: string; name?: string; contextWindow?: number; api?: string },
+  ): Promise<ProviderConfig[]>;
+  /** True only for providers pi can log into with OAuth; the rest use an API key. */
+  supportsOauth(providerId: string): Promise<boolean>;
   getDefaults(): Promise<ModelDefaults>;
   setDefault(role: 'llm' | 'image', ref: ModelRef | null): Promise<ModelDefaults>;
   /** Imports an existing pi config as providers (explicit user action). */

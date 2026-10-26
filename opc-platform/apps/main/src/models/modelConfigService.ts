@@ -77,6 +77,46 @@ export class ModelConfigService {
     return this.runtime.testProvider(config);
   };
 
+  /**
+   * Adds a model the provider's `/models` endpoint does not list (fine-tuning,
+   * self-hosted gateways, brand-new ids). Prices start empty: 0 means "unknown",
+   * which the UI shows as a dash instead of a fake number.
+   */
+  addModel = (
+    providerId: string,
+    input: { id: string; name?: string; contextWindow?: number; api?: string },
+  ): ProviderConfig[] => {
+    const provider = this.repository.getProvider(providerId);
+    if (!provider) throw new Error('未知 provider');
+    const id = input.id.trim();
+    if (!id) throw new Error('模型 id 不能为空');
+    if (provider.models.some((model) => model.id === id)) throw new Error(`模型已存在：${id}`);
+
+    this.repository.saveModels(providerId, [
+      ...provider.models,
+      {
+        id,
+        name: input.name?.trim() || id,
+        api: input.api?.trim() || provider.api,
+        // Chat is the only capability a hand-added model has until proven otherwise.
+        capability: 'chat',
+        contextWindow: input.contextWindow ?? 0,
+        inputUsdPerM: 0,
+        outputUsdPerM: 0,
+        cacheReadUsdPerM: 0,
+        cacheWriteUsdPerM: 0,
+      },
+    ]);
+    return this.listProviders();
+  };
+
+  /** Whether this provider can log in through OAuth (most use an API key). */
+  supportsOauth = async (providerId: string): Promise<boolean> => {
+    const { builtinProviders } = await import('@earendil-works/pi-ai/providers/all');
+    const builtin = builtinProviders().find((provider) => provider.id === providerId);
+    return Boolean(builtin?.auth && (builtin.auth as { oauth?: unknown }).oauth);
+  };
+
   /** Test + import the model list, so the user picks from real ids. */
   refreshModels = async (providerId: string): Promise<ProviderConfig[]> => {
     const config = this.repository.getProvider(providerId);

@@ -191,7 +191,7 @@
       "addProvider": "Add provider",
       "customProvider": "Custom provider",
       "customProviderHint": "Custom OpenAI- or Anthropic-compatible endpoint",
-      "addModel": "Add model",
+      "addModel": "+ Custom model",
       "addModelPlaceholder": "model id, e.g. vendor/model-1",
       "descAll": "pi ships {{providers}} providers and ~{{models}} models; all of them are reachable here, with prices taken from pi's catalog and editable in place.",
       "providersDescAll": "{{count}} providers, grouped as official / subscription / cloud / gateway / China / other.",
@@ -204,7 +204,14 @@
       },
       "idHint": "Unique id, written into config and the ledger.",
       "apiHint": "pi supports {{count}} API kinds; all are selectable here.",
-      "createProvider": "Create"
+      "createProvider": "Create",
+      "fetchModels": "Fetch models",
+      "fetchRequested": "Fetch requested (had {{before}} models); success depends on the provider's /models endpoint and key",
+      "fetchDone": "{{count}} models added",
+      "added": "Model added",
+      "modelId": "Model ID",
+      "nameOptional": "Display name (optional)",
+      "apiKeyOnly": "This provider logs in with an API key — no OAuth"
     },
     "compaction": {
       "desc": "When the context approaches the model limit, older turns are summarized. Thresholds are relative to the selected model's window.",
@@ -519,7 +526,8 @@
       "limit_reached": "This thread hit its turn limit, so automatic replies stopped and it is waiting for you.",
       "escalated": "This thread is escalated: automatic replies between the two employees are paused."
     }
-  },  "task": {
+  },
+  "task": {
     "card": "Task card",
     "dispatch": "Dispatch",
     "submit": "Dispatch and run",

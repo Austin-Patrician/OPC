@@ -80,6 +80,11 @@ export function useModels() {
     removeProvider: (providerId: string) => run(() => bridge?.removeProvider(providerId)),
     setKey: (providerId: string, apiKey: string) => run(() => bridge?.setKey(providerId, apiKey)),
     refreshModels: (providerId: string) => run(() => bridge?.refreshModels(providerId)),
+    addModel: (
+      providerId: string,
+      input: { id: string; name?: string; contextWindow?: number; api?: string },
+    ) => run(() => bridge?.addModel(providerId, input)),
+    supportsOauth: (providerId: string) => bridge?.supportsOauth(providerId) ?? Promise.resolve(false),
     setDefault: (role: 'llm' | 'image', ref: ModelRef | null) =>
       run(() => bridge?.setDefault(role, ref)),
     importFromPi: () => run(() => bridge?.importFromPi()),

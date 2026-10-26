@@ -30,6 +30,37 @@ interface DisplayProvider {
  * with the model list rendered as a table whose price columns are prefilled from
  * pi and editable per model.
  */
+/** OAuth only exists for a few providers; the rest log in with an API key. */
+function OauthSection({ providerId }: { providerId: string }) {
+  const { t } = useTranslation();
+  const [supported, setSupported] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void window.opc?.models
+      .supportsOauth(providerId)
+      .then((value) => {
+        if (alive) setSupported(value);
+      })
+      .catch(() => {
+        if (alive) setSupported(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [providerId]);
+
+  if (supported === null) return null;
+  if (!supported) {
+    return (
+      <p data-testid="apikey-only" className="text-xs text-ink-quaternary">
+        {t('settings.llm.apiKeyOnly')}
+      </p>
+    );
+  }
+  return <AuthLoginPanel providerId={providerId} />;
+}
+
 export function LlmPage({ initialProviderId }: { initialProviderId?: string } = {}) {
   const { t } = useTranslation();
   const models = useModels();
@@ -39,6 +70,10 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
   const [keyDraft, setKeyDraft] = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState<Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>>({});
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customModel, setCustomModel] = useState({ id: '', name: '', contextWindow: '' });
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   const configured = useMemo(
     () => new Map(models.providers.map((provider) => [provider.id, provider])),
@@ -385,7 +420,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                       </div>
                     </div>
 
-                    <AuthLoginPanel providerId={selected.id} />
+                    <OauthSection providerId={selected.id} />
 
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
@@ -397,18 +432,115 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                     <div>
                       <div className="mb-1.5 flex items-center justify-between gap-2">
                         <span className="text-sm font-medium text-ink-secondary">{t('settings.llm.tableTitle')}</span>
-                        <button
-                          type="button"
-                          data-testid="apply-builtin-pricing"
-                          onClick={async () => {
-                            await ensureProvider(selected);
-                            await models.applyBuiltinPricing(selected.id);
-                          }}
-                          className="text-xs text-accent-ink hover:text-accent"
-                        >
-                          {t('settings.pricing.useOfficial')}
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            data-testid="refresh-models"
+                            onClick={async () => {
+                              await ensureProvider(selected);
+                              const before = chatModels.length;
+                              await models.refreshModels(selected.id);
+                              setModelNotice(t('settings.llm.fetchRequested', { before }));
+                            }}
+                            className="text-xs text-accent-ink hover:text-accent"
+                          >
+                            {t('settings.llm.fetchModels')}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="add-custom-model"
+                            onClick={() => setCustomOpen((open) => !open)}
+                            className="text-xs text-accent-ink hover:text-accent"
+                          >
+                            {t('settings.llm.addModel')}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="apply-builtin-pricing"
+                            onClick={async () => {
+                              await ensureProvider(selected);
+                              await models.applyBuiltinPricing(selected.id);
+                            }}
+                            className="text-xs text-accent-ink hover:text-accent"
+                          >
+                            {t('settings.pricing.useOfficial')}
+                          </button>
+                        </div>
                       </div>
+
+                      {customOpen ? (
+                        <div className="mb-2 flex flex-wrap items-end gap-2 rounded-lg border border-line bg-surface-muted px-3 py-2">
+                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
+                            {t('settings.llm.modelId')}
+                            <input
+                              data-testid="custom-model-id"
+                              value={customModel.id}
+                              onChange={(event) =>
+                                setCustomModel((current) => ({ ...current, id: event.target.value }))
+                              }
+                              placeholder="my-finetune-v1"
+                              className="h-7 w-44 rounded-md border border-line bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-accent"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
+                            {t('settings.llm.col.name')}
+                            <input
+                              value={customModel.name}
+                              onChange={(event) =>
+                                setCustomModel((current) => ({ ...current, name: event.target.value }))
+                              }
+                              placeholder={t('settings.llm.nameOptional')}
+                              className="h-7 w-40 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
+                            {t('settings.llm.col.context')}
+                            <input
+                              value={customModel.contextWindow}
+                              onChange={(event) =>
+                                setCustomModel((current) => ({ ...current, contextWindow: event.target.value }))
+                              }
+                              placeholder="128000"
+                              inputMode="numeric"
+                              className="h-7 w-28 rounded-md border border-line bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-accent"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            data-testid="custom-model-save"
+                            onClick={async () => {
+                              setCustomError(null);
+                              try {
+                                await ensureProvider(selected);
+                                await models.addModel(selected.id, {
+                                  id: customModel.id.trim(),
+                                  name: customModel.name.trim() || undefined,
+                                  contextWindow: Number(customModel.contextWindow) || undefined,
+                                });
+                                setCustomModel({ id: '', name: '', contextWindow: '' });
+                                setCustomOpen(false);
+                                setModelNotice(t('settings.llm.added'));
+                              } catch (error) {
+                                setCustomError(error instanceof Error ? error.message : String(error));
+                              }
+                            }}
+                            className="h-7 rounded-md bg-accent px-3 text-xs font-medium text-white"
+                          >
+                            {t('common.save')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCustomOpen(false)}
+                            className="h-7 rounded-md px-2 text-xs text-ink-tertiary hover:bg-ink/5"
+                          >
+                            {t('common.cancel')}
+                          </button>
+                        </div>
+                      ) : null}
+                      {customError ? <p className="mb-2 text-xs text-danger">{customError}</p> : null}
+                      {modelNotice ? (
+                        <p className="mb-2 text-2xs text-ink-tertiary">{modelNotice}</p>
+                      ) : null}
 
                       <div
                         data-testid="llm-model-table"

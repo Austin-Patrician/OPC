@@ -191,7 +191,7 @@
       "addProvider": "添加 Provider",
       "customProvider": "自定义 Provider",
       "customProviderHint": "自定义 OpenAI 兼容 / Anthropic 兼容端点",
-      "addModel": "添加模型",
+      "addModel": "+ 自定义模型",
       "addModelPlaceholder": "模型 id，例如 vendor/model-1",
       "descAll": "pi 内置 {{providers}} 个 Provider、约 {{models}} 个模型；这里全部可接入，价格直接取自 pi 目录并可就地修改。",
       "providersDescAll": "{{count}} 个 Provider，按官方 / 订阅 / 云平台 / 网关 / 国内 / 其他分组。",
@@ -204,7 +204,14 @@
       },
       "idHint": "唯一 ID，会写进配置与账本。",
       "apiHint": "pi 共支持 {{count}} 种 API 类型，这里全部可选。",
-      "createProvider": "创建"
+      "createProvider": "创建",
+      "fetchModels": "拉取模型",
+      "fetchRequested": "已请求拉取（当前 {{before}} 个模型）；成功与否取决于该服务商的 /models 接口与密钥",
+      "fetchDone": "新增 {{count}} 个模型",
+      "added": "模型已添加",
+      "modelId": "模型 ID",
+      "nameOptional": "显示名（可选）",
+      "apiKeyOnly": "该服务商使用 API Key 登录，无需 OAuth"
     },
     "compaction": {
       "desc": "上下文接近模型上限时，自动把较早的对话总结成摘要。阈值按所选模型的上下文窗口计算。",
@@ -519,7 +526,8 @@
       "limit_reached": "这段对话已达到轮数上限，自动回复停止，等你介入。",
       "escalated": "这段对话已升级：员工之间的自动回复已暂停。"
     }
-  },  "task": {
+  },
+  "task": {
     "card": "任务卡",
     "dispatch": "派活",
     "submit": "派发并执行",

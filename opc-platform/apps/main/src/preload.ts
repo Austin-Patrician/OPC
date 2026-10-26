@@ -145,6 +145,9 @@ const bridge: OpcBridge = {
     test: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.test, providerId) as Promise<ProviderTestResult>,
     refreshModels: (providerId: string) => ipcRenderer.invoke(IPC.models.refreshModels, providerId),
+    addModel: (providerId: string, input: unknown) => ipcRenderer.invoke(IPC.models.addModel, providerId, input),
+    supportsOauth: (providerId: string) =>
+      ipcRenderer.invoke(IPC.models.supportsOauth, providerId) as Promise<boolean>,
     getDefaults: () => ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
     setDefault: (role: 'llm' | 'image', ref: ModelRef | null) =>
       ipcRenderer.invoke(IPC.models.setDefault, role, ref),

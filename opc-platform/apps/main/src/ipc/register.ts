@@ -195,6 +195,23 @@ export function registerIpc({
     if (typeof providerId !== 'string') throw new Error('models:test 参数非法');
     return models.test(providerId);
   });
+  ipcMain.handle(IPC.models.addModel, (_event, providerId: unknown, input: unknown) => {
+    if (typeof providerId !== 'string' || typeof input !== 'object' || input === null) {
+      throw new Error('models:addModel 参数非法');
+    }
+    const { id, name, contextWindow, api } = input as Record<string, unknown>;
+    if (typeof id !== 'string') throw new Error('models:addModel 需要模型 id');
+    return models.addModel(providerId, {
+      id,
+      name: typeof name === 'string' ? name : undefined,
+      contextWindow: typeof contextWindow === 'number' ? contextWindow : undefined,
+      api: typeof api === 'string' ? api : undefined,
+    });
+  });
+  ipcMain.handle(IPC.models.supportsOauth, (_event, providerId: unknown) => {
+    if (typeof providerId !== 'string') throw new Error('models:supportsOauth 参数非法');
+    return models.supportsOauth(providerId);
+  });
   ipcMain.handle(IPC.models.refreshModels, (_event, providerId: unknown) => {
     if (typeof providerId !== 'string') throw new Error('models:refreshModels 参数非法');
     return models.refreshModels(providerId);

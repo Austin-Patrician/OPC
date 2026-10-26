@@ -133,6 +133,21 @@
           await new Promise((r) => setTimeout(r, 200));
           document.querySelector('[data-testid="settings-page-llm"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise((r) => setTimeout(r, 700));
+          // Settings → 模型 LLM: 拉取模型 / 自定义模型 / OAuth 仅对支持的服务商出现
+          location.hash = '#/settings';
+          await new Promise((r) => setTimeout(r, 700));
+          document
+            .querySelector('[data-testid="settings-page-llm"]')
+            ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 600));
+          const fetchModelsButton = Boolean(document.querySelector('[data-testid="refresh-models"]'));
+          const addModelButton = Boolean(document.querySelector('[data-testid="add-custom-model"]'));
+          const apiKeyOnlyHint = Boolean(document.querySelector('[data-testid="apikey-only"]'));
+          document
+            .querySelector('[data-testid="add-custom-model"]')
+            ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 300));
+          const customModelForm = Boolean(document.querySelector('[data-testid="custom-model-id"]'));
           const providerRows = document.querySelectorAll('[data-testid="provider-row"]').length;
           const providerIcons = document.querySelectorAll('img[src*="provider-icons"]').length;
           const llmTableScrollable = Boolean(
@@ -328,6 +343,10 @@
             boardColumns,
             boardDimmed,
             providerRows,
+            fetchModelsButton,
+            addModelButton,
+            apiKeyOnlyHint,
+            customModelForm,
             providerIcons,
             llmTableScrollable,
             saveBox,
