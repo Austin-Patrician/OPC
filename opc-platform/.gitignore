@@ -14,8 +14,9 @@ release/
 .env.*
 !.env.example
 
-# Local runtime data (daemon-owned; never commit)
-data/
+# Local runtime data (daemon-owned; never commit).
+# Anchored on purpose: a bare `data/` also matched apps/main/src/data, which is source.
+/data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

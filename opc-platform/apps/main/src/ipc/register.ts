@@ -11,6 +11,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAppInfo } from '../appInfo';
 import type { ChatService } from '../chat/chatService';
+import type { CommService } from '../comm/commService';
+import type { ManualWakeResult } from '../comm/scheduler';
+import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
 import type { MarketService } from '../market/marketService';
@@ -35,6 +38,9 @@ interface RegisterOptions {
   market: MarketService;
   facts: OrgFactService;
   projects: ProjectService;
+  comm: CommService;
+  /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
+  wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -49,6 +55,8 @@ export function registerIpc({
   market,
   facts,
   projects,
+  comm,
+  wakeEmployee,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -85,6 +93,40 @@ export function registerIpc({
         window.webContents.send(IPC.chat.snapshotEvent, snapshot);
       }
     }
+  });
+
+  // The notification view re-reads the overview itself; the event only says "it moved".
+  // Coalesced, because one inbox run completes several items in a row.
+  let commSignal: ReturnType<typeof setTimeout> | null = null;
+  const unsubscribeComm = comm.subscribe(() => {
+    if (commSignal) return;
+    commSignal = setTimeout(() => {
+      commSignal = null;
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(IPC.comm.overviewEvent, null);
+      }
+    }, 150);
+    commSignal.unref?.();
+  });
+
+  ipcMain.handle(IPC.comm.overview, () =>
+    buildCommOverview({
+      comm,
+      org,
+      readTranscript: (conversationId) => chat.readTranscript(conversationId),
+    }),
+  );
+
+  ipcMain.handle(IPC.comm.wake, (_event, employeeId: unknown) => {
+    if (typeof employeeId !== 'string') throw new Error('comm:wake 参数非法');
+    return wakeEmployee(employeeId);
+  });
+
+  ipcMain.handle(IPC.comm.dismissGuards, (_event, ids: unknown) => {
+    if (ids !== undefined && !(Array.isArray(ids) && ids.every((id) => typeof id === 'string'))) {
+      throw new Error('comm:dismissGuards 参数非法');
+    }
+    return comm.dismissGuards(ids as string[] | undefined);
   });
 
   ipcMain.handle(IPC.app.getInfo, () => getAppInfo());
@@ -474,6 +516,11 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.images.generate);
     unsubscribeBudgets();
     unsubscribeWork();
+    unsubscribeComm();
+    if (commSignal) clearTimeout(commSignal);
+    ipcMain.removeHandler(IPC.comm.overview);
+    ipcMain.removeHandler(IPC.comm.wake);
+    ipcMain.removeHandler(IPC.comm.dismissGuards);
     ipcMain.removeHandler(IPC.work.listBudgets);
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);

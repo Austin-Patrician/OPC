@@ -21,7 +21,15 @@ import { MarketService } from './market/marketService';
 import { OrgService } from './org/orgService';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
+import { CommService, commSettingsFrom } from './comm/commService';
+import { CommRepository } from './data/commRepository';
+import { CommScheduler } from './comm/scheduler';
+import { createInboxRunner } from './comm/inboxRunner';
 import { DEMO_TASK } from './work/acceptanceTemplate';
+
+/** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
+const IDLE_COOLING_MS = 60 * 60 * 1000;
+const IDLE_ARCHIVE_MS = 24 * 60 * 60 * 1000;
 
 const isDev = !app.isPackaged;
 
@@ -41,6 +49,8 @@ const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
 /** `OPC_PROJECT_PROBE=1`: project assignment scopes facts; other projects stay out. */
 const isProjectProbe = process.env.OPC_PROJECT_PROBE === '1';
+/** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
+const isInboxProbe = process.env.OPC_INBOX_PROBE === '1';
 /** `OPC_FACT_PROBE=1`: company facts are versioned and reach the employee's prompt. */
 const isFactProbe = process.env.OPC_FACT_PROBE === '1';
 /** `OPC_ARCHIVE_PROBE=1`: idle conversation → archived → consolidated once. */
@@ -72,6 +82,9 @@ const crashProbe = process.env.OPC_CRASH_PROBE;
 let mainWindow: BrowserWindow | null = null;
 let chat: ChatService | null = null;
 let work: WorkService | null = null;
+let comm: CommService | null = null;
+/** Kept at module scope so IPC can trigger a manual wake (§7.2 P0). */
+let heartbeat: CommScheduler | null = null;
 let disposeIpc: (() => void) | null = null;
 function createMainWindow() {
 	const window = new BrowserWindow({
@@ -246,6 +259,23 @@ function bootstrap(): void {
   const facts = new OrgFactService(db);
   const projects = new ProjectService(db);
   const imageService = new ImageService(modelConfig, appPaths);
+
+  // Communication: inbox, wake quota, guards, relationships (F5/F6). Built before
+  // WorkService so the task harness can carry `send_direct_message`.
+  comm = new CommService({
+    repository: new CommRepository(db),
+    org,
+    transcript: chat,
+    settings: commSettingsFrom(db),
+  });
+
+  // §7.4: 群聊 @ 的路由交给通信层。老板在部门群里说话，没人被 @ 就只叫负责人。
+  chat.routeGroupMessage = (input) => {
+    const result = comm?.routeGroupMessage(input);
+    if (result && result.delegatedToOwner && result.targets[0]) {
+      console.warn(`群消息没有 @，已交给负责人 ${result.targets[0].name}`);
+    }
+  };
   work = new WorkService({
     db,
     paths: appPaths,
@@ -257,6 +287,7 @@ function bootstrap(): void {
     memory,
     facts,
     projects,
+    comm,
   });
 
   disposeIpc = registerIpc({
@@ -267,18 +298,54 @@ function bootstrap(): void {
     market,
     facts,
     projects,
+    comm,
+    wakeEmployee: async (employeeId) =>
+      heartbeat
+        ? heartbeat.wakeNow(employeeId)
+        : { ok: false, message: '心跳未启动（无头模式），无法手动唤醒', items: 0 },
     images: imageService,
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
   });
 
-  // Auto consolidation: a conversation idle for an hour is archived once, and its
-  // lessons become memory. Probes drive this explicitly instead of waiting.
+  // Auto lifecycle (§7.5): an idle thread cools first — it stops auto-replying but
+  // stays readable — and only a much older one is archived, which is what triggers
+  // consolidation. Probes drive both explicitly instead of waiting.
   if (!isHeadlessMode) {
     const timer = setInterval(() => {
-      void chat?.sweepIdleConversations(60 * 60 * 1000).catch(() => undefined);
+      chat?.coolIdleConversations(IDLE_COOLING_MS);
+      void chat?.sweepIdleConversations(IDLE_ARCHIVE_MS).catch(() => undefined);
     }, 5 * 60 * 1000);
     app.on('before-quit', () => clearInterval(timer));
+  }
+
+  // The heartbeat (§10.3): an employee with an empty inbox is never woken, so an idle
+  // company costs nothing. Signalled work (a colleague needs an answer) wakes its
+  // recipient on the next tick instead of waiting for the full heartbeat interval.
+  if (!isHeadlessMode && comm && chat) {
+    const liveChat = chat;
+    const inboxRunner = createInboxRunner({
+      comm,
+      agentFor: (employeeId) => agentsFromOrg(org).find((agent) => agent.id === employeeId),
+      replyWithModel: async ({ agent, text, history }) => {
+        if (!liveChat.replyWithModel) throw new Error('未配置模型');
+        return liveChat.replyWithModel({ agent, text, history });
+      },
+      appendAgentMessage: (conversationId, agent, text) => {
+        liveChat.appendAgentMessage(conversationId, agent, text);
+      },
+    });
+    const scheduler = new CommScheduler({ comm, onWake: inboxRunner });
+    heartbeat = scheduler;
+    // A signalled message (a boss @, or a manager asking) must not wait up to a full
+    // heartbeat: any change to the queues nudges one tick, debounced inside the scheduler.
+    const unsubscribeNudge = comm.subscribe(() => heartbeat?.nudge());
+    scheduler.start();
+    app.on('before-quit', () => {
+      unsubscribeNudge();
+      scheduler.stop();
+      heartbeat = null;
+    });
   }
 
   // Crash recovery: resume durable tasks the previous process left running, then
@@ -314,7 +381,8 @@ const isHeadlessMode =
   isFirstRunProbe ||
   isChatProbe ||
   isReviewProbe ||
-  isMarketProbe;
+  isMarketProbe ||
+  isInboxProbe;
 const hasLock = isHeadlessMode ? true : app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
@@ -404,6 +472,227 @@ if (!hasLock) {
         }) + '\n',
       );
       app.exit(aliceПроjects.length === 1 ? 0 : 1);
+      return;
+    }
+
+    if (isInboxProbe) {
+      // One wake per person per day: the brake has to trip inside a probe, not after
+      // five real ones. No model is configured on purpose — the run must still close
+      // its items and leave a visible guard instead of inventing a reply.
+      process.env.OPC_WAKE_QUOTA = '1';
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-inbox-')));
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const org = new OrgService(db);
+      ensureFirstCompany(org);
+      const probeChat = new ChatService({
+        db,
+        agents: agentsFromOrg(org),
+        departments: chatDepartmentsFromOrg(org),
+        conversations: [],
+      });
+      const settings = commSettingsFrom(db);
+      const repo = new CommRepository(db);
+      const comm = new CommService({ repository: repo, org, transcript: probeChat, settings });
+
+      const members = org.list().flatMap((department) => department.members);
+      const manager = members.find((member) =>
+        members.some((other) => other.reportsToEmployeeId === member.id),
+      )!;
+      const report = members.find((member) => member.reportsToEmployeeId === manager.id)!;
+      const sameDepartment = members.filter((member) => member.departmentId === report.departmentId);
+      const peerA = sameDepartment.find((member) => member.id !== report.id && member.id !== manager.id)!;
+      // Deliberately from the whole company: a two-person department has no second peer.
+      const peerB = members.find(
+        (member) => member.id !== report.id && member.id !== manager.id && member.id !== peerA.id,
+      )!;
+
+      const now = Date.now();
+      const first = comm.sendDirectMessage({
+        fromEmployeeId: manager.id,
+        toEmployeeId: report.id,
+        text: '把昨天的接口测试结果发我一份',
+        now,
+      });
+      const second = comm.sendDirectMessage({
+        fromEmployeeId: manager.id,
+        toEmployeeId: report.id,
+        text: '顺便把用例也补上',
+        now,
+      });
+      const third = comm.sendDirectMessage({
+        fromEmployeeId: manager.id,
+        toEmployeeId: report.id,
+        text: '下午三点前给我',
+        now,
+      });
+
+      const queued = comm.inbox(report.id);
+      // A fresh ChatService proves the recipient's context comes from `message` rows,
+      // not from this process's memory (§5.4).
+      const reopened = new ChatService({
+        db,
+        agents: agentsFromOrg(org),
+        departments: chatDepartmentsFromOrg(org),
+        conversations: [],
+      });
+      const transcript = reopened.readTranscript(first.conversationId ?? '');
+      const deliveredToBoss = reopened
+        .getSnapshot()
+        .conversations.find((conversation) => conversation.id === first.conversationId);
+
+      const woken: string[] = [];
+      const scheduler = new CommScheduler({
+        comm,
+        now: () => now,
+        onWake: async (input) => {
+          woken.push(`${input.employeeId}:${input.reason}:${input.items.length}`);
+          // No model: the runner must close the items and record why it stayed silent.
+          await createInboxRunner({
+            comm,
+            agentFor: (employeeId) => agentsFromOrg(org).find((agent) => agent.id === employeeId),
+            appendAgentMessage: () => undefined,
+          })(input);
+        },
+      });
+      const firstTick = await scheduler.tick();
+      const idleTick = await scheduler.tick();
+      const guards = comm.guards(report.id);
+      // Snapshot now: the turn-limit segment below queues new work on purpose.
+      const inboxDrained = comm.inbox(report.id).length === 0;
+
+      // Rate brake: the same pair may not exceed the hourly cap.
+      for (let index = 0; index < settings.dmPerHour; index += 1) {
+        comm.sendDirectMessage({
+          fromEmployeeId: peerA.id,
+          toEmployeeId: peerB.id,
+          text: `第 ${index + 1} 条`,
+          now,
+        });
+      }
+      const overRate = comm.sendDirectMessage({
+        fromEmployeeId: peerA.id,
+        toEmployeeId: peerB.id,
+        text: '这条应该被拦下',
+        now,
+      });
+      const rateRefused = overRate.ok === false && overRate.code === 'DM_RATE_LIMIT';
+
+      // §7.3 ②: the turn ceiling. A second instance with a budget of 2, so the brake
+      // trips inside the probe instead of after ten real exchanges.
+      const strict = new CommService({
+        repository: repo,
+        org,
+        transcript: probeChat,
+        settings: { ...settings, maxConversationTurns: 2 },
+      });
+      const turn1 = strict.sendDirectMessage({
+        fromEmployeeId: peerA.id,
+        toEmployeeId: report.id,
+        text: '接口这个字段怎么定',
+        now,
+      });
+      strict.sendDirectMessage({
+        fromEmployeeId: peerA.id,
+        toEmployeeId: report.id,
+        text: '我倾向用 snake_case',
+        now,
+      });
+      const turn3 = strict.sendDirectMessage({
+        fromEmployeeId: peerA.id,
+        toEmployeeId: report.id,
+        text: '再确认一下',
+        now,
+      });
+      const escalatedState = probeChat.turnState(turn1.conversationId ?? '');
+      // The boss stepping in is the resolution the doc's lifecycle calls for.
+      probeChat.sendMessage({ conversationId: turn1.conversationId ?? '', text: '这件事我来定' });
+      const reopenedState = probeChat.turnState(turn1.conversationId ?? '');
+
+      // §7.5: idle → cooling, and writing to a cooled thread brings it back.
+      const cooled = probeChat.coolIdleConversations(60_000, now + 10 * 60_000);
+      const warmed = strict.sendDirectMessage({
+        fromEmployeeId: manager.id,
+        toEmployeeId: peerA.id,
+        text: '在吗',
+        now: now + 11 * 60_000,
+      });
+      const cooledPeer = probeChat.turnState(warmed.conversationId ?? '');
+
+      const relationship = repo.relationship(manager.id, report.id, 'report');
+      // §7.4: 群聊 @ 的路由 —— 没人 @ 只叫负责人，有人 @ 只叫被点名的人。
+      const groupId = probeChat.ensureDepartmentGroup(org.list()[0]?.id ?? '');
+      const routedOwner = comm.routeGroupMessage({
+        conversationId: groupId,
+        messageId: 'msg-group-owner',
+        now,
+      });
+      const routedMentions = comm.routeGroupMessage({
+        conversationId: groupId,
+        messageId: 'msg-group-mentions',
+        mentionIds: [report.id, peerA.id],
+        now,
+      });
+      // 老板的两个动作：手动唤醒现在的待办，以及把护栏标记为已读。
+      const manualWake = await scheduler.wakeNow(report.id);
+      const openGuards = comm.guards().length;
+      const dismissedGuards = comm.dismissGuards();
+      const checks = {
+        firstWokeRecipient: first.ok && first.delivery === 'now' && first.priority === 1,
+        quotaDegradesToQueued:
+          second.ok && second.delivery === 'queued' && second.priority === 3 && third.priority === 3,
+        inboxOrdered: queued.length === 3 && queued[0]?.priority === 1 && queued[2]?.priority === 3,
+        onlyFirstRequiresWake: queued.filter((item) => item.requiresWake).length === 1,
+        transcriptFromDb: transcript.length === 3,
+        visibleToBoss: Boolean(deliveredToBoss) && (deliveredToBoss?.messages.length ?? 0) === 3,
+        wakeQuotaGuard: guards.some((guard) => guard.kind === 'wake_quota'),
+        signalledWake: firstTick.woken.some((entry) => entry.reason === 'signal' && entry.items === 3),
+        noModelGuard: guards.some((guard) => guard.kind === 'message_dropped'),
+        inboxDrained,
+        idleCostsNothing: idleTick.woken.length === 0,
+        rateBrake: rateRefused,
+        relationshipGrew: (relationship?.strength ?? 0) > 0.5 && relationship?.interactionCount === 3,
+        turnLimitEscalates: escalatedState.status === 'escalated' && escalatedState.turns === 2,
+        turnLimitRefuses: turn3.ok === false && turn3.code === 'CONVERSATION_ESCALATED',
+        turnLimitGuard: strict
+          .guards(peerA.id)
+          .some((guard) => guard.kind === 'turn_limit' && guard.detail.reason === 'limit_reached'),
+        bossReopensThread: reopenedState.status === 'open' && reopenedState.turns === 0,
+        coolingReachable: cooled.length > 0,
+        warmingReopens: cooledPeer.status === 'open',
+        bossCanWake: manualWake.ok && manualWake.items > 0,
+        guardsDismissable:
+          openGuards > 0 && dismissedGuards === openGuards && comm.guards().length === 0,
+        groupRoutesToOwner:
+          routedOwner.delegatedToOwner &&
+          routedOwner.targets.length === 1 &&
+          routedOwner.targets[0]?.employeeId === manager.id,
+        groupRoutesToMentions:
+          routedMentions.targets.length === 2 &&
+          routedMentions.targets.every((target) => target.priority === 2),
+      };
+
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            probe: 'inbox',
+            ...checks,
+            firstDelivery: first.delivery,
+            priorities: queued.map((item) => item.priority),
+            guards: guards.map((guard) => guard.kind),
+            woken,
+            relationship: relationship
+              ? { kind: relationship.kind, strength: relationship.strength, interactions: relationship.interactionCount }
+              : null,
+            lifecycle: { escalated: escalatedState, reopened: reopenedState, cooledThreads: cooled.length },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      scheduler.stop();
+      db.close();
+      app.exit(Object.values(checks).every(Boolean) ? 0 : 1);
       return;
     }
 

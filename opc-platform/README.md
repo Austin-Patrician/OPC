@@ -644,3 +644,207 @@ Linux 的 bwrap 路径只做了 argv 构造与单测，**未在真机验证**；
    `read/write/edit/run_command`，命令在 workspace 内执行。
 4. 自动验收：跑命令看退出码 + 收集证据；预算预留→结算→硬停。
 5. 崩溃恢复：杀进程重启后 `harness.resume()` 继续未完成 run。
+
+## 通信与唤醒：inbox / 配额 / 心跳（F5、F6、P5）
+
+员工不再"只有被派活才动"。四张表 + 两个服务把「有自己的节奏」落成可审计的状态：
+
+| 表 | 作用 | 关键约束 |
+|---|---|---|
+| `inbox_item` | 下班后要处理的事 | `priority` 0..3；同一来源只能排队一次（部分唯一索引）；`requires_wake` 绕过心跳 |
+| `wake_quota` | 每人每天的唤醒配额 | `(employee_id, quota_date)` 唯一，跨日自动重开 |
+| `guard_event` | 每一次"被拒绝"都留痕 | 配额耗尽 / 频率超限 / 无法回答，老板看得到沉默的原因 |
+| `relationship` | 关系强度 + 频率窗口 | 有向边，`strength` 随互动 +0.05；`window_started_at/count` 支撑"A→B 10 条/小时" |
+
+`CommService`（准入与路由）与 `CommScheduler`（心跳）分工明确：
+
+- **准入顺序有讲究**：未知/离职 → 频率闸 → 配额 → 才写消息。频率先于配额，防止用别人的配额刷屏。
+- **配额记账在路由之前**：先扣再投递，崩溃不会白送一次唤醒。
+- **无配额降级为留言**：消息仍在队列里（priority 3），只是不立刻唤醒，并写 `wake_quota` guard。
+- **空 inbox 不唤醒**：心跳 tick 对没有待办的员工零动作 —— 闲置公司零 token（守住 R2）。
+- **context 从 `message` 表重建**：`ChatService.readTranscript` 直接读 message 行，
+  所以对方睡着期间新到的三条它也能看见（§5.4 的核心洞察）。
+- **一次唤醒只回一次**：回复不把原发送者再入队，两个人不会互相点燃（守住 R4）。
+
+员工工具（`opc.comm`）：
+
+| 工具 | 作用 |
+|---|---|
+| `send_direct_message` | 给同事发消息；不创建任务（P4：消息 ≠ 任务），花的是**对方**的配额 |
+| `ack_message` | 只确认不回复（零 token），让"不话痨"成为可执行的选择 |
+
+```bash
+OPC_INBOX_PROBE=1 electron .
+#  firstWokeRecipient: true（priority 1 + 立即唤醒）
+#  quotaDegradesToQueued: true（第 2、3 条降级 priority 3）
+#  transcriptFromDb: true / visibleToBoss: true / inboxDrained: true
+#  wakeQuotaGuard: true / noModelGuard: true（没配模型时不编回答，留痕）
+#  idleCostsNothing: true / rateBrake: true / relationshipGrew: true
+```
+
+单测（`comm/commService.test.ts`）覆盖同样十二条不变量，跑真实 SQLite，不需要启动 Electron：
+
+```bash
+pnpm test   # 15 个文件 / 82 用例
+```
+
+**还没做的**（Step 1 的剩余护栏）：会话 `turn_count` 与 `cooling` 状态还挂在 `ChatService`
+侧未接；老板侧的"通知 / 关系"页面仍是占位页（`/notifications`），guard 与 inbox 目前只能
+通过探针和档案抽屉看到。
+
+## 老板侧可见性：/notifications（收件箱 + 护栏 + 关系 + 配额）
+
+Step 1 把"谁在等、谁被拦下"写进了数据库，但老板看不到 —— 那是日志，不是可见性。
+这个页面把四张表投成一块看板，渲染层不做任何估算：
+
+| 区块 | 数据来源 | 老板能回答的问题 |
+|---|---|---|
+| 待办收件箱 | `inbox_item`（pending）+ `message` 预览 | 谁的桌上还有事？是"立刻唤醒"还是"等心跳"？ |
+| 被拦下的动作 | `guard_event` | 谁今天被配额/频率/没模型挡住了？为什么沉默 |
+| 关系 | `relationship` | 谁和谁在说话、什么方向、关系强度多少 |
+| 今日唤醒配额 | `wake_quota` | 谁的配额已经用满，后面的消息只能排队 |
+
+契约与实现：
+
+- `IPC.comm.overview` 只读一次投影（`comm/commOverview.ts`），不写库、不带业务规则；
+- `CommService.subscribe` 在有变化时发一个**信号**（不带 payload），主进程 150ms 合并突发，
+  渲染层收到后自己重读投影 —— 一次 inbox 批处理会连续完成多条，不该连续推四次全量；
+- guard 的 `detail` 是 JSON，投影时只保留基本类型并把 `fromEmployeeId/toEmployeeId` 解析成
+  人名，页面上不会出现裸 uuid；无法解释的行直接把原始 detail 打出来，不隐藏；
+- 收件箱行点"打开对话"直接跳 `#/chat/<conversationId>`，看到的就是 `message` 表里的真实对话。
+
+`IPC.comm` 之后接的是 `CommBridge`（`overview()` + `onOverviewChanged`），渲染层
+`window.opc.comm` 是唯一入口，仍然没有 Node/fs/SQLite。
+
+验证：
+
+```bash
+pnpm test        # 17 个通信用例（含 3 个投影用例：预览/人名解析/配额方向）
+pnpm build       # main 318 kB · preload 9.9 kB · renderer 251 kB（页面参与打包）
+```
+
+**还没做的**：这个页面目前只读 —— 老板不能在这里手动补一次唤醒、也不能清空某人的护栏；
+`turn_count`/`cooling` 仍未接线，所以"轮数超限"这一格暂时不会有数据。
+
+## 轮数与生命周期：turn_count / cooling / escalated（§7.3 ②、§7.5）
+
+三层防护的最后一道补上了，护栏四类现在都有真实数据：
+
+| guard kind | 触发点 | 后果 |
+|---|---|---|
+| `wake_quota` | 收件人当日唤醒配额用尽 | 消息降级为留言（priority 3），不丢 |
+| `dm_rate` | 同一对员工一小时内超过上限 | 直接拒绝发送，消息不写库 |
+| `message_dropped` | 没配模型 / 模型调用失败 | 前者关掉条目，后者退回队列重试 |
+| `turn_limit` | 员工之间的轮数用完，或线程已升级 | 线程 `escalated`，自动回复停止 |
+
+轮数怎么数：`Conversation.turnCount` **只数员工发出的消息**（`appendAgentMessage`），老板的消息不计数也不清零 —— 老板可以随便聊，员工之间才会互相点燃。每次计数后立刻检查预算：
+
+```
+turn <  limit  → 照常投递
+turn >= limit  → conversation.status = 'escalated' + guard_event('turn_limit', {reason:'limit_reached'})
+                  之后任何员工再想发 → 结构化拒绝 CONVERSATION_ESCALATED（不写库）
+```
+
+生命周期（§7.5）：
+
+```
+open ──(闲置 1h)──→ cooling ──(闲置 24h)──→ archived（顺带巩固）
+ │                     ↑                        │
+ └──(轮数超限)──→ escalated ─(老板发一句话)──→ open（turnCount 归零）
+```
+
+- **cooling**：只是停掉自动回复，线程照常可读；有人写进来就自动回暖（`appendAgentMessage` 会 warm）。
+- **escalated**：只有老板能解除。老板在该会话里发一句话即解除并把轮次清零 —— 这正是文档里 `escalated →(老板处理)→ open`，不需要额外按钮。
+- 侧边栏会话标题旁会显示 `冷却中` / `已升级` 小标签，老板在 IM 里就能看到哪种线程等他决定。
+
+```bash
+OPC_INBOX_PROBE=1 electron .
+#  19 项全绿，含：
+#  turnLimitEscalates: true（turns=2, status='escalated'）
+#  turnLimitRefuses: true（第 3 条 CONVERSATION_ESCALATED，未写入 transcript）
+#  turnLimitGuard: true（turn_limit / reason=limit_reached）
+#  bossReopensThread: true（turns=0, status='open'）
+#  coolingReachable / warmingReopens: true
+#  guardKindsSeen: wake_quota, message_dropped, turn_limit, dm_rate
+```
+
+单测新增 6 例（`comm/commService.test.ts`）：到达上限即升级、升级后拒绝且不写库、
+回答的 run 在升级线程里不回复、老板解除后恢复、冷却/回暖、状态跨重启还在。
+
+**与文档的偏差（明确记录）**：§7.3 说轮数超限时创建 `approval_request(kind='turn_limit')`。
+`approval_request` 表属 Phase 3，本轮用 `conversation.status='escalated'` + `guard_event` 承担
+同样的"告知老板"职责，`/notifications` 的护栏区就是它的信箱；等 Phase 3 落表时再挂上队列。
+
+## 从看板到控制台：手动唤醒 + 处理护栏
+
+`/notifications` 现在能动手了，两个动作都刻意保持窄：
+
+| 动作 | IPC | 语义 |
+|---|---|---|
+| 立刻唤醒 | `comm.wake(employeeId)` | 走与心跳**完全相同**的 claim → run 路径，但绕过心跳时钟与配额（§7.2 P0：老板特权，不计配额） |
+| 标记已处理 | `comm.dismissGuards(ids?)` | 不传 ids = 全部；**标记时间戳，不删除记录** |
+
+为什么"已处理"是 `dismissed_at` 而不是 DELETE：一次被拦下是审计事实，老板认可它不代表它没发生。
+适配这条，schema 走到 **v3**：
+
+```sql
+ALTER TABLE guard_event ADD COLUMN dismissed_at INTEGER;
+CREATE INDEX idx_guard_open ON guard_event(employee_id, dismissed_at, created_at DESC);
+```
+
+`guards()` 与 `/notifications` 的投影只看 `dismissed_at IS NULL` 的行，历史上限仍在库里可查。
+
+唤醒的实现要点：
+
+- `CommScheduler.wakeNow(employeeId)` 与心跳 tick 共用一次 run，失败同样把批次 `requeue`，
+  所以"手动唤醒"不会比自动唤醒更脆；
+- 它**不消耗**收件人的每日配额 —— 老板找人不需要排队；
+- 收件箱为空时返回结构化"没有待办"，而不是假装成功；
+- `WakeInput.reason` 多了 `'manual'`，探针里能看到是谁把人叫醒的（`signal` / `heartbeat` / `manual`）。
+
+```bash
+OPC_INBOX_PROBE=1 electron .
+#  21 项全绿，新增：
+#  bossCanWake: true（手动唤醒处理掉 2 条待办）
+#  guardsDismissable: true（标记后 guards() 归零，行仍在库里）
+```
+
+单测新增 4 例：手动唤醒不花配额、空收件箱拒绝、标记后从 `guards()` 消失但库里有
+`dismissed_at`、投影排除已处理项。
+
+**还没做的**：页面不能改配额/阈值（那是设置页的事），也不能从这里给某个线程"解除升级"
+—— 解除方式是老板在会话里说一句话（§7.5），有意不做成两个入口。
+
+## 部门群 @ 路由（§7.4）
+
+老板在部门群里说话，现在走和私聊一样的队列，只是"谁该醒"由规则决定：
+
+| 情形 | 唤醒谁 | priority | 计配额 |
+|---|---|---|---|
+| 没人被 @ | 只叫部门负责人 | 1 | 老板是 P0，不计 |
+| 有人被 @ | 只叫被点名的人 | 2 | 不计 |
+| @ 了不在群里的人 | 谁都不叫，返回 `ignored` | — | — |
+| 1v1 私聊 | 不走群路由（保持原来的直接回复） | — | — |
+
+实现要点：
+
+- `CommService.routeGroupMessage()` 只决定"谁该醒"，消息本身早已写进 transcript（`ChatService`），
+  所以 `sendMessage` 在有 `routeGroupMessage` 时**不再**安排 760ms 的定时回复 —— 否则群里会出现两次回答；
+- 负责人判定：优先 `department.head_employee_id`，回落到 `position.is_head`，再回落到该群最资深的在职成员；
+- 重复投递被 `inbox_item` 的部分唯一索引挡住：同一条消息对同一个人只会有一条 pending；
+- `CommScheduler.nudge()`：信号到达后 50ms 内跑一次 tick（内部合并突发），
+  不然"立刻唤醒"要等下一次心跳（最多 15 分钟）。
+
+```bash
+OPC_INBOX_PROBE=1 electron .   # 23 项，新增
+#  groupRoutesToOwner: true      （无 @ → 只有负责人，priority 1）
+#  groupRoutesToMentions: true   （@ 两人 → 只有这两人，priority 2）
+```
+
+单测新增 6 例（`comm/commService.test.ts` 的 `group routing`）：无 @ 只叫负责人且其他人 inbox 为空、
+@ 后只叫被点名的人且负责人不被叫、非成员 @ 被忽略并返回、老板不吃配额、私聊不走群路由、
+负责人被唤醒后在群里回话且该轮被计数（同时断言没有走定时回复）。
+
+**还没做的**："由负责人决定：自己答，还是点名下属答" 目前只到前半句。负责人在群里的回复由模型给出；
+真正把活派给下属需要 `decompose_task` 这类管理工具，而工具集目前只挂在**任务 run** 的 harness 上，
+inbox run 还没有工具。那一步要等 inbox run 能用 pi-durable 的 harness 跑（Phase 1 尾巴）。

@@ -12,6 +12,7 @@ const STATUS_STYLE: Record<TaskStatus, string> = {
   delivered: 'bg-success/20 text-success',
   rejected: 'bg-danger/12 text-danger',
   failed: 'bg-danger/12 text-danger',
+  cancelled: 'bg-ink/5 text-ink-tertiary',
 };
 
 /**

@@ -114,6 +114,15 @@ export class OrgService {
   unplaced = (): OrgMember[] => this.readMembers().filter((member) => member.departmentId === '');
 
   /**
+   * Every employee row, including people whose position is gone (terminated).
+   *
+   * `list()` is the org chart and only shows live positions; anything that must tell
+   * "left the company" apart from "never existed" — a message that will never be read
+   * is not the same as an unknown id — has to look here instead.
+   */
+  everyone = (): OrgMember[] => this.readMembers();
+
+  /**
    * Places an employee into a department, re-activating them when needed.
    * Used by the talent pool and by re-hiring after a termination.
    */

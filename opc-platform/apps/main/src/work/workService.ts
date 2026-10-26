@@ -34,6 +34,8 @@ import { HarnessBrain } from './harnessBrain';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createImageToolExtension } from './imageTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
+import { createCommToolExtension } from '../comm/commTools';
+import type { CommService } from '../comm/commService';
 import { setWorkTaskServices, WorkTaskDefinition } from './workTaskDefinition';
 
 /** How many manager rework rounds a task may take before it is parked for the boss. */
@@ -63,6 +65,8 @@ export interface WorkServiceDeps {
   memory?: MemoryService;
   facts?: OrgFactService;
   projects?: ProjectService;
+  /** Colleague messaging (F5); absent = employees cannot talk to each other. */
+  comm?: CommService;
 }
 
 const REAPER_INTERVAL_MS = 10 * 60 * 1000;
@@ -606,6 +610,12 @@ export class WorkService {
 
   // ── internals ──────────────────────────────────────────────────────────
 
+  /** Who this employee reports to inside the department (empty when it is the head). */
+  private reportingLineOf(employeeId: string): string | undefined {
+    const members = this.deps.org?.list().flatMap((department) => department.members) ?? [];
+    return members.find((member) => member.id === employeeId)?.reportsToEmployeeId;
+  }
+
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
@@ -685,6 +695,30 @@ export class WorkService {
         }),
       );
       void member;
+    }
+
+    // Everyone can talk to a colleague (F5); the tool spends the *other* person's
+    // wake quota, which is what stops a chatty agent from waking the whole company.
+    if (this.deps.comm) {
+      const comm = this.deps.comm;
+      registry.install(
+        createCommToolExtension({
+          employeeId,
+          colleagues: () =>
+            (this.deps.org?.list().flatMap((department) => department.members) ?? [])
+              .filter((member) => member.id !== employeeId && member.status === 'active')
+              .map((member) => ({
+                id: member.id,
+                name: member.name,
+                role: `${member.role} · ${member.level}`,
+                reportsToMe: member.reportsToEmployeeId === employeeId,
+                manager: member.id === this.reportingLineOf(employeeId),
+              })),
+          sendDirectMessage: (input) => comm.sendDirectMessage(input),
+          ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
+          currentConversationId: () => comm.latestConversationId(employeeId),
+        }),
+      );
     }
 
     // Managers can decompose; individual contributors cannot (the org chart decides).

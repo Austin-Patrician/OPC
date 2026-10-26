@@ -115,6 +115,12 @@ export const IPC = {
     listBudgets: 'work:listBudgets',
     budgetsEvent: 'work:budgetsChanged',
   },
+  comm: {
+    overview: 'comm:overview',
+    overviewEvent: 'comm:overviewChanged',
+    wake: 'comm:wake',
+    dismissGuards: 'comm:dismissGuards',
+  },
   app: {
     getInfo: 'app:getInfo',
   },
@@ -355,6 +361,89 @@ export interface ImagesBridge {
   generate(input: { prompt: string; modelId?: string }): Promise<GeneratedImageResult>;
 }
 
+/**
+ * What the boss can see about employee-to-employee communication.
+ *
+ * Suppression is deliberately visible (决定② C): who is waiting, who was refused a
+ * wake, who has been talking to whom. Nothing here is a filter over a private
+ * transcript — the inbox, the guards and the relationship edges are their own rows.
+ */
+export type CommPriority = 0 | 1 | 2 | 3;
+export type CommGuardKind = 'wake_quota' | 'turn_limit' | 'dm_rate' | 'message_dropped';
+export type CommRelationshipKind = 'colleague' | 'manager' | 'report' | 'collaborator';
+
+export interface CommInboxView {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  sourceType: 'message' | 'task' | 'approval' | 'system';
+  priority: CommPriority;
+  /** True when the recipient is woken now instead of at its heartbeat. */
+  requiresWake: boolean;
+  conversationId?: string;
+  /** Who caused it, when the source is a message. */
+  fromName?: string;
+  /** First line of the message, for the list. */
+  preview?: string;
+  createdAt: number;
+}
+
+export interface CommGuardView {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  kind: CommGuardKind;
+  /** Already-flattened detail: names resolved, nothing to look up in the UI. */
+  detail: Readonly<Record<string, string | number | boolean>>;
+  conversationId?: string;
+  createdAt: number;
+}
+
+export interface CommRelationshipView {
+  id: string;
+  fromEmployeeId: string;
+  fromName: string;
+  toEmployeeId: string;
+  toName: string;
+  kind: CommRelationshipKind;
+  strength: number;
+  interactionCount: number;
+  lastInteractionAt?: number;
+}
+
+export interface CommQuotaView {
+  employeeId: string;
+  employeeName: string;
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
+export interface CommOverview {
+  generatedAt: number;
+  inbox: CommInboxView[];
+  guards: CommGuardView[];
+  relationships: CommRelationshipView[];
+  quotas: CommQuotaView[];
+}
+
+export interface CommWakeResult {
+  ok: boolean;
+  message: string;
+  /** How many inbox items the run actually handled. */
+  items: number;
+}
+
+export interface CommBridge {
+  overview(): Promise<CommOverview>;
+  /** Fires when the inbox, a guard, a quota or a relationship changed. */
+  onOverviewChanged(listener: () => void): () => void;
+  /** 老板手动唤醒一个人：绕过心跳与配额（P0 特权），跑一次收件箱。 */
+  wake(employeeId: string): Promise<CommWakeResult>;
+  /** 标记护栏为已读；不传 ids 表示全部。记录不会被删除。 */
+  dismissGuards(ids?: string[]): Promise<number>;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -371,6 +460,7 @@ export interface OpcBridge {
   facts: FactsBridge;
   projects: ProjectsBridge;
   market: MarketBridge;
+  comm: CommBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };

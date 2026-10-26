@@ -40,6 +40,10 @@
     "more": "More actions"
   },
   "chat": {
+    "lifecycle": {
+      "cooling": "Cooling",
+      "escalated": "Escalated"
+    },
     "members": "{{count}} members",
     "mention": "Mention",
     "mentionAll": "@everyone",
@@ -457,7 +461,65 @@
     "run": "Run self-check",
     "running": "Running…"
   },
-  "task": {
+  "notifications": {
+    "title": "Notifications & guards",
+    "subtitle": "Who is waiting, who was held back, who is talking to whom — every row is a database row, not an estimate.",
+    "refresh": "Refresh",
+    "inbox": "Pending inbox",
+    "inboxHint": "What employees still owe after hours. Woken now bypasses the heartbeat; queued waits for it.",
+    "inboxEmpty": "Nobody has anything waiting.",
+    "guards": "Held back",
+    "guardsHint": "Quota spent, rate exceeded, no answer given — silence keeps its reason.",
+    "guardsEmpty": "Nobody has been held back yet.",
+    "relationships": "Relationships",
+    "relationshipsHint": "Directional edges: strength grows with interaction; the kind is the role you play in their eyes.",
+    "relationshipsEmpty": "No employee-to-employee interaction yet.",
+    "quotas": "Wake quota today",
+    "quotasHint": "Once the daily quota is spent, later messages only queue.",
+    "wakeNow": "Woken now",
+    "wakeLater": "Queued",
+    "wake": "Wake",
+    "waking": "Waking…",
+    "woke": "Woke {{name}}, handled {{items}} item(s)",
+    "wakeFailed": "Could not wake {{name}}: {{reason}}",
+    "dismiss": "Dismiss",
+    "dismissAll": "Dismiss all",
+    "dismissed": "Dismissed {{count}} guard record(s) — kept for audit, just out of the way",
+    "openChat": "Open chat",
+    "interactions": "{{count}} exchanges",
+    "guardRate": "{{sent}} messages within the hour (limit {{limit}}) — blocked{{to}}",
+    "guardQuota": "Quota spent — {{from}}'s message was downgraded to a queued note",
+    "priority": {
+      "0": "Boss order",
+      "1": "Reporting line",
+      "2": "Peer request",
+      "3": "Note"
+    },
+    "source": {
+      "message": "Message",
+      "task": "Task",
+      "approval": "Approval",
+      "system": "System"
+    },
+    "guard": {
+      "wake_quota": "Quota spent",
+      "turn_limit": "Turn limit",
+      "dm_rate": "Sending too fast",
+      "message_dropped": "Could not answer"
+    },
+    "relation": {
+      "colleague": "Colleague",
+      "manager": "Upward",
+      "report": "Downward",
+      "collaborator": "Collaborator"
+    },
+    "reason": {
+      "no_model": "No model configured, so the employee could not answer; the message stays in the thread for a human.",
+      "model_failed": "The model call failed; the items went back to the queue for the next heartbeat.",
+      "limit_reached": "This thread hit its turn limit, so automatic replies stopped and it is waiting for you.",
+      "escalated": "This thread is escalated: automatic replies between the two employees are paused."
+    }
+  },  "task": {
     "card": "Task card",
     "dispatch": "Dispatch",
     "submit": "Dispatch and run",
@@ -476,7 +538,8 @@
       "rejected": "Rejected",
       "failed": "Failed",
       "review": "Awaiting manager",
-      "delivered": "Delivered"
+      "delivered": "Delivered",
+      "cancelled": "Cancelled"
     },
     "field": {
       "title": "Title",

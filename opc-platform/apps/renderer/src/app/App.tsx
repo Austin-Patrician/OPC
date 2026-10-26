@@ -8,10 +8,10 @@ import {
   ChannelsPage,
   DeliverablesPage,
   DevicePage,
-  NotificationsPage,
   SkillsPage,
 } from '@/pages/placeholder/staticPages';
 import { MarketPage } from '@/pages/market/MarketPage';
+import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
 import { OrgPage } from '@/pages/org/OrgPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 

@@ -1,4 +1,11 @@
-import type { Agent, Conversation, Message, WorkTask } from '@opc/shared/domain';
+import type {
+  Agent,
+  Conversation,
+  ConversationKind,
+  ConversationStatus,
+  Message,
+  WorkTask,
+} from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type { ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
 
@@ -39,6 +46,15 @@ export class ChatService {
 
   /** Injected by bootstrap; the only way an agent can actually answer. */
   replyWithModel?: (input: { agent: Agent; text: string; history: Message[] }) => Promise<string>;
+  /**
+   * Injected by bootstrap: §7.4 routing for group/channel messages.
+   * Absent (e.g. in a probe) keeps the inline reply path.
+   */
+  routeGroupMessage?: (input: {
+    conversationId: string;
+    messageId: string;
+    mentionIds?: readonly string[];
+  }) => void;
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private activeConversationId: string | null = null;
@@ -109,7 +125,12 @@ export class ChatService {
    */
   openDirect = (agentId: string, displayName?: string): string => {
     const existing = this.snapshot.conversations.find(
-      (conversation) => conversation.kind === 'dm' && conversation.memberIds[0] === agentId,
+      // `memberIds.length === 1` keeps boss↔agent threads apart from peer threads,
+      // which carry both participants.
+      (conversation) =>
+        conversation.kind === 'dm' &&
+        conversation.memberIds.length === 1 &&
+        conversation.memberIds[0] === agentId,
     );
     if (existing) return existing.id;
 
@@ -126,6 +147,163 @@ export class ChatService {
     };
     this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
     return conversation.id;
+  };
+
+  /**
+   * The peer thread between two employees (F5). Distinct from `openDirect`, which
+   * is the boss's 1v1: this one carries both participants and no `primaryAgentId`,
+   * so the boss's own thread with either of them is untouched.
+   */
+  openPeerDirect = (fromAgentId: string, toAgentId: string): string => {
+    const pair = [fromAgentId, toAgentId].sort();
+    const existing = this.snapshot.conversations.find(
+      (conversation) =>
+        conversation.kind === 'dm' &&
+        conversation.memberIds.length === 2 &&
+        [...conversation.memberIds].sort().join() === pair.join(),
+    );
+    if (existing) return existing.id;
+
+    const nameOf = (id: string) => this.snapshot.agents.find((agent) => agent.id === id)?.name ?? id;
+    const conversation: Conversation = {
+      id: `dm-${pair.join('--')}`,
+      title: `${nameOf(pair[0] ?? '')} × ${nameOf(pair[1] ?? '')}`,
+      kind: 'dm',
+      memberIds: [...pair],
+      messages: [],
+      lastMessage: '同事之间开始对话',
+      timestamp: formatClock(),
+    };
+    this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
+    return conversation.id;
+  };
+
+  /**
+   * An employee's own message, appended to the transcript.
+   *
+   * This is the only way an agent writes into a conversation: the message table
+   * stays the single source of truth (§P1), and the boss sees the exchange in the
+   * same list as everything else. Each agent message is one *turn* — the counter the
+   * turn limit is enforced against (§7.3 ②) — and posting warms a cooling thread.
+   */
+  appendAgentMessage = (
+    conversationId: string,
+    from: { id: string; name: string; role?: string; avatarUrl?: string },
+    text: string,
+  ): Message | undefined => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return undefined;
+    if (!conversation.memberIds.includes(from.id)) return undefined;
+
+    const message: Message = {
+      id: createId('msg'),
+      kind: 'text',
+      senderId: from.id,
+      senderName: from.name,
+      ...(from.role ? { senderRole: from.role } : {}),
+      ...(from.avatarUrl ? { senderAvatarUrl: from.avatarUrl } : {}),
+      timestamp: formatClock(),
+      text,
+    };
+    this.appendMessage(conversation, message, { read: conversation.id === this.activeConversationId });
+    this.patchConversation(conversationId, (item) => ({
+      ...item,
+      turnCount: (item.turnCount ?? 0) + 1,
+      // Work arriving in a cooling thread means it is live again; `escalated` is
+      // left alone on purpose — only the boss may lift that (§7.5).
+      ...(item.status === 'cooling' ? { status: 'open' as const, statusChangedAt: Date.now() } : {}),
+    }));
+    return message;
+  };
+
+  /** Turns used so far and the §7.5 lifecycle state of one thread. */
+  turnState = (conversationId: string): { turns: number; status: ConversationStatus } => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    return {
+      turns: conversation?.turnCount ?? 0,
+      status: conversation?.status ?? 'open',
+    };
+  };
+
+  /**
+   * Escalation (§7.3 ②): the thread stops auto-replying and waits for the boss.
+   * Idempotent, because the same overrun is seen by both the sender and the runner.
+   */
+  escalateConversation = (conversationId: string): boolean => {
+    const state = this.turnState(conversationId);
+    if (state.status === 'escalated') return false;
+    this.patchConversation(conversationId, (item) => ({
+      ...item,
+      status: 'escalated',
+      statusChangedAt: Date.now(),
+    }));
+    return true;
+  };
+
+  /** §7.5: an idle thread cools down; it may still be read, it just stops replying. */
+  coolConversation = (conversationId: string): boolean => {
+    const state = this.turnState(conversationId);
+    if (state.status !== 'open') return false;
+    this.patchConversation(conversationId, (item) => ({
+      ...item,
+      status: 'cooling',
+      statusChangedAt: Date.now(),
+    }));
+    return true;
+  };
+
+  /**
+   * The boss's intervention lifts an escalation and resets the turn budget, which is
+   * exactly the doc's `escalated →(老板处理)→ open`.
+   */
+  reopenConversation = (conversationId: string): boolean => {
+    const state = this.turnState(conversationId);
+    if (state.status === 'open' && state.turns === 0) return false;
+    this.patchConversation(conversationId, (item) => ({
+      ...item,
+      status: 'open',
+      turnCount: 0,
+      statusChangedAt: Date.now(),
+    }));
+    return true;
+  };
+
+  /** Cools every thread idle longer than `idleMs` (the stage before archiving). */
+  coolIdleConversations = (idleMs: number, now = Date.now()): string[] => {
+    if (!this.db) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM conversation
+          WHERE archived_at IS NULL AND consolidated_at IS NULL AND updated_at <= ?
+          ORDER BY updated_at LIMIT 50`,
+      )
+      .all(now - idleMs) as { id: string }[];
+
+    const cooled: string[] = [];
+    for (const row of rows) {
+      if (this.coolConversation(row.id)) cooled.push(row.id);
+    }
+    return cooled;
+  };
+
+  /**
+   * The transcript as *storage* has it, not as this process happens to remember it.
+   *
+   * §5.4: the recipient may have been asleep while three more messages arrived, so
+   * its context must be rebuilt from `message` rows, never from a private cache.
+   */
+  readTranscript = (conversationId: string): Message[] => {
+    if (this.db) {
+      const rows = this.db
+        .prepare('SELECT payload FROM message WHERE conversation_id = ? ORDER BY created_at, rowid')
+        .all(conversationId) as { payload: string }[];
+      if (rows.length > 0) {
+        return rows.map((row) => JSON.parse(row.payload) as Message);
+      }
+    }
+    return (
+      this.snapshot.conversations.find((item) => item.id === conversationId)?.messages.slice() ?? []
+    );
   };
 
   /** Opens the department group chat, creating it with the current roster. */
@@ -261,10 +439,11 @@ export class ChatService {
     if (!conversation) return;
 
     const now = formatClock();
+    const messageId = createId('msg');
     this.appendMessage(
       conversation,
       {
-        id: createId('msg'),
+        id: messageId,
         kind: 'text',
         senderId: 'user',
         senderName: '我',
@@ -273,6 +452,19 @@ export class ChatService {
       },
       { read: true },
     );
+
+    // §7.5: 老板介入即解除升级/冷却。The boss answering *is* the resolution.
+    if (conversation.status && conversation.status !== 'open') {
+      this.reopenConversation(conversation.id);
+    }
+
+    // §7.4: a group/channel message is routed by the comm layer — nobody @-ed means
+    // only the owner is woken, otherwise exactly the mentioned people. That path goes
+    // through the inbox and the heartbeat, so it must not *also* schedule a timer reply.
+    if (conversation.kind !== 'dm' && this.routeGroupMessage) {
+      this.routeGroupMessage({ conversationId, messageId, ...(mentionIds ? { mentionIds } : {}) });
+      return;
+    }
 
     const responders = this.pickResponders(conversation, mentionIds);
     if (responders.length === 0) return;
@@ -287,6 +479,19 @@ export class ChatService {
       this.appendReply(conversation, first, reply);
       this.setTyping(conversationId, []);
     });
+  };
+
+  /** Routing facts the comm layer needs; no members = not a conversation we route. */
+  conversationInfo = (
+    conversationId: string,
+  ): { kind: ConversationKind; departmentId?: string; memberIds: readonly string[] } | undefined => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return undefined;
+    return {
+      kind: conversation.kind,
+      ...(conversation.departmentId ? { departmentId: conversation.departmentId } : {}),
+      memberIds: conversation.memberIds,
+    };
   };
 
   /**
@@ -418,8 +623,19 @@ export class ChatService {
     });
   }
 
-  private setTyping(conversationId: string, names: string[]): void {
-    const next: Record<string, readonly string[]> = { ...this.snapshot.typingByConversation };
+  /** Replaces one conversation object; `commit` persists whichever rows changed. */
+  private patchConversation(
+    conversationId: string,
+    update: (conversation: Conversation) => Conversation,
+  ): void {
+    this.commit({
+      conversations: this.snapshot.conversations.map((item) =>
+        item.id === conversationId ? update(item) : item,
+      ),
+    });
+  }
+
+  private setTyping(conversationId: string, names: string[]): void {    const next: Record<string, readonly string[]> = { ...this.snapshot.typingByConversation };
     if (names.length > 0) next[conversationId] = names;
     else delete next[conversationId];
     this.commit({ typingByConversation: next });

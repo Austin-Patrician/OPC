@@ -28,9 +28,14 @@ describe('resolveToolPath', () => {
     expect(resolveToolPath(workspace, 'server.js')).toBe(path.join(workspace, 'server.js'));
   });
 
-  it('keeps absolute paths absolute so they can be rejected', () => {
-    expect(resolveToolPath(workspace, '/etc/passwd')).toBe('/etc/passwd');
-  });
+  // POSIX-only: on Windows path.resolve() turns '/etc/passwd' into '<drive>:\etc\passwd',
+  // which is still absolute — the invariant under test holds there, the literal does not.
+  it.skipIf(process.platform === 'win32')(
+    'keeps absolute paths absolute so they can be rejected',
+    () => {
+      expect(resolveToolPath(workspace, '/etc/passwd')).toBe('/etc/passwd');
+    },
+  );
 });
 
 describe('buildSeatbeltProfile', () => {

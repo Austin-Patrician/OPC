@@ -22,6 +22,13 @@ export interface Agent {
 
 export type ConversationKind = 'dm' | 'group' | 'channel';
 
+/**
+ * §7.5 lifecycle. `cooling` is an idle thread that must not generate new replies;
+ * `escalated` is one that never converged and now needs the boss (§7.3 turn limit).
+ * Archiving is tracked separately (`archivedAt`) because the sweep queries it.
+ */
+export type ConversationStatus = 'open' | 'cooling' | 'escalated';
+
 export interface Conversation {
   id: string;
   title: string;
@@ -38,6 +45,11 @@ export interface Conversation {
   /** Set once the conversation is archived and its lessons consolidated. */
   archivedAt?: number;
   primaryAgentId?: string;
+  /** Employee-authored turns; the boss's own messages never count (§7.3 ②). */
+  turnCount?: number;
+  /** Defaults to `open` when absent (payloads written before Step 3). */
+  status?: ConversationStatus;
+  statusChangedAt?: number;
   messages: Message[];
 }
 
@@ -80,7 +92,9 @@ export type TaskStatus =
   | 'accepted'
   | 'delivered'
   | 'rejected'
-  | 'failed';
+  | 'failed'
+  /** Cancelled by the system, e.g. the assignee was terminated (F10). */
+  | 'cancelled';
 
 export interface TaskArtifact {
   id: string;

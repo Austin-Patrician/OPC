@@ -40,6 +40,10 @@
     "more": "更多操作"
   },
   "chat": {
+    "lifecycle": {
+      "cooling": "冷却中",
+      "escalated": "已升级"
+    },
     "members": "{{count}} 人",
     "mention": "提及员工",
     "mentionAll": "@全体成员",
@@ -457,7 +461,65 @@
     "run": "运行自检",
     "running": "正在自检…"
   },
-  "task": {
+  "notifications": {
+    "title": "通知与护栏",
+    "subtitle": "谁在等、谁被拦下、谁和谁在说话 —— 每条都是数据库里的一行，不是估算。",
+    "refresh": "刷新",
+    "inbox": "待办收件箱",
+    "inboxHint": "员工下班后要处理的事。立刻唤醒绕过心跳；等心跳的会留在队列里。",
+    "inboxEmpty": "没有员工有待处理的事。",
+    "guards": "被拦下的动作",
+    "guardsHint": "配额耗尽、频率超限、没能回复 —— 沉默也要留下原因。",
+    "guardsEmpty": "还没有人被拦下。",
+    "relationships": "关系",
+    "relationshipsHint": "有向边：强度随互动增长，kinds 显示你在对方眼里的角色。",
+    "relationshipsEmpty": "还没有员工之间的互动记录。",
+    "quotas": "今日唤醒配额",
+    "quotasHint": "用满当天配额的人，之后的消息只会排队。",
+    "wakeNow": "立刻唤醒",
+    "wakeLater": "等心跳",
+    "wake": "唤醒",
+    "waking": "唤醒中…",
+    "woke": "已唤醒 {{name}}，处理了 {{items}} 条",
+    "wakeFailed": "没能唤醒 {{name}}：{{reason}}",
+    "dismiss": "已处理",
+    "dismissAll": "全部标记已处理",
+    "dismissed": "标记了 {{count}} 条护栏记录（记录保留，只是不再占位置）",
+    "openChat": "打开对话",
+    "interactions": "{{count}} 次互动",
+    "guardRate": "一小时内已发 {{sent}} 条（上限 {{limit}}），被拦下{{to}}",
+    "guardQuota": "配额已用完，{{from}} 的消息降级为留言",
+    "priority": {
+      "0": "老板指令",
+      "1": "汇报线",
+      "2": "平级求助",
+      "3": "留言"
+    },
+    "source": {
+      "message": "消息",
+      "task": "任务",
+      "approval": "审批",
+      "system": "系统"
+    },
+    "guard": {
+      "wake_quota": "配额耗尽",
+      "turn_limit": "轮数超限",
+      "dm_rate": "发送过频",
+      "message_dropped": "没能回复"
+    },
+    "relation": {
+      "colleague": "同事",
+      "manager": "上级方向",
+      "report": "下属方向",
+      "collaborator": "协作"
+    },
+    "reason": {
+      "no_model": "没有配置模型，员工无法回答，消息留在会话里等人工处理。",
+      "model_failed": "模型调用失败，条目已退回队列，下次心跳重试。",
+      "limit_reached": "这段对话已达到轮数上限，自动回复停止，等你介入。",
+      "escalated": "这段对话已升级：员工之间的自动回复已暂停。"
+    }
+  },  "task": {
     "card": "任务卡",
     "dispatch": "派活",
     "submit": "派发并执行",
@@ -476,7 +538,8 @@
       "rejected": "未通过",
       "failed": "失败",
       "review": "待负责人验收",
-      "delivered": "已交付"
+      "delivered": "已交付",
+      "cancelled": "已取消"
     },
     "field": {
       "title": "任务标题",

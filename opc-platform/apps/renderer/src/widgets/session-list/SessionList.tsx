@@ -68,8 +68,23 @@ export function SessionList({
 
           <span className="ml-2.5 min-w-0 flex-1">
             <span className="flex items-center justify-between gap-1">
-              <span className="truncate text-md leading-snug font-medium text-ink">
-                {conversation.title}
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate text-md leading-snug font-medium text-ink">
+                  {conversation.title}
+                </span>
+                {conversation.status && conversation.status !== 'open' ? (
+                  <span
+                    title={t(`chat.lifecycle.${conversation.status}`)}
+                    className={cn(
+                      'shrink-0 rounded px-1 py-px text-[0.5625rem] leading-none font-medium',
+                      conversation.status === 'escalated'
+                        ? 'bg-danger/12 text-danger'
+                        : 'bg-ink/5 text-ink-tertiary',
+                    )}
+                  >
+                    {t(`chat.lifecycle.${conversation.status}`)}
+                  </span>
+                ) : null}
               </span>
               <span className="shrink-0 text-xs-plus leading-none text-ink-quaternary">
                 {conversation.timestamp}
