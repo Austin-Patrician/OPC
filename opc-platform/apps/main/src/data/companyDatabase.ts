@@ -25,6 +25,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
   applyPragmas(db);
+  repairLegacyColumns(db);
   migrate(db);
   return db;
 }
@@ -50,6 +51,127 @@ function applyPragmas(db: CompanyDatabase): void {
   db.pragma('busy_timeout = 5000');
   db.pragma('cache_size = -64000');
   db.pragma('temp_store = MEMORY');
+}
+
+/**
+ * Columns that older builds created without, but that current indexes and views
+ * expect. `CREATE TABLE IF NOT EXISTS` silently keeps the old shape, so a
+ * migration that adds only an index on `company_id` fails with
+ * "no such column: company_id" and rolls the whole step back — every launch.
+ *
+ * Adding the column first makes the migration re-runnable on upgraded installs.
+ * Each entry is (table, column, definition); a missing table is skipped.
+ */
+interface ColumnSpec {
+  name: string;
+  definition: string;
+}
+
+/** Reads `CREATE TABLE IF NOT EXISTS x (…);` blocks out of a migration script. */
+function declaredTables(sql: string): { table: string; columns: ColumnSpec[] }[] {
+  const tables: { table: string; columns: ColumnSpec[] }[] = [];
+  const tablePattern = /CREATE TABLE IF NOT EXISTS (\w+)\s*\(([\s\S]*?)\n\);/g;
+  let match: RegExpExecArray | null;
+  while ((match = tablePattern.exec(sql)) !== null) {
+    const [, table, body] = match;
+    const columns: ColumnSpec[] = [];
+    for (const rawLine of (body ?? '').split('\n')) {
+      const line = rawLine.trim().replace(/,$/, '');
+      if (!line || line.startsWith('--')) continue;
+      // Table-level constraints are not columns.
+      if (/^(CONSTRAINT|FOREIGN KEY|PRIMARY KEY|UNIQUE|CHECK)\b/i.test(line)) continue;
+      const columnMatch = /^(\w+)\s+(.+)$/.exec(line);
+      if (!columnMatch) continue;
+      const [, name, rest] = columnMatch;
+      // A column cannot be added as PRIMARY KEY, and NOT NULL needs a default.
+      if (/PRIMARY KEY/i.test(rest ?? '')) continue;
+      // FK clauses and inline CHECKs are not portable through ALTER TABLE ADD COLUMN.
+      const definition = (rest ?? '')
+        .replace(/\s+REFERENCES\s+\w+\s*\([^)]*\)/gi, '')
+        .replace(/\s+CHECK\s*\((?:[^()]|\([^()]*\))*\)/gi, '')
+        // A CHECK whose body itself contains parentheses survives the pass above.
+        .replace(/\s+CHECK\s*\(.*$/i, '')
+        .replace(/\bNOT NULL\b/i, (value) => (/DEFAULT/i.test(rest ?? '') ? value : ''))
+        .replace(/\s+/g, ' ')
+        .trim();
+      columns.push({ name: name!, definition });
+    }
+    tables.push({ table: table!, columns });
+  }
+  return tables;
+}
+
+/**
+ * Columns the current schema assumes but an older install may not have.
+ *
+ * `CREATE TABLE IF NOT EXISTS` keeps the old shape, so a migration that adds only
+ * an index on a new column fails with "no such column" and rolls the whole step
+ * back — every launch, forever (this crashed the app on upgrade). Instead of a
+ * hand-maintained patch list, every column declared in the initial migration is
+ * diffed against the live table and added when missing.
+ */
+/**
+ * Tables whose column set changed shape during development (`est_tokens` → `tokens`,
+ * extra NOT NULL columns). Adding columns cannot remove a NOT NULL, so these are
+ * rebuilt: create the current shape, copy whatever columns both sides share, swap.
+ * Only tables that are pure derived state are safe to rebuild this way.
+ */
+const REBUILDABLE = new Set(['budget_reservation', 'budget_ledger']);
+
+export function repairLegacyColumns(db: CompanyDatabase): string[] {
+  const repaired: string[] = [];
+  const rebuilt: string[] = [];
+  for (const { table, columns } of declaredTables(MIGRATIONS[0] ?? '')) {
+    const exists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    if (!exists) continue;
+    const present = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((entry) => entry.name),
+    );
+    const declared = new Set(columns.map((column) => column.name));
+    const extraRequired = (
+      db.prepare(`PRAGMA table_info(${table})`).all() as {
+        name: string;
+        notnull: number;
+        dflt_value: string | null;
+      }[]
+    ).filter((column) => !declared.has(column.name) && column.notnull === 1 && column.dflt_value === null);
+
+    if (REBUILDABLE.has(table) && extraRequired.length > 0) {
+      rebuilt.push(table);
+      db.transaction(() => {
+        db.exec(`ALTER TABLE ${table} RENAME TO ${table}__old`);
+        for (const statement of splitStatements(MIGRATIONS[0] ?? '')) {
+          if (statement.toUpperCase().includes(`CREATE TABLE IF NOT EXISTS ${table.toUpperCase()}`)) {
+            db.exec(statement);
+          }
+        }
+        const shared = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
+          .map((column) => column.name)
+          .filter((name) => present.has(name));
+        if (shared.length > 0) {
+          db.exec(
+            `INSERT INTO ${table} (${shared.join(', ')}) SELECT ${shared.join(', ')} FROM ${table}__old`,
+          );
+        }
+        db.exec(`DROP TABLE ${table}__old`);
+      })();
+      continue;
+    }
+
+    for (const column of columns) {
+      if (present.has(column.name)) continue;
+      const statement = `ALTER TABLE ${table} ADD COLUMN ${column.name} ${column.definition}`;
+      try {
+        db.exec(statement);
+      } catch (error) {
+        throw new Error(`${(error as Error).message} :: ${statement}`, { cause: error });
+      }
+      repaired.push(`${table}.${column.name}`);
+    }
+  }
+  return [...repaired, ...rebuilt.map((table) => `rebuilt:${table}`)];
 }
 
 /**
