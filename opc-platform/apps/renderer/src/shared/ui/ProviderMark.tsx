@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { providerIconUrl, providerVisual } from '@/shared/providers/visuals';
 import { cn } from '@/shared/lib/cn';
 
@@ -16,22 +16,40 @@ const ICON_INSET = {
 
 interface ProviderMarkProps {
   providerId: string;
+  /** Reuse another provider's icon; custom providers pick one from the catalogue. */
+  icon?: string;
+  /** Human name, used for the initials fallback when no icon is chosen. */
+  label?: string;
   size?: keyof typeof BOX;
   className?: string;
+}
+
+function initialsOf(label: string | undefined, providerId: string): string {
+  const source = label?.trim() || providerId;
+  return (
+    source
+      .replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '')
+      .slice(0, 2)
+      .toUpperCase() || '?'
+  );
 }
 
 /**
  * Provider avatar used everywhere a model provider is shown.
  *
- * Icons come from `public/provider-icons`; when an id has none (custom relays,
- * third-party gateways) it degrades to brand-tinted initials instead of a broken
- * image. One component, so the settings list, pickers and future chat headers all
- * look the same.
+ * Icons come from `public/provider-icons`; a custom provider can borrow one via
+ * `icon`. When nothing matches (or the image fails) it degrades to tinted
+ * initials instead of a broken image. One component, so the settings list,
+ * pickers and future chat headers all look the same.
  */
-export function ProviderMark({ providerId, size = 'sm', className }: ProviderMarkProps) {
-  const visual = providerVisual(providerId);
-  const iconUrl = providerIconUrl(providerId);
+export function ProviderMark({ providerId, icon, label, size = 'sm', className }: ProviderMarkProps) {
+  const visual = providerVisual(icon || providerId);
+  const iconUrl = providerIconUrl(icon || providerId);
   const [failed, setFailed] = useState(false);
+
+  // A different icon is a different image: clear the previous error.
+  useEffect(() => setFailed(false), [icon, providerId]);
+
   const showIcon = Boolean(iconUrl) && !failed;
 
   return (
@@ -56,7 +74,7 @@ export function ProviderMark({ providerId, size = 'sm', className }: ProviderMar
         />
       ) : (
         <span className={size === 'lg' ? 'text-[0.9375rem]' : size === 'md' ? 'text-[0.8125rem]' : 'text-[0.6875rem]'}>
-          {visual.initials}
+          {icon ? visual.initials : initialsOf(label, providerId)}
         </span>
       )}
     </span>

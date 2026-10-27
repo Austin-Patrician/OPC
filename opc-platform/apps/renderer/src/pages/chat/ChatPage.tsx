@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ProjectView } from '@opc/shared/ipc';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChatPanel } from '@/features/chat/ui/ChatPanel';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
@@ -14,6 +15,7 @@ export function ChatPage() {
     useChatRuntime();
   const { createTask, budgetFor } = useWorkRuntime();
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [projects, setProjects] = useState<ProjectView[]>([]);
 
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
 
@@ -26,6 +28,15 @@ export function ChatPage() {
   useEffect(() => {
     if (active) markRead(active.id);
   }, [active, markRead]);
+
+  // 项目列表只在派活时用：让老板把这笔钱记在某个项目上（§8.1）。
+  useEffect(() => {
+    if (!dispatchOpen || !window.opc?.projects) return;
+    void window.opc.projects
+      .list()
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, [dispatchOpen]);
 
   // createTask reserves budget, then starts the run; the card arrives via chat snapshots.
   const dispatchTask = (draft: DispatchDraft) => createTask(draft);
@@ -82,6 +93,7 @@ export function ChatPage() {
         <DispatchTaskDialog
           agents={agents}
           defaultAssigneeId={active.primaryAgentId ?? agents[0]?.id ?? ''}
+          projects={projects}
           budgetFor={budgetFor}
           onSubmit={dispatchTask}
           onClose={() => setDispatchOpen(false)}

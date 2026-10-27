@@ -496,6 +496,157 @@ export const LLM_PROVIDERS: PiProvider[] = [
 export const findProvider = (id: string) =>
   LLM_PROVIDERS.find((p) => p.id === id || p.regions?.some((r) => r.id === id));
 
+/**
+ * Group + display metadata for the rest of pi's built-in catalog.
+ *
+ * `LLM_PROVIDERS` above is the curated shortlist used by onboarding and the
+ * featured cards. Settings, however, lists **every** built-in provider; without
+ * this map the 24 providers missing above would all collapse into "其他".
+ */
+export const PROVIDER_EXTRA_META: Record<
+  string,
+  { name: string; group: ProviderGroup; description: string }
+> = {
+  // Official APIs (direct model / inference vendors)
+  cerebras: {
+    name: 'Cerebras',
+    group: 'official',
+    description: 'Cerebras 推理云，托管 Llama、Qwen 等开源模型。',
+  },
+  meta: {
+    name: 'Meta',
+    group: 'official',
+    description: 'Meta Muse 系列模型，支持 API Key 或 Meta 订阅登录。',
+  },
+  typesafe: {
+    name: 'TypeSafe',
+    group: 'official',
+    description: 'TypeSafe System One 分类模型（不可用于对话）。',
+  },
+
+  // Subscription plans
+  'kimi-coding': {
+    name: 'Kimi For Coding',
+    group: 'subscription',
+    description: 'Kimi 编程订阅，支持 OAuth 登录或 API Key。',
+  },
+
+  // Cloud platforms
+  baseten: {
+    name: 'Baseten',
+    group: 'cloud',
+    description: 'Baseten 托管的开源模型推理服务。',
+  },
+  'cloudflare-workers-ai': {
+    name: 'Cloudflare Workers AI',
+    group: 'cloud',
+    description: 'Cloudflare 边缘推理平台。',
+  },
+  fireworks: {
+    name: 'Fireworks AI',
+    group: 'cloud',
+    description: 'Fireworks 托管的开源模型推理服务。',
+  },
+  nvidia: {
+    name: 'NVIDIA NIM',
+    group: 'cloud',
+    description: 'NVIDIA 托管的 NIM 推理端点。',
+  },
+  together: {
+    name: 'Together AI',
+    group: 'cloud',
+    description: 'Together 托管的开源模型推理服务。',
+  },
+
+  // Aggregation gateways
+  'cloudflare-ai-gateway': {
+    name: 'Cloudflare AI Gateway',
+    group: 'gateway',
+    description: 'Cloudflare 统一 AI 网关，可代理多家服务商。',
+  },
+  huggingface: {
+    name: 'Hugging Face',
+    group: 'gateway',
+    description: 'Hugging Face Inference Providers，路由多家推理服务。',
+  },
+  opencode: {
+    name: 'OpenCode Zen',
+    group: 'gateway',
+    description: 'OpenCode Zen 聚合网关，一个 Key 调用多家模型。',
+  },
+  'opencode-go': {
+    name: 'OpenCode Go',
+    group: 'gateway',
+    description: 'OpenCode Go 聚合网关。',
+  },
+
+  // Chinese vendors and their regional / plan endpoints
+  'ant-ling': {
+    name: 'Ant Ling（蚂蚁百灵）',
+    group: 'china',
+    description: '蚂蚁百灵 Ling 系列模型。',
+  },
+  'minimax-cn': {
+    name: 'MiniMax（中国站）',
+    group: 'china',
+    description: 'MiniMax 中国站 Anthropic 兼容端点。',
+  },
+  'moonshotai-cn': {
+    name: 'Moonshot AI（中国站）',
+    group: 'china',
+    description: 'Kimi 中国站端点。',
+  },
+  'qwen-token-plan': {
+    name: 'Qwen Token Plan（国际站）',
+    group: 'china',
+    description: '通义千问 Token 套餐，国际站端点。',
+  },
+  'qwen-token-plan-cn': {
+    name: 'Qwen Token Plan（中国站）',
+    group: 'china',
+    description: '通义千问 Token 套餐，中国站端点。',
+  },
+  'qwen-token-plan-individual': {
+    name: 'Qwen Token Plan（个人版）',
+    group: 'china',
+    description: '通义千问 Token 套餐，个人版端点。',
+  },
+  xiaomi: {
+    name: 'Xiaomi MiMo',
+    group: 'china',
+    description: '小米 MiMo 系列模型。',
+  },
+  'xiaomi-token-plan-ams': {
+    name: 'Xiaomi Token Plan（AMS）',
+    group: 'china',
+    description: '小米 Token 套餐，阿姆斯特丹节点。',
+  },
+  'xiaomi-token-plan-cn': {
+    name: 'Xiaomi Token Plan（中国站）',
+    group: 'china',
+    description: '小米 Token 套餐，中国站节点。',
+  },
+  'xiaomi-token-plan-sgp': {
+    name: 'Xiaomi Token Plan（新加坡）',
+    group: 'china',
+    description: '小米 Token 套餐，新加坡节点。',
+  },
+  'zai-coding-cn': {
+    name: 'Z.AI Coding（中国站）',
+    group: 'china',
+    description: '智谱 BigModel Coding 端点。',
+  },
+};
+
+/** Design metadata for any built-in provider id, curated or not. */
+export function providerMeta(providerId: string) {
+  const curated = LLM_PROVIDERS.find((provider) => provider.id === providerId);
+  if (curated) {
+    return { name: curated.name, group: curated.group, description: curated.description };
+  }
+  return PROVIDER_EXTRA_META[providerId];
+}
+
 /** pi `defaultThinkingLevel` values, in order. */
 export const THINKING_LEVELS = [
   { value: 'off', label: '关闭' },

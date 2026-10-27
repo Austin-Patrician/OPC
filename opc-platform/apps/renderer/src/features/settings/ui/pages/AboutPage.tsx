@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ArrowUpRight, BookOpen, FolderGit2, Package } from 'lucide-react';
+import { ArrowUpRight, BookOpen, FolderGit2, Package, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AppInfo } from '@opc/shared/ipc';
+import { useOnboarding } from '@/features/onboarding/model/onboardingStore';
 import { PI_AI_PACKAGE, PI_AI_VERSION, PI_CHAT_PROVIDER_TOTAL, PI_NPM_URL, PI_REPO_URL, PI_SITE_URL, IMAGE_MODELS } from '@/shared/providers/catalog';
 import { KeyTag, PageHeader, Section } from '../kit';
 
@@ -15,6 +16,7 @@ const LINKS = [
 export function AboutPage() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const reopenOnboarding = useOnboarding((state) => state.reopen);
 
   useEffect(() => {
     void window.opc?.app.getInfo().then(setInfo);
@@ -52,6 +54,14 @@ export function AboutPage() {
             </div>
             <p className="mt-0.5 text-sm text-ink-tertiary">{t('settings.about.tagline')}</p>
           </div>
+          <button
+            type="button"
+            onClick={reopenOnboarding}
+            className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-3 text-sm-plus text-ink-secondary transition-colors hover:border-accent hover:text-accent"
+          >
+            <Sparkles className="size-3.5" />
+            {t('settings.about.replayGuide')}
+          </button>
         </section>
 
         <Section title={t('settings.about.versions')}>

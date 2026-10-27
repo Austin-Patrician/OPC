@@ -1,6 +1,7 @@
 import React, { useEffect, useState, version as reactVersion } from 'react';
-import { ArrowUpRight, BookOpen, FolderGit2, Package, RotateCcw } from 'lucide-react';
+import { ArrowUpRight, BookOpen, FolderGit2, Package, RotateCcw, Sparkles } from 'lucide-react';
 import { devDependencies, version as appVersion } from '../../../package.json';
+import { onboardingStore } from '../onboarding/onboardingStore';
 import {
   IMAGE_MODELS,
   PI_AGENT_DIR,
@@ -107,6 +108,18 @@ export const AboutSettings: React.FC = () => {
         </Section>
 
         <Section title="重置">
+          <div className="px-4 py-3.5 flex items-center gap-6 border-b border-[#F0F0F2]">
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] text-[#1C1C1E]">新手引导</div>
+              <div className="mt-0.5 text-[11.5px] text-[#8E8E93] leading-relaxed">
+                重新浏览欢迎页并逐步调整偏好、模型、公司信息与团队；已有会话和员工不会被清除。
+              </div>
+            </div>
+            <button type="button" className={`${buttonClass.secondary} shrink-0`} onClick={() => onboardingStore.reopen()}>
+              <Sparkles className="w-3.5 h-3.5" />
+              重新打开引导
+            </button>
+          </div>
           <div className="px-4 py-3.5 flex items-center gap-6">
             <div className="flex-1 min-w-0">
               <div className="text-[13px] text-[#1C1C1E]">恢复默认设置</div>

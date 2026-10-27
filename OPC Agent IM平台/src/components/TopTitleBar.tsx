@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Cloud, Network, UserPlus } from 'lucide-react';
 import { AvatarIcon } from './AvatarIcon';
 import { NavTab } from '../types/im';
+import { CompanyMark } from './onboarding/onboardingShared';
+import { useOnboarding } from './onboarding/onboardingStore';
 
 interface TopTitleBarProps {
   activeTab: NavTab;
@@ -24,6 +26,8 @@ export const TopTitleBar: React.FC<TopTitleBarProps> = ({
 }) => {
   const [signature, setSignature] = useState('编辑个性签名');
   const [editingSig, setEditingSig] = useState(false);
+  const { company } = useOnboarding();
+  const companyName = company.name.trim();
 
   return (
     <header className="h-[42px] bg-[#EBEBEC] border-b border-[#DFDFE1] px-3.5 flex items-center justify-between select-none shrink-0">
@@ -34,6 +38,13 @@ export const TopTitleBar: React.FC<TopTitleBarProps> = ({
           <span className="w-[12px] h-[12px] rounded-full bg-[#FFBD2E] border border-[#DEA123] inline-block" />
           <span className="w-[12px] h-[12px] rounded-full bg-[#27C93F] border border-[#1AAB29] inline-block" />
         </div>
+
+        {companyName && (
+          <div className="flex items-center gap-1.5 pr-3.5 border-r border-black/[0.08]" title={company.vision.trim() || companyName}>
+            <CompanyMark company={company} size={20} />
+            <span className="text-[13px] font-semibold text-[#1C1C1E] tracking-tight max-w-[160px] truncate">{companyName}</span>
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <AvatarIcon type="founder-girl" size="xs" showTopBarBadge className="w-[26px] h-[26px]" />

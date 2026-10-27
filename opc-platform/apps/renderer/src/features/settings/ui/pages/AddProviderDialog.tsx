@@ -2,11 +2,14 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ProviderDraft } from '@opc/shared/domain';
-import { buttonClass, Field, SelectField, TextField } from '../kit';
+import { createId } from '@/shared/lib/id';
+import { buttonClass, Field, SecretField, SelectField, TextField } from '../kit';
 
 /**
- * "添加 Provider" modal: id, display name, base URL and the pi API kind.
- * The API list comes from pi's catalog (14 kinds), not from a hard-coded pair.
+ * "添加 Provider" modal: display name, base URL, the pi API kind and an optional
+ * API key, so a custom endpoint is usable right after creation.
+ * The unique id is generated internally and never shown; the API list comes from
+ * pi's catalog (14 kinds), not from a hard-coded pair.
  */
 export function AddProviderDialog({
   apiKinds,
@@ -18,12 +21,14 @@ export function AddProviderDialog({
   onCreate: (draft: ProviderDraft) => void;
 }) {
   const { t } = useTranslation();
-  const [id, setId] = useState(`custom-${Date.now().toString(36)}`);
+  // Internal handle only — users never see or edit it.
+  const [id] = useState(() => createId('custom'));
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [api, setApi] = useState(apiKinds[0] ?? 'openai-completions');
+  const [apiKey, setApiKey] = useState('');
 
-  const valid = name.trim().length > 0 && id.trim().length > 0 && baseUrl.trim().length > 0;
+  const valid = name.trim().length > 0 && baseUrl.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -31,7 +36,14 @@ export function AddProviderDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (!valid) return;
-          onCreate({ id: id.trim(), name: name.trim(), baseUrl: baseUrl.trim(), api, isCustom: true });
+          onCreate({
+            id: id.trim(),
+            name: name.trim(),
+            baseUrl: baseUrl.trim(),
+            api,
+            isCustom: true,
+            ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+          });
           onClose();
         }}
         className="w-full max-w-lg overflow-hidden rounded-xl border border-line bg-surface shadow-popover"
@@ -47,9 +59,6 @@ export function AddProviderDialog({
           <Field label={t('models.field.name')}>
             <TextField ariaLabel={t('models.field.name')} value={name} onChange={setName} placeholder="My relay" />
           </Field>
-          <Field label={t('models.field.id')} hint={t('settings.llm.idHint')}>
-            <TextField ariaLabel={t('models.field.id')} value={id} onChange={setId} mono />
-          </Field>
           <Field label={t('models.field.baseUrl')} hint={t('settings.llm.baseUrlHint')}>
             <TextField
               ariaLabel={t('models.field.baseUrl')}
@@ -57,6 +66,14 @@ export function AddProviderDialog({
               onChange={setBaseUrl}
               placeholder="https://api.example.com/v1"
               mono
+            />
+          </Field>
+          <Field label={t('models.field.key')} hint={t('settings.llm.addProviderKeyHint')}>
+            <SecretField
+              ariaLabel={t('models.field.key')}
+              value={apiKey}
+              onChange={setApiKey}
+              placeholder={t('settings.llm.keyInputPlaceholder', { name: name.trim() || 'Provider' })}
             />
           </Field>
           <Field label={t('models.field.api')} hint={t('settings.llm.apiHint', { count: apiKinds.length })}>

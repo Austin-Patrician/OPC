@@ -1,18 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
-import { KeyRound, Plus, Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { KeyRound, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ProviderDraft } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
-import { LLM_PROVIDERS, PROVIDER_GROUPS, THINKING_LEVELS, formatContext, type ThinkingLevel } from '@/shared/providers/catalog';
+import { PROVIDER_GROUPS, THINKING_LEVELS, formatContext, providerMeta, type ThinkingLevel } from '@/shared/providers/catalog';
+import { providerIconUrl } from '@/shared/providers/visuals';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { cn } from '@/shared/lib/cn';
-import { buttonClass, KeyTag, PageHeader, Section, Segmented, SelectField, StatusBadge, TextField } from '../kit';
+import { buttonClass, KeyTag, PageHeader, Section, SecretField, Segmented, SelectField, StatusBadge, TextField } from '../kit';
 import { AddProviderDialog } from './AddProviderDialog';
 import { AuthLoginPanel } from './AuthLoginPanel';
+import { ProviderIconDialog, type ProviderIconChoice } from './ProviderIconDialog';
 
 const OTHER_GROUP = { id: 'other', label: '其他' };
-const DESIGN = new Map(LLM_PROVIDERS.map((provider) => [provider.id, provider]));
+
+/** A blank row at the bottom of the model table; its columns are edited in place. */
+const EMPTY_MODEL_DRAFT = {
+  id: '',
+  name: '',
+  contextWindow: '',
+  input: '',
+  output: '',
+  cacheRead: '',
+  cacheWrite: '',
+};
 
 interface DisplayProvider {
   id: string;
@@ -20,6 +32,8 @@ interface DisplayProvider {
   group: string;
   baseUrl: string;
   apis: string[];
+  /** Reused icon from the provider catalogue (custom providers only). */
+  icon?: string;
   counts: { chat: number; image: number; classifier: number };
   models: CatalogModel[];
   description?: string;
@@ -68,12 +82,20 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>(() => initialProviderId ?? '');
   const [keyDraft, setKeyDraft] = useState('');
+  const [savedKey, setSavedKey] = useState('');
+  const [baseUrlDraft, setBaseUrlDraft] = useState('');
+  const [iconDraft, setIconDraft] = useState('');
+  const [iconDialogOpen, setIconDialogOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState<Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>>({});
   const [customOpen, setCustomOpen] = useState(false);
-  const [customModel, setCustomModel] = useState({ id: '', name: '', contextWindow: '' });
+  const [customModel, setCustomModel] = useState(EMPTY_MODEL_DRAFT);
+  const customRowRef = useRef<HTMLTableRowElement>(null);
   const [customError, setCustomError] = useState<string | null>(null);
   const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState(false);
 
   const configured = useMemo(
     () => new Map(models.providers.map((provider) => [provider.id, provider])),
@@ -82,16 +104,47 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
 
   const providers: DisplayProvider[] = useMemo(() => {
     const fromCatalog: DisplayProvider[] = catalog.map((entry) => {
-      const design = DESIGN.get(entry.id);
+      const meta = providerMeta(entry.id);
+      // Stored models the pi catalogue does not know about (typically ids returned by
+      // "拉取模型") still belong in the table, otherwise a refresh looks like a no-op.
+      const stored = configured.get(entry.id);
+      const catalogIds = new Set(entry.models.map((model) => model.id));
+      const extra = (stored?.models ?? [])
+        .filter((model) => !catalogIds.has(model.id))
+        .map<CatalogModel>((model) => ({
+          id: model.id,
+          name: model.name || model.id,
+          type: model.capability,
+          api: model.api ?? entry.apis[0] ?? 'openai-completions',
+          contextWindow: model.contextWindow,
+          price: {
+            input: model.inputUsdPerM ?? 0,
+            output: model.outputUsdPerM ?? 0,
+            cacheRead: model.cacheReadUsdPerM ?? 0,
+            cacheWrite: model.cacheWriteUsdPerM ?? 0,
+            tiers: model.tiers?.map((tier) => ({
+              inputTokensAbove: tier.inputTokensAbove,
+              input: tier.inputUsdPerM,
+              output: tier.outputUsdPerM,
+              cacheRead: tier.cacheReadUsdPerM,
+              cacheWrite: tier.cacheWriteUsdPerM,
+            })),
+          },
+        }));
       return {
         id: entry.id,
-        name: design?.name ?? entry.id,
-        group: design?.group ?? OTHER_GROUP.id,
+        name: meta?.name ?? entry.id,
+        group: meta?.group ?? OTHER_GROUP.id,
         baseUrl: entry.baseUrl,
         apis: entry.apis,
-        counts: entry.counts,
-        models: entry.models,
-        description: design?.description,
+        icon: stored?.icon,
+        counts: {
+          chat: entry.counts.chat + extra.filter((model) => model.type === 'chat').length,
+          image: entry.counts.image + extra.filter((model) => model.type === 'image').length,
+          classifier: entry.counts.classifier + extra.filter((model) => model.type === 'classifier').length,
+        },
+        models: [...entry.models, ...extra],
+        description: meta?.description,
       };
     });
 
@@ -104,6 +157,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
         group: OTHER_GROUP.id,
         baseUrl: provider.baseUrl,
         apis: [provider.api],
+        icon: provider.icon,
         counts: {
           chat: provider.models.filter((model) => model.capability === 'chat').length,
           image: provider.models.filter((model) => model.capability === 'image').length,
@@ -132,7 +186,21 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
       }));
 
     return [...fromCatalog, ...custom];
-  }, [catalog, models.providers]);
+  }, [catalog, configured, models.providers]);
+
+  // The icon picker offers every icon the catalogue actually ships, once each
+  // (several provider ids share one brand file), labelled with a provider name.
+  const iconChoices = useMemo<ProviderIconChoice[]>(() => {
+    const seen = new Set<string>();
+    const choices: ProviderIconChoice[] = [];
+    for (const provider of providers) {
+      const url = providerIconUrl(provider.id);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      choices.push({ id: provider.id, name: provider.name });
+    }
+    return choices;
+  }, [providers]);
 
   const selected = providers.find((provider) => provider.id === selectedId) ?? providers[0];
   const selectedConfig = selected ? configured.get(selected.id) : undefined;
@@ -185,7 +253,52 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     : '';
   const pricedModels = selectedConfig ? new Map(selectedConfig.models.map((model) => [model.id, model])) : new Map();
 
-  useEffect(() => setKeyDraft(''), [selected?.id]);
+  // Load the stored key lazily per selection: the field is always shown masked,
+  // and the eye reveals it without a round-trip.
+  const activeProviderId = selected?.id;
+  const selectedBaseUrl = selected?.baseUrl;
+  useEffect(() => {
+    let alive = true;
+    setKeyDraft('');
+    setSavedKey('');
+    if (activeProviderId) {
+      void window.opc?.models
+        .getKey(activeProviderId)
+        .then((key) => {
+          if (alive) {
+            setKeyDraft(key);
+            setSavedKey(key);
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      alive = false;
+    };
+  }, [activeProviderId]);
+
+  useEffect(() => setBaseUrlDraft(selectedBaseUrl ?? ''), [activeProviderId, selectedBaseUrl]);
+
+  const selectedIcon = selectedConfig?.icon;
+  useEffect(() => setIconDraft(selectedIcon ?? ''), [activeProviderId, selectedIcon]);
+
+  // A half-filled draft belongs to the provider it was started on.
+  useEffect(() => {
+    setCustomOpen(false);
+    setCustomModel(EMPTY_MODEL_DRAFT);
+    setCustomError(null);
+    setPriceDraft({});
+    setSaveError(null);
+    setSavedNotice(false);
+    setIconDialogOpen(false);
+  }, [activeProviderId]);
+
+  // The draft row lives at the bottom of a scrollable table: bring it into view,
+  // otherwise "+ 自定义模型" looks like it did nothing on long model lists.
+  useEffect(() => {
+    if (!customOpen) return;
+    customRowRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [customOpen]);
 
   const priceOf = (model: CatalogModel) => {
     const local = pricedModels.get(model.id);
@@ -197,15 +310,87 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     };
   };
 
-  const savePrice = async (provider: DisplayProvider, model: CatalogModel) => {
-    const price = priceOf(model);
-    await ensureProvider(provider);
-    await models.setModelPricing(provider.id, model.id, price);
-    setPriceDraft((previous) => {
-      const next = { ...previous };
-      delete next[model.id];
-      return next;
-    });
+  // Everything in the detail panel is a draft until the single Save button runs:
+  // key, base URL, price cells and the pending custom-model row.
+  const customRowFilled = Object.values(customModel).some((value) => value.trim() !== '');
+  const keyDirty = Boolean(selected) && keyDraft !== savedKey;
+  const baseUrlDirty =
+    Boolean(selectedConfig?.isCustom) && baseUrlDraft.trim() !== (selectedBaseUrl ?? '').trim();
+  const iconDirty =
+    Boolean(selectedConfig?.isCustom) && iconDraft !== (selectedConfig?.icon ?? '');
+  const pricesDirty = Object.keys(priceDraft).length > 0;
+  const dirty = keyDirty || baseUrlDirty || iconDirty || pricesDirty || (customOpen && customRowFilled);
+
+  const cancelCustomModel = () => {
+    setCustomOpen(false);
+    setCustomModel(EMPTY_MODEL_DRAFT);
+    setCustomError(null);
+  };
+
+  const discardChanges = () => {
+    setKeyDraft(savedKey);
+    setBaseUrlDraft(selectedBaseUrl ?? '');
+    setIconDraft(selectedConfig?.icon ?? '');
+    setIconDialogOpen(false);
+    setPriceDraft({});
+    setCustomOpen(false);
+    setCustomModel(EMPTY_MODEL_DRAFT);
+    setCustomError(null);
+    setSaveError(null);
+    setSavedNotice(false);
+  };
+
+  const saveAll = async () => {
+    const bridge = window.opc?.models;
+    if (!selected || !bridge) return;
+    if (customOpen && customRowFilled && !customModel.id.trim()) {
+      setCustomError(t('settings.llm.modelIdRequired'));
+      return;
+    }
+    setSaveError(null);
+    setCustomError(null);
+    setSaving(true);
+    try {
+      await ensureProvider(selected);
+      if (keyDirty) {
+        await bridge.setKey(selected.id, keyDraft);
+        setSavedKey(keyDraft);
+      }
+      if (baseUrlDirty || iconDirty) {
+        await bridge.saveProvider({
+          id: selected.id,
+          name: selected.name,
+          baseUrl: baseUrlDraft.trim(),
+          api: selectedConfig?.api ?? selected.apis[0] ?? 'openai-completions',
+          isCustom: true,
+          icon: iconDraft,
+        });
+      }
+      for (const [modelId, price] of Object.entries(priceDraft)) {
+        await bridge.setModelPricing(selected.id, modelId, price);
+      }
+      setPriceDraft({});
+      if (customOpen && customModel.id.trim()) {
+        const contextWindow = Number(customModel.contextWindow);
+        await bridge.addModel(selected.id, {
+          id: customModel.id.trim(),
+          name: customModel.name.trim() || undefined,
+          contextWindow: contextWindow > 0 ? contextWindow : undefined,
+          inputUsdPerM: Math.max(0, Number(customModel.input) || 0),
+          outputUsdPerM: Math.max(0, Number(customModel.output) || 0),
+          cacheReadUsdPerM: Math.max(0, Number(customModel.cacheRead) || 0),
+          cacheWriteUsdPerM: Math.max(0, Number(customModel.cacheWrite) || 0),
+        });
+        setCustomModel(EMPTY_MODEL_DRAFT);
+        setCustomOpen(false);
+      }
+      await models.reload();
+      setSavedNotice(true);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -331,7 +516,12 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                               active ? 'bg-surface-active' : 'hover:bg-ink/5',
                             )}
                           >
-                            <ProviderMark providerId={provider.id} size="sm" />
+                            <ProviderMark
+                              providerId={provider.id}
+                              icon={provider.icon}
+                              label={provider.name}
+                              size="sm"
+                            />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-sm-plus font-medium text-ink">{provider.name}</span>
                               <span className="block truncate font-mono text-2xs text-ink-tertiary">
@@ -364,7 +554,28 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
               {!selected ? null : (
                 <>
                   <div className="flex items-start gap-3 border-b border-line px-5 py-4">
-                    <ProviderMark providerId={selected.id} size="lg" />
+                    {selectedConfig?.isCustom ? (
+                      <button
+                        type="button"
+                        data-testid="provider-icon-picker"
+                        onClick={() => setIconDialogOpen(true)}
+                        aria-label={t('settings.llm.iconChoose')}
+                        title={t('settings.llm.iconChoose')}
+                        className="group relative shrink-0 self-start rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                      >
+                        <ProviderMark
+                          providerId={selected.id}
+                          icon={iconDraft || selected.icon}
+                          label={selected.name}
+                          size="lg"
+                        />
+                        <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                          <Pencil className="size-4" />
+                        </span>
+                      </button>
+                    ) : (
+                      <ProviderMark providerId={selected.id} size="lg" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-lg font-bold text-ink">{selected.name}</h4>
@@ -374,7 +585,6 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                         {selected.description ?? `${selected.apis.join(' · ')}`}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <KeyTag className="text-accent-ink">{selected.id}</KeyTag>
                         {selected.apis.map((api) => (
                           <KeyTag key={api}>{api}</KeyTag>
                         ))}
@@ -387,6 +597,64 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                         </span>
                       </div>
                     </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {/* Fixed slot: mounting/unmounting or swapping this text must not
+                            resize the header, which re-wraps the description beside it. */}
+                        <span
+                          aria-live="polite"
+                          className={cn(
+                            'w-12 shrink-0 text-right text-2xs',
+                            dirty ? 'text-ink-tertiary' : 'text-success',
+                          )}
+                        >
+                          {dirty
+                            ? t('settings.llm.unsaved')
+                            : savedNotice
+                              ? t('settings.llm.saved')
+                              : null}
+                        </span>
+                        {selectedConfig?.isCustom ? (
+                          <button
+                            type="button"
+                            data-testid="remove-provider"
+                            disabled={saving}
+                            onClick={async () => {
+                              if (!window.confirm(t('settings.llm.removeConfirm', { name: selected.name }))) return;
+                              await models.removeProvider(selected.id);
+                              setSelectedId('');
+                            }}
+                            aria-label={t('settings.llm.removeProvider')}
+                            title={t('settings.llm.removeProvider')}
+                            className="flex size-7 items-center justify-center rounded-md text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={!dirty || saving}
+                          onClick={discardChanges}
+                          className={buttonClass.secondary}
+                        >
+                          {t('settings.llm.discard')}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="save-provider"
+                          disabled={!dirty || saving}
+                          aria-busy={saving}
+                          onClick={() => void saveAll()}
+                          className={buttonClass.primary}
+                        >
+                          {/* The spinner always occupies its box: swapping the label to
+                              "加载中…" resized the button and shook the whole header. */}
+                          <Loader2 className={cn('size-3.5 animate-spin', !saving && 'invisible')} />
+                          {t('common.save')}
+                        </button>
+                      </div>
+                      {saveError ? <p className="max-w-[16rem] text-right text-2xs text-danger">{saveError}</p> : null}
+                    </div>
                   </div>
 
                   <div className="space-y-4 px-5 py-4">
@@ -398,26 +666,15 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                         </span>
                         {selectedConfig?.hasKey ? <KeyTag>{t('settings.llm.keyReady')}</KeyTag> : null}
                       </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          value={keyDraft}
-                          onChange={(event) => setKeyDraft(event.target.value)}
-                          placeholder={t('settings.llm.keyPlaceholder', { name: selected.name })}
-                          className="h-[30px] min-w-0 flex-1 rounded-md border border-line bg-surface px-2.5 font-mono text-sm text-ink outline-none focus:border-accent"
-                        />
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await ensureProvider(selected);
-                            await models.setKey(selected.id, keyDraft);
-                            setKeyDraft('');
-                          }}
-                          className={buttonClass.primary}
-                        >
-                          {t('common.save')}
-                        </button>
-                      </div>
+                      <SecretField
+                        ariaLabel={t('models.field.key')}
+                        value={keyDraft}
+                        onChange={(next) => {
+                          setKeyDraft(next);
+                          setSavedNotice(false);
+                        }}
+                        placeholder={t('settings.llm.keyPlaceholder', { name: selected.name })}
+                      />
                     </div>
 
                     <OauthSection providerId={selected.id} />
@@ -425,34 +682,21 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
                         <span className="text-sm font-medium text-ink-secondary">Base URL</span>
-                        <KeyTag>{selected.baseUrl || '—'}</KeyTag>
+                        {!selectedConfig?.isCustom ? <KeyTag>{selected.baseUrl || '—'}</KeyTag> : null}
                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-2xs text-ink-quaternary">
-                        {selectedConfig?.isCustom
-                          ? t('settings.llm.customProvider')
-                          : t('settings.llm.builtinProvider')}
-                      </span>
                       {selectedConfig?.isCustom ? (
-                        <button
-                          type="button"
-                          data-testid="remove-provider"
-                          onClick={async () => {
-                            if (!window.confirm(t('settings.llm.removeConfirm', { name: selected.name }))) return;
-                            await models.removeProvider(selected.id);
-                            setSelectedId('');
+                        <input
+                          data-testid="provider-base-url"
+                          value={baseUrlDraft}
+                          onChange={(event) => {
+                            setBaseUrlDraft(event.target.value);
+                            setSavedNotice(false);
                           }}
-                          className="text-xs text-danger hover:underline"
-                        >
-                          {t('settings.llm.removeProvider')}
-                        </button>
-                      ) : (
-                        <span data-testid="builtin-protected" className="text-2xs text-ink-quaternary">
-                          {t('settings.llm.builtinProtected')}
-                        </span>
-                      )}
+                          placeholder="https://api.example.com/v1"
+                          spellCheck={false}
+                          className="h-[30px] w-full rounded-md border border-line bg-surface px-2.5 font-mono text-sm text-ink outline-none focus:border-accent"
+                        />
+                      ) : null}
                     </div>
 
                     <div>
@@ -486,7 +730,10 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                           <button
                             type="button"
                             data-testid="add-custom-model"
-                            onClick={() => setCustomOpen((open) => !open)}
+                            onClick={() => {
+                              setCustomError(null);
+                              setCustomOpen(true);
+                            }}
                             className="text-xs text-accent-ink hover:text-accent"
                           >
                             {t('settings.llm.addModel')}
@@ -497,6 +744,8 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                             onClick={async () => {
                               await ensureProvider(selected);
                               await models.applyBuiltinPricing(selected.id);
+                              // Official prices replace whatever was staged for this provider.
+                              setPriceDraft({});
                             }}
                             className="text-xs text-accent-ink hover:text-accent"
                           >
@@ -505,103 +754,54 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                         </div>
                       </div>
 
-                      {customOpen ? (
-                        <div className="mb-2 flex flex-wrap items-end gap-2 rounded-lg border border-line bg-surface-muted px-3 py-2">
-                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
-                            {t('settings.llm.modelId')}
-                            <input
-                              data-testid="custom-model-id"
-                              value={customModel.id}
-                              onChange={(event) =>
-                                setCustomModel((current) => ({ ...current, id: event.target.value }))
-                              }
-                              placeholder="my-finetune-v1"
-                              className="h-7 w-44 rounded-md border border-line bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-accent"
-                            />
-                          </label>
-                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
-                            {t('settings.llm.col.name')}
-                            <input
-                              value={customModel.name}
-                              onChange={(event) =>
-                                setCustomModel((current) => ({ ...current, name: event.target.value }))
-                              }
-                              placeholder={t('settings.llm.nameOptional')}
-                              className="h-7 w-40 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
-                            />
-                          </label>
-                          <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
-                            {t('settings.llm.col.context')}
-                            <input
-                              value={customModel.contextWindow}
-                              onChange={(event) =>
-                                setCustomModel((current) => ({ ...current, contextWindow: event.target.value }))
-                              }
-                              placeholder="128000"
-                              inputMode="numeric"
-                              className="h-7 w-28 rounded-md border border-line bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-accent"
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            data-testid="custom-model-save"
-                            onClick={async () => {
-                              setCustomError(null);
-                              try {
-                                await ensureProvider(selected);
-                                await models.addModel(selected.id, {
-                                  id: customModel.id.trim(),
-                                  name: customModel.name.trim() || undefined,
-                                  contextWindow: Number(customModel.contextWindow) || undefined,
-                                });
-                                setCustomModel({ id: '', name: '', contextWindow: '' });
-                                setCustomOpen(false);
-                                setModelNotice(t('settings.llm.added'));
-                              } catch (error) {
-                                setCustomError(error instanceof Error ? error.message : String(error));
-                              }
-                            }}
-                            className="h-7 rounded-md bg-accent px-3 text-xs font-medium text-white"
-                          >
-                            {t('common.save')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setCustomOpen(false)}
-                            className="h-7 rounded-md px-2 text-xs text-ink-tertiary hover:bg-ink/5"
-                          >
-                            {t('common.cancel')}
-                          </button>
-                        </div>
-                      ) : null}
                       {customError ? <p className="mb-2 text-xs text-danger">{customError}</p> : null}
                       {modelNotice ? (
                         <p className="mb-2 text-2xs text-ink-tertiary">{modelNotice}</p>
                       ) : null}
 
-                      <div
-                        data-testid="llm-model-table"
-                        className="max-h-[22rem] overflow-y-auto rounded-lg border border-line"
-                      >
-                        <table className="w-full table-fixed border-collapse text-sm">
-                          <thead className="sticky top-0 z-10 bg-surface-muted">
-                            <tr className="text-2xs text-ink-tertiary">
-                              <th className="px-3 py-1.5 text-left font-medium">{t('settings.llm.col.name')}</th>
-                              <th className="w-[4.5rem] px-1 py-1.5 text-right font-medium">{t('settings.llm.col.context')}</th>
-                              <th className="w-[4.75rem] px-1 py-1.5 text-right font-medium">{t('settings.pricing.input')}</th>
-                              <th className="w-[4.75rem] px-1 py-1.5 text-right font-medium">{t('settings.pricing.output')}</th>
-                              <th className="w-[4.75rem] px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheRead')}</th>
-                              <th className="w-[4.75rem] px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheWrite')}</th>
-                              <th className="w-[5.25rem] px-2 py-1.5 text-right font-medium">{t('settings.llm.col.default')}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
+                      <div className="overflow-hidden rounded-lg border border-line">
+                        {/* Header and body are separate tables so the scrollbar starts
+                            below the column titles instead of running past them. Both
+                            reserve the same gutter, which keeps the columns aligned. */}
+                        <div className="overflow-y-auto border-b border-line bg-surface-muted [scrollbar-gutter:stable]">
+                          <table className="w-full table-fixed border-collapse text-sm">
+                            <colgroup>
+                              <col />
+                              <col style={{ width: '4.25rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                            </colgroup>
+                            <thead>
+                              <tr className="text-2xs text-ink-tertiary">
+                                <th className="px-3 py-1.5 text-left font-medium">{t('settings.llm.col.name')}</th>
+                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.llm.col.context')}</th>
+                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.input')}</th>
+                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.output')}</th>
+                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheRead')}</th>
+                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheWrite')}</th>
+                              </tr>
+                            </thead>
+                          </table>
+                        </div>
+                        <div
+                          data-testid="llm-model-table"
+                          className="max-h-[22rem] overflow-y-auto [scrollbar-gutter:stable]"
+                        >
+                          <table className="w-full table-fixed border-collapse text-sm">
+                            <colgroup>
+                              <col />
+                              <col style={{ width: '4.25rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.5rem' }} />
+                            </colgroup>
+                            <tbody className="[&>tr:first-child]:border-t-0">
                             {chatModels.map((model) => {
                               const price = priceOf(model);
-                              const dirty = Boolean(priceDraft[model.id]);
-                              const isDefault =
-                                models.defaults.llm?.providerId === selected.id &&
-                                models.defaults.llm?.modelId === model.id;
+                              const priceDirty = Boolean(priceDraft[model.id]);
                               return (
                                 <tr key={model.id} className="border-t border-line align-middle">
                                   <td className="px-3 py-1.5">
@@ -625,37 +825,107 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                                             [model.id]: { ...price, [field]: Number(event.target.value) },
                                           }))
                                         }
-                                        onBlur={() => dirty && void savePrice(selected, model)}
                                         className={cn(
                                           'h-6 w-full rounded border bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent',
-                                          dirty ? 'border-accent' : 'border-transparent hover:border-line',
+                                          priceDirty ? 'border-accent' : 'border-transparent hover:border-line',
                                         )}
                                       />
                                     </td>
                                   ))}
-                                  <td className="px-2 py-1.5 text-right">
-                                    {isDefault ? (
-                                      <span className="text-xs font-medium text-accent-ink">{t('settings.llm.current')}</span>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={async () => {
-                                          await ensureProvider(selected);
-                                          await models.setDefault('llm', { providerId: selected.id, modelId: model.id });
-                                        }}
-                                        className="text-xs text-accent-ink hover:text-accent"
-                                      >
-                                        {t('settings.llm.setDefault')}
-                                      </button>
-                                    )}
-                                  </td>
                                 </tr>
                               );
                             })}
+                            {customOpen ? (
+                              <tr
+                                ref={customRowRef}
+                                data-testid="custom-model-row"
+                                className="border-t border-accent/40 bg-accent/5 align-middle"
+                              >
+                                <td className="px-3 py-1.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="min-w-0 flex-1">
+                                      <input
+                                        value={customModel.name}
+                                        onChange={(event) =>
+                                          setCustomModel((current) => ({ ...current, name: event.target.value }))
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Escape') cancelCustomModel();
+                                        }}
+                                        aria-label={t('settings.llm.col.name')}
+                                        placeholder={t('settings.llm.nameOptional')}
+                                        className="h-6 w-full rounded border border-line bg-surface px-1 text-sm-plus font-medium text-ink outline-none focus:border-accent"
+                                      />
+                                      <input
+                                        data-testid="custom-model-id"
+                                        autoFocus
+                                        value={customModel.id}
+                                        onChange={(event) =>
+                                          setCustomModel((current) => ({ ...current, id: event.target.value }))
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Escape') cancelCustomModel();
+                                        }}
+                                        aria-label={t('settings.llm.modelId')}
+                                        placeholder="model-id"
+                                        spellCheck={false}
+                                        className="mt-1 h-6 w-full rounded border border-line bg-surface px-1 font-mono text-2xs text-ink outline-none focus:border-accent"
+                                      />
+                                    </div>
+                                    <div className="flex shrink-0 flex-col gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={cancelCustomModel}
+                                        aria-label={t('common.cancel')}
+                                        title={t('common.cancel')}
+                                        className="flex size-5 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-ink/5"
+                                      >
+                                        <X className="size-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-1 py-1.5">
+                                  <input
+                                    value={customModel.contextWindow}
+                                    onChange={(event) =>
+                                      setCustomModel((current) => ({
+                                        ...current,
+                                        contextWindow: event.target.value,
+                                      }))
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Escape') cancelCustomModel();
+                                    }}
+                                    aria-label={t('settings.llm.col.context')}
+                                    placeholder="128000"
+                                    inputMode="numeric"
+                                    className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
+                                  />
+                                </td>
+                                {(['input', 'output', 'cacheRead', 'cacheWrite'] as const).map((field) => (
+                                  <td key={field} className="px-1 py-1.5">
+                                    <input
+                                      type="number"
+                                      step="0.001"
+                                      min={0}
+                                      value={customModel[field]}
+                                      onChange={(event) =>
+                                        setCustomModel((current) => ({ ...current, [field]: event.target.value }))
+                                      }
+                                      aria-label={`${t('settings.llm.modelId')} ${field}`}
+                                      placeholder="0"
+                                      className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ) : null}
                           </tbody>
                         </table>
                       </div>
-                      <p className="mt-1.5 text-xs text-ink-tertiary">{t('settings.pricing.hint')}</p>
+                    </div>
+                    <p className="mt-1.5 text-xs text-ink-tertiary">{t('settings.pricing.hint')}</p>
                     </div>
 
                     {models.error ? <p className="text-xs text-danger">{models.error}</p> : null}
@@ -667,11 +937,28 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
         </Section>
       </div>
 
+      {iconDialogOpen && selected && selectedConfig?.isCustom ? (
+        <ProviderIconDialog
+          providerId={selected.id}
+          name={selected.name}
+          choices={iconChoices}
+          value={iconDraft}
+          onSelect={(icon) => {
+            setIconDraft(icon);
+            setSavedNotice(false);
+          }}
+          onClose={() => setIconDialogOpen(false)}
+        />
+      ) : null}
+
       {addOpen ? (
         <AddProviderDialog
           apiKinds={Array.from(new Set(providers.flatMap((provider) => provider.apis))).sort()}
           onClose={() => setAddOpen(false)}
-          onCreate={(draft: ProviderDraft) => void models.saveProvider(draft)}
+          onCreate={(draft: ProviderDraft) => {
+            void models.saveProvider(draft);
+            setSelectedId(draft.id);
+          }}
         />
       ) : null}
     </>

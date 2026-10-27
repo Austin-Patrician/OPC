@@ -1,6 +1,7 @@
 import {
   IPC,
   type AuthPromptRequest,
+  type BudgetOverview,
   type CommOverview,
   type CommWakeResult,
   type ChatSnapshot,
@@ -11,6 +12,8 @@ import type {
   Budget,
   HireInput,
   CatalogProvider,
+  CompanyProfile,
+  CompanyProfilePatch,
   ModelOption,
   CompactionSettings,
   CreateTaskInput,
@@ -19,6 +22,9 @@ import type {
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
+  ProxyConfig,
+  ProxyConfigInput,
+  ProxyTestResult,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -32,6 +38,32 @@ const bridge: OpcBridge = {
   platform: process.platform,
   app: {
     getInfo: () => ipcRenderer.invoke(IPC.app.getInfo),
+  },
+  network: {
+    get: () => ipcRenderer.invoke(IPC.network.get) as Promise<ProxyConfig>,
+    update: (input: ProxyConfigInput) =>
+      ipcRenderer.invoke(IPC.network.update, input) as Promise<ProxyConfig>,
+    test: (input: ProxyConfigInput) =>
+      ipcRenderer.invoke(IPC.network.test, input) as Promise<ProxyTestResult>,
+    onChanged: (listener: (config: ProxyConfig) => void) => {
+      const handler = (_event: IpcRendererEvent, config: ProxyConfig) => listener(config);
+      ipcRenderer.on(IPC.network.changedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.network.changedEvent, handler);
+      };
+    },
+  },
+  company: {
+    get: () => ipcRenderer.invoke(IPC.company.get) as Promise<CompanyProfile>,
+    update: (patch: CompanyProfilePatch) =>
+      ipcRenderer.invoke(IPC.company.update, patch) as Promise<CompanyProfile>,
+    onChanged: (listener: (profile: CompanyProfile) => void) => {
+      const handler = (_event: IpcRendererEvent, profile: CompanyProfile) => listener(profile);
+      ipcRenderer.on(IPC.company.changedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.company.changedEvent, handler);
+      };
+    },
   },
   chat: {
     getSnapshot: () => ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
@@ -62,6 +94,14 @@ const bridge: OpcBridge = {
       candidateId: string,
       input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean },
     ) => ipcRenderer.invoke(IPC.market.hireCandidate, candidateId, input),
+  },
+  budget: {
+    overview: () => ipcRenderer.invoke(IPC.budget.overview) as Promise<BudgetOverview>,
+    setLimit: (input: {
+      scope: 'company' | 'employee' | 'department' | 'project';
+      scopeId: string;
+      limitTokens: number;
+    }) => ipcRenderer.invoke(IPC.budget.setLimit, input) as Promise<BudgetOverview>,
   },
   comm: {
     overview: () => ipcRenderer.invoke(IPC.comm.overview) as Promise<CommOverview>,
@@ -148,6 +188,7 @@ const bridge: OpcBridge = {
     removeProvider: (providerId: string) => ipcRenderer.invoke(IPC.models.removeProvider, providerId),
     setKey: (providerId: string, apiKey: string) =>
       ipcRenderer.invoke(IPC.models.setKey, providerId, apiKey),
+    getKey: (providerId: string) => ipcRenderer.invoke(IPC.models.getKey, providerId),
     test: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.test, providerId) as Promise<ProviderTestResult>,
     refreshModels: (providerId: string) => ipcRenderer.invoke(IPC.models.refreshModels, providerId),

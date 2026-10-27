@@ -1,6 +1,7 @@
 import { IPC, type SendMessageInput } from '@opc/shared/ipc';
 import type {
   CompactionSettings,
+  CompanyProfilePatch,
   CreateTaskInput,
   ModelOption,
   ModelRef,
@@ -12,6 +13,7 @@ import path from 'node:path';
 import { getAppInfo } from '../appInfo';
 import type { ChatService } from '../chat/chatService';
 import type { CommService } from '../comm/commService';
+import type { BudgetCenter } from '../work/budgetCenter';
 import type { ManualWakeResult } from '../comm/scheduler';
 import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
@@ -21,10 +23,13 @@ import type { OrgFactService } from '../memory/orgFactService';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
+import type { CompanyService } from '../company/companyService';
 import type { OrgService } from '../org/orgService';
 import { readImageArtifact } from '../work/artifacts';
 import type { ImageService } from '../models/imageService';
 import type { ModelConfigService } from '../models/modelConfigService';
+import type { NetworkProxyService } from '../network/proxyService';
+import { probeProxy } from '../network/proxyRuntime';
 import type { WorkService } from '../work/workService';
 
 interface RegisterOptions {
@@ -33,6 +38,9 @@ interface RegisterOptions {
   models: ModelConfigService;
   images: ImageService;
   auth: AuthService;
+  company: CompanyService;
+  /** 网络代理：保存即生效，失败会作为 IPC 错误抛回设置页。 */
+  network: NetworkProxyService;
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
@@ -41,6 +49,7 @@ interface RegisterOptions {
   projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
   comm: CommService;
+  budget: BudgetCenter;
   /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
   wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
 }
@@ -59,6 +68,9 @@ export function registerIpc({
   projects,
   consolidationRuns,
   comm,
+  budget: budgetCenter,
+  company,
+  network,
   wakeEmployee,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
@@ -112,6 +124,27 @@ export function registerIpc({
     commSignal.unref?.();
   });
 
+  ipcMain.handle(IPC.budget.overview, () => budgetCenter.overview());
+
+  ipcMain.handle(IPC.budget.setLimit, (_event, input: unknown) => {
+    const draft = (input ?? {}) as { scope?: unknown; scopeId?: unknown; limitTokens?: unknown };
+    const scopes = ['company', 'employee', 'department', 'project'];
+    if (typeof draft.scope !== 'string' || !scopes.includes(draft.scope)) {
+      throw new Error('budget:setLimit 参数非法（scope）');
+    }
+    if (typeof draft.scopeId !== 'string' || draft.scopeId.length === 0) {
+      throw new Error('budget:setLimit 参数非法（scopeId）');
+    }
+    if (typeof draft.limitTokens !== 'number' || !Number.isFinite(draft.limitTokens) || draft.limitTokens <= 0) {
+      throw new Error('budget:setLimit 参数非法（limitTokens）');
+    }
+    return budgetCenter.setLimit({
+      scope: draft.scope as 'company' | 'employee' | 'department' | 'project',
+      scopeId: draft.scopeId,
+      limitTokens: draft.limitTokens,
+    });
+  });
+
   ipcMain.handle(IPC.comm.overview, () =>
     buildCommOverview({
       comm,
@@ -133,6 +166,28 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.app.getInfo, () => getAppInfo());
+
+  ipcMain.handle(IPC.network.get, () => network.get());
+
+  ipcMain.handle(IPC.network.update, async (_event, input: unknown) => {
+    const config = await network.update(input);
+    // Other windows show the same setting; they re-render from this payload.
+    broadcast(IPC.network.changedEvent, config);
+    return config;
+  });
+
+  ipcMain.handle(IPC.network.test, (_event, input: unknown) => probeProxy(network.candidate(input)));
+
+  ipcMain.handle(IPC.company.get, () => company.get());
+
+  ipcMain.handle(IPC.company.update, (_event, patch: unknown) => {
+    if (!isCompanyPatch(patch)) throw new Error('company:update 参数非法');
+    const profile = company.update(patch);
+    // Every window renders the title bar, so a rename has to reach all of them.
+    broadcast(IPC.company.changedEvent, profile);
+    return profile;
+  });
+
   ipcMain.handle(IPC.diagnostics.report, () => runDiagnostics());
 
   ipcMain.handle(IPC.chat.getSnapshot, () => chat.getSnapshot());
@@ -194,6 +249,10 @@ export function registerIpc({
     }
     return models.setKey(providerId, apiKey);
   });
+  ipcMain.handle(IPC.models.getKey, (_event, providerId: unknown) => {
+    if (typeof providerId !== 'string') throw new Error('models:getKey 参数非法');
+    return models.readKey(providerId) ?? '';
+  });
   ipcMain.handle(IPC.models.test, (_event, providerId: unknown) => {
     if (typeof providerId !== 'string') throw new Error('models:test 参数非法');
     return models.test(providerId);
@@ -202,13 +261,20 @@ export function registerIpc({
     if (typeof providerId !== 'string' || typeof input !== 'object' || input === null) {
       throw new Error('models:addModel 参数非法');
     }
-    const { id, name, contextWindow, api } = input as Record<string, unknown>;
+    const { id, name, contextWindow, api, inputUsdPerM, outputUsdPerM, cacheReadUsdPerM, cacheWriteUsdPerM } =
+      input as Record<string, unknown>;
     if (typeof id !== 'string') throw new Error('models:addModel 需要模型 id');
+    const price = (value: unknown) =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
     return models.addModel(providerId, {
       id,
       name: typeof name === 'string' ? name : undefined,
       contextWindow: typeof contextWindow === 'number' ? contextWindow : undefined,
       api: typeof api === 'string' ? api : undefined,
+      inputUsdPerM: price(inputUsdPerM),
+      outputUsdPerM: price(outputUsdPerM),
+      cacheReadUsdPerM: price(cacheReadUsdPerM),
+      cacheWriteUsdPerM: price(cacheWriteUsdPerM),
     });
   });
   ipcMain.handle(IPC.models.supportsOauth, (_event, providerId: unknown) => {
@@ -578,6 +644,8 @@ export function registerIpc({
     unsubscribeWork();
     unsubscribeComm();
     if (commSignal) clearTimeout(commSignal);
+    ipcMain.removeHandler(IPC.budget.overview);
+    ipcMain.removeHandler(IPC.budget.setLimit);
     ipcMain.removeHandler(IPC.comm.overview);
     ipcMain.removeHandler(IPC.comm.wake);
     ipcMain.removeHandler(IPC.comm.dismissGuards);
@@ -590,6 +658,8 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
     ipcMain.removeHandler(IPC.app.getInfo);
+    ipcMain.removeHandler(IPC.company.get);
+    ipcMain.removeHandler(IPC.company.update);
     ipcMain.removeHandler(IPC.diagnostics.report);
     ipcMain.removeHandler(IPC.chat.getSnapshot);
     ipcMain.removeHandler(IPC.chat.sendMessage);
@@ -600,6 +670,14 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.ensureDepartmentGroup);
     ipcMain.removeHandler(IPC.chat.updateAgentBrief);
   };
+}
+
+function isCompanyPatch(value: unknown): value is CompanyProfilePatch {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  const fields = ['name', 'industry', 'vision', 'colorId', 'bossName', 'logo', 'bossAvatar'] as const;
+  // Every present field must be a string; `undefined` means "leave as is".
+  return fields.every((field) => candidate[field] === undefined || typeof candidate[field] === 'string');
 }
 
 function isCompaction(value: unknown): value is CompactionSettings {
@@ -621,7 +699,9 @@ function isProviderDraft(value: unknown): value is ProviderDraft {
     typeof candidate.name === 'string' &&
     typeof candidate.baseUrl === 'string' &&
     typeof candidate.api === 'string' &&
-    typeof candidate.isCustom === 'boolean'
+    typeof candidate.isCustom === 'boolean' &&
+    (candidate.icon === undefined || typeof candidate.icon === 'string') &&
+    (candidate.apiKey === undefined || typeof candidate.apiKey === 'string')
   );
 }
 

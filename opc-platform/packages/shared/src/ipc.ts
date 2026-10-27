@@ -1,12 +1,16 @@
 import type {
   Agent,
   Budget,
+  BudgetScope,
+  BudgetState,
   Conversation,
   Department,
   CreateTaskInput,
   CreateTaskResult,
   CatalogProvider,
   CompactionSettings,
+  CompanyProfile,
+  CompanyProfilePatch,
   DepartmentNode,
   AgentCandidate,
   HireInput,
@@ -18,6 +22,9 @@ import type {
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
+  ProxyConfig,
+  ProxyConfigInput,
+  ProxyTestResult,
   WorkTask,
 } from './domain';
 
@@ -49,6 +56,7 @@ export const IPC = {
     saveProvider: 'models:saveProvider',
     removeProvider: 'models:removeProvider',
     setKey: 'models:setKey',
+    getKey: 'models:getKey',
     test: 'models:test',
     refreshModels: 'models:refreshModels',
     addModel: 'models:addModel',
@@ -123,6 +131,10 @@ export const IPC = {
     listBudgets: 'work:listBudgets',
     budgetsEvent: 'work:budgetsChanged',
   },
+  budget: {
+    overview: 'budget:overview',
+    setLimit: 'budget:setLimit',
+  },
   comm: {
     overview: 'comm:overview',
     overviewEvent: 'comm:overviewChanged',
@@ -131,6 +143,17 @@ export const IPC = {
   },
   app: {
     getInfo: 'app:getInfo',
+  },
+  network: {
+    get: 'network:get',
+    update: 'network:update',
+    test: 'network:test',
+    changedEvent: 'network:changed',
+  },
+  company: {
+    get: 'company:get',
+    update: 'company:update',
+    changedEvent: 'company:changed',
   },
 } as const;
 
@@ -225,8 +248,10 @@ export interface ModelsBridge {
   getCatalog(): Promise<CatalogProvider[]>;
   saveProvider(draft: ProviderDraft): Promise<ProviderConfig[]>;
   removeProvider(providerId: string): Promise<ProviderConfig[]>;
-  /** Write-only: the key never travels back to the renderer. */
+  /** Replace (or clear with an empty string) the stored API key. */
   setKey(providerId: string, apiKey: string): Promise<ProviderConfig[]>;
+  /** The decrypted key, only so the settings page can show it masked with a reveal toggle. */
+  getKey(providerId: string): Promise<string>;
   test(providerId: string): Promise<ProviderTestResult>;
   refreshModels(providerId: string): Promise<{
     providers: ProviderConfig[];
@@ -237,7 +262,17 @@ export interface ModelsBridge {
   }>;
   addModel(
     providerId: string,
-    input: { id: string; name?: string; contextWindow?: number; api?: string },
+    input: {
+      id: string;
+      name?: string;
+      contextWindow?: number;
+      api?: string;
+      /** USD per 1M tokens; omitted/0 means "unknown". */
+      inputUsdPerM?: number;
+      outputUsdPerM?: number;
+      cacheReadUsdPerM?: number;
+      cacheWriteUsdPerM?: number;
+    },
   ): Promise<ProviderConfig[]>;
   /** True only for providers pi can log into with OAuth; the rest use an API key. */
   supportsOauth(providerId: string): Promise<boolean>;
@@ -475,8 +510,64 @@ export interface CommOverview {
   quotas: CommQuotaView[];
 }
 
-export interface CommWakeResult {
-  ok: boolean;
+/** ── 预算中心 (§8) ───────────────────────────────────────────────────────── */
+
+export interface BudgetView {
+  scope: BudgetScope;
+  scopeId: string;
+  /** Resolved name (公司 / 员工 / 部门 / 项目) — never a raw id. */
+  label: string;
+  periodKey: string;
+  limitTokens: number;
+  usedTokens: number;
+  reservedTokens: number;
+  availableTokens: number;
+  state: BudgetState;
+  warnAt: number;
+  hardStopAt: number;
+  /** §8.3 straight-line projection to the end of the month. */
+  projectedTokens: number;
+  willExceed: boolean;
+}
+
+export interface BudgetAlertView {
+  id: string;
+  scope: BudgetScope;
+  scopeId: string;
+  label: string;
+  level: 'warn' | 'stop';
+  usedTokens: number;
+  limitTokens: number;
+  ratio: number;
+  periodKey: string;
+  createdAt: number;
+}
+
+/** A person taken off a project by a budget stop (§5.6: 停任职不停员工). */
+export interface PausedAssignmentView {
+  projectId: string;
+  projectName: string;
+  employeeId: string;
+  employeeName: string;
+  reason: string;
+  pausedAt?: number;
+}
+
+export interface BudgetOverview {
+  generatedAt: number;
+  periodKey: string;
+  budgets: BudgetView[];
+  alerts: BudgetAlertView[];
+  paused: PausedAssignmentView[];
+}
+
+export interface BudgetBridge {
+  overview(): Promise<BudgetOverview>;
+  /** 老板改额度；把额度提回阈值以下会解除硬停并恢复被暂停的任职。 */
+  setLimit(input: { scope: BudgetScope; scopeId: string; limitTokens: number }): Promise<BudgetOverview>;
+}
+
+export interface CommWakeResult {  ok: boolean;
   message: string;
   /** How many inbox items the run actually handled. */
   items: number;
@@ -492,12 +583,43 @@ export interface CommBridge {
   dismissGuards(ids?: string[]): Promise<number>;
 }
 
+/**
+ * The company row + its profile preferences (§1.3: one company per install).
+ *
+ * The name lives in `company.name`, the industry in `company.industry`; the rest
+ * (vision / brand colour / how the boss is addressed) has no column and lives in
+ * `app_setting`. The renderer treats this as the single source of truth — it keeps
+ * no copy in localStorage.
+ */
+export interface CompanyBridge {
+  get(): Promise<CompanyProfile>;
+  /** Partial write; returns the stored profile so the UI can render the truth. */
+  update(patch: CompanyProfilePatch): Promise<CompanyProfile>;
+  /** Fires after any write, so every window stays in sync. */
+  onChanged(listener: (profile: CompanyProfile) => void): () => void;
+}
+
+/**
+ * Outgoing network configuration. Saving applies immediately: main-process
+ * `fetch`, Chromium's network stack and spawned child processes all switch at
+ * once, and the stored config is re-applied on the next launch.
+ */
+export interface NetworkBridge {
+  get(): Promise<ProxyConfig>;
+  update(input: ProxyConfigInput): Promise<ProxyConfig>;
+  /** Probes the draft without saving it (TCP dial + one egress request). */
+  test(input: ProxyConfigInput): Promise<ProxyTestResult>;
+  onChanged(listener: (config: ProxyConfig) => void): () => void;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
   app: {
     getInfo(): Promise<AppInfo>;
   };
+  network: NetworkBridge;
+  company: CompanyBridge;
   chat: ChatBridge;
   work: WorkBridge;
   models: ModelsBridge;
@@ -509,6 +631,7 @@ export interface OpcBridge {
   projects: ProjectsBridge;
   memory: MemoryBridge;
   market: MarketBridge;
+  budget: BudgetBridge;
   comm: CommBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;

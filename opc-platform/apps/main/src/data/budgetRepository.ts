@@ -38,6 +38,25 @@ interface ReservationRow {
   expires_at: number;
 }
 
+/** The two axes that can pause a person's work when they trip (§5.6). */
+export interface StoppedBudget {
+  scope: BudgetScope;
+  scopeId: string;
+}
+
+export interface BudgetAlertRow {
+  id: string;
+  budgetId: string;
+  scope: BudgetScope;
+  scopeId: string;
+  periodKey: string;
+  level: 'warn' | 'stop';
+  usedTokens: number;
+  limitTokens: number;
+  ratio: number;
+  createdAt: number;
+}
+
 /** `YYYY-MM` in local time: the budget period the boss thinks in. */
 export function budgetPeriodKey(now: Date = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -71,40 +90,56 @@ export class BudgetRepository {
   ensureEmployeeBudget = (employeeId: string, limitTokens: number): void =>
     this.ensure('employee', employeeId, limitTokens);
 
+  /** Project budgets are created on first charge, like employees' (§8.1). */
+  ensureProjectBudget = (projectGroupId: string, limitTokens: number): void =>
+    this.ensure('project', projectGroupId, limitTokens);
+
+  ensureDepartmentBudget = (departmentId: string, limitTokens: number): void =>
+    this.ensure('department', departmentId, limitTokens);
+
+  /**
+   * Reserve across every axis in one transaction.
+   *
+   * Admission is checked by the caller (`BudgetService`) for all axes *before* any
+   * reservation is written, so a task is never half-charged.
+   */
   reserve = (input: {
-    budget: Budget;
+    budgets: readonly Budget[];
     taskId: string;
     employeeId: string;
     tokens: number;
     expiresAt: number;
   }): void => {
+    if (input.budgets.length === 0) return;
     const now = Date.now();
     const run = this.db.transaction(() => {
-      this.db
-        .prepare(
-          `INSERT INTO budget_reservation (id, budget_id, task_id, employee_id, tokens, expires_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          `res-${crypto.randomUUID()}`,
-          input.budget.id,
-          input.taskId,
-          input.employeeId,
-          input.tokens,
-          input.expiresAt,
-          now,
-        );
-      this.db
-        .prepare('UPDATE budget SET reserved_tokens = reserved_tokens + ?, updated_at = ? WHERE id = ?')
-        .run(input.tokens, now, input.budget.id);
-      this.ledger(input.budget, {
-        taskId: input.taskId,
-        employeeId: input.employeeId,
-        tokens: input.tokens,
-        costUsd: 0,
-        kind: 'reserve',
-        at: now,
-      });
+      for (const budget of input.budgets) {
+        this.db
+          .prepare(
+            `INSERT INTO budget_reservation (id, budget_id, task_id, employee_id, tokens, expires_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            `res-${crypto.randomUUID()}`,
+            budget.id,
+            input.taskId,
+            input.employeeId,
+            input.tokens,
+            input.expiresAt,
+            now,
+          );
+        this.db
+          .prepare('UPDATE budget SET reserved_tokens = reserved_tokens + ?, updated_at = ? WHERE id = ?')
+          .run(input.tokens, now, budget.id);
+        this.ledger(budget, {
+          taskId: input.taskId,
+          employeeId: input.employeeId,
+          tokens: input.tokens,
+          costUsd: 0,
+          kind: 'reserve',
+          at: now,
+        });
+      }
     });
     run();
   };
@@ -113,13 +148,17 @@ export class BudgetRepository {
    * Charge what was actually spent and give the reservation back.
    *
    * `actualTokens` is charged to *every* budget that held a reservation for this
-   * task: company and employee spend are two independent axes over the same run,
-   * not a split of one number.
+   * task: employee, project, department and company spend are independent axes over
+   * the same run, not a split of one number.
+   *
+   * Returns the axes that tripped their hard stop, so the caller can apply F8
+   * (pause the assignment) — a budget stop is not just a refusal, it is a state.
    */
-  settle = (taskId: string, actualTokens: number, costUsd = 0): void => {
+  settle = (taskId: string, actualTokens: number, costUsd = 0): StoppedBudget[] => {
     const reservations = this.reservationsFor(taskId);
-    if (reservations.length === 0) return;
+    if (reservations.length === 0) return [];
     const now = Date.now();
+    const stopped: StoppedBudget[] = [];
 
     const run = this.db.transaction(() => {
       for (const reservation of reservations) {
@@ -139,7 +178,8 @@ export class BudgetRepository {
           .prepare('SELECT * FROM budget WHERE id = ?')
           .get(reservation.budget_id) as BudgetRow | undefined;
         if (!row) continue;
-        this.ledger(toBudget(row), {
+        const budget = toBudget(row);
+        this.ledger(budget, {
           taskId,
           employeeId: reservation.employee_id,
           tokens: actualTokens,
@@ -147,14 +187,17 @@ export class BudgetRepository {
           kind: 'settle',
           at: now,
         });
+        // Thresholds are recorded here, at the only moment they can change.
+        this.recordAlerts(budget, now);
+        if (budget.isStopped) stopped.push({ scope: budget.scope, scopeId: budget.scopeId });
       }
     });
     run();
+    return stopped;
   };
 
   /** Frees every reservation this task holds; used whenever work does not deliver. */
-  release = (taskId: string): void => {
-    const reservations = this.reservationsFor(taskId);
+  release = (taskId: string): void => {    const reservations = this.reservationsFor(taskId);
     if (reservations.length === 0) return;
     const now = Date.now();
 
@@ -227,8 +270,91 @@ export class BudgetRepository {
       );
   };
 
-  private reservationsFor(taskId: string): ReservationRow[] {
-    return this.db
+  /** Open alerts, newest first: what the boss has not seen yet. */
+  alerts = (limit = 40): BudgetAlertRow[] => {
+    const rows = this.db
+      .prepare(
+        `SELECT id, scope, scope_id, period_key, level, used_tokens, limit_tokens, ratio, created_at
+           FROM budget_alert ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(limit) as {
+      id: string;
+      budget_id: string;
+      scope: string;
+      scope_id: string;
+      period_key: string;
+      level: string;
+      used_tokens: number;
+      limit_tokens: number;
+      ratio: number;
+      created_at: number;
+    }[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      budgetId: row.budget_id,
+      scope: row.scope as BudgetScope,
+      scopeId: row.scope_id,
+      periodKey: row.period_key,
+      level: row.level as 'warn' | 'stop',
+      usedTokens: row.used_tokens,
+      limitTokens: row.limit_tokens,
+      ratio: row.ratio,
+      createdAt: row.created_at,
+    }));
+  };
+
+  /**
+   * 老板调整额度。Raising the limit **un-latches** a stop when the ratio falls back
+   * under the threshold: `is_stopped` is a state, not a scar, and the whole point of
+   * topping up is to let the person work again.
+   */
+  setLimit = (scope: BudgetScope, scopeId: string, limitTokens: number): void => {
+    const limit = Math.max(1, Math.round(limitTokens));
+    this.db
+      .prepare(
+        `UPDATE budget SET
+           limit_tokens = ?,
+           is_stopped = CASE WHEN used_tokens + reserved_tokens >= ? * hard_stop_at THEN 1 ELSE 0 END,
+           updated_at = ?
+         WHERE scope = ? AND scope_id = ? AND period_key = ?`,
+      )
+      .run(limit, limit, Date.now(), scope, scopeId, budgetPeriodKey());
+  };
+
+  /**
+   * Records a threshold crossing once per level per month. Deduplicated by the unique
+   * index rather than by a read: two charges in the same millisecond must not both
+   * write a warn.
+   */
+  private recordAlerts(budget: Budget, now: number): void {
+    const evaluation = evaluateBudget(budget);
+    const ratio = evaluation.usedRatio;
+    const level = budget.state === 'stopped' ? 'stop' : budget.state === 'warn' ? 'warn' : undefined;
+    if (!level) return;
+
+    this.db
+      .prepare(
+        `INSERT INTO budget_alert (id, budget_id, scope, scope_id, period_key, level,
+                                   used_tokens, limit_tokens, ratio, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(budget_id, level, period_key) DO NOTHING`,
+      )
+      .run(
+        `alert-${crypto.randomUUID()}`,
+        budget.id,
+        budget.scope,
+        budget.scopeId,
+        budget.periodKey,
+        level,
+        budget.usedTokens,
+        budget.limitTokens,
+        ratio,
+        now,
+      );
+  }
+
+  private reservationsFor(taskId: string): ReservationRow[] {    return this.db
       .prepare('SELECT id, budget_id, task_id, employee_id, tokens, expires_at FROM budget_reservation WHERE task_id = ?')
       .all(taskId) as ReservationRow[];
   }

@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 10;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -514,7 +514,58 @@ CREATE TABLE IF NOT EXISTS consolidation_run (
 CREATE INDEX IF NOT EXISTS idx_consol_emp ON consolidation_run(employee_id, started_at DESC);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7];
+/**
+ * V8: 预算双轴 + 告警 (§8.1 / §8.3).
+ *
+ * `budget` has allowed project/department scopes since v1 — nothing had written
+ * them yet. What was missing is (a) the link from a task to the project it spends
+ * on, and (b) a record of the thresholds it crossed: without a budget-alert table a
+ * "warn" exists only as a colour in the UI, and the boss cannot answer "who blew
+ * what, when".
+ */
+const V8 = `
+ALTER TABLE task ADD COLUMN project_group_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_task_project ON task(project_group_id, status);
+ALTER TABLE assignment ADD COLUMN pause_reason TEXT;
+ALTER TABLE assignment ADD COLUMN paused_at INTEGER;
+CREATE TABLE IF NOT EXISTS budget_alert (
+  id           TEXT PRIMARY KEY,
+  budget_id    TEXT NOT NULL,
+  scope        TEXT NOT NULL,
+  scope_id     TEXT NOT NULL,
+  period_key   TEXT NOT NULL,
+  level        TEXT NOT NULL CHECK (level IN ('warn','stop')),
+  used_tokens  INTEGER NOT NULL,
+  limit_tokens INTEGER NOT NULL,
+  ratio        REAL NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_once ON budget_alert(budget_id, level, period_key);
+CREATE INDEX IF NOT EXISTS idx_alert_recent ON budget_alert(created_at DESC);
+`;
+
+/**
+ * V9: `task.acceptance_template` 的 CHECK 里加入 `node-test`（普通软件工作的闸门）。
+ *
+ * SQLite 改不了 CHECK：只能重建表。重建在 `repairAcceptanceTemplateConstraint()` 里做，
+ * 它在迁移事务之外先跑（`PRAGMA foreign_keys` 在事务里无效），所以这一步本身没有 SQL，
+ * 只把版本号往前推，表示"约束已经修复过"。
+ */
+const V9 = `
+-- 见 repairAcceptanceTemplateConstraint()：重建 task 表以放宽 acceptance_template 约束。
+`;
+
+/**
+ * V10: 自定义 provider 可复用某个内置 provider 的图标。
+ *
+ * 存 provider id（如 `openai`）而不是文件名：图标表只在渲染进程，主进程不该知道
+ * `public/provider-icons` 的布局。NULL = 没有选，回退到首字母。
+ */
+const V10 = `
+ALTER TABLE model_provider ADD COLUMN icon TEXT;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {

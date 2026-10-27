@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateBudget } from './budgetMath';
+import { evaluateBudget, forecastPeriod } from './budgetMath';
 
 const base = {
   limitTokens: 10_000,
@@ -52,5 +52,50 @@ describe('evaluateBudget', () => {
     const budget = evaluateBudget(base);
     expect(budget.canReserve(0)).toBe(false);
     expect(budget.canReserve(-100)).toBe(false);
+  });
+});
+
+describe('forecastPeriod', () => {
+  it('projects straight to the end of the month from today\'s pace', () => {
+    const now = new Date(2025, 0, 10, 12).getTime(); // 10 Jan, 31-day month
+    const forecast = forecastPeriod({
+      usedTokens: 100_000,
+      limitTokens: 500_000,
+      periodKey: '2025-01',
+      now,
+    });
+
+    // 100k over 10 days → 310k over 31 days.
+    expect(forecast.elapsedDays).toBe(10);
+    expect(forecast.daysInPeriod).toBe(31);
+    expect(forecast.projectedTokens).toBe(310_000);
+    expect(forecast.willExceed).toBe(false);
+  });
+
+  it('flags an overrun, and does not claim a pace for another period', () => {
+    const now = new Date(2025, 0, 20, 12).getTime();
+    expect(
+      forecastPeriod({ usedTokens: 400_000, limitTokens: 500_000, periodKey: '2025-01', now })
+        .willExceed,
+    ).toBe(true);
+
+    // A past period has no pace: the answer is what was spent, nothing more.
+    const past = forecastPeriod({
+      usedTokens: 400_000,
+      limitTokens: 500_000,
+      periodKey: '2024-12',
+      now,
+    });
+    expect(past.projectedTokens).toBe(400_000);
+    expect(past.elapsedDays).toBe(0);
+  });
+
+  it('treats day one as one day, never divides by zero', () => {
+    const now = new Date(2025, 1, 1, 1).getTime(); // 1 Feb, 28-day month
+    const forecast = forecastPeriod({ usedTokens: 5_000, limitTokens: 100_000, periodKey: '2025-02', now });
+    expect(forecast.elapsedDays).toBe(1);
+    expect(forecast.daysInPeriod).toBe(28);
+    expect(forecast.projectedTokens).toBe(140_000);
+    expect(forecast.willExceed).toBe(true);
   });
 });

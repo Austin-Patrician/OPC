@@ -26,7 +26,7 @@ const THEMES: { value: SettingsPrefs['theme']; label: string }[] = [
   { value: 'dark', label: '深色' },
 ];
 
-const ThemePreview: React.FC<{ mode: SettingsPrefs['theme'] }> = ({ mode }) => {
+export const ThemePreview: React.FC<{ mode: SettingsPrefs['theme'] }> = ({ mode }) => {
   const pane = (dark: boolean) => (
     <div className={`flex-1 flex ${dark ? 'bg-[#2C2C2E]' : 'bg-white'}`}>
       <div className={`w-[22%] border-r ${dark ? 'bg-[#1C1C1E] border-[#3A3A3C]' : 'bg-[#F2F2F3] border-[#E5E5E7]'}`} />

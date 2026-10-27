@@ -148,8 +148,9 @@
             ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise((r) => setTimeout(r, 300));
           const customModelForm = Boolean(document.querySelector('[data-testid="custom-model-id"]'));
-          // A built-in provider must advertise that it cannot be deleted.
-          const builtinProtected = Boolean(document.querySelector('[data-testid="builtin-protected"]'));
+          // A built-in provider must offer no delete action (deletion sits next to
+          // Discard for custom providers only).
+          const builtinProtected = !document.querySelector('[data-testid="remove-provider"]');
           // Issues: every task carries a human key, rows group by state, detail opens.
           location.hash = '#/issues';
           await new Promise((r) => setTimeout(r, 800));

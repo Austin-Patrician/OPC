@@ -131,9 +131,18 @@ export class WorkService {
           if (running === taskId) runningTaskByEmployee.delete(employeeId);
         }
         const task = this.repository.getTask(taskId);
+        // A session that failed at the storage layer is closed for good; keeping it
+        // cached would make every later run of this employee fail with "Harness is closed".
+        if (outcome === 'faulted' && task) this.harnesses.delete(task.assigneeId);
         const passed = outcome === 'completed' && result?.verdict === 'pass';
-        if (passed) this.budgets.settle(taskId, task?.tokensUsed ?? 0, task?.costUsd ?? 0);
-        else this.budgets.release(taskId);
+        if (passed) {
+          // §5.6: a hard stop pauses the assignment, not the employee. The charge is
+          // what trips it, so the reaction belongs here, right after settling.
+          const stopped = this.budgets.settle(taskId, task?.tokensUsed ?? 0, task?.costUsd ?? 0);
+          for (const axis of stopped) this.applyHardStop(axis.scope, axis.scopeId, taskId);
+        } else {
+          this.budgets.release(taskId);
+        }
         this.emitBudgetChange();
 
         if (passed && task && this.deps.memory) {
@@ -326,6 +335,11 @@ export class WorkService {
           employeeId: subtask.assigneeId,
           taskId: childId,
           estTokens: subtask.estTokens,
+          // A subtask spends the same project budget its parent does.
+          ...(parent.projectGroupId ? { projectGroupId: parent.projectGroupId } : {}),
+          ...(this.departmentOf(subtask.assigneeId)
+            ? { departmentId: this.departmentOf(subtask.assigneeId) }
+            : {}),
         });
       } catch (error) {
         if (error instanceof BudgetBlockedError) {
@@ -380,7 +394,15 @@ export class WorkService {
     const config = this.deps.modelConfig;
     if (!config) return;
     const llm = config.getDefaults().llm;
-    if (!llm) return; // nothing configured: the scripted brain still works offline
+    // 没配模型就不装成"员工在干活"：脚本化执行只留给探针（它们显式设 OPC_BRAIN_VARIANT）。
+    // 真实公司里先把模型配好（设置 → 模型），否则任务直接失败并说明原因，而不是让一个
+    // 写死 hello-world 的替身把任务"干完"。
+    if (!llm && !process.env.OPC_BRAIN_VARIANT) {
+      throw new Error(
+        '未配置默认模型：到 设置 → 模型 选一个 LLM 后再执行（演练可设 OPC_BRAIN_VARIANT=ok）',
+      );
+    }
+    if (!llm) return; // 探针模式：脚本化大脑离线可跑
     const provider = config.listProviders().find((entry) => entry.id === llm.providerId);
     if (!provider) throw new Error(`默认模型指向不存在的 provider：${llm.providerId}`);
     if (!provider.hasKey) {
@@ -405,6 +427,10 @@ export class WorkService {
         employeeId: input.assigneeId,
         taskId,
         estTokens: input.estTokens,
+        ...(input.projectGroupId ? { projectGroupId: input.projectGroupId } : {}),
+        ...(this.departmentOf(input.assigneeId)
+          ? { departmentId: this.departmentOf(input.assigneeId) }
+          : {}),
         allowOverdraft: (input as { allowOverdraft?: boolean }).allowOverdraft === true,
       });
     } catch (error) {
@@ -586,8 +612,23 @@ export class WorkService {
     }
   }
 
+  /**
+   * 同一个任务只能有一个 run 在跑。
+   *
+   * 这不是优化而是正确性：pi 的 Session 是单写者，同一员工的两个 run 并发写同一个
+   * sqlite 会直接 `Session failed after a storage error`，并把这个员工的 harness 毒化。
+   * 触发路径很常见：负责人验收任务由 `openManagerReview` 自己启动，UI/探针再点一次。
+   */
+  private isRunning(taskId: string): boolean {
+    for (const running of runningTaskByEmployee.values()) {
+      if (running === taskId) return true;
+    }
+    return this.repository.getTask(taskId)?.status === 'running';
+  }
+
   /** Fire-and-forget: the UI follows `subscribe()`. */
   runTask = (taskId: string): void => {
+    if (this.isRunning(taskId)) return;
     if (this.refuseToStart(taskId)) return;
     const task = this.repository.getTask(taskId);
     if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
@@ -601,6 +642,7 @@ export class WorkService {
   };
 
   runTaskAndWait = async (taskId: string): Promise<WorkTask> => {
+    if (this.isRunning(taskId)) return this.repository.getTask(taskId) as WorkTask;
     if (this.refuseToStart(taskId)) return this.repository.getTask(taskId) as WorkTask;
     const task = this.repository.getTask(taskId);
     if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
@@ -684,8 +726,52 @@ export class WorkService {
 
   // ── internals ──────────────────────────────────────────────────────────
 
-  /** Who this employee reports to inside the department (empty when it is the head). */
-  private reportingLineOf(employeeId: string): string | undefined {
+  /**
+   * F8: 预算硬停的落地动作（§5.6）。
+   *
+   * 项目预算超了 → 暂停该项目所有任职（员工在别的项目照常干活）；
+   * 员工预算超了 → 只暂停他自己的任职；
+   * 公司预算超了 → 不自动全停（那要老板决定），但会留下告警让 /budget 亮红灯。
+   */
+  private applyHardStop(
+    scope: 'company' | 'employee' | 'project' | 'department',
+    scopeId: string,
+    taskId: string,
+  ): void {
+    const projects = this.deps.projects;
+    if (!projects) return;
+
+    const reason =
+      scope === 'project'
+        ? 'project_budget_exceeded'
+        : scope === 'department'
+          ? 'department_budget_exceeded'
+          : 'employee_budget_exceeded';
+
+    const paused =
+      scope === 'project'
+        ? projects.pauseAssignments({ projectId: scopeId }, reason)
+        : scope === 'employee'
+          ? projects.pauseAssignments({ employeeId: scopeId }, reason)
+          : 0;
+
+    if (paused > 0) {
+      this.repository.addStep(
+        taskId,
+        `预算硬停（${scope}）→ 暂停 ${paused} 条任职，等老板在预算中心调整额度`,
+      );
+      this.emitBudgetChange();
+    }
+  }
+
+  /** The assignee's department, for the department budget axis (§8.1). */
+  private departmentOf(employeeId: string): string | undefined {
+    const members = this.deps.org?.everyone() ?? [];
+    const departmentId = members.find((member) => member.id === employeeId)?.departmentId;
+    return departmentId || undefined;
+  }
+
+  /** Who this employee reports to inside the department (empty when it is the head). */  private reportingLineOf(employeeId: string): string | undefined {
     const members = this.deps.org?.list().flatMap((department) => department.members) ?? [];
     return members.find((member) => member.id === employeeId)?.reportsToEmployeeId;
   }

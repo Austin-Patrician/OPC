@@ -240,7 +240,7 @@ describe('BudgetRepository', () => {
     );
 
     budgets.reserve({
-      budget: budgets.find('employee', worker.id)!,
+      budgets: [budgets.find('employee', worker.id)!],
       taskId: task.id,
       employeeId: worker.id,
       tokens: 1000,
@@ -265,7 +265,7 @@ describe('BudgetRepository', () => {
   it('reclaims reservations whose task no longer exists', () => {
     const { budgets, worker } = setup();
     budgets.reserve({
-      budget: budgets.find('employee', worker.id)!,
+      budgets: [budgets.find('employee', worker.id)!],
       taskId: 'task-ghost',
       employeeId: worker.id,
       tokens: 77,

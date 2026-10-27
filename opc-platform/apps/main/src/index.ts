@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
@@ -19,12 +19,20 @@ import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
 import type { Agent, SubtaskDraft } from '@opc/shared/domain';
 import { MarketService } from './market/marketService';
+import { CompanyService } from './company/companyService';
+import { NetworkProxyService } from './network/proxyService';
+import { applyProxy, connectProxyRuntime } from './network/proxyRuntime';
+import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { OrgService } from './org/orgService';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
 import { CommService, commSettingsFrom } from './comm/commService';
 import { CommRepository } from './data/commRepository';
 import { CommScheduler } from './comm/scheduler';
+import { BudgetCenter } from './work/budgetCenter';
+import { applyCompanySetup, parseCompanySetup } from './setup/companySetup';
+import { BudgetService } from './work/budgetService';
+import { BudgetRepository } from './data/budgetRepository';
 import { createInboxRunner } from './comm/inboxRunner';
 import { DEMO_TASK } from './work/acceptanceTemplate';
 
@@ -60,6 +68,12 @@ const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
 const isProjectProbe = process.env.OPC_PROJECT_PROBE === '1';
 /** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
 const isInboxProbe = process.env.OPC_INBOX_PROBE === '1';
+/** `OPC_COMPANY_SETUP=<file.json>`: 用公司模板把部门/员工/项目/待办一次建好，然后退出。 */
+const companySetupPath = process.env.OPC_COMPANY_SETUP;
+/** `OPC_RUN_TASK=<issue key | task id>`: 用真实模型把一条任务跑到终态，然后退出。 */
+const runTaskRef = process.env.OPC_RUN_TASK;
+const isRunTask = Boolean(runTaskRef);
+const isCompanySetup = Boolean(companySetupPath);
 /** `OPC_FACT_PROBE=1`: company facts are versioned and reach the employee's prompt. */
 const isFactProbe = process.env.OPC_FACT_PROBE === '1';
 /** `OPC_ARCHIVE_PROBE=1`: idle conversation → archived → consolidated once. */
@@ -108,14 +122,14 @@ function createMainWindow() {
 			titleBarStyle: "hiddenInset",
 			trafficLightPosition: {
 				x: 14,
-				y: 15
+				y: 6
 			}
 		} : process.platform === "win32" ? {
 			titleBarStyle: "hidden",
 			titleBarOverlay: {
 				color: "#ebebec",
 				symbolColor: "#4a4a4d",
-				height: 42
+				height: 24
 			}
 		} : { titleBarStyle: "default" },
 		webPreferences: {
@@ -180,7 +194,7 @@ function hardenSession() {
   });
 }
 
-function bootstrap(): void {
+async function bootstrap(): Promise<void> {
   initAppPaths();
 
   const db = openCompanyDatabase(appPaths.database);
@@ -188,11 +202,20 @@ function bootstrap(): void {
   if (isSmoke) db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
   const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
   const modelConfig = new ModelConfigService(db, credentialStore);
+  const network = new NetworkProxyService(db, {
+    cipher: { encrypt: encryptSecret, decrypt: decryptSecret },
+    apply: applyProxy,
+  });
   const org = new OrgService(db);
   const market = new MarketService(db, org);
-  // A fresh install gets a real two-department company created through `hire`;
-  // there are no fixtures behind it and no seeded conversations.
-  ensureFirstCompany(org);
+  // 首启不再塞演示公司：空的组织架构就是空的公司，老板自己建，
+  // 或者用 `OPC_COMPANY_SETUP=<file>` 导入一个公司模板（同样走 hire/assign）。
+  if (org.list().length === 0) {
+    // `warn` and not `info`: an empty company is a state the boss must act on.
+    console.warn(
+      '[OPC] 公司还是空的：去「组织架构」创建部门并招聘，或运行 OPC_COMPANY_SETUP=<file.json> 导入公司模板。',
+    );
+  }
 
   chat = new ChatService({
     db,
@@ -281,6 +304,14 @@ function bootstrap(): void {
     settings: commSettingsFrom(db),
   });
 
+  // 预算中心 (§8): 自己的 BudgetService 实例，读写同一批行；工作循环仍然通过
+  // WorkService 扣费，老板通过这里改额度并解除硬停。
+  const budgetCenter = new BudgetCenter({
+    budgets: new BudgetService(new BudgetRepository(db)),
+    org,
+    projects,
+  });
+
   // §7.4: 群聊 @ 的路由交给通信层。老板在部门群里说话，没人被 @ 就只叫负责人。
   chat.routeGroupMessage = (input) => {
     const result = comm?.routeGroupMessage(input);
@@ -321,6 +352,9 @@ function bootstrap(): void {
     projects,
     consolidationRuns,
     comm,
+    budget: budgetCenter,
+    company: new CompanyService(db),
+    network,
     wakeEmployee: async (employeeId) =>
       heartbeat
         ? heartbeat.wakeNow(employeeId)
@@ -370,6 +404,16 @@ function bootstrap(): void {
     });
   }
 
+  // Outgoing traffic must already follow the boss's choice when the first window
+  // paints: install the fetch bridge, then apply the stored config. A broken proxy
+  // must not stop the app from opening — the settings page is where it gets fixed.
+  connectProxyRuntime();
+  try {
+    await applyProxy(network.resolve());
+  } catch (error) {
+    console.error('[OPC] 代理配置未能生效，本次按原设置继续', error);
+  }
+
   // Crash recovery: resume durable tasks the previous process left running, then
   // free any reservation whose task is gone.
   void work.recover();
@@ -408,7 +452,9 @@ const isHeadlessMode =
   isChatProbe ||
   isReviewProbe ||
   isMarketProbe ||
-  isInboxProbe;
+  isInboxProbe ||
+  isCompanySetup ||
+  isRunTask;
 const hasLock = isHeadlessMode ? true : app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
@@ -421,6 +467,115 @@ if (!hasLock) {
 
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
+
+    if (isRunTask) {
+      // 单条任务跑到底：给"真实公司 + 真实模型"一个非交互的入口，也方便回归。
+      // 用真库（就是老板正在用的公司），不改任何别的任务。
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
+      const modelConfig = new ModelConfigService(db, credentialStore);
+      const org = new OrgService(db);
+      const projects = new ProjectService(db);
+      const work = new WorkService({
+        db,
+        paths: appPaths,
+        agents: agentsFromOrg(org),
+        upsertTaskCard: () => undefined,
+        modelConfig,
+        org,
+        projects,
+        memory: new MemoryService(db),
+        facts: new OrgFactService(db),
+      });
+
+      try {
+        const tasks = work.listAllTasks(500);
+        const target =
+          tasks.find((task) => task.issueKey === runTaskRef) ?? tasks.find((task) => task.id === runTaskRef);
+        if (!target) throw new Error(`找不到任务：${runTaskRef}`);
+
+        // 被中断过的任务先回到 open，避免带着旧的 running 状态再跑一遍。
+        if (target.status === 'running' || target.status === 'failed') {
+          db.prepare("UPDATE task SET status = 'open', finished_at = NULL, error = NULL WHERE id = ?").run(target.id);
+        }
+
+        let finished = await work.runTaskAndWait(target.id);
+
+        // 自动验收通过后任务会停在 `review`：`openManagerReview` 已经自己启动了负责人
+        // 验收（fire-and-forget），这里等它落地，而不是再跑一遍（并发会写坏 session）。
+        if (finished.status === 'review') {
+          const deadline = Date.now() + 240_000;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            const current = work.getTask(finished.id);
+            if (!current) break;
+            finished = current;
+            if (current.status !== 'review') break;
+          }
+        }
+        process.stdout.write(
+          `${JSON.stringify(
+            {
+              probe: 'run-task',
+              task: finished.issueKey,
+              title: finished.title,
+              status: finished.status,
+              attempts: finished.attempts,
+              tokensUsed: finished.tokensUsed,
+              costUsd: finished.costUsd,
+              acceptance: finished.acceptance
+                ? {
+                    verdict: finished.acceptance.verdict,
+                    reason: finished.acceptance.reason,
+                    exitCode: finished.acceptance.evidence.exitCode,
+                    stdoutTail: finished.acceptance.evidence.stdoutTail.slice(-400),
+                  }
+                : null,
+              artifacts: finished.artifacts.map((artifact) => artifact.relPath),
+              steps: finished.steps.map((step) => step.text).slice(-14),
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        await work.dispose();
+        app.exit(finished.status === 'accepted' ? 0 : 1);
+      } catch (error) {
+        console.error('RUN_TASK_FAILED', error);
+        await work.dispose().catch(() => undefined);
+        app.exit(1);
+      }
+      return;
+    }
+
+    if (isCompanySetup) {
+      // 用真实服务建公司：与 UI 里点出来的是同一批行，只是可以重复执行。
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const org = new OrgService(db);
+      const projects = new ProjectService(db);
+      const work = new WorkService({
+        db,
+        paths: appPaths,
+        agents: agentsFromOrg(org),
+        upsertTaskCard: () => undefined,
+        org,
+        projects,
+      });
+      try {
+        const spec = parseCompanySetup(readFileSync(companySetupPath!, 'utf8'));
+        const report = applyCompanySetup({ db, org, projects, work }, spec);
+        process.stdout.write(`${JSON.stringify({ probe: 'company-setup', ...report }, null, 2)}\n`);
+        await work.dispose();
+        app.exit(0);
+      } catch (error) {
+        console.error('COMPANY_SETUP_FAILED', error);
+        await work.dispose().catch(() => undefined);
+        app.exit(1);
+      }
+      return;
+    }
 
     if (isConsolidationRunProbe) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consol-run-')));
@@ -844,6 +999,9 @@ if (!hasLock) {
       // The boss stepping in is the resolution the doc's lifecycle calls for.
       probeChat.sendMessage({ conversationId: turn1.conversationId ?? '', text: '这件事我来定' });
       const reopenedState = probeChat.turnState(turn1.conversationId ?? '');
+      // Snapshot before the boss actions below: dismissing a guard hides it, which is
+      // exactly what `dismissed_at` is for.
+      const turnLimitGuards = strict.guards(peerA.id);
 
       // §7.5: idle → cooling, and writing to a cooled thread brings it back.
       const cooled = probeChat.coolIdleConversations(60_000, now + 10 * 60_000);
@@ -890,9 +1048,9 @@ if (!hasLock) {
         relationshipGrew: (relationship?.strength ?? 0) > 0.5 && relationship?.interactionCount === 3,
         turnLimitEscalates: escalatedState.status === 'escalated' && escalatedState.turns === 2,
         turnLimitRefuses: turn3.ok === false && turn3.code === 'CONVERSATION_ESCALATED',
-        turnLimitGuard: strict
-          .guards(peerA.id)
-          .some((guard) => guard.kind === 'turn_limit' && guard.detail.reason === 'limit_reached'),
+        turnLimitGuard: turnLimitGuards.some(
+          (guard) => guard.kind === 'turn_limit' && guard.detail.reason === 'limit_reached',
+        ),
         bossReopensThread: reopenedState.status === 'open' && reopenedState.turns === 0,
         coolingReachable: cooled.length > 0,
         warmingReopens: cooledPeer.status === 'open',
@@ -1902,77 +2060,127 @@ if (!hasLock) {
     }
 
     if (isBudgetProbe) {
-      process.env.OPC_BRAIN_VARIANT ??= 'ok'; // probes are deterministic and must not spend tokens
+      try {
+      // Deterministic and non-destructive: its own temp company, and no model calls.
+      // It charges through BudgetService directly — the sandbox refuses commands on
+      // Windows, so running a full task here would hang until the durable timeout.
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-budget-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      // Probes must be deterministic: start from an empty ledger/reservation state.
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
-        db,
-        paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
-        upsertTaskCard: () => undefined,
+      const org = new OrgService(db);
+      ensureFirstCompany(org);
+      const projects = new ProjectService(db);
+      const budgets = new BudgetService(new BudgetRepository(db));
+      const budgetCenter = new BudgetCenter({ budgets, org, projects });
+
+      const assignee = org.list().flatMap((department) => department.members)[0]!;
+      const departmentId = assignee.departmentId;
+      const project = projects.create({ name: '预算探针项目', code: 'BUD', departmentId });
+      projects.assign(project.id, assignee.id, '开发');
+      const find = (scope: 'project' | 'department' | 'employee' | 'company', id: string) =>
+        budgets.list().find((budget) => budget.scope === scope && budget.scopeId === id);
+
+      // ① 单笔消耗同时扣四个维度
+      budgets.reserve({
+        employeeId: assignee.id,
+        taskId: 'probe-multi-axis',
+        estTokens: 1_000,
+        projectGroupId: project.id,
+        departmentId,
       });
-      const draft = { ...DEMO_TASK, assigneeId: 'agent-fe' } as const;
-      const snapshot = () =>
-        work.listBudgets().find((budget) => budget.scope === 'employee' && budget.scopeId === 'agent-fe');
+      const stoppedOnFirst = budgets.settle('probe-multi-axis', 800, 0);
 
-      const first = work.createTask({ ...draft, estTokens: 6000 });
-      const second = work.createTask({ ...draft, estTokens: 6000 });
-      const afterReserve = snapshot();
+      const axes = {
+        project: find('project', project.id)?.usedTokens ?? 0,
+        department: find('department', departmentId)?.usedTokens ?? 0,
+        employee: find('employee', assignee.id)?.usedTokens ?? 0,
+        company: find('company', 'company-local')?.usedTokens ?? 0,
+      };
+      const chargedEveryAxis = Object.values(axes).every((used) => used === 800);
+      const noStopYet = stoppedOnFirst.length === 0;
 
-      if (first.ok) {
-        const finished = await work.runTaskAndWait(first.task.id);
-        work.runTask(first.task.id);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        if (finished.status !== 'accepted') {
-          process.stdout.write(`${JSON.stringify({ unexpected: finished.status, error: finished.error })}\n`);
-        }
+      // ② 任一维度没额度就整笔拒绝（不能只扣有钱的那条轴）
+      budgets.setLimit('project', project.id, 500);
+      let refusedWholeRun = false;
+      try {
+        budgets.reserve({
+          employeeId: assignee.id,
+          taskId: 'probe-refused',
+          estTokens: 1_000,
+          projectGroupId: project.id,
+          departmentId,
+        });
+      } catch {
+        refusedWholeRun = true;
       }
-      // The fire-and-forget run above charges the ledger; give it a beat, then read again.
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      const afterSettle = snapshot();
+      const projectReserved = find('project', project.id)?.reservedTokens ?? 0;
 
-      const third = work.createTask({ ...draft, estTokens: 6000 });
+      // ③ 冲过上限 → 硬停 + 告警；F8 停任职；提额度 → 解冻并恢复任职
+      // 预估能过、实际花超 —— 生产里硬停几乎都是这么来的。
+      budgets.setLimit('project', project.id, 2_000);
+      budgets.reserve({
+        employeeId: assignee.id,
+        taskId: 'probe-trip',
+        estTokens: 900,
+        projectGroupId: project.id,
+        departmentId,
+      });
+      const stoppedOnTrip = budgets.settle('probe-trip', 1_200, 0);
+      const projectStopped = stoppedOnTrip.some((axis) => axis.scope === 'project');
 
-      // Simulate a fully spent month to exercise the hard-stop latch.
-      db.prepare(
-        `UPDATE budget SET used_tokens = limit_tokens WHERE scope = 'employee' AND scope_id = 'agent-fe'`,
-      ).run();
-      const stopped = work.createTask({ ...draft, estTokens: 1000 });
+      // WorkService 就是这么反应的（§5.6）：停任职，不停员工。
+      const paused = projects.pauseAssignments({ projectId: project.id }, 'project_budget_exceeded');
+      const pausedMembers = projects
+        .list()
+        .find((item) => item.id === project.id)!
+        .members.filter((member) => member.status === 'paused').length;
+
+      budgetCenter.setLimit({ scope: 'project', scopeId: project.id, limitTokens: 50_000 });
+      const resumedMembers = projects
+        .list()
+        .find((item) => item.id === project.id)!
+        .members.filter((member) => member.status === 'active').length;
+      const projectAlert = budgets.alerts().some((alert) => alert.scope === 'project');
+      const employerStillActive =
+        org.everyone().find((member) => member.id === assignee.id)?.status === 'active';
+
+      const checks = {
+        chargedEveryAxis,
+        noStopYet,
+        refusedWholeRun,
+        projectNotHalfReserved: projectReserved === 0,
+        projectStopped,
+        paused: paused === 1 && pausedMembers === 1,
+        resumed: resumedMembers === 1,
+        projectAlert,
+        employerStillActive,
+      };
 
       process.stdout.write(
         `${JSON.stringify(
           {
-            firstOk: first.ok,
-            secondRefused: second.ok ? null : second.error.code,
-            thirdAfterSettleOk: third.ok,
-            stoppedRefused: stopped.ok ? null : stopped.error.code,
-            budgetAfterReserve: afterReserve && {
-              limit: afterReserve.limitTokens,
-              used: afterReserve.usedTokens,
-              reserved: afterReserve.reservedTokens,
-              available: afterReserve.availableTokens,
+            probe: 'budget',
+            ...checks,
+            axes,
+            projectBudget: find('project', project.id) && {
+              used: find('project', project.id)!.usedTokens,
+              limit: find('project', project.id)!.limitTokens,
+              state: find('project', project.id)!.state,
             },
-            budgetAfterSettle: afterSettle && {
-              limit: afterSettle.limitTokens,
-              used: afterSettle.usedTokens,
-              reserved: afterSettle.reservedTokens,
-              available: afterSettle.availableTokens,
-            },
+            alerts: budgets.alerts().map((alert) => `${alert.scope}:${alert.level}`),
           },
           null,
           2,
         )}\n`,
       );
-      await work.dispose();
-      app.exit(
-        first.ok && !second.ok && second.error.code === 'BUDGET_EXCEEDED' && third.ok && !stopped.ok && stopped.error.code === 'BUDGET_STOPPED'
-          ? 0
-          : 1,
-      );
+      db.close();
+      app.exit(Object.values(checks).every(Boolean) ? 0 : 1);
+      } catch (error) {
+        // A probe must fail loudly, never hang: an unhandled rejection keeps the
+        // process alive and CI sees a timeout instead of a reason.
+        console.error('BUDGET_PROBE_FAILED', error);
+        app.exit(1);
+      }
       return;
     }
 
@@ -2031,7 +2239,7 @@ if (!hasLock) {
       return;
     }
 
-    bootstrap();
+    await bootstrap();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();

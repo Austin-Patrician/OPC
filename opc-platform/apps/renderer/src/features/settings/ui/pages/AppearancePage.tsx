@@ -16,7 +16,7 @@ const THEMES: { value: ThemeMode; labelKey: string }[] = [
 ];
 
 /** Miniature window used by the theme cards, matching the design's preview. */
-function ThemePreview({ mode }: { mode: ThemeMode }) {
+export function ThemePreview({ mode }: { mode: ThemeMode }) {
   const pane = (dark: boolean) => (
     <div className={cn('flex flex-1', dark ? 'bg-[#2C2C2E]' : 'bg-white')}>
       <div className={cn('w-[22%] border-r', dark ? 'border-[#3A3A3C] bg-[#1C1C1E]' : 'border-[#E5E5E7] bg-[#F2F2F3]')} />

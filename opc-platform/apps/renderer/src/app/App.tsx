@@ -2,6 +2,8 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
+import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
+import { BudgetPage } from '@/pages/budget/BudgetPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import {
@@ -37,6 +39,7 @@ export function App() {
           <Route path="market" element={<MarketPage />} />
           <Route path="issues" element={<IssueListPage />} />
           <Route path="projects" element={<ProjectsPage />} />
+        <Route path="budget" element={<BudgetPage />} />
           <Route path="channels" element={<ChannelsPage />} />
           <Route path="deliverables" element={<DeliverablesPage />} />
           <Route path="skills" element={<SkillsPage />} />
@@ -46,6 +49,8 @@ export function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>
+      {/* First-run guide: overlays the shell until the install has completed it. */}
+      <OnboardingGuide />
     </HashRouter>
   );
 }

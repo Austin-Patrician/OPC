@@ -58,7 +58,8 @@ OPC_SMOKE=1 ./node_modules/.bin/electron .        # 真开窗口跑一遍 preloa
 | 关闭 | `before-quit` 先释放 IPC 与业务服务 |
 
 窗口 chrome：macOS 用 `hiddenInset` 保留原生红绿灯，Windows 用 `titleBarOverlay`，
-Linux 暂用系统边框；应用内 42px 标题栏在 Electron 下自动隐藏装饰性红绿灯并让出原生按钮占位。
+Linux 暂用系统边框；应用内 24px 标题栏在 Electron 下自动隐藏装饰性红绿灯，并通过
+`env(titlebar-area-*)` 让出原生窗口按钮占位（标题栏自身的按钮不再被压在关闭键下面）。
 
 ## 分层与全局抽象
 
@@ -848,3 +849,74 @@ OPC_INBOX_PROBE=1 electron .   # 23 项，新增
 **还没做的**："由负责人决定：自己答，还是点名下属答" 目前只到前半句。负责人在群里的回复由模型给出；
 真正把活派给下属需要 `decompose_task` 这类管理工具，而工具集目前只挂在**任务 run** 的 harness 上，
 inbox run 还没有工具。那一步要等 inbox run 能用 pi-durable 的 harness 跑（Phase 1 尾巴）。
+
+## 预算双轴 + 告警 + 预算中心（§8.1 / §8.3 / §5.6）
+
+预算从"公司 + 员工"两条腿，补成文档要求的四条轴，并把硬停真正落到**任职**上：
+
+```
+一笔消耗 = 员工 E 在项目 P 上的任职执行任务 T
+          → 同时扣 P 的项目预算、E 所在部门预算、E 的员工预算、公司预算
+```
+
+| 变化 | 位置 |
+|---|---|
+| 任务是"记在哪个项目上"的：`task.project_group_id`，派活表单可选项目，子任务继承父任务的项目 | schema v8 · `DispatchTaskDialog` · `workService.decompose` |
+| 四个维度一次事务预留；**任一维度没额度就整笔拒绝**，不会只扣有钱的那条轴 | `BudgetRepository.reserve` / `BudgetService.reserve` |
+| 结算返回"刚刚被硬停的维度" | `BudgetService.settle → StoppedBudget[]` |
+| 硬停动作（F8）：项目超限 → 暂停该项目所有任职；员工超限 → 只停他自己的任职；**人仍然在岗** | `workService.applyHardStop` + `ProjectService.pauseAssignments` |
+| 提高额度即解除硬停并恢复那批任职（按 `pause_reason` 精确找回） | `ProjectService.resumeAssignments` · `BudgetCenter.setLimit` |
+| 阈值告警落表：每个额度每月各记一次 warn / stop，不重复刷屏 | `budget_alert`（唯一索引 `idx_alert_once`） |
+| 预算中心页 `/budget`：四维额度条、预计月末、告警列表、被暂停的任职、行内改额度 | `pages/budget/BudgetPage.tsx` |
+| 预测（§8.3）：按今天的速度直线外推到月末，只标"会超支"，不假装精算 | `budgetMath.forecastPeriod` |
+
+两个刻意的取舍：
+
+- **部门维度只告警、不暂停任职**（文档 §5.6 只对项目/员工定义了暂停动作）；部门超限表现在 `/budget` 的红灯上。
+- **"预计月末"是直线外推**，第 2 天就说"照这个速度"——把数字摆出来让老板反对，而不是藏一个模型。
+
+```bash
+OPC_BUDGET_PROBE=1 electron .   # 9 项，exit 0
+#  chargedEveryAxis: 四轴各扣 800（不是把 800 拆成四份）
+#  refusedWholeRun / projectNotHalfReserved: 项目额度不够时整笔拒绝，员工轴也没被半扣
+#  projectStopped / projectAlert: 冲过上限 → 硬停 + alert(project:stop)
+#  paused / resumed: 任职暂停 1 条 → 提额后恢复 1 条
+#  employerStillActive: 员工状态仍是 active（停任职不停员工）
+```
+
+探针本身也改了两件事：跑在**临时目录**而不是老板的真实公司库（原先是就地清空预算表），
+以及**失败即退出**——之前一个未捕获异常会让进程挂着，CI 只能看到超时而不是原因。
+
+单测：`work/budgetAxes.test.ts` 6 例（四轴分别记账、任一轴不足整笔拒绝、告警每月各一次、
+结算返回被停维度、停任职不停员工、提额解冻并恢复任职），`budgetMath.test.ts` +3 例（外推、跨周期不算速度、首日不除零）。
+
+**还没做的**：预算中心不能设 warn 阈值（固定 80%）；部门维度没有暂停动作；
+`activity_log` 仍缺，所以"谁在什么时候改了额度"还没有统一审计流。
+
+## 网络与代理：一次配置，所有出站请求都走它
+
+设置 → 网络 → 网络与代理。三种模式：**跟随系统**（默认，读操作系统代理）、**直连**（忽略系统代理与环境变量）、
+**手动代理**（HTTP / HTTPS / SOCKS5，可带用户名密码）。
+
+配置存在 `app_setting` 的两行里（`network.proxy` 是 JSON，`network.proxyPassword` 是 `safeStorage`
+密文），不需要迁移；保存后立刻生效，下次启动在 `bootstrap()` 里、窗口创建之前重新应用。
+
+进程里有三个出口，各自都要单独切换：
+
+| 出口 | 机制 |
+|---|---|
+| 渲染进程 / `<img>` / `net.request` | `session.defaultSession.setProxy()`，改完 `closeAllConnections()` 丢弃池化连接 |
+| 主进程 `fetch`（pi-ai、图片生成、模型列表） | `globalThis.fetch` 换成 Electron `net.fetch`（Chromium 网络栈：SOCKS / PAC / 系统代理 / 代理认证都支持）；直连模式保留 Node 原生 fetch |
+| 子进程（workspace 里的 `git` / `npm` / 脚本） | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，切回直连时按启动时的原值还原；SOCKS5 只写 `ALL_PROXY`，避免把 `HTTP_PROXY` 说成 SOCKS |
+
+代理认证走 `app.on('login')`，只在 `authInfo.isProxy` 时用保存的凭据应答——密码不会拼进 URL，也就不会进日志。
+`proxyBypassRules` 永远包含 `localhost` / `127.0.0.1` / `::1`，本机探针与工作区预览不受影响。
+
+「测试连接」用的是**表单草稿**而不是已保存配置：先 TCP 探测端口，再通过一个临时 session 请求
+`api.ipify.org`（失败回退 `ifconfig.me`）读出口 IP。只探测端口会把"接受连接然后丢包"的防火墙误报成可用，
+所以两步都过了才算 OK。
+
+规则、校验、Env 生成是纯函数（`network/proxyConfig.ts`，14 例单测）；持久化
+（`network/proxyService.ts`，10 例单测）用真实 SQLite + 注入的 cipher/applier 验证密码三态、
+密钥环不可用时不落库、坏行回退默认值。
+

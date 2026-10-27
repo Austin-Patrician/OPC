@@ -72,6 +72,9 @@ export class ModelConfigService {
 
   saveProvider = (draft: ProviderDraft): ProviderConfig[] => {
     this.repository.saveProvider(draft);
+    // The dialog can collect the key up-front, so creating a provider is one step.
+    const apiKey = draft.apiKey?.trim();
+    if (apiKey) this.repository.saveCredential(draft.id, encryptSecret(apiKey));
     return this.listProviders();
   };
 
@@ -111,7 +114,16 @@ export class ModelConfigService {
    */
   addModel = (
     providerId: string,
-    input: { id: string; name?: string; contextWindow?: number; api?: string },
+    input: {
+      id: string;
+      name?: string;
+      contextWindow?: number;
+      api?: string;
+      inputUsdPerM?: number;
+      outputUsdPerM?: number;
+      cacheReadUsdPerM?: number;
+      cacheWriteUsdPerM?: number;
+    },
   ): ProviderConfig[] => {
     const provider = this.repository.getProvider(providerId);
     if (!provider) throw new Error('未知 provider');
@@ -128,10 +140,10 @@ export class ModelConfigService {
         // Chat is the only capability a hand-added model has until proven otherwise.
         capability: 'chat',
         contextWindow: input.contextWindow ?? 0,
-        inputUsdPerM: 0,
-        outputUsdPerM: 0,
-        cacheReadUsdPerM: 0,
-        cacheWriteUsdPerM: 0,
+        inputUsdPerM: input.inputUsdPerM ?? 0,
+        outputUsdPerM: input.outputUsdPerM ?? 0,
+        cacheReadUsdPerM: input.cacheReadUsdPerM ?? 0,
+        cacheWriteUsdPerM: input.cacheWriteUsdPerM ?? 0,
       },
     ]);
     return this.listProviders();
@@ -178,7 +190,19 @@ export class ModelConfigService {
       };
     }
 
-    this.repository.saveModels(providerId, listed);
+    // Merge instead of replace: the endpoint only tells us ids. Existing prices,
+    // context windows, capabilities and manually added models are the user's data
+    // and must survive a refresh.
+    const existing = new Map(config.models.map((model) => [model.id, model]));
+    const listedIds = new Set(listed.map((model) => model.id));
+    const imported = listed.map((model) => {
+      const previous = existing.get(model.id);
+      if (!previous) return model;
+      return { ...previous, id: model.id, name: previous.name || model.name };
+    });
+    const kept = config.models.filter((model) => !listedIds.has(model.id));
+    this.repository.saveModels(providerId, [...imported, ...kept]);
+
     const added = listed.filter((model) => !before.has(model.id)).map((model) => model.id);
     return {
       providers: this.listProviders(),

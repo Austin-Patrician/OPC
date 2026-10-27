@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Info } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 import { cn } from '@/shared/lib/cn';
 import type { ReactNode as ReactNodeType } from 'react';
@@ -319,6 +320,7 @@ export function SecretField({
   placeholder: string;
   ariaLabel: string;
 }) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   return (
     <div className="relative">
@@ -334,7 +336,7 @@ export function SecretField({
       <button
         type="button"
         onClick={() => setVisible((previous) => !previous)}
-        aria-label={visible ? '隐藏' : '显示'}
+        aria-label={visible ? t('common.hide') : t('common.show')}
         className="absolute top-1/2 right-2 -translate-y-1/2 text-ink-quaternary hover:text-ink"
       >
         {visible ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}

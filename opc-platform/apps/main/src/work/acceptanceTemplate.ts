@@ -94,6 +94,52 @@ process.exit(0);
  * image file, and asserts status 200 plus an `image/*` content type.
  */
 /**
+ * Engineering acceptance: 交付物自带的测试必须真的跑起来并全部通过。
+ *
+ * 这是让"普通软件开发"可被自动判定的闸门：没有通过测试的模块不算交付，
+ * 一个零用例的测试文件更不算。命令由系统固定，员工无法改自己的判卷人，
+ * 也不能靠删测试蒙过去。
+ */
+export const VERIFY_NODE_TEST = String.raw`
+import { spawnSync } from 'node:child_process';
+
+// tap 报告格式稳定（# pass N）；默认 spec reporter 的符号随 Node 版本变。
+const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap'], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  timeout: 120000,
+  env: { ...process.env, NODE_OPTIONS: '' },
+});
+
+const output = (run.stdout ?? '') + (run.stderr ?? '');
+const tail = output.trim().split('\n').slice(-14).join('\n');
+if (tail) console.log(tail);
+
+const count = (label) => {
+  // TAP: "# pass 10"；spec: "ℹ pass 10"。两种都认，避免因 reporter 变化误判。
+  const tap = output.match(new RegExp('^# ' + label + ' (\\d+)$', 'm'));
+  const spec = output.match(new RegExp('[ℹ] ' + label + ' (\\d+)$', 'm'));
+  const match = tap ?? spec;
+  return match ? Number(match[1]) : null;
+};
+const passed = count('pass');
+const failed = count('fail');
+
+if (run.status !== 0) {
+  console.error('FAIL node --test 退出码 ' + run.status + '（pass=' + passed + ', fail=' + failed + '）');
+  process.exit(run.status && run.status > 0 ? run.status : 1);
+}
+// node --test 在没有可跑的用例时也退 0；空套件证明不了任何事情。
+if (!passed) {
+  console.error('FAIL 工作区没有跑起来的测试用例：交付物必须包含 node:test 用例');
+  process.exit(4);
+}
+
+console.log('PASS node-test（' + passed + ' 个用例通过）');
+process.exit(0);
+`;
+
+/**
  * Manager sign-off gate: the reviewer must leave a machine-readable verdict.
  * `pass` accepts the subordinate's work; `revise` sends it back with a reason.
  */

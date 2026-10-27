@@ -25,6 +25,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
   applyPragmas(db);
+  repairAcceptanceTemplateConstraint(db);
   repairLegacyColumns(db);
   migrate(db);
   return db;
@@ -54,6 +55,61 @@ function applyPragmas(db: CompanyDatabase): void {
 }
 
 /**
+ * Widens `task.acceptance_template` to include `node-test`.
+ *
+ * SQLite cannot alter a CHECK constraint, so the table is rebuilt: copy the DDL from
+ * `sqlite_master`, rename it, swap the CHECK clause, copy the rows, drop the old
+ * table, rename, then recreate the indexes the drop took with it.
+ *
+ * It runs *before* `migrate()` and outside its transaction on purpose: PRAGMA
+ * foreign_keys is a no-op inside a transaction, and the child tables referencing
+ * `task` would otherwise block the drop. Idempotent: it does nothing once the
+ * constraint already mentions the new template.
+ */
+export function repairAcceptanceTemplateConstraint(db: CompanyDatabase): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task'")
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+  if (!row.sql.includes("'review-verdict'")) return false;
+  if (row.sql.includes("'node-test'")) return false;
+
+  const indexes = (
+    db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task' AND sql IS NOT NULL")
+      .all() as { name: string; sql: string }[]
+  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
+
+  const rebuilt = row.sql
+    .replace(/^CREATE TABLE\s+["']?task["']?/i, 'CREATE TABLE task_rebuild')
+    .replace(
+      "'http-ok','image-200','review-verdict'",
+      "'http-ok','node-test','image-200','review-verdict'",
+    );
+  if (!rebuilt.includes("'node-test'")) {
+    // A hand-edited schema we do not recognise: leave it alone rather than guess.
+    return false;
+  }
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec('INSERT INTO task_rebuild SELECT * FROM task');
+    db.exec('DROP TABLE task');
+    db.exec('ALTER TABLE task_rebuild RENAME TO task');
+    for (const index of indexes) db.exec(index.sql);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw new Error(`重建 task 表以放宽 acceptance_template 约束失败：${String(error)}`, { cause: error });
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  return true;
+}
+
+/**
  * Columns that older builds created without, but that current indexes and views
  * expect. `CREATE TABLE IF NOT EXISTS` silently keeps the old shape, so a
  * migration that adds only an index on `company_id` fails with

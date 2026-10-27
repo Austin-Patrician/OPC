@@ -79,11 +79,18 @@ export function useModels() {
     saveProvider: (draft: ProviderDraft) => run(() => bridge?.saveProvider(draft)),
     removeProvider: (providerId: string) => run(() => bridge?.removeProvider(providerId)),
     setKey: (providerId: string, apiKey: string) => run(() => bridge?.setKey(providerId, apiKey)),
+    getKey: (providerId: string) => bridge?.getKey(providerId) ?? Promise.resolve(''),
     // Returns the outcome (ok/message/added) instead of void, so the page can report it.
+    // The imported list is applied straight from the result: without that the table kept
+    // showing the pre-refresh models until the page was remounted.
     refreshModels: async (providerId: string) => {
       try {
         const result = await bridge?.refreshModels(providerId);
-        setState((previous) => ({ ...previous, error: null }));
+        setState((previous) => ({
+          ...previous,
+          providers: result?.providers ?? previous.providers,
+          error: null,
+        }));
         return result;
       } catch (error) {
         setState((previous) => ({
@@ -95,7 +102,16 @@ export function useModels() {
     },
     addModel: (
       providerId: string,
-      input: { id: string; name?: string; contextWindow?: number; api?: string },
+      input: {
+        id: string;
+        name?: string;
+        contextWindow?: number;
+        api?: string;
+        inputUsdPerM?: number;
+        outputUsdPerM?: number;
+        cacheReadUsdPerM?: number;
+        cacheWriteUsdPerM?: number;
+      },
     ) => run(() => bridge?.addModel(providerId, input)),
     supportsOauth: (providerId: string) => bridge?.supportsOauth(providerId) ?? Promise.resolve(false),
     setDefault: (role: 'llm' | 'image', ref: ModelRef | null) =>
@@ -128,5 +144,5 @@ export function useModels() {
   const modelsOf = (provider: ProviderConfig, capability: ModelOption['capability']) =>
     provider.models.filter((model) => model.capability === capability);
 
-  return { ...state, ...actions, test, modelsOf };
+  return { ...state, ...actions, reload: load, test, modelsOf };
 }

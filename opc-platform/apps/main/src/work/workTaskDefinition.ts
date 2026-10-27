@@ -3,7 +3,12 @@ import type { TaskRepository } from '../data/taskRepository';
 import type { Context } from '@earendil-works/chord/context';
 import { defineTask, type TaskDefinition } from '@earendil-works/pi-durable';
 import fs from 'node:fs';
-import { VERIFY_HTTP_OK, VERIFY_IMAGE_200, VERIFY_REVIEW_VERDICT } from './acceptanceTemplate';
+import {
+  VERIFY_HTTP_OK,
+  VERIFY_IMAGE_200,
+  VERIFY_NODE_TEST,
+  VERIFY_REVIEW_VERDICT,
+} from './acceptanceTemplate';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runCommand } from './exec';
 import { ensureDir, listWorkspaceFiles, writeFileWithin } from './workspace';
@@ -195,11 +200,13 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
       writeFileWithin(
         checksDir,
         'verify.mjs',
-        workTask.acceptanceTemplate === 'image-200'
-          ? VERIFY_IMAGE_200
-          : workTask.acceptanceTemplate === 'review-verdict'
-            ? VERIFY_REVIEW_VERDICT
-            : VERIFY_HTTP_OK,
+        workTask.acceptanceTemplate === 'node-test'
+          ? VERIFY_NODE_TEST
+          : workTask.acceptanceTemplate === 'image-200'
+            ? VERIFY_IMAGE_200
+            : workTask.acceptanceTemplate === 'review-verdict'
+              ? VERIFY_REVIEW_VERDICT
+              : VERIFY_HTTP_OK,
       );
 
       const files = listWorkspaceFiles(workspaceDir);

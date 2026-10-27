@@ -145,6 +145,8 @@ export interface WorkTask {
   assigneeId: string;
   assigneeName: string;
   parentTaskId?: string;
+  /** The project this work is charged to (§8.1); absent = no project axis. */
+  projectGroupId?: string;
   /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
   issueKey?: string;
   /** P0 (do it now) … P3 (someday). Defaults to P2. */
@@ -192,6 +194,41 @@ export interface WorkTask {
 }
 
 /** ── Organisation ───────────────────────────────────────────────────────── */
+
+/**
+ * The one company this installation is (§1.3): its `company` row plus the profile
+ * preferences that have no column of their own (vision / brand colour / how the
+ * boss is addressed). Read and written through `window.opc.company`, so the
+ * renderer never keeps a second copy in localStorage.
+ */
+export interface CompanyProfile {
+  id: string;
+  /** Displayed in the title bar and on the onboarding business card. */
+  name: string;
+  /** `content` | `ecommerce` | … — the renderer owns the vocabulary. */
+  industry: string;
+  vision: string;
+  /** Brand palette id; unknown ids fall back to the default palette entry. */
+  colorId: string;
+  /** What the boss is called in the UI ("老板" by default). */
+  bossName: string;
+  /** Uploaded company logo as a base64 data URL; absent = brand monogram. */
+  logo?: string;
+  /** Uploaded boss avatar as a base64 data URL; absent = initials. */
+  bossAvatar?: string;
+}
+
+/** Partial update; omitted fields keep their stored value. */
+export interface CompanyProfilePatch {
+  name?: string;
+  industry?: string;
+  vision?: string;
+  colorId?: string;
+  bossName?: string;
+  /** Data URL; `''` removes the uploaded image. */
+  logo?: string;
+  bossAvatar?: string;
+}
 
 export interface OrgMember {
   id: string;
@@ -348,6 +385,11 @@ export interface ProviderConfig {
   /** pi api kind, e.g. `openai-completions` / `anthropic-messages`. */
   api: string;
   isCustom: boolean;
+  /**
+   * Provider id whose icon this one reuses (custom providers only). Empty or
+   * undefined falls back to initials.
+   */
+  icon?: string;
   /** Never carries the secret: the renderer only learns whether a key exists. */
   hasKey: boolean;
   models: ModelOption[];
@@ -372,6 +414,10 @@ export interface ProviderDraft {
   baseUrl: string;
   api: string;
   isCustom: boolean;
+  /** Provider id whose icon to reuse; `''` clears it, `undefined` leaves it unchanged. */
+  icon?: string;
+  /** Optional plaintext key; encrypted in the main process and never echoed back. */
+  apiKey?: string;
 }
 
 export interface ProviderTestResult {
@@ -383,8 +429,28 @@ export interface ProviderTestResult {
 
 /** ── Budget (Phase 0, slice B) ─────────────────────────────────────────── */
 
-export type BudgetScope = 'company' | 'employee';
+/**
+ * The four axes a run can be charged on (§8.1). `project` and `department` exist
+ * because a project is where money is actually decided; `company` is the backstop.
+ */
+export type BudgetScope = 'company' | 'employee' | 'project' | 'department';
 export type BudgetState = 'ok' | 'warn' | 'stopped';
+
+/** A crossed threshold. One row per budget per level per month (`idx_alert_once`). */
+export type BudgetAlertLevel = 'warn' | 'stop';
+
+export interface BudgetAlert {
+  id: string;
+  budgetId: string;
+  scope: BudgetScope;
+  scopeId: string;
+  periodKey: string;
+  level: BudgetAlertLevel;
+  usedTokens: number;
+  limitTokens: number;
+  ratio: number;
+  createdAt: number;
+}
 
 export interface Budget {
   id: string;
@@ -433,7 +499,12 @@ export type CreateTaskResult =
   | { ok: true; task: WorkTask }
   | { ok: false; error: BudgetError };
 
-export type AcceptanceTemplate = 'http-ok' | 'image-200' | 'review-verdict';
+export type AcceptanceTemplate =
+  | 'http-ok'
+  /** 交付物自带的 node:test 套件必须跑通（普通软件工作的默认闸门）。 */
+  | 'node-test'
+  | 'image-200'
+  | 'review-verdict';
 
 /** One subtask a manager wants to create. */
 export interface SubtaskDraft {
@@ -450,11 +521,65 @@ export interface CreateTaskInput {
   brief: string;
   deliverableSpec: string;
   assigneeId: string;
+  /** Charges this project's budget as well; subtasks inherit it (§8.1). */
+  projectGroupId?: string;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: AcceptanceTemplate;
   /** Service-internal: mandatory system steps (manager sign-off) may overdraw. */
   allowOverdraft?: boolean;
+}
+
+/** ── 网络与代理 ──────────────────────────────────────────────────────────── */
+
+/**
+ * `system` follows the OS proxy, `direct` ignores every proxy, `manual` uses the
+ * server below. The default is `system`, which is what an ordinary install does
+ * today — the feature is opt-in but never silently re-routes traffic.
+ */
+export type ProxyMode = 'system' | 'direct' | 'manual';
+
+/** `https` means "the proxy itself speaks TLS", not "proxy HTTPS traffic". */
+export type ProxyProtocol = 'http' | 'https' | 'socks5';
+
+/**
+ * The stored config as the renderer sees it.
+ *
+ * `password` is deliberately absent: the secret is encrypted with the OS keychain
+ * in `app_setting` and never crosses IPC. The UI only learns whether one exists.
+ */
+export interface ProxyConfig {
+  mode: ProxyMode;
+  protocol: ProxyProtocol;
+  host: string;
+  port: number;
+  username: string;
+  /** A password is stored for this proxy; the value itself is never returned. */
+  hasPassword: boolean;
+  /** Comma-separated hosts that skip the proxy; loopback is always added. */
+  bypass: string;
+}
+
+/**
+ * Write shape. `password: undefined` keeps the stored secret, `''` clears it and
+ * any other value replaces it — the same three-state contract as `setKey`.
+ */
+export interface ProxyConfigInput {
+  mode: ProxyMode;
+  protocol: ProxyProtocol;
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  bypass: string;
+}
+
+export interface ProxyTestResult {
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+  /** Egress IP observed by the probe endpoint, when it answered. */
+  ip?: string;
 }
 
 export interface Message {

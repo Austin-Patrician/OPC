@@ -19,11 +19,14 @@ import { SessionList } from './components/SessionList';
 import { ChatWorkspace } from './components/ChatWorkspace';
 import { HrOrgView } from './components/HrOrgView';
 import { SettingsView } from './components/settings/SettingsView';
+import { Onboarding } from './components/onboarding/Onboarding';
+import { useOnboarding } from './components/onboarding/onboardingStore';
 import { AvatarIcon } from './components/AvatarIcon';
 import { Users } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('im');
+  const onboarding = useOnboarding();
   const [departments, setDepartments] = useState<Department[]>(INITIAL_DEPARTMENTS);
   const [agents, setAgents] = useState<AgentEmployee[]>(INITIAL_AGENTS);
   const [candidates] = useState<CandidateAgent[]>(CANDIDATE_AGENTS);
@@ -283,7 +286,9 @@ export default function App() {
 
   // Hire a candidate Agent from the Talent Market into a Department
   const handleHireCandidate = (cand: CandidateAgent, targetDeptId: string) => {
-    const newAgentId = `agent-hired-${Date.now()}`;
+    // Candidate ID keeps IDs unique when several candidates are hired in the same tick.
+    const hireKey = `${Date.now()}-${cand.id}`;
+    const newAgentId = `agent-hired-${hireKey}`;
     const newAgent: AgentEmployee = {
       id: newAgentId,
       name: cand.name,
@@ -306,7 +311,7 @@ export default function App() {
 
     const dept = departments.find((d) => d.id === targetDeptId);
     const nowTime = getNowTime();
-    const newDmId = `conv-dm-${Date.now()}`;
+    const newDmId = `conv-dm-${hireKey}`;
 
     const newDmConv: Conversation = {
       id: newDmId,
@@ -321,7 +326,7 @@ export default function App() {
       memberAgentIds: [newAgentId],
       messages: [
         {
-          id: `sys-hire-${Date.now()}`,
+          id: `sys-hire-${hireKey}`,
           senderId: 'system',
           senderName: 'HR系统',
           timestamp: nowTime,
@@ -329,7 +334,7 @@ export default function App() {
           text: `[HR组织架构通知] 您已成功聘用「${newAgent.name} (${newAgent.level})」加入「${dept?.name || ''}」`,
         },
         {
-          id: `msg-hire-${Date.now()}`,
+          id: `msg-hire-${hireKey}`,
           senderId: newAgentId,
           senderName: newAgent.name,
           senderRole: `${newAgent.role} · ${newAgent.level}`,
@@ -354,7 +359,7 @@ export default function App() {
             messages: [
               ...c.messages,
               {
-                id: `grp-join-${Date.now()}`,
+                id: `grp-join-${hireKey}`,
                 senderId: newAgentId,
                 senderName: newAgent.name,
                 senderRole: `${newAgent.role} · ${newAgent.level}`,
@@ -753,6 +758,16 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {onboarding.open && (
+        <Onboarding
+          agents={agents}
+          departments={departments}
+          candidates={candidates}
+          onHire={handleHireCandidate}
+          onNavigate={setActiveTab}
+        />
       )}
     </div>
   );

@@ -1,15 +1,23 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AboutPage } from './pages/AboutPage';
 import { AppearancePage } from './pages/AppearancePage';
+import { CompanyPage } from './pages/CompanyPage';
 import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
 import { LlmPage } from './pages/LlmPage';
+import { NetworkPage } from './pages/NetworkPage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { useTranslation } from 'react-i18next';
-import { Boxes, Info, Settings2, ShieldCheck } from 'lucide-react';
+import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
-type PageId = 'appearance' | 'compaction' | 'llm' | 'image' | 'selfcheck' | 'about';
+const PAGE_IDS = ['appearance', 'company', 'compaction', 'llm', 'image', 'network', 'selfcheck', 'about'] as const;
+
+type PageId = (typeof PAGE_IDS)[number];
+
+const isPageId = (value: string | null): value is PageId =>
+  PAGE_IDS.some((id) => id === value);
 
 interface Group {
   id: string;
@@ -25,7 +33,15 @@ interface Group {
  */
 export function SettingsShell() {
   const { t } = useTranslation();
-  const [page, setPage] = useState<PageId>('appearance');
+  // `?page=company` is the deep link the title-bar identity card uses. The URL is
+  // the source of truth, so a link always lands on the page it names and clicking
+  // the sidebar keeps the address honest (no `?page=` for the default page).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get('page');
+  const page: PageId = isPageId(requested) ? requested : 'appearance';
+  const setPage = (next: PageId) => {
+    setSearchParams(next === 'appearance' ? {} : { page: next }, { replace: true });
+  };
   const [llmFocus, setLlmFocus] = useState<string | undefined>(undefined);
 
   const groups: Group[] = [
@@ -36,6 +52,7 @@ export function SettingsShell() {
       color: '#8E8E93',
       pages: [
         { id: 'appearance', label: t('settings.page.appearance') },
+        { id: 'company', label: t('settings.page.company') },
         { id: 'compaction', label: t('settings.page.compaction') },
       ],
     },
@@ -48,6 +65,15 @@ export function SettingsShell() {
         { id: 'llm', label: 'LLM' },
         { id: 'image', label: 'Image' },
       ],
+    },
+    {
+      // Outgoing traffic is infrastructure, not a model concern: its own group
+      // keeps it one click away instead of buried under 通用.
+      id: 'network',
+      label: t('settings.group.network'),
+      icon: Globe,
+      color: '#FF9500',
+      pages: [{ id: 'network', label: t('settings.page.network') }],
     },
     {
       id: 'selfcheck',
@@ -73,6 +99,8 @@ export function SettingsShell() {
     switch (page) {
       case 'appearance':
         return <AppearancePage />;
+      case 'company':
+        return <CompanyPage />;
       case 'compaction':
         return <CompactionPage />;
       case 'llm':
@@ -89,6 +117,8 @@ export function SettingsShell() {
         );
       case 'selfcheck':
         return <SelfCheckPage />;
+      case 'network':
+        return <NetworkPage />;
       case 'about':
         return <AboutPage />;
     }

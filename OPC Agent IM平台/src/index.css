@@ -51,3 +51,150 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.26);
 }
+
+/* ---------------------------------------------------------------------------
+ * First-run onboarding motion (scoped with the `onb-` prefix)
+ * ------------------------------------------------------------------------- */
+@keyframes onb-aurora-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(9%, -7%, 0) scale(1.16); }
+  66% { transform: translate3d(-7%, 6%, 0) scale(0.9); }
+}
+@keyframes onb-aurora-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.05); }
+  50% { transform: translate3d(-11%, -9%, 0) scale(0.88); }
+}
+@keyframes onb-aurora-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(0.95) rotate(0deg); }
+  50% { transform: translate3d(7%, 11%, 0) scale(1.14) rotate(28deg); }
+}
+@keyframes onb-spin { to { transform: rotate(360deg); } }
+@keyframes onb-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes onb-float {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -11px, 0); }
+}
+@keyframes onb-fade-up {
+  from { opacity: 0; transform: translate3d(0, 20px, 0); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes onb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes onb-char {
+  from { opacity: 0; transform: translate3d(0, 0.5em, 0) rotate(5deg); filter: blur(10px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes onb-wipe {
+  from { clip-path: inset(0 100% 0 0); opacity: 0.3; filter: blur(8px); }
+  to { clip-path: inset(0 -2% 0 0); opacity: 1; filter: blur(0); }
+}
+@keyframes onb-pan { to { background-position: 200% center; } }
+@keyframes onb-shimmer {
+  0% { transform: translateX(-140%) skewX(-20deg); }
+  55%, 100% { transform: translateX(340%) skewX(-20deg); }
+}
+@keyframes onb-ripple {
+  0% { transform: scale(0.85); opacity: 0.5; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+@keyframes onb-twinkle {
+  0%, 100% { opacity: 0.12; transform: scale(0.8); }
+  50% { opacity: 0.95; transform: scale(1.15); }
+}
+@keyframes onb-live-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.65); }
+  50% { box-shadow: 0 0 0 5px rgba(52, 199, 89, 0); }
+}
+@keyframes onb-typing {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+@keyframes onb-exit {
+  to { opacity: 0; transform: scale(1.05); filter: blur(12px); }
+}
+@keyframes onb-panel-in {
+  from { opacity: 0; transform: translate3d(0, 28px, 0) scale(0.965); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes onb-slide-next {
+  from { opacity: 0; transform: translate3d(32px, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes onb-slide-prev {
+  from { opacity: 0; transform: translate3d(-32px, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes onb-draw { to { stroke-dashoffset: 0; } }
+@keyframes onb-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes onb-burst {
+  0% { transform: scale(0.7); opacity: 0.7; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+@keyframes onb-confetti {
+  0% { transform: translate3d(0, -24px, 0) rotate(0deg); opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translate3d(var(--onb-dx, 0px), 640px, 0) rotate(var(--onb-rot, 540deg)); opacity: 0; }
+}
+
+.onb-fade-up { animation: onb-fade-up 0.9s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-fade { animation: onb-fade 1.2s ease-out both; }
+.onb-char { display: inline-block; animation: onb-char 1s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-wipe { animation: onb-wipe 1.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-exit { animation: onb-exit 0.45s cubic-bezier(0.4, 0, 1, 1) forwards; }
+.onb-panel-in { animation: onb-panel-in 0.75s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-slide-next { animation: onb-slide-next 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-slide-prev { animation: onb-slide-prev 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-float { animation: onb-float 6s ease-in-out infinite; }
+.onb-twinkle { animation: onb-twinkle 4s ease-in-out infinite; }
+.onb-live-dot { animation: onb-live-dot 2s ease-in-out infinite; }
+.onb-typing > span { animation: onb-typing 1.2s ease-in-out infinite; }
+.onb-typing > span:nth-child(2) { animation-delay: 0.15s; }
+.onb-typing > span:nth-child(3) { animation-delay: 0.3s; }
+.onb-shimmer { animation: onb-shimmer 3.6s ease-in-out 1.6s infinite; }
+.onb-ripple { animation: onb-ripple 3.6s cubic-bezier(0.2, 0.6, 0.3, 1) infinite; }
+.onb-pop { animation: onb-pop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.onb-burst { animation: onb-burst 1.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onb-confetti { animation: onb-confetti var(--onb-dur, 2.8s) cubic-bezier(0.25, 0.6, 0.4, 1) var(--onb-delay, 0s) both; }
+
+.onb-gradient-text {
+  background: linear-gradient(95deg, #0066E6 0%, #5B3DF5 36%, #0099FF 68%, #0066E6 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: onb-pan 7s linear infinite;
+}
+
+.onb-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 20%, transparent 75%);
+}
+
+.onb-grid-light {
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 42%, #000 25%, transparent 80%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onb-root *,
+  .onb-root *::before,
+  .onb-root *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+
+  .onb-root .onb-confetti {
+    display: none;
+  }
+}

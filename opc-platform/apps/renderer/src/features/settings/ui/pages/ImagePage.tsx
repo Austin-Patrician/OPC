@@ -204,7 +204,6 @@ export function ImagePage({ onOpenLlmProvider }: { onOpenLlmProvider?: (provider
                       />
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <KeyTag className="text-accent-ink">{selected.provider.id}</KeyTag>
                       <KeyTag>{selected.provider.baseUrl || '—'}</KeyTag>
                       {onOpenLlmProvider ? (
                         <button
