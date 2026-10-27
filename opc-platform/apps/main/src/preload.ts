@@ -77,6 +77,10 @@ const bridge: OpcBridge = {
       };
     },
   },
+  memory: {
+    consolidationRuns: (employeeId?: string) =>
+      ipcRenderer.invoke(IPC.memory.consolidationRuns, employeeId),
+  },
   projects: {
     list: () => ipcRenderer.invoke(IPC.projects.list),
     create: (input: unknown) => ipcRenderer.invoke(IPC.projects.create, input),

@@ -6,6 +6,7 @@ import { ChatService } from './chat/chatService';
 import { agentsFromOrg, chatDepartmentsFromOrg, ensureFirstCompany } from './seed/firstCompany';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
+import { ConsolidationRunStore } from './memory/consolidationRun';
 import { MemoryService } from './memory/memoryService';
 import { OrgFactService } from './memory/orgFactService';
 import { ProjectService } from './org/projectService';
@@ -47,6 +48,8 @@ const isBudgetProbe = process.env.OPC_BUDGET_PROBE === "1";
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
+/** `OPC_CONSOLIDATION_RUN_PROBE=1`: skipped and done runs are both recorded. */
+const isConsolidationRunProbe = process.env.OPC_CONSOLIDATION_RUN_PROBE === '1';
 /** `OPC_BLOCKER_PROBE=1`: a task with an unfinished blocker refuses to start. */
 const isBlockerProbe = process.env.OPC_BLOCKER_PROBE === '1';
 /** `OPC_ISSUE_META_PROBE=1`: priority / labels / due date round-trip through the repo. */
@@ -232,7 +235,9 @@ function bootstrap(): void {
       .filter((lesson) => lesson.content.length > 0);
   };
   chat.consolidate = async ({ conversationId, employeeId, messages: turns }) =>
-    consolidateConversation(memory, { conversationId, employeeId, messages: turns }, summarize);
+    consolidateConversation(memory, { conversationId, employeeId, messages: turns }, summarize, {
+      runs: consolidationRuns,
+    });
 
   // An agent answers with its own model. No provider → no answer, never a canned one.
   chat.replyWithModel = async ({ agent, text }) => {
@@ -263,6 +268,7 @@ function bootstrap(): void {
 
   const memory = new MemoryService(db);
   const facts = new OrgFactService(db);
+  const consolidationRuns = new ConsolidationRunStore(db);
   const projects = new ProjectService(db);
   const imageService = new ImageService(modelConfig, appPaths);
 
@@ -313,6 +319,7 @@ function bootstrap(): void {
     market,
     facts,
     projects,
+    consolidationRuns,
     comm,
     wakeEmployee: async (employeeId) =>
       heartbeat
@@ -385,6 +392,7 @@ const isHeadlessMode =
   isWorkProbe ||
   isBudgetProbe ||
   isModelProbe ||
+  isConsolidationRunProbe ||
   isBlockerProbe ||
   isIssueMetaProbe ||
   isPricingProbe ||
@@ -413,6 +421,66 @@ if (!hasLock) {
 
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
+
+    if (isConsolidationRunProbe) {
+      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consol-run-')));
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const org = new OrgService(db);
+      ensureFirstCompany(org);
+      const member = org.list().flatMap((department) => department.members)[0]!;
+      const memory = new MemoryService(db);
+      const runs = new ConsolidationRunStore(db);
+
+      const slice = {
+        conversationId: 'conv-run-probe',
+        employeeId: member.id,
+        messages: [
+          { senderId: 'user', text: '交付先给最小可运行版本' },
+          { senderId: member.id, text: '明白' },
+        ],
+      };
+
+      const skipped = await consolidateConversation(memory, slice, undefined, { runs });
+      const done = await consolidateConversation(
+        memory,
+        slice,
+        async ({ messages }) =>
+          messages
+            .filter((message) => message.senderId === 'user')
+            .map((message) => ({ kind: 'preference' as const, content: `老板要求：${message.text}` })),
+        { runs },
+      );
+      const failed = await consolidateConversation(
+        memory,
+        slice,
+        async () => {
+          throw new Error('模型崩了');
+        },
+        { runs },
+      ).catch((error) => ({ written: 0, skipped: String(error) }));
+
+      const rows = runs.list(10);
+      process.stdout.write(
+        JSON.stringify({
+          probe: 'consolidation-run',
+          skipped,
+          done,
+          failedSkipped: 'skipped' in failed,
+          statuses: rows.map((run) => `${run.status}:${run.memoriesCreated}`),
+          total: rows.length,
+        }) + '\n',
+      );
+      app.exit(
+        rows.length === 3 &&
+          rows.some((run) => run.status === 'skipped') &&
+          rows.some((run) => run.status === 'done' && run.memoriesCreated === 1) &&
+          rows.some((run) => run.status === 'failed')
+          ? 0
+          : 1,
+      );
+      return;
+    }
 
     if (isBlockerProbe) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';

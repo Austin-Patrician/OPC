@@ -312,6 +312,7 @@
             ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise((r) => setTimeout(r, 600));
           const factRows = document.querySelectorAll('[data-testid="org-fact-row"]').length;
+          const runRows = document.querySelectorAll('[data-testid="consolidation-run-row"]').length;
 
           // Department rules live in the department dossier (org_fact scope=department).
           let deptFactsForm = false;
@@ -432,6 +433,7 @@
             orgMembers,
             factsForm,
             factRows,
+            runRows,
             deptFactsForm,
             deptFactRows,
             orgDepartments,

@@ -78,6 +78,9 @@ export const IPC = {
     list: 'facts:list',
     write: 'facts:write',
   },
+  memory: {
+    consolidationRuns: 'memory:consolidationRuns',
+  },
   projects: {
     list: 'projects:list',
     create: 'projects:create',
@@ -338,6 +341,23 @@ export interface ProjectView {
   members: { employeeId: string; name: string; role: string }[];
 }
 
+export interface ConsolidationRunView {
+  id: string;
+  employeeId: string;
+  conversationIds: string[];
+  episodeCount: number;
+  memoriesCreated: number;
+  status: 'running' | 'done' | 'failed' | 'skipped';
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface MemoryBridge {
+  /** Recent consolidation runs — the audit trail of "下班反思". */
+  consolidationRuns(employeeId?: string): Promise<ConsolidationRunView[]>;
+}
+
 export interface ProjectsBridge {
   list(): Promise<ProjectView[]>;
   create(input: { name: string; code?: string; description?: string; departmentId?: string }): Promise<ProjectView[]>;
@@ -487,6 +507,7 @@ export interface OpcBridge {
   org: OrgBridge;
   facts: FactsBridge;
   projects: ProjectsBridge;
+  memory: MemoryBridge;
   market: MarketBridge;
   comm: CommBridge;
   diagnostics: {

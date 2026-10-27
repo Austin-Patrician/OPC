@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -492,7 +492,29 @@ CREATE INDEX IF NOT EXISTS idx_link_from ON task_link(from_task_id);
 CREATE INDEX IF NOT EXISTS idx_link_to ON task_link(to_task_id);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6];
+/**
+ * V7: a record per consolidation ("下班反思"). Without it the app can create memories
+ * but cannot answer "how many runs, how many memories, how much did it cost".
+ */
+const V7 = `
+CREATE TABLE IF NOT EXISTS consolidation_run (
+  id                      TEXT PRIMARY KEY,
+  employee_id             TEXT NOT NULL,
+  source_conversation_ids TEXT NOT NULL DEFAULT '[]',
+  episode_count           INTEGER NOT NULL DEFAULT 0,
+  memories_created        INTEGER NOT NULL DEFAULT 0,
+  memories_merged         INTEGER NOT NULL DEFAULT 0,
+  memories_archived       INTEGER NOT NULL DEFAULT 0,
+  tokens_used             INTEGER NOT NULL DEFAULT 0,
+  status                  TEXT NOT NULL DEFAULT 'running',
+  error                   TEXT,
+  started_at              INTEGER NOT NULL,
+  finished_at             INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_consol_emp ON consolidation_run(employee_id, started_at DESC);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {

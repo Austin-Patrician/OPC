@@ -18,6 +18,7 @@ import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
 import type { MarketService } from '../market/marketService';
 import type { OrgFactService } from '../memory/orgFactService';
+import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
 import type { OrgService } from '../org/orgService';
@@ -38,6 +39,7 @@ interface RegisterOptions {
   market: MarketService;
   facts: OrgFactService;
   projects: ProjectService;
+  consolidationRuns: ConsolidationRunStore;
   comm: CommService;
   /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
   wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
@@ -55,6 +57,7 @@ export function registerIpc({
   market,
   facts,
   projects,
+  consolidationRuns,
   comm,
   wakeEmployee,
 }: RegisterOptions): () => void {
@@ -255,6 +258,9 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.org.list, () => org.list());
+  ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
+    consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
+  );
   ipcMain.handle(IPC.projects.list, () => projects.list());
   ipcMain.handle(IPC.projects.create, (_event, input: unknown) => {
     if (typeof input !== 'object' || input === null) throw new Error('projects:create 参数非法');

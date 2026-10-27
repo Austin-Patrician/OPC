@@ -318,6 +318,12 @@
       "subject": "Subject, e.g. Q4 goal",
       "object": "Value, e.g. retention first",
       "save": "Save"
+    },
+    "runs": {
+      "title": "Consolidation runs",
+      "desc": "Every reflection leaves a record: counts, status, failure reason. No model = skipped, not an error.",
+      "empty": "No consolidation runs yet.",
+      "created": "{{count}} memories from {{episodes}} messages"
     }
   },
   "org": {
