@@ -2,9 +2,94 @@ import { useEffect, useMemo, useState } from 'react';
 import { Archive, FolderPlus, Plus, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DepartmentNode, OrgMember } from '@opc/shared/domain';
-import type { ProjectView } from '@opc/shared/ipc';
+import type { OrgFactView, ProjectView } from '@opc/shared/ipc';
 import { cn } from '@/shared/lib/cn';
 import { buttonClass } from '@/features/settings/ui/kit';
+
+/**
+ * Project rules: facts scoped to this project, which only assigned people receive.
+ * Same shape as the department block — one list, one inline write, no modals.
+ */
+function ProjectRules({ projectId }: { projectId: string }) {
+  const { t } = useTranslation();
+  const [facts, setFacts] = useState<OrgFactView[]>([]);
+  const [subject, setSubject] = useState('');
+  const [value, setValue] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    void window
+      .opc!.facts.list({ projectId })
+      .then((rows) => {
+        if (alive) setFacts(rows);
+      })
+      .catch(() => {
+        if (alive) setFacts([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  const save = async () => {
+    if (!subject.trim() || !value.trim()) return;
+    setFacts(
+      await window.opc!.facts.write({
+        scopeType: 'project',
+        scopeId: projectId,
+        subject: subject.trim(),
+        object: value.trim(),
+      }),
+    );
+    setSubject('');
+    setValue('');
+  };
+
+  return (
+    <div className="mt-1.5">
+      <div className="mb-1 text-3xs text-ink-quaternary">
+        {t('projects.rules')} · {facts.length}
+      </div>
+      {facts.length > 0 ? (
+        <ul data-testid="project-facts" className="mb-1 space-y-0.5">
+          {facts.map((fact) => (
+            <li key={fact.id} data-testid="project-fact-row" className="flex gap-1.5 text-2xs">
+              <span className="shrink-0 font-mono text-3xs text-ink-quaternary">{fact.subject}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-secondary">{fact.object}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="flex items-center gap-1.5">
+        <input
+          value={subject}
+          onChange={(event) => setSubject(event.target.value)}
+          placeholder={t('projects.ruleSubject')}
+          className="h-6 w-28 rounded border border-line bg-surface px-1.5 text-2xs text-ink outline-none focus:border-accent"
+        />
+        <input
+          data-testid="project-fact-value"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void save();
+          }}
+          placeholder={t('projects.ruleValue')}
+          className="h-6 min-w-40 flex-1 rounded border border-line bg-surface px-1.5 text-2xs text-ink outline-none focus:border-accent"
+        />
+        <button
+          type="button"
+          data-testid="project-fact-save"
+          disabled={!subject.trim() || !value.trim()}
+          onClick={() => void save()}
+          className="h-6 rounded bg-accent px-2 text-2xs font-medium text-white disabled:opacity-40"
+        >
+          {t('common.save')}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Projects — where an employee works *besides* their seat in the org chart.
@@ -204,6 +289,8 @@ export function ProjectsPage() {
                           {t('projects.addMember')}
                         </button>
                       </div>
+
+                      <ProjectRules projectId={project.id} />
 
                       {openFor === project.id ? (
                         <select

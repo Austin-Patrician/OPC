@@ -91,7 +91,7 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.projects.removeMember, projectId, employeeId),
   },
   facts: {
-    list: (filter?: { employeeId?: string; departmentId?: string }) =>
+    list: (filter?: { employeeId?: string; departmentId?: string; projectId?: string }) =>
       ipcRenderer.invoke(IPC.facts.list, filter),
     write: (input: unknown) => ipcRenderer.invoke(IPC.facts.write, input),
   },

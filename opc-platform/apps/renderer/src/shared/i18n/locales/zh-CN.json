@@ -728,6 +728,9 @@
     "remove": "移出",
     "addMember": "加人",
     "pickMember": "选择员工",
-    "noDescription": "（没有描述）"
+    "noDescription": "（没有描述）",
+    "rules": "项目规定",
+    "ruleSubject": "主题",
+    "ruleValue": "内容，如 只做留存相关改动"
   }
 }

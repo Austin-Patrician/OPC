@@ -220,7 +220,15 @@
               departmentId: firstDepartment?.id,
             });
             const project = list[0];
-            if (project) await window.opc.projects.assign(project.id, firstMember.id, '负责人');
+            if (project) {
+              await window.opc.projects.assign(project.id, firstMember.id, '负责人');
+              await window.opc.facts.write({
+                scopeType: 'project',
+                scopeId: project.id,
+                subject: 'smoke-rule',
+                object: '项目规定写入可见',
+              });
+            }
           }
           location.hash = '#/issues';
           await new Promise((r) => setTimeout(r, 300));
@@ -228,6 +236,7 @@
           await new Promise((r) => setTimeout(r, 700));
           const projectRows = document.querySelectorAll('[data-testid="project-row"]').length;
           const projectMembers = document.querySelectorAll('[data-testid="project-member"]').length;
+          const projectFactRows = document.querySelectorAll('[data-testid="project-fact-row"]').length;
           // Back to issues so the board assertions below run on the right page.
           location.hash = '#/issues';
           await new Promise((r) => setTimeout(r, 600));
@@ -470,6 +479,7 @@
             projectCreateOpen,
             projectRows,
             projectMembers,
+            projectFactRows,
             issueBurndown,
             issuePeopleRows,
             issueBulkBar,

@@ -368,7 +368,7 @@ export interface ProjectsBridge {
 
 export interface FactsBridge {
   /** Current facts: by employee (org + their department) or by department. */
-  list(filter?: { employeeId?: string; departmentId?: string }): Promise<OrgFactView[]>;
+  list(filter?: { employeeId?: string; departmentId?: string; projectId?: string }): Promise<OrgFactView[]>;
   write(input: {
     scopeType: 'org' | 'department' | 'project';
     scopeId?: string;

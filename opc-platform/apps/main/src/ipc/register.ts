@@ -298,9 +298,13 @@ export function registerIpc({
     const parsed = (typeof filter === 'object' && filter !== null ? filter : {}) as {
       employeeId?: unknown;
       departmentId?: unknown;
+      projectId?: unknown;
     };
     if (typeof parsed.departmentId === 'string' && parsed.departmentId) {
       return facts.current([{ type: 'department' as const, id: parsed.departmentId }], 50);
+    }
+    if (typeof parsed.projectId === 'string' && parsed.projectId) {
+      return facts.current([{ type: 'project' as const, id: parsed.projectId }], 50);
     }
     const member =
       typeof parsed.employeeId === 'string'

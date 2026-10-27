@@ -728,6 +728,9 @@
     "remove": "Remove",
     "addMember": "Add member",
     "pickMember": "Pick an employee",
-    "noDescription": "(no description)"
+    "noDescription": "(no description)",
+    "rules": "Project rules",
+    "ruleSubject": "Subject",
+    "ruleValue": "Value, e.g. retention-only changes"
   }
 }
