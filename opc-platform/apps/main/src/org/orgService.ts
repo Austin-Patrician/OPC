@@ -87,27 +87,42 @@ export class OrgService {
   list = (): DepartmentNode[] => {
     const members = this.readMembers();
     const departments = this.db
-      .prepare('SELECT * FROM department WHERE deleted_at IS NULL ORDER BY created_at')
+      .prepare(
+        'SELECT id, name, code, description, color FROM department WHERE deleted_at IS NULL ORDER BY created_at',
+      )
       .all() as {
       id: string;
       name: string;
       code: string;
       description: string;
       color: string;
-      head_employee_id: string | null;
     }[];
+
+    const byDepartment = new Map<string, OrgMember[]>();
+    for (const member of members) {
+      if (!member.departmentId) continue;
+      const bucket = byDepartment.get(member.departmentId);
+      if (bucket) bucket.push(member);
+      else byDepartment.set(member.departmentId, [member]);
+    }
 
     // No synthetic "unassigned" department: people without a position live in the
     // talent pool (`unplaced`), which is what the market page lists.
-    return departments.map((department) => ({
-      id: department.id,
-      name: department.name,
-      code: department.code,
-      description: department.description,
-      color: department.color,
-      headEmployeeId: department.head_employee_id ?? undefined,
-      members: members.filter((member) => member.departmentId === department.id),
-    }));
+    return departments.map((department) => {
+      const departmentMembers = byDepartment.get(department.id) ?? [];
+      return {
+        id: department.id,
+        name: department.name,
+        code: department.code,
+        description: department.description,
+        color: department.color,
+        // Derived, never stored: `position.is_head` is the single source of truth.
+        // `department.head_employee_id` is kept in the schema for one release so a
+        // rollback still renders, but this class neither reads nor writes it.
+        headEmployeeId: departmentMembers.find((member) => member.isHead)?.id,
+        members: departmentMembers,
+      };
+    });
   };
 
   /** Employees with no active position: alumni and anyone not yet placed. */
@@ -143,6 +158,61 @@ export class OrgService {
     this.list()
       .flatMap((department) => department.members)
       .filter((member) => member.reportsToEmployeeId === managerId && member.status === 'active');
+
+  /**
+   * Demotes the current head of `departmentId`.
+   *
+   * Called before appointing a new one: `idx_pos_head` allows exactly one live head
+   * per department, so "hire a new head" has to mean "replace", not "add".
+   */
+  private clearHead = (departmentId: string, now: number): void => {
+    this.db
+      .prepare(
+        'UPDATE position SET is_head = 0, updated_at = ? WHERE department_id = ? AND is_head = 1 AND deleted_at IS NULL',
+      )
+      .run(now, departmentId);
+  };
+
+  /** The live position of one employee, if any. `position` is the org authority. */
+  private livePosition = (
+    employeeId: string,
+  ): { id: string; department_id: string; reports_to_employee_id: string | null; is_head: number } | undefined =>
+    this.db
+      .prepare(
+        `SELECT id, department_id, reports_to_employee_id, is_head FROM position
+          WHERE employee_id = ? AND deleted_at IS NULL`,
+      )
+      .get(employeeId) as
+      | { id: string; department_id: string; reports_to_employee_id: string | null; is_head: number }
+      | undefined;
+
+  private isActive = (employeeId: string): boolean =>
+    this.db
+      .prepare("SELECT 1 AS ok FROM employee WHERE id = ? AND status = 'active'")
+      .get(employeeId) !== undefined;
+
+  /**
+   * A reporting line is a permission edge, not a drawing: `subordinatesOf` decides
+   * who gets the decompose tool. So the target must be an active employee, and the
+   * new edge must not close a loop (A→B→A makes both of them managers).
+   */
+  private assertManager = (employeeId: string, managerId: string | null): void => {
+    if (!managerId) return;
+    if (managerId === employeeId) throw new Error('不能把自己设为汇报对象');
+    if (!this.isActive(managerId)) throw new Error('汇报对象不在岗');
+
+    const seen = new Set<string>();
+    let cursor: string | null = managerId;
+    while (cursor) {
+      if (cursor === employeeId) throw new Error('汇报线不能成环');
+      // A pre-existing loop elsewhere in the chain cannot be fixed here; stop rather
+      // than spin. This write is still safe: it adds an edge to a chain that already
+      // had a cycle, it does not create one through `employeeId`.
+      if (seen.has(cursor)) return;
+      seen.add(cursor);
+      cursor = this.livePosition(cursor)?.reports_to_employee_id ?? null;
+    }
+  };
 
   /**
    * Repairs legacy rows that share a colour (older builds hard-coded one blue).
@@ -216,8 +286,11 @@ export class OrgService {
         .prepare("SELECT id FROM employee WHERE id = ? AND status = 'active'")
         .get(input.headEmployeeId);
       if (!head) throw new Error('指定的负责人不在岗');
-      // Move first (the employee may already hold a position elsewhere), then mark head.
+      // Move first (the employee may already hold a position elsewhere), then mark
+      // head. A brand-new department has no incumbent, but going through `clearHead`
+      // keeps the invariant in one place.
       this.transfer(input.headEmployeeId, id);
+      this.clearHead(id, Date.now());
       this.db
         .prepare(
           "UPDATE position SET is_head = 1, updated_at = ? WHERE employee_id = ? AND department_id = ? AND deleted_at IS NULL",
@@ -235,15 +308,10 @@ export class OrgService {
       .get(input.departmentId);
     if (!department) throw new Error('部门不存在');
 
-    if (input.reportsToEmployeeId) {
-      const manager = this.db
-        .prepare("SELECT id FROM employee WHERE id = ? AND status = 'active'")
-        .get(input.reportsToEmployeeId);
-      if (!manager) throw new Error('汇报对象不在岗');
-    }
-
     const now = Date.now();
     const employeeId = `agent-${crypto.randomUUID()}`;
+    // A brand-new id cannot be its own manager; this validates the target is active.
+    this.assertManager(employeeId, input.reportsToEmployeeId ?? null);
 
     const tx = this.db.transaction(() => {
       this.db
@@ -265,6 +333,10 @@ export class OrgService {
           now,
         );
 
+      // The new head replaces the old one; `idx_pos_head` would reject a second flag.
+      // Demote first: the insert below is the only row that must stay flagged.
+      if (input.isHead) this.clearHead(input.departmentId, now);
+
       this.db
         .prepare(
           `INSERT INTO position (id, employee_id, department_id, title, reports_to_employee_id, is_head, created_at, updated_at)
@@ -280,12 +352,6 @@ export class OrgService {
           now,
           now,
         );
-
-      if (input.isHead) {
-        this.db
-          .prepare('UPDATE department SET head_employee_id = ?, updated_at = ? WHERE id = ?')
-          .run(employeeId, now, input.departmentId);
-      }
     });
     tx();
 
@@ -328,13 +394,16 @@ export class OrgService {
         this.place(input.employeeId, departmentId);
         return;
       }
-      case 'set-manager':
+      case 'set-manager': {
+        const position = this.livePosition(input.employeeId);
+        if (!position) throw new Error('该员工不在岗，无法设置汇报对象');
+        const managerId = input.reportsToEmployeeId || null;
+        this.assertManager(input.employeeId, managerId);
         this.db
-          .prepare(
-            'UPDATE position SET reports_to_employee_id = ?, updated_at = ? WHERE employee_id = ? AND deleted_at IS NULL',
-          )
-          .run(input.reportsToEmployeeId || null, Date.now(), input.employeeId);
+          .prepare('UPDATE position SET reports_to_employee_id = ?, updated_at = ? WHERE id = ?')
+          .run(managerId, Date.now(), position.id);
         return;
+      }
       default:
         throw new Error(`未知的人事操作: ${String(input.action)}`);
     }
@@ -363,7 +432,11 @@ export class OrgService {
       .get(employeeId);
     if (existing) return;
 
+    this.assertManager(employeeId, options.reportsToEmployeeId ?? null);
+
     const now = Date.now();
+    // Demote the incumbent before inserting the new flag: `idx_pos_head` permits one.
+    if (options.isHead) this.clearHead(departmentId, now);
     this.db
       .prepare(
         `INSERT INTO position (id, employee_id, department_id, title, reports_to_employee_id, is_head, created_at, updated_at)
@@ -382,11 +455,6 @@ export class OrgService {
     this.db
       .prepare('UPDATE employee SET department_id = ?, updated_at = ? WHERE id = ?')
       .run(departmentId, now, employeeId);
-    if (options.isHead) {
-      this.db
-        .prepare('UPDATE department SET head_employee_id = ?, updated_at = ? WHERE id = ?')
-        .run(employeeId, now, departmentId);
-    }
   };
 
   transfer = (employeeId: string, departmentId: string, reportsToEmployeeId?: string): OrgMember => {
@@ -394,6 +462,13 @@ export class OrgService {
       .prepare('SELECT id FROM department WHERE id = ? AND deleted_at IS NULL')
       .get(departmentId);
     if (!department) throw new Error('部门不存在');
+
+    this.assertManager(employeeId, reportsToEmployeeId ?? null);
+
+    const current = this.livePosition(employeeId);
+    // A "transfer" to the same department must not silently demote the head: the
+    // old row is soft-deleted below, so the flag has to be carried across.
+    const keepHead = current?.is_head === 1 && current.department_id === departmentId;
 
     const now = Date.now();
     const tx = this.db.transaction(() => {
@@ -403,7 +478,7 @@ export class OrgService {
       this.db
         .prepare(
           `INSERT INTO position (id, employee_id, department_id, title, reports_to_employee_id, is_head, created_at, updated_at)
-           VALUES (?, ?, ?, (SELECT role FROM employee WHERE id = ?), ?, 0, ?, ?)`,
+           VALUES (?, ?, ?, (SELECT role FROM employee WHERE id = ?), ?, ?, ?, ?)`,
         )
         .run(
           `position-${crypto.randomUUID()}`,
@@ -411,6 +486,7 @@ export class OrgService {
           departmentId,
           employeeId,
           reportsToEmployeeId ?? null,
+          keepHead ? 1 : 0,
           now,
           now,
         );
@@ -437,9 +513,21 @@ export class OrgService {
       .prepare("SELECT id FROM task WHERE employee_id = ? AND status IN ('open','running')")
       .all(employeeId) as { id: string }[];
 
+    // Direct reports are handed to the departing manager's own manager. Without this
+    // they keep pointing at a terminated employee: `subordinatesOf` drops them (it
+    // only counts active members), so the whole branch silently becomes rootless.
+    const managerId = this.livePosition(employeeId)?.reports_to_employee_id ?? null;
+    const successor =
+      managerId && managerId !== employeeId && this.isActive(managerId) ? managerId : null;
+
     const budgets = new BudgetService(new BudgetRepository(this.db));
 
     const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          'UPDATE position SET reports_to_employee_id = ?, updated_at = ? WHERE reports_to_employee_id = ? AND deleted_at IS NULL',
+        )
+        .run(successor, now, employeeId);
       this.db
         .prepare("UPDATE employee SET status = 'terminated', updated_at = ? WHERE id = ?")
         .run(now, employeeId);

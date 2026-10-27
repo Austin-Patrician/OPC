@@ -78,6 +78,69 @@ describe('company.db', () => {
     expect(db.prepare("SELECT name FROM department WHERE id = 'dept-keep'").get()).toBeDefined();
     expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION);
   });
+
+  it('repairs org rows that violate the v11 invariants before adding the constraints', () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const person = org.hire({ name: '李雷', role: '工程师', departmentId: department.id });
+    org.hire({ name: '沈聿', role: '技术总监', departmentId: department.id, isHead: true });
+
+    // A v10 database could hold both of these: the unique index was per
+    // (employee, department), and reports_to had no foreign key at all.
+    const now = Date.now();
+    db.exec('DROP INDEX IF EXISTS idx_pos_employee');
+    db.prepare(
+      `INSERT INTO position (id, employee_id, department_id, title, is_head, created_at, updated_at)
+       VALUES ('pos-stale', ?, ?, '旧岗', 0, ?, ?)`,
+    ).run(person.id, department.id, now - 1_000, now);
+
+    db.pragma('foreign_keys = OFF');
+    db.prepare(
+      "UPDATE position SET reports_to_employee_id = 'agent-ghost' WHERE employee_id = ? AND deleted_at IS NULL",
+    ).run(person.id);
+    db.pragma('foreign_keys = ON');
+
+    db.pragma('user_version = 10');
+    db.close();
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const live = db
+      .prepare('SELECT id, reports_to_employee_id FROM position WHERE employee_id = ? AND deleted_at IS NULL')
+      .all(person.id) as { id: string; reports_to_employee_id: string | null }[];
+    expect(live).toHaveLength(1);
+    expect(live[0]!.reports_to_employee_id).toBeNull();
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION);
+
+    // The repaired data now satisfies the constraint the migration installed.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO position (id, employee_id, department_id, title, is_head, created_at, updated_at)
+           VALUES ('pos-again', ?, ?, '再来一岗', 0, ?, ?)`,
+        )
+        .run(person.id, department.id, now, now),
+    ).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it('keeps a v10 head-only department as the position flag when upgrading', () => {
+    // Old builds recorded the head only on `department.head_employee_id`. Dropping
+    // that column's values without migrating them would leave every department
+    // headless on the first launch of v11.
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const person = org.hire({ name: '沈聿', role: '技术总监', departmentId: department.id });
+
+    db.exec('DROP INDEX IF EXISTS idx_pos_head');
+    db.exec('UPDATE position SET is_head = 0');
+    db.prepare('UPDATE department SET head_employee_id = ? WHERE id = ?').run(person.id, department.id);
+    db.pragma('user_version = 10');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+    const node = new OrgService(db).list().find((entry) => entry.id === department.id)!;
+    expect(node.headEmployeeId).toBe(person.id);
+    expect(node.members.find((member) => member.id === person.id)?.isHead).toBe(true);
+  });
 });
 
 describe('org + budget', () => {

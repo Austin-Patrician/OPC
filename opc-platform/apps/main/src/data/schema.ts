@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS department (
   code              TEXT NOT NULL DEFAULT '',
   description       TEXT NOT NULL DEFAULT '',
   color             TEXT NOT NULL,
+  -- Deprecated since v11: the head is position.is_head (§4.3). Kept nullable and
+  -- unread for one release so a rollback still renders; OrgService never writes it.
   head_employee_id  TEXT,
   parent_id         TEXT,
   sort_order        INTEGER NOT NULL DEFAULT 0,
@@ -96,7 +98,8 @@ CREATE TABLE IF NOT EXISTS employee (
 );
 CREATE INDEX IF NOT EXISTS idx_emp_company_status ON employee(company_id, status);
 
--- Where someone sits and to whom they report. One live row per employee..
+-- Where someone sits and to whom they report. One live row per employee: a second
+-- job would need its own table, because readMembers joins this one 1:1.
 CREATE TABLE IF NOT EXISTS position (
   id                      TEXT PRIMARY KEY,
   employee_id             TEXT NOT NULL,
@@ -108,11 +111,20 @@ CREATE TABLE IF NOT EXISTS position (
   created_at              INTEGER NOT NULL,
   updated_at              INTEGER NOT NULL,
   FOREIGN KEY (employee_id) REFERENCES employee(id),
-  FOREIGN KEY (department_id) REFERENCES department(id)
+  FOREIGN KEY (department_id) REFERENCES department(id),
+  -- A reporting line is an edge to an employee, not a free-form string: it decides
+  -- who may decompose tasks (subordinatesOf), so a dangling id is a permission bug.
+  FOREIGN KEY (reports_to_employee_id) REFERENCES employee(id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_emp_dept ON position(employee_id, department_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_employee ON position(employee_id)
   WHERE deleted_at IS NULL;
+-- One head per department, enforced rather than agreed: headEmployeeId is derived
+-- from this flag and the org chart tolerates exactly one badge per department.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_head ON position(department_id)
+  WHERE is_head = 1 AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_pos_dept ON position(department_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_pos_reports_to ON position(reports_to_employee_id)
+  WHERE reports_to_employee_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS project_group (
   id            TEXT PRIMARY KEY,
@@ -565,7 +577,127 @@ const V10 = `
 ALTER TABLE model_provider ADD COLUMN icon TEXT;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
+/**
+ * V11: 组织架构的三条不变式写进 schema，而不是只写在 `OrgService` 里。
+ *
+ * 1. **一人一岗**：`(employee_id) WHERE deleted_at IS NULL` 唯一。旧索引是
+ *    `(employee_id, department_id)`，允许同一个人在两个部门各挂一条 live position；
+ *    `readMembers` 的 LEFT JOIN 会因此把同一个人算两次。
+ * 2. **一部门一负责人**：`is_head = 1` 的部分唯一索引。负责人此前有两个事实源
+ *    （`department.head_employee_id` + `position.is_head`），且都维护不全；从这一版起
+ *    只认 `position.is_head`，旧列停止读写。
+ * 3. **汇报线是外键**：`reports_to_employee_id → employee(id)`。这一列决定谁能拿到
+ *    拆解任务的工具（`subordinatesOf`），悬空 id 等于把权限发给一个不存在的人。
+ *
+ * SQLite 不能给已有表加外键，所以重建 `position`。重建前先修数据：同一员工只留
+ * 一条 live position、同一部门只留一个 `is_head`、悬空/自指的汇报线置空。这样即使
+ * 某个旧库已经违反了不变式，升级也能一次通过，而不是在 CREATE INDEX 时卡住。
+ *
+ * `department.head_employee_id` 不在这里删除：先停止读写、观察一个版本，回滚时旧
+ * 代码仍能渲染负责人。它留下的陈旧值不会被任何读取路径使用。
+ */
+const V11 = `
+-- ── 1. 修数据（必须在建索引/重建表之前）─────────────────────────────────
+-- 悬空、指向已离职、或指向自己的汇报线一律置空。
+UPDATE position
+SET reports_to_employee_id = NULL,
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE reports_to_employee_id IS NOT NULL
+  AND (
+    reports_to_employee_id = employee_id
+    OR NOT EXISTS (
+      SELECT 1 FROM employee e
+      WHERE e.id = position.reports_to_employee_id AND e.status = 'active'
+    )
+  );
+
+-- 一人多岗：优先保留负责人那条，其次保留最新的一条，其余软删除。
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY employee_id
+    ORDER BY is_head DESC, created_at DESC, id DESC
+  ) AS rn
+  FROM position
+  WHERE deleted_at IS NULL
+)
+UPDATE position
+SET deleted_at = CAST(strftime('%s','now') AS INTEGER) * 1000,
+    is_head = 0,
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+-- 一部门多负责人：优先保留旧列 head_employee_id 指向的人，其次最新的一条。
+WITH ranked AS (
+  SELECT p.id, ROW_NUMBER() OVER (
+    PARTITION BY p.department_id
+    ORDER BY (
+      p.employee_id = COALESCE(
+        (SELECT d.head_employee_id FROM department d WHERE d.id = p.department_id), ''
+      )
+    ) DESC, p.created_at DESC, p.id DESC
+  ) AS rn
+  FROM position p
+  WHERE p.is_head = 1 AND p.deleted_at IS NULL
+)
+UPDATE position
+SET is_head = 0, updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+-- 旧列里记着负责人、但 is_head 没标上的，补上：升级过程不能丢负责人。
+UPDATE position
+SET is_head = 1, updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE deleted_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM department d
+    WHERE d.id = position.department_id
+      AND d.head_employee_id = position.employee_id
+      AND d.deleted_at IS NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM position p2
+    WHERE p2.department_id = position.department_id
+      AND p2.is_head = 1 AND p2.deleted_at IS NULL
+  );
+
+-- ── 2. 重建 position：加上 reports_to 外键 ──────────────────────────────
+DROP INDEX IF EXISTS idx_pos_emp_dept;
+DROP INDEX IF EXISTS idx_pos_dept;
+DROP TABLE IF EXISTS position_rebuild;
+
+CREATE TABLE position_rebuild (
+  id                      TEXT PRIMARY KEY,
+  employee_id             TEXT NOT NULL,
+  department_id           TEXT NOT NULL,
+  title                   TEXT NOT NULL,
+  reports_to_employee_id  TEXT,
+  is_head                 INTEGER NOT NULL DEFAULT 0,
+  deleted_at              INTEGER,
+  created_at              INTEGER NOT NULL,
+  updated_at              INTEGER NOT NULL,
+  FOREIGN KEY (employee_id) REFERENCES employee(id),
+  FOREIGN KEY (department_id) REFERENCES department(id),
+  FOREIGN KEY (reports_to_employee_id) REFERENCES employee(id)
+);
+
+INSERT INTO position_rebuild
+  (id, employee_id, department_id, title, reports_to_employee_id, is_head, deleted_at, created_at, updated_at)
+SELECT id, employee_id, department_id, title, reports_to_employee_id, is_head, deleted_at, created_at, updated_at
+FROM position;
+
+DROP TABLE position;
+ALTER TABLE position_rebuild RENAME TO position;
+
+-- ── 3. 新不变式 ─────────────────────────────────────────────────────────
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_employee ON position(employee_id)
+  WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_head ON position(department_id)
+  WHERE is_head = 1 AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_pos_dept ON position(department_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_pos_reports_to ON position(reports_to_employee_id)
+  WHERE reports_to_employee_id IS NOT NULL;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
 
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
