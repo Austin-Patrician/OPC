@@ -21,7 +21,8 @@
     "mail": "Notifications",
     "device": "Mobile device",
     "menu": "Settings",
-    "issues": "Issues"
+    "issues": "Issues",
+    "projects": "Projects"
   },
   "titleBar": {
     "defaultSignature": "Edit your signature",
@@ -707,5 +708,20 @@
       "lead": "Avg lead",
       "spend": "Spend"
     }
+  },
+  "projects": {
+    "title": "Projects",
+    "create": "New project",
+    "desc": "A project is a second affiliation beside the org seat: only assigned people receive its memories and facts.",
+    "name": "Project name",
+    "description": "Description",
+    "department": "Department",
+    "noDepartment": "Any department",
+    "empty": "No projects yet.",
+    "archive": "Archive project",
+    "remove": "Remove",
+    "addMember": "Add member",
+    "pickMember": "Pick an employee",
+    "noDescription": "(no description)"
   }
 }

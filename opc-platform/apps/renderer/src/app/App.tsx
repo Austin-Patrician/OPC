@@ -11,6 +11,7 @@ import {
   SkillsPage,
 } from '@/pages/placeholder/staticPages';
 import { IssueListPage } from '@/pages/issues/IssueListPage';
+import { ProjectsPage } from '@/pages/projects/ProjectsPage';
 import { MarketPage } from '@/pages/market/MarketPage';
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
 import { OrgPage } from '@/pages/org/OrgPage';
@@ -35,6 +36,7 @@ export function App() {
           <Route path="org" element={<OrgPage />} />
           <Route path="market" element={<MarketPage />} />
           <Route path="issues" element={<IssueListPage />} />
+          <Route path="projects" element={<ProjectsPage />} />
           <Route path="channels" element={<ChannelsPage />} />
           <Route path="deliverables" element={<DeliverablesPage />} />
           <Route path="skills" element={<SkillsPage />} />

@@ -275,6 +275,13 @@ export function registerIpc({
     projects.assign(projectId, employeeId, typeof role === 'string' ? role : '');
     return projects.list();
   });
+  ipcMain.handle(IPC.projects.removeMember, (_event, projectId: unknown, employeeId: unknown) => {
+    if (typeof projectId !== 'string' || typeof employeeId !== 'string') {
+      throw new Error('projects:removeMember 参数非法');
+    }
+    projects.removeMember(projectId, employeeId);
+    return projects.list();
+  });
   ipcMain.handle(IPC.projects.archive, (_event, projectId: unknown) => {
     if (typeof projectId !== 'string') throw new Error('projects:archive 参数非法');
     projects.archive(projectId);

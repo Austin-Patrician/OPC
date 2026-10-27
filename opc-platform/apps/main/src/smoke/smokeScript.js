@@ -207,6 +207,31 @@
           );
           await new Promise((r) => setTimeout(r, 400));
           const issuePeopleRows = document.querySelectorAll('[data-testid="issue-person-row"]').length;
+          // Projects: create through the bridge, then the row + member chip render.
+          location.hash = '#/projects';
+          await new Promise((r) => setTimeout(r, 700));
+          const projectCreateOpen = Boolean(document.querySelector('[data-testid="project-create-open"]'));
+          const firstDepartment = (await window.opc.org.list())[0];
+          const firstMember = firstDepartment?.members[0];
+          if (firstMember) {
+            const list = await window.opc.projects.create({
+              name: `smoke-${Date.now()}`,
+              code: 'SMK-1',
+              departmentId: firstDepartment?.id,
+            });
+            const project = list[0];
+            if (project) await window.opc.projects.assign(project.id, firstMember.id, '负责人');
+          }
+          location.hash = '#/issues';
+          await new Promise((r) => setTimeout(r, 300));
+          location.hash = '#/projects';
+          await new Promise((r) => setTimeout(r, 700));
+          const projectRows = document.querySelectorAll('[data-testid="project-row"]').length;
+          const projectMembers = document.querySelectorAll('[data-testid="project-member"]').length;
+          // Back to issues so the board assertions below run on the right page.
+          location.hash = '#/issues';
+          await new Promise((r) => setTimeout(r, 600));
+
           document.querySelector('[data-testid="issue-mode-ledger"]')?.dispatchEvent(
             new MouseEvent('click', { bubbles: true }),
           );
@@ -440,6 +465,9 @@
             issueFilteredRows,
             issuePriorityShown,
             issueTimelineBars,
+            projectCreateOpen,
+            projectRows,
+            projectMembers,
             issueBurndown,
             issuePeopleRows,
             issueBulkBar,

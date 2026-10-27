@@ -83,6 +83,7 @@ export const IPC = {
     create: 'projects:create',
     assign: 'projects:assign',
     archive: 'projects:archive',
+    removeMember: 'projects:removeMember',
   },
   org: {
     list: 'org:list',
@@ -342,6 +343,7 @@ export interface ProjectsBridge {
   create(input: { name: string; code?: string; description?: string; departmentId?: string }): Promise<ProjectView[]>;
   assign(projectId: string, employeeId: string, role?: string): Promise<ProjectView[]>;
   archive(projectId: string): Promise<ProjectView[]>;
+  removeMember(projectId: string, employeeId: string): Promise<ProjectView[]>;
 }
 
 export interface FactsBridge {

@@ -83,6 +83,8 @@ const bridge: OpcBridge = {
     assign: (projectId: string, employeeId: string, role?: string) =>
       ipcRenderer.invoke(IPC.projects.assign, projectId, employeeId, role),
     archive: (projectId: string) => ipcRenderer.invoke(IPC.projects.archive, projectId),
+    removeMember: (projectId: string, employeeId: string) =>
+      ipcRenderer.invoke(IPC.projects.removeMember, projectId, employeeId),
   },
   facts: {
     list: (filter?: { employeeId?: string; departmentId?: string }) =>

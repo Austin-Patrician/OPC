@@ -21,7 +21,8 @@
     "mail": "站内通知",
     "device": "移动端设备",
     "menu": "设置与总控",
-    "issues": "工作项"
+    "issues": "工作项",
+    "projects": "项目"
   },
   "titleBar": {
     "defaultSignature": "编辑个性签名",
@@ -707,5 +708,20 @@
       "lead": "平均耗时",
       "spend": "花费"
     }
+  },
+  "projects": {
+    "title": "项目",
+    "create": "新建项目",
+    "desc": "项目是员工在组织架构之外的第二个归属：只有被指派的人，才会拿到该项目的记忆与事实。",
+    "name": "项目名称",
+    "description": "项目描述",
+    "department": "所属部门",
+    "noDepartment": "不限定部门",
+    "empty": "还没有项目。",
+    "archive": "归档项目",
+    "remove": "移出",
+    "addMember": "加人",
+    "pickMember": "选择员工",
+    "noDescription": "（没有描述）"
   }
 }

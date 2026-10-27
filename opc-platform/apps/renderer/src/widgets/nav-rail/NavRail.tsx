@@ -8,6 +8,7 @@ import {
   Smartphone,
   Star,
   UsersRound,
+  FolderKanban,
   SquareKanban,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -18,6 +19,7 @@ const PRIMARY_NAV = [
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
   { to: '/org', icon: UsersRound, labelKey: 'nav.org' },
+  { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { to: '/market', icon: Star, labelKey: 'nav.market', dot: true },
   { to: '/channels', icon: Hash, labelKey: 'nav.channels' },
   { to: '/deliverables', icon: Archive, labelKey: 'nav.deliverables' },
