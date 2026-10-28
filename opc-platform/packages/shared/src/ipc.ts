@@ -444,6 +444,8 @@ export interface ProjectView {
   description: string;
   departmentId: string;
   status: 'active' | 'archived';
+  /** ms epoch; the dossier shows when the commitment was opened. */
+  createdAt: number;
   members: {
     employeeId: string;
     name: string;
