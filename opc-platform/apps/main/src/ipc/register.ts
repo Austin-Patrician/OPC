@@ -6,6 +6,7 @@ import type {
   ModelOption,
   ModelRef,
   ProviderDraft,
+  RuntimeProfileDraft,
 } from '@opc/shared/domain';
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs';
@@ -30,6 +31,8 @@ import type { ImageService } from '../models/imageService';
 import type { ModelConfigService } from '../models/modelConfigService';
 import type { NetworkProxyService } from '../network/proxyService';
 import { probeProxy } from '../network/proxyRuntime';
+import { isRuntimeKind } from '../runtime/profiles';
+import type { RuntimeService } from '../runtime/service';
 import type { WorkService } from '../work/workService';
 
 interface RegisterOptions {
@@ -41,6 +44,8 @@ interface RegisterOptions {
   company: CompanyService;
   /** 网络代理：保存即生效，失败会作为 IPC 错误抛回设置页。 */
   network: NetworkProxyService;
+  /** 全局基础运行环境（Node / Python），所有员工共用。 */
+  runtime: RuntimeService;
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
@@ -71,6 +76,7 @@ export function registerIpc({
   budget: budgetCenter,
   company,
   network,
+  runtime,
   wakeEmployee,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
@@ -177,6 +183,50 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.network.test, (_event, input: unknown) => probeProxy(network.candidate(input)));
+
+  ipcMain.handle(IPC.runtime.snapshot, () => runtime.snapshot());
+
+  // Re-detects every profile; the settings page calls this explicitly so a
+  // version is never probed during a tool call.
+  ipcMain.handle(IPC.runtime.probe, () => runtime.probe());
+
+  ipcMain.handle(IPC.runtime.setActive, (_event, kind: unknown, profileId: unknown) => {
+    if (!isRuntimeKind(kind)) throw new Error('runtime:setActive kind 非法');
+    if (profileId !== null && typeof profileId !== 'string') {
+      throw new Error('runtime:setActive profileId 非法');
+    }
+    return runtime.setActive(kind, profileId);
+  });
+
+  ipcMain.handle(IPC.runtime.chooseBinary, async (event, kind: unknown) => {
+    if (!isRuntimeKind(kind)) throw new Error('runtime:chooseBinary kind 非法');
+    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const options = {
+      title: kind === 'node' ? '选择 Node 解释器' : '选择 Python 解释器',
+      // Interpreters have no stable extension; let the user pick any executable.
+      properties: ['openFile' as const],
+    };
+    const result = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? '' : (result.filePaths[0] ?? '');
+  });
+
+  ipcMain.handle(IPC.runtime.inspect, (_event, kind: unknown, binary: unknown) => {
+    if (!isRuntimeKind(kind)) throw new Error('runtime:inspect kind 非法');
+    if (typeof binary !== 'string') throw new Error('runtime:inspect binary 非法');
+    return runtime.inspect({ kind, binary });
+  });
+
+  ipcMain.handle(IPC.runtime.saveProfile, (_event, draft: unknown) => {
+    if (!isRuntimeProfileDraft(draft)) throw new Error('runtime:saveProfile 参数非法');
+    return runtime.saveProfile(draft);
+  });
+
+  ipcMain.handle(IPC.runtime.removeProfile, (_event, profileId: unknown) => {
+    if (typeof profileId !== 'string') throw new Error('runtime:removeProfile 参数非法');
+    return runtime.removeProfile(profileId);
+  });
 
   ipcMain.handle(IPC.company.get, () => company.get());
 
@@ -639,6 +689,7 @@ export function registerIpc({
 
   return () => {
     for (const channel of Object.values(IPC.models)) ipcMain.removeHandler(channel);
+    for (const channel of Object.values(IPC.runtime)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.images.generate);
     unsubscribeBudgets();
     unsubscribeWork();
@@ -737,5 +788,15 @@ function isSendMessageInput(value: unknown): value is SendMessageInput {
     (candidate.mentionIds === undefined ||
       (Array.isArray(candidate.mentionIds) &&
         candidate.mentionIds.every((id) => typeof id === 'string')))
+  );
+}
+
+function isRuntimeProfileDraft(value: unknown): value is RuntimeProfileDraft {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    isRuntimeKind(candidate.kind) &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.binary === 'string'
   );
 }

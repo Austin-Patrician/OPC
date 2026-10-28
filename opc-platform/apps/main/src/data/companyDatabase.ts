@@ -26,6 +26,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   const db = new Database(file);
   applyPragmas(db);
   repairAcceptanceTemplateConstraint(db);
+  repairBudgetScopeConstraint(db);
   repairLegacyColumns(db);
   migrate(db);
   return db;
@@ -109,7 +110,66 @@ export function repairAcceptanceTemplateConstraint(db: CompanyDatabase): boolean
   return true;
 }
 
-/**
+/**
+ * Widens `budget.scope` to include `project` and `department`.
+ *
+ * `budget` allowed only (`company`, `employee`) in early builds. `CREATE TABLE IF
+ * NOT EXISTS` keeps that CHECK on upgraded installs, so `ensureProjectBudget` dies
+ * with "CHECK constraint failed" the first time a project is charged — even though
+ * the current schema has accepted all four scopes since v1.
+ *
+ * Same constraining trick as the task repair above: SQLite cannot alter a CHECK, so
+ * rebuild outside the migration transaction with FKs off. Idempotent.
+ */
+export function repairBudgetScopeConstraint(db: CompanyDatabase): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'budget'")
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+
+  const scopes = ['company', 'employee', 'project', 'department'];
+  const scopeCheck = /CHECK\s*\(\s*scope\s+IN\s*\([^)]*\)\s*\)/i.exec(row.sql);
+  if (!scopeCheck) return false;
+  if (scopes.every((scope) => scopeCheck[0].includes(`'${scope}'`))) return false;
+
+  const indexes = (
+    db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'budget' AND sql IS NOT NULL",
+      )
+      .all() as { name: string; sql: string }[]
+  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
+
+  const rebuilt = row.sql
+    .replace(/^CREATE TABLE\s+["']?budget["']?/i, 'CREATE TABLE budget_rebuild')
+    .replace(
+      scopeCheck[0],
+      `CHECK (scope IN (${scopes.map((scope) => `'${scope}'`).join(',')}))`,
+    );
+  if (!rebuilt.includes("'project'") || !rebuilt.includes("'department'")) {
+    // A hand-edited schema we do not recognise: leave it alone rather than guess.
+    return false;
+  }
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec('INSERT INTO budget_rebuild SELECT * FROM budget');
+    db.exec('DROP TABLE budget');
+    db.exec('ALTER TABLE budget_rebuild RENAME TO budget');
+    for (const index of indexes) db.exec(index.sql);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw new Error(`重建 budget 表以允许 project/department 预算失败：${String(error)}`, { cause: error });
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  return true;
+}
+
+/**
  * Columns that older builds created without, but that current indexes and views
  * expect. `CREATE TABLE IF NOT EXISTS` silently keeps the old shape, so a
  * migration that adds only an index on `company_id` fails with

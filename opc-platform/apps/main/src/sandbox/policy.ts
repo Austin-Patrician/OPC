@@ -7,6 +7,12 @@ export interface SandboxPolicy {
   workspace: string;
   /** Absolute paths the process may not read (secrets). */
   deniedReadRoots: string[];
+  /**
+   * Interpreter prefixes the sandbox must expose read-only (venv, nvm, Homebrew).
+   * Linux `bwrap` starts with an empty mount namespace, so without these a runtime
+   * selected in Settings would not exist inside the sandbox.
+   */
+  readOnlyRoots: string[];
   allowNetwork: boolean;
 }
 
@@ -84,6 +90,10 @@ export function buildBwrapArgv(policy: SandboxPolicy, shellCommand: string): str
 
   if (!policy.allowNetwork) args.push('--unshare-net');
   for (const root of policy.deniedReadRoots) args.push('--ro-bind-try', '/dev/null', root);
+  for (const root of policy.readOnlyRoots) {
+    if (!root || root === policy.workspace) continue;
+    args.push('--ro-bind-try', root, root);
+  }
 
   args.push('/bin/sh', '-c', shellCommand);
   return args;

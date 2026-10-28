@@ -168,7 +168,8 @@
       "appearance": "外观与语言",
       "compaction": "工作区与压缩",
       "company": "公司与称呼",
-      "network": "网络与代理"
+      "network": "网络与代理",
+      "runtime": "运行时"
     },
     "llm": {
       "desc": "Provider 与模型目录取自 pi 内置目录（@earendil-works/pi-ai），默认模型与思考强度对应运行时。",
@@ -221,6 +222,7 @@
       "tableTitle": "模型与定价",
       "col": {
         "name": "名称",
+        "capability": "能力",
         "context": "上下文",
         "default": "默认"
       },
@@ -427,6 +429,40 @@
       "saved": "已保存",
       "discard": "撤销更改",
       "unavailable": "当前环境无法读取代理设置"
+    },
+    "runtime": {
+      "desc": "所有员工共用一套基础环境：工作区里的命令和验收脚本都通过这里的解释器执行。Node 与 Python 同时生效，不需要按员工切换。",
+      "globalNote": "这是公司级设置：修改后下一次工具调用即生效，已在运行的任务不会中断。",
+      "nodeTitle": "Node 运行环境",
+      "nodeDesc": "默认优先使用系统 Node；系统没有安装时才用 Electron 内置的 Node 兜底。",
+      "pythonTitle": "Python 运行环境",
+      "pythonDesc": "可以指向系统 Python 3，也可以选择某个 venv / conda 环境里的解释器。",
+      "current": "当前环境",
+      "auto": "自动选择",
+      "autoHint": "自动选择时使用第一个可用的解释器",
+      "version": "v{{version}}",
+      "available": "可用",
+      "unavailable": "不可用",
+      "builtin": "内置",
+      "custom": "自定义",
+      "remove": "删除",
+      "noProfiles": "还没有可用的解释器",
+      "loading": "正在读取运行环境…",
+      "refresh": "重新检测",
+      "probing": "检测中…",
+      "addTitle": "添加自定义解释器",
+      "addDesc": "适合 nvm 的某个版本、venv 或 conda 环境；保存后会立即设为该类语言的当前环境。",
+      "kind": "解释器类型",
+      "kindHint": "一个 Node 和一个 Python 可以同时生效",
+      "binary": "解释器路径",
+      "binaryHint": "必须指向可执行文件；venv / conda 的变量会自动识别",
+      "choose": "选择文件",
+      "name": "环境名称",
+      "nameHint": "留空则根据所在目录自动命名",
+      "namePlaceholder": "例如：项目 venv",
+      "inspectOk": "解释器可用：v{{version}}",
+      "inspectFail": "不可用：{{detail}}",
+      "save": "保存并启用"
     }
   },
   "org": {

@@ -7,12 +7,13 @@ import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
 import { LlmPage } from './pages/LlmPage';
 import { NetworkPage } from './pages/NetworkPage';
+import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { useTranslation } from 'react-i18next';
 import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
-const PAGE_IDS = ['appearance', 'company', 'compaction', 'llm', 'image', 'network', 'selfcheck', 'about'] as const;
+const PAGE_IDS = ['appearance', 'company', 'compaction', 'runtime', 'llm', 'image', 'network', 'selfcheck', 'about'] as const;
 
 type PageId = (typeof PAGE_IDS)[number];
 
@@ -54,6 +55,7 @@ export function SettingsShell() {
         { id: 'appearance', label: t('settings.page.appearance') },
         { id: 'company', label: t('settings.page.company') },
         { id: 'compaction', label: t('settings.page.compaction') },
+        { id: 'runtime', label: t('settings.page.runtime') },
       ],
     },
     {
@@ -103,6 +105,8 @@ export function SettingsShell() {
         return <CompanyPage />;
       case 'compaction':
         return <CompactionPage />;
+      case 'runtime':
+        return <RuntimePage />;
       case 'llm':
         return <LlmPage key={llmFocus ?? 'default'} initialProviderId={llmFocus} />;
       case 'image':

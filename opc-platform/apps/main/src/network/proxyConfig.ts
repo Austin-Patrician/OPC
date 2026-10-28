@@ -218,6 +218,88 @@ export function proxyEnvironment(config: ResolvedProxy): Record<string, string |
   };
 }
 
+/** Every proxy variable removed: what "direct" means for a child process. */
+export function clearProxyEnvironment(): Record<string, string | null> {
+  return Object.fromEntries(PROXY_ENV_KEYS.map((key) => [key, null]));
+}
+
+/** A proxy directive as Chromium's `session.resolveProxy()` reports it. */
+export interface SystemProxy {
+  protocol: 'http' | 'https' | 'socks5';
+  host: string;
+  port: number;
+}
+
+function splitAuthority(authority: string): { host: string; port: number } | null {
+  const trimmed = authority.trim();
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(trimmed);
+  if (bracketed) {
+    const port = normalizeProxyPort(bracketed[2] ?? '');
+    return port ? { host: `[${bracketed[1]}]`, port } : null;
+  }
+
+  const colon = trimmed.lastIndexOf(':');
+  if (colon <= 0) return null;
+  const host = trimmed.slice(0, colon).trim();
+  const port = normalizeProxyPort(trimmed.slice(colon + 1));
+  return host && port ? { host, port } : null;
+}
+
+/**
+ * Parses `PROXY host:port; DIRECT` (Chromium's PAC result) into the first usable
+ * hop. A system PAC can return several entries; environment variables can only
+ * express one, so the first proxy is the honest choice.
+ */
+export function parseSystemProxy(result: string | null | undefined): SystemProxy | null {
+  const directive = (result ?? '')
+    .split(/[;\n]/)
+    .map((entry) => entry.trim())
+    .find(Boolean);
+  if (!directive || /^DIRECT$/i.test(directive)) return null;
+
+  const match = /^(PROXY|HTTPS|SOCKS5?|SOCKS4)\s+(.+)$/i.exec(directive);
+  if (!match) return null;
+  const authority = splitAuthority(match[2] ?? '');
+  if (!authority) return null;
+
+  const kind = (match[1] ?? '').toUpperCase();
+  const protocol = kind === 'HTTPS' ? 'https' : kind.startsWith('SOCKS') ? 'socks5' : 'http';
+  return { protocol, host: authority.host, port: authority.port };
+}
+
+function systemProxyOf(system: SystemProxy): ResolvedProxy {
+  return {
+    ...DEFAULT_PROXY_CONFIG,
+    protocol: system.protocol,
+    host: system.host,
+    port: system.port,
+    username: '',
+    password: '',
+    hasPassword: false,
+    bypass: '',
+  };
+}
+
+/**
+ * The proxy variables a spawned process should see.
+ *
+ * `null` means "leave the inherited environment alone": used only when the
+ * system proxy could not be resolved, where guessing would be worse than the
+ * user's original environment. `direct` intentionally clears every variable,
+ * including one the app inherited at launch.
+ */
+export function proxyChildEnvironment(
+  config: ResolvedProxy,
+  systemProxyResult?: string,
+): Record<string, string | null> | null {
+  if (config.mode === 'manual') return proxyEnvironment(config);
+  if (config.mode === 'direct') return clearProxyEnvironment();
+  if (systemProxyResult === undefined) return null;
+
+  const system = parseSystemProxy(systemProxyResult);
+  return system ? proxyEnvironment(systemProxyOf(system)) : clearProxyEnvironment();
+}
+
 /** One-line summary for logs and the settings header. Never includes the secret. */
 export function describeProxy(config: Pick<ProxyConfig, 'mode' | 'protocol' | 'host' | 'port'>): string {
   if (config.mode === 'system') return '跟随系统';

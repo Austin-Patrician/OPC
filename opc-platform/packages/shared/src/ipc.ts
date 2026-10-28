@@ -25,6 +25,11 @@ import type {
   ProxyConfig,
   ProxyConfigInput,
   ProxyTestResult,
+  RuntimeInspection,
+  RuntimeKind,
+  RuntimeProfileDraft,
+  RuntimeSnapshot,
+  RuntimeState,
   WorkTask,
 } from './domain';
 
@@ -149,6 +154,15 @@ export const IPC = {
     update: 'network:update',
     test: 'network:test',
     changedEvent: 'network:changed',
+  },
+  runtime: {
+    snapshot: 'runtime:snapshot',
+    probe: 'runtime:probe',
+    setActive: 'runtime:setActive',
+    chooseBinary: 'runtime:chooseBinary',
+    inspect: 'runtime:inspect',
+    saveProfile: 'runtime:saveProfile',
+    removeProfile: 'runtime:removeProfile',
   },
   company: {
     get: 'company:get',
@@ -612,6 +626,27 @@ export interface NetworkBridge {
   onChanged(listener: (config: ProxyConfig) => void): () => void;
 }
 
+/**
+ * The company-wide base environment (Settings → 运行时).
+ *
+ * There is deliberately no per-employee surface: one selection applies to every
+ * agent's tool calls and to acceptance commands.
+ */
+export interface RuntimeBridge {
+  /** Stored profiles plus the last known availability, without spawning. */
+  snapshot(): Promise<RuntimeSnapshot>;
+  /** Re-detects every profile (spawns `--version` with a timeout). */
+  probe(): Promise<RuntimeSnapshot>;
+  setActive(kind: RuntimeKind, profileId: string | null): Promise<RuntimeState>;
+  /** Native picker; returns '' when the user cancels. */
+  chooseBinary(kind: RuntimeKind): Promise<string>;
+  /** Version + derived venv/conda variables, before saving. */
+  inspect(kind: RuntimeKind, binary: string): Promise<RuntimeInspection>;
+  /** Adds a custom profile and makes it current for its language. */
+  saveProfile(draft: RuntimeProfileDraft): Promise<RuntimeState>;
+  removeProfile(profileId: string): Promise<RuntimeState>;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -619,6 +654,7 @@ export interface OpcBridge {
     getInfo(): Promise<AppInfo>;
   };
   network: NetworkBridge;
+  runtime: RuntimeBridge;
   company: CompanyBridge;
   chat: ChatBridge;
   work: WorkBridge;

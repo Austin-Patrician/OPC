@@ -21,7 +21,11 @@ import type { Agent, SubtaskDraft } from '@opc/shared/domain';
 import { MarketService } from './market/marketService';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
-import { applyProxy, connectProxyRuntime } from './network/proxyRuntime';
+import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
+import { RuntimeService } from './runtime/service';
+import { resolveOcrAssetsDir } from './ocr/assets';
+import { registerOcrScheme } from './ocr/protocol';
+import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { OrgService } from './org/orgService';
 import { initAppPaths, appPaths } from './paths';
@@ -42,10 +46,15 @@ const IDLE_ARCHIVE_MS = 24 * 60 * 60 * 1000;
 
 const isDev = !app.isPackaged;
 
+// Must happen before `app.whenReady()`: the OCR window loads over `opc-ocr://`.
+registerOcrScheme();
+
 /** Compile-time constant injected by electron-vite: `out/main`. */
 const mainDir = __dirname;
 
 const isSelfTest = process.argv.includes("--self-test");
+/** `OPC_OCR_PROBE=<image>`: recognise one image end-to-end (hidden window, WebGPU/WASM), print JSON, exit. */
+const isOcrProbe = process.env.OPC_OCR_PROBE;
 /** `OPC_SMOKE=1`: boot the real window, exercise preload + IPC, print a report, exit. */
 const isSmoke = process.env.OPC_SMOKE === "1";
 /** `OPC_WORK_PROBE=1`: run the Phase 0 loop headlessly and print evidence. */
@@ -106,6 +115,7 @@ let mainWindow: BrowserWindow | null = null;
 let chat: ChatService | null = null;
 let work: WorkService | null = null;
 let comm: CommService | null = null;
+let ocrService: OcrService | null = null;
 /** Kept at module scope so IPC can trigger a manual wake (§7.2 P0). */
 let heartbeat: CommScheduler | null = null;
 let disposeIpc: (() => void) | null = null;
@@ -179,6 +189,25 @@ function attachSmokeTest(window: BrowserWindow) {
     })();
   });
 }
+/**
+ * The OCR engine is a hidden renderer, created on first use. Constructing the
+ * service only wires IPC; the window itself is lazy.
+ */
+function ensureOcr(): OcrService {
+  if (ocrService) return ocrService;
+  ocrService = new OcrService({
+    preload: path.join(mainDir, '../preload/ocr.cjs'),
+    rendererDir: path.join(mainDir, '../renderer'),
+    assetsDir: resolveOcrAssetsDir({
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    }),
+    ...(process.env.ELECTRON_RENDERER_URL ? { devUrl: process.env.ELECTRON_RENDERER_URL } : {}),
+  });
+  return ocrService;
+}
+
 /** Lock the renderer down with a CSP once the window exists (dev needs HMR). */
 function hardenSession() {
   if (isDev) return;
@@ -201,7 +230,7 @@ async function bootstrap(): Promise<void> {
   // Smoke runs must not inherit an exhausted budget from earlier real runs.
   if (isSmoke) db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
   const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
-  const modelConfig = new ModelConfigService(db, credentialStore);
+  const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
   const network = new NetworkProxyService(db, {
     cipher: { encrypt: encryptSecret, decrypt: decryptSecret },
     apply: applyProxy,
@@ -293,7 +322,15 @@ async function bootstrap(): Promise<void> {
   const facts = new OrgFactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
   const projects = new ProjectService(db);
-  const imageService = new ImageService(modelConfig, appPaths);
+  const imageService = new ImageService(modelConfig, appPaths, networkClient);
+
+  // One runtime service for the whole process: employees, acceptance scripts and
+  // the settings page must see exactly the same interpreters. The app-owned
+  // `<userData>/runtimes` directory is where the PATH shims live.
+  const runtimeService = new RuntimeService(db, {
+    userDataDir: appPaths.userData,
+    network: networkClient,
+  });
 
   // Communication: inbox, wake quota, guards, relationships (F5/F6). Built before
   // WorkService so the task harness can carry `send_direct_message`.
@@ -331,6 +368,9 @@ async function bootstrap(): Promise<void> {
     facts,
     projects,
     comm,
+    network: networkClient,
+    runtime: runtimeService,
+    ocr: ensureOcr(),
   });
 
   // Rows created before issue keys existed get one now; new tasks allocate at insert.
@@ -355,6 +395,7 @@ async function bootstrap(): Promise<void> {
     budget: budgetCenter,
     company: new CompanyService(db),
     network,
+    runtime: runtimeService,
     wakeEmployee: async (employeeId) =>
       heartbeat
         ? heartbeat.wakeNow(employeeId)
@@ -433,6 +474,7 @@ async function bootstrap(): Promise<void> {
 const isHeadlessMode =
   isSelfTest ||
   isSmoke ||
+  Boolean(isOcrProbe) ||
   isWorkProbe ||
   isBudgetProbe ||
   isModelProbe ||
@@ -468,13 +510,35 @@ if (!hasLock) {
   void app.whenReady().then(async () => {
     app.setAppUserModelId('com.opc.agent.workspace');
 
+    if (isOcrProbe) {
+      // Proves the whole path outside of a task: protocol → hidden window →
+      // worker → WebGPU/WASM, with no model and no database involved.
+      try {
+        initAppPaths();
+        const { readFile } = await import('node:fs/promises');
+        const bytes = await readFile(path.resolve(isOcrProbe));
+        const repeat = Math.max(1, Number(process.env.OPC_OCR_PROBE_REPEAT ?? '1'));
+        for (let index = 0; index < repeat; index += 1) {
+          const result = await ensureOcr().recognize(new Uint8Array(bytes));
+          process.stdout.write(`OCR_PROBE ${JSON.stringify(result)}\n`);
+        }
+        await ocrService?.dispose();
+        app.exit(0);
+      } catch (error) {
+        console.error('OCR_PROBE_FAILED', error);
+        await ocrService?.dispose();
+        app.exit(1);
+      }
+      return;
+    }
+
     if (isRunTask) {
       // 单条任务跑到底：给"真实公司 + 真实模型"一个非交互的入口，也方便回归。
       // 用真库（就是老板正在用的公司），不改任何别的任务。
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
-      const modelConfig = new ModelConfigService(db, credentialStore);
+      const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
       const org = new OrgService(db);
       const projects = new ProjectService(db);
       const work = new WorkService({
@@ -746,7 +810,7 @@ if (!hasLock) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
-      const modelConfig = new ModelConfigService(db, credentialStore);
+      const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
 
       modelConfig.saveProvider({
         id: 'probe-gateway',
@@ -1850,7 +1914,7 @@ if (!hasLock) {
       const port = (server.address() as { port: number }).port;
 
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
-      const modelConfig = new ModelConfigService(db, credentialStore);
+      const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
       modelConfig.importFromPi();
       modelConfig.saveProvider({
         id: 'mock-image',
@@ -2004,7 +2068,7 @@ if (!hasLock) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
-      const modelConfig = new ModelConfigService(db, credentialStore);
+      const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
       const imported = modelConfig.importFromPi();
       const defaults = modelConfig.getDefaults();
       // Price the model so the ledger has a money column to verify.
@@ -2256,6 +2320,8 @@ if (!hasLock) {
     disposeIpc = null;
     chat?.dispose();
     chat = null;
+    void ocrService?.dispose();
+    ocrService = null;
     void work?.dispose();
     work = null;
   });

@@ -11,6 +11,8 @@ import {
 } from './acceptanceTemplate';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runCommand } from './exec';
+import type { NetworkClient } from '../network/networkClient';
+import type { RuntimeService } from '../runtime/service';
 import { ensureDir, listWorkspaceFiles, writeFileWithin } from './workspace';
 
 /** What travels into the durable task. Paths, not objects: input must be JSON. */
@@ -66,6 +68,10 @@ export interface WorkTaskServices {
   repository: TaskRepository;
   recordDurableStep: (taskId: string, text: string) => Promise<void>;
   onTaskChanged: (taskId: string) => void;
+  /** Proxy policy for acceptance commands (git/npm/scripts). */
+  network?: NetworkClient;
+  /** Company base environment; absent = ambient PATH with the Electron node fallback. */
+  runtime?: RuntimeService;
 }
 
 let services: WorkTaskServices | null = null;
@@ -308,10 +314,15 @@ async function accept(
   checksDir: string,
 ): Promise<Omit<TaskAcceptance, 'createdAt'>> {
   const argv = task.acceptanceCommand.map((part) => part.replace('{checks}', checksDir));
+  // The acceptance command runs in the same base environment as the agent's
+  // tools. `env` below still wins per-key for the OPC_* contract variables.
+  const runtimeEnv = requireServices().runtime?.acceptanceEnv();
   const result = await runCommand(argv, {
     cwd: workspaceDir,
     timeoutMs: 25_000,
     env: { OPC_ENTRY: 'server.js', OPC_EXPECT: 'ok' },
+    network: requireServices().network,
+    ...(runtimeEnv ? { runtime: { env: runtimeEnv } } : {}),
   });
 
   const passed = result.exitCode === 0;

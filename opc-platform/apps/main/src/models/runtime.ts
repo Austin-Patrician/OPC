@@ -7,12 +7,32 @@ type ProviderStreams = NonNullable<
 >;
 import type { ModelConfigRepository } from '../data/modelConfigRepository';
 import type { FileCredentialStore } from './credentialStore';
+import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
+import { withNetworkFetch } from '../network/modelNetwork';
+import { normalizeModelId } from './pricingMatch';
 
 interface ProviderPreset {
   id: string;
   name: string;
   baseUrl: string;
   api: 'openai-completions' | 'anthropic-messages';
+}
+
+/** One entry of a provider's `/models` payload; only `id` is guaranteed. */
+interface ListedModel {
+  id?: string;
+  /** OpenRouter-style modality metadata. */
+  architecture?: { input_modalities?: string[]; modality?: string };
+  /** Some gateways report a capability flag instead. */
+  capabilities?: { vision?: boolean };
+  supports_vision?: boolean;
+}
+
+/** The subset of pi's built-in model definition we fall back to. */
+interface BuiltinChatLike {
+  id: string;
+  input?: readonly string[];
+  reasoning?: boolean;
 }
 
 /**
@@ -40,6 +60,7 @@ export class ModelRuntime {
     private readonly repository: ModelConfigRepository,
     private readonly readKey: (providerId: string) => string | undefined,
     private readonly credentials?: FileCredentialStore,
+    private readonly network: NetworkClient = defaultNetworkClient,
   ) {}
 
   /** Builds a fresh `Models` for the current config (cheap; providers are lazy). */
@@ -52,7 +73,9 @@ export class ModelRuntime {
       if (provider) models.setProvider(provider);
     }
 
-    return models;
+    // Explicitly route provider SDK requests through the app's network client.
+    // Google adapters are the documented exception (they require globalThis.fetch).
+    return withNetworkFetch(models, this.network);
   }
 
   /** Resolved model object for a provider/model pair, if both are configured. */
@@ -81,10 +104,11 @@ export class ModelRuntime {
     }
 
     try {
-      const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/models`, {
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(15_000),
-      });
+      const response = await this.network.fetch(
+        `${config.baseUrl.replace(/\/$/, '')}/models`,
+        { headers: { authorization: `Bearer ${apiKey}` } },
+        { purpose: 'model', providerId: config.id, timeoutMs: 15_000 },
+      );
 
       if (!response.ok) {
         return {
@@ -94,12 +118,18 @@ export class ModelRuntime {
         };
       }
 
-      const payload = (await response.json()) as { data?: { id?: string }[] };
+      const payload = (await response.json()) as { data?: ListedModel[] };
       const models = (payload.data ?? [])
-        .map((entry) => entry.id)
-        .filter((id): id is string => typeof id === 'string')
-        .sort()
-        .map<ModelOption>((id) => ({ id, name: id, capability: 'chat' }));
+        .filter((entry): entry is ListedModel & { id: string } => typeof entry.id === 'string')
+        .map<ModelOption>((entry) => ({
+          id: entry.id,
+          name: entry.id,
+          capability: 'chat',
+          // Capability hints are optional and provider-specific; only trust an
+          // explicit declaration, otherwise leave it unknown (undefined).
+          ...(declaresVision(entry) ? { vision: true } : {}),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
 
       return {
         ok: true,
@@ -148,38 +178,51 @@ export class ModelRuntime {
     if (Object.keys(api).length === 0) return undefined;
 
     const baseUrl = config.baseUrl.replace(/\/$/, '');
+    // Built-in definitions carry `input`/`reasoning` even for models the user
+    // configured before those flags existed. Use them as a read-time fallback so
+    // vision works without forcing a re-import.
+    const builtinModels = await builtinModelsFor(config.id);
+    // Custom relays (OpenRouter, a company gateway) are not built-in providers,
+    // but their model ids often are; a global index keeps those rows correct.
+    const globalCapabilities = builtinModels.length === 0 ? await globalBuiltinCapabilities() : null;
     const chatModels = config.models
       .filter((model) => model.capability === 'chat')
-      .map((model) => ({
-        id: model.id,
-        name: model.name,
-        api: model.api ?? config.api,
-        provider: config.id,
-        baseUrl,
-        input: ['text'] as ('text' | 'image')[],
-        // pi's ModelCost: USD per 1M tokens, cache rates included, plus optional
-        // context-bucket tiers (`inputTokensAbove`).
-        cost: {
-          input: model.inputUsdPerM ?? 0,
-          output: model.outputUsdPerM ?? 0,
-          cacheRead: model.cacheReadUsdPerM ?? model.inputUsdPerM ?? 0,
-          cacheWrite: model.cacheWriteUsdPerM ?? model.inputUsdPerM ?? 0,
-          ...(model.tiers && model.tiers.length > 0
-            ? {
-                tiers: model.tiers.map((tier) => ({
-                  inputTokensAbove: tier.inputTokensAbove,
-                  input: tier.inputUsdPerM,
-                  output: tier.outputUsdPerM,
-                  cacheRead: tier.cacheReadUsdPerM,
-                  cacheWrite: tier.cacheWriteUsdPerM,
-                })),
-              }
-            : {}),
-        },
-        reasoning: false,
-        contextWindow: model.contextWindow ?? 128_000,
-        maxTokens: Math.min(8_192, Math.round((model.contextWindow ?? 128_000) / 8)),
-      }));
+      .map((model) => {
+        const builtin = findBuiltinLike(builtinModels, model.id);
+        const known = globalCapabilities?.get(normalizeModelId(model.id));
+        const vision = model.vision ?? builtin?.input?.includes('image') ?? known?.vision ?? false;
+        const reasoning = model.reasoning ?? builtin?.reasoning ?? known?.reasoning ?? false;
+        return {
+          id: model.id,
+          name: model.name,
+          api: model.api ?? config.api,
+          provider: config.id,
+          baseUrl,
+          input: (vision ? ['text', 'image'] : ['text']) as ('text' | 'image')[],
+          // pi's ModelCost: USD per 1M tokens, cache rates included, plus optional
+          // context-bucket tiers (`inputTokensAbove`).
+          cost: {
+            input: model.inputUsdPerM ?? 0,
+            output: model.outputUsdPerM ?? 0,
+            cacheRead: model.cacheReadUsdPerM ?? model.inputUsdPerM ?? 0,
+            cacheWrite: model.cacheWriteUsdPerM ?? model.inputUsdPerM ?? 0,
+            ...(model.tiers && model.tiers.length > 0
+              ? {
+                  tiers: model.tiers.map((tier) => ({
+                    inputTokensAbove: tier.inputTokensAbove,
+                    input: tier.inputUsdPerM,
+                    output: tier.outputUsdPerM,
+                    cacheRead: tier.cacheReadUsdPerM,
+                    cacheWrite: tier.cacheWriteUsdPerM,
+                  })),
+                }
+              : {}),
+          },
+          reasoning,
+          contextWindow: model.contextWindow ?? 128_000,
+          maxTokens: Math.min(8_192, Math.round((model.contextWindow ?? 128_000) / 8)),
+        };
+      });
 
     if (chatModels.length === 0) return undefined;
 
@@ -244,4 +287,63 @@ async function apiFor(kind: string): Promise<unknown> {
 async function findBuiltinProvider(providerId: string) {
   const { builtinProviders } = await import('@earendil-works/pi-ai/providers/all');
   return builtinProviders().find((provider) => provider.id === providerId);
+}
+
+/**
+ * Only trust an explicit capability declaration from a listing endpoint:
+ * OpenAI-compatible gateways are wildly inconsistent here, and guessing from a
+ * model name is exactly how a text-only model gets advertised as vision-capable.
+ */
+function declaresVision(entry: ListedModel): boolean {
+  const modalities = entry.architecture?.input_modalities;
+  return (
+    entry.supports_vision === true ||
+    entry.capabilities?.vision === true ||
+    modalities?.includes('image') === true ||
+    entry.architecture?.modality?.includes('image') === true
+  );
+}
+
+/** Built-in definitions for a provider, or `[]` for custom/unknown providers. */
+async function builtinModelsFor(providerId: string): Promise<BuiltinChatLike[]> {
+  try {
+    const { getBuiltinModels } = await import('@earendil-works/pi-ai/providers/all');
+    // The runtime indexes by provider id; the generated types ask for the object.
+    return getBuiltinModels(providerId as never) as unknown as BuiltinChatLike[];
+  } catch {
+    return [];
+  }
+}
+
+function findBuiltinLike(models: readonly BuiltinChatLike[], modelId: string) {
+  const exact = models.find((model) => model.id === modelId);
+  if (exact) return exact;
+  const normalized = normalizeModelId(modelId);
+  return normalized ? models.find((model) => normalizeModelId(model.id) === normalized) : undefined;
+}
+
+/** id → capability, across every built-in provider, built once per process. */
+let globalCapabilities: Map<string, { vision: boolean; reasoning: boolean }> | null = null;
+
+async function globalBuiltinCapabilities(): Promise<Map<string, { vision: boolean; reasoning: boolean }>> {
+  if (globalCapabilities) return globalCapabilities;
+  const map = new Map<string, { vision: boolean; reasoning: boolean }>();
+  try {
+    const { builtinProviders, getBuiltinModels } = await import('@earendil-works/pi-ai/providers/all');
+    for (const provider of builtinProviders()) {
+      const models = getBuiltinModels(provider.id as never) as unknown as BuiltinChatLike[];
+      for (const model of models) {
+        const key = normalizeModelId(model.id);
+        if (!key || map.has(key)) continue;
+        map.set(key, {
+          vision: model.input?.includes('image') === true,
+          reasoning: model.reasoning === true,
+        });
+      }
+    }
+  } catch {
+    // A catalog failure must not stop model creation; capabilities stay unknown.
+  }
+  globalCapabilities = map;
+  return map;
 }

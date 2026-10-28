@@ -17,7 +17,9 @@ const PATH_TOOLS = new Set(['read', 'write', 'edit']);
  * Windows is intentionally unsupported: `detectBackend()` reports `none` and the
  * hook fails closed.
  */
-export function createSandboxExtension(options: { enforce?: boolean } = {}) {
+export function createSandboxExtension(
+  options: { enforce?: boolean; readOnlyRoots?: () => readonly string[] } = {},
+) {
   const status = detectBackend();
   const enforce = options.enforce ?? process.env.OPC_SANDBOX !== 'off';
 
@@ -54,7 +56,7 @@ export function createSandboxExtension(options: { enforce?: boolean } = {}) {
             return {
               arguments: {
                 ...args,
-                command: sandboxedShellCommand(status.backend, buildPolicy(workspace), command),
+                command: sandboxedShellCommand(status.backend, buildPolicy(workspace, false, options.readOnlyRoots?.() ?? []), command),
               },
             };
           }

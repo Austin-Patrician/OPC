@@ -140,6 +140,14 @@ export function NetworkPage() {
       syncDrafts(next);
       setSavedNotice(true);
     } catch (failure) {
+      // `update()` persists before applying, so a failed apply still saved the
+      // config. Re-read it so the form shows what is stored, not the stale draft.
+      try {
+        syncDrafts(await bridge.get());
+        setSavedNotice(true);
+      } catch {
+        // Keep the form as-is; the apply error is the actionable part.
+      }
       setError(reasonOf(failure));
     } finally {
       setSaving(false);

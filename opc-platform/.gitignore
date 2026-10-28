@@ -24,6 +24,11 @@ archive/
 artifacts/
 logs/
 
+# OCR assets are downloaded by scripts/fetch-ocr-assets.mjs (~45 MB).
+/resources/ocr/models/
+/resources/ocr/ort/
+/resources/ocr/manifest.json
+
 # Editor / OS
 .DS_Store
 .idea/

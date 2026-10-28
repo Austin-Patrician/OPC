@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./domain": "./src/domain.ts",
-    "./ipc": "./src/ipc.ts"
+    "./ipc": "./src/ipc.ts",
+    "./ocr": "./src/ocr.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

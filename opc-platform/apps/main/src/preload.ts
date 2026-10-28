@@ -25,6 +25,11 @@ import type {
   ProxyConfig,
   ProxyConfigInput,
   ProxyTestResult,
+  RuntimeInspection,
+  RuntimeKind,
+  RuntimeProfileDraft,
+  RuntimeSnapshot,
+  RuntimeState,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -52,6 +57,20 @@ const bridge: OpcBridge = {
         ipcRenderer.off(IPC.network.changedEvent, handler);
       };
     },
+  },
+  runtime: {
+    snapshot: () => ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
+    probe: () => ipcRenderer.invoke(IPC.runtime.probe) as Promise<RuntimeSnapshot>,
+    setActive: (kind: RuntimeKind, profileId: string | null) =>
+      ipcRenderer.invoke(IPC.runtime.setActive, kind, profileId) as Promise<RuntimeState>,
+    chooseBinary: (kind: RuntimeKind) =>
+      ipcRenderer.invoke(IPC.runtime.chooseBinary, kind) as Promise<string>,
+    inspect: (kind: RuntimeKind, binary: string) =>
+      ipcRenderer.invoke(IPC.runtime.inspect, kind, binary) as Promise<RuntimeInspection>,
+    saveProfile: (draft: RuntimeProfileDraft) =>
+      ipcRenderer.invoke(IPC.runtime.saveProfile, draft) as Promise<RuntimeState>,
+    removeProfile: (profileId: string) =>
+      ipcRenderer.invoke(IPC.runtime.removeProfile, profileId) as Promise<RuntimeState>,
   },
   company: {
     get: () => ipcRenderer.invoke(IPC.company.get) as Promise<CompanyProfile>,

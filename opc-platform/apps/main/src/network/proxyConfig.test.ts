@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clearProxyEnvironment,
   DEFAULT_PROXY_CONFIG,
   formatAuthority,
   normalizeBypass,
   normalizeProxyHost,
   normalizeProxyInput,
   normalizeProxyPort,
+  parseSystemProxy,
   proxyBypassRules,
+  proxyChildEnvironment,
   proxyEnvironment,
   proxyRules,
   proxyUrl,
@@ -120,5 +123,74 @@ describe('proxyEnvironment', () => {
     expect(env.https_proxy).toBeNull();
     expect(env.ALL_PROXY).toBe('socks5://127.0.0.1:1080');
     expect(env.no_proxy).toContain('localhost');
+  });
+});
+
+describe('parseSystemProxy', () => {
+  it('reads the first hop of a PAC result', () => {
+    expect(parseSystemProxy('PROXY proxy.corp:8080; DIRECT')).toEqual({
+      protocol: 'http',
+      host: 'proxy.corp',
+      port: 8080,
+    });
+  });
+
+  it('understands HTTPS and SOCKS directives', () => {
+    expect(parseSystemProxy('HTTPS proxy.corp:443')).toEqual({
+      protocol: 'https',
+      host: 'proxy.corp',
+      port: 443,
+    });
+    expect(parseSystemProxy('SOCKS5 127.0.0.1:1080')).toEqual({
+      protocol: 'socks5',
+      host: '127.0.0.1',
+      port: 1080,
+    });
+  });
+
+  it('keeps IPv6 literals bracketed', () => {
+    expect(parseSystemProxy('PROXY [::1]:7890')).toEqual({
+      protocol: 'http',
+      host: '[::1]',
+      port: 7890,
+    });
+  });
+
+  it('returns null for DIRECT, empty or malformed results', () => {
+    expect(parseSystemProxy('DIRECT')).toBeNull();
+    expect(parseSystemProxy('')).toBeNull();
+    expect(parseSystemProxy(null)).toBeNull();
+    expect(parseSystemProxy('PROXY no-port')).toBeNull();
+    expect(parseSystemProxy('PROXY host:0')).toBeNull();
+  });
+});
+
+describe('proxyChildEnvironment', () => {
+  const systemConfig = (): ResolvedProxy => ({ ...DEFAULT_PROXY_CONFIG, mode: 'system', password: '' });
+  const directConfig = (): ResolvedProxy => ({ ...DEFAULT_PROXY_CONFIG, mode: 'direct', password: '' });
+
+  it('uses the manual config verbatim', () => {
+    expect(proxyChildEnvironment(manual())?.HTTP_PROXY).toBe('http://127.0.0.1:7890');
+  });
+
+  it('clears every variable in direct mode', () => {
+    const env = proxyChildEnvironment(directConfig());
+    expect(Object.keys(env ?? {})).toHaveLength(8);
+    expect(Object.values(env ?? {})).toEqual(Array(8).fill(null));
+    expect(clearProxyEnvironment()).toEqual(env);
+  });
+
+  it('translates a resolved system proxy into env vars', () => {
+    const env = proxyChildEnvironment(systemConfig(), 'PROXY proxy.corp:8080');
+    expect(env?.HTTP_PROXY).toBe('http://proxy.corp:8080');
+  });
+
+  it('clears variables when the system is known to be direct', () => {
+    const env = proxyChildEnvironment(systemConfig(), 'DIRECT');
+    expect(env?.HTTPS_PROXY).toBeNull();
+  });
+
+  it('returns null only when the system proxy could not be resolved', () => {
+    expect(proxyChildEnvironment(systemConfig())).toBeNull();
   });
 });

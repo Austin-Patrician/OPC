@@ -51,8 +51,17 @@ export function defaultDeniedRoots(): string[] {
   ];
 }
 
-export function buildPolicy(workspace: string, allowNetwork = false): SandboxPolicy {
-  return { workspace, deniedReadRoots: defaultDeniedRoots(), allowNetwork };
+export function buildPolicy(
+  workspace: string,
+  allowNetwork = false,
+  readOnlyRoots: readonly string[] = [],
+): SandboxPolicy {
+  return {
+    workspace,
+    deniedReadRoots: defaultDeniedRoots(),
+    readOnlyRoots: [...readOnlyRoots],
+    allowNetwork,
+  };
 }
 
 export interface SandboxSelfTest {

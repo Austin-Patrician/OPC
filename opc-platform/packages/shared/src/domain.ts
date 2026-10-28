@@ -305,6 +305,69 @@ export interface HireInput {
   persona?: string;
 }
 
+/** ── Runtime environments (global base environment) ────────────────────── */
+
+/** Languages the app knows how to launch. */
+export type RuntimeKind = 'node' | 'python';
+
+/**
+ * One selectable interpreter. The environment is company-wide: every employee
+ * shares it, so there is deliberately no per-employee or per-task override.
+ */
+export interface RuntimeProfile {
+  id: string;
+  name: string;
+  kind: RuntimeKind;
+  /** Absolute interpreter path; '' for a built-in that is detected at use time. */
+  binary: string;
+  /** Directories prepended to PATH (venv/bin, nvm/.../bin, conda env bin). */
+  binDirs: string[];
+  /** Variables overlaid on the child process. */
+  env: Record<string, string>;
+  /** Built-ins come from code and cannot be deleted. */
+  isCustom: boolean;
+  createdAt: number;
+}
+
+/** Which profile is in force for each language. `null` = auto-pick. */
+export interface RuntimeState {
+  profiles: RuntimeProfile[];
+  active: Record<RuntimeKind, string | null>;
+}
+
+/** Availability of one profile, refreshed by a probe. */
+export interface RuntimeStatus {
+  profileId: string;
+  available: boolean;
+  /** Resolved absolute binary, when it exists. */
+  binary?: string;
+  version?: string;
+  /** Why it is unavailable, or a non-fatal note. */
+  detail?: string;
+}
+
+export interface RuntimeSnapshot extends RuntimeState {
+  statuses: RuntimeStatus[];
+}
+
+/** The only fields the settings page may submit for a new custom profile. */
+export interface RuntimeProfileDraft {
+  name: string;
+  kind: RuntimeKind;
+  binary: string;
+}
+
+/** Result of inspecting an interpreter before saving it. */
+export interface RuntimeInspection {
+  ok: boolean;
+  binary: string;
+  version?: string;
+  detail?: string;
+  /** Derived by looking at the interpreter's layout (venv / conda). */
+  binDirs: string[];
+  env: Record<string, string>;
+}
+
 /** ── Model providers (slice A) ─────────────────────────────────────────── */
 
 export type ModelCapability = 'chat' | 'image' | 'classifier' | 'video';
@@ -318,6 +381,10 @@ export interface ModelOption {
   contextWindow?: number;
   /** API kind of this model (`openai-completions`, `anthropic-messages`, ...). */
   api?: string;
+  /** Whether the model accepts image input. Absent = unknown. */
+  vision?: boolean;
+  /** Whether the model supports reasoning/thinking. Absent = unknown. */
+  reasoning?: boolean;
   /** USD per 1M tokens. Mirrors pi's ModelCost, cache included. */
   inputUsdPerM?: number;
   outputUsdPerM?: number;

@@ -6,6 +6,7 @@ const workspace = path.resolve('/tmp/opc-workspace');
 const policy = {
   workspace,
   deniedReadRoots: ['/Users/someone/.ssh'],
+  readOnlyRoots: ['/Users/someone/.venv'],
   allowNetwork: false,
 };
 

@@ -39,8 +39,11 @@ export default defineConfig({
       outDir: resolve(__dirname, 'out/preload'),
       // A sandboxed preload cannot be an ES module.
       rollupOptions: {
-        input: resolve(__dirname, 'apps/main/src/preload.ts'),
-        output: { format: 'cjs', entryFileNames: 'index.cjs' },
+        input: {
+          index: resolve(__dirname, 'apps/main/src/preload.ts'),
+          ocr: resolve(__dirname, 'apps/main/src/ocrPreload.ts'),
+        },
+        output: { format: 'cjs', entryFileNames: '[name].cjs' },
       },
     },
   },
@@ -48,8 +51,19 @@ export default defineConfig({
     root: resolve(__dirname, 'apps/renderer'),
     resolve: {
       alias: { '@': resolve(__dirname, 'apps/renderer/src') },
+      // `onnxruntime-web` ships a bundled build that inlines a `new URL(...wasm)`
+      // reference; bundlers then emit a second 23 MB copy of the binary. The
+      // extern-wasm build reads `ort.env.wasm.wasmPaths` only, which we point at
+      // `opc-ocr://app/ort/` (the copy in resources/ocr).
+      conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production'],
     },
     plugins: [react(), tailwindcss()],
+    // The OCR page loads ~5 MB of ESM (ONNX Runtime + the OCR pipeline). Pre-
+    // bundling it makes the first dev call slower than loading it as-is.
+    optimizeDeps: {
+      exclude: ['onnxruntime-web', 'ppu-paddle-ocr', 'ppu-ocv'],
+    },
+    worker: { format: 'es' },
     build: {
       outDir: resolve(__dirname, 'out/renderer'),
       target: 'es2022',
@@ -58,7 +72,10 @@ export default defineConfig({
       minify: true,
       sourcemap: false,
       rollupOptions: {
-        input: resolve(__dirname, 'apps/renderer/index.html'),
+        input: {
+          index: resolve(__dirname, 'apps/renderer/index.html'),
+          ocr: resolve(__dirname, 'apps/renderer/ocr.html'),
+        },
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined;

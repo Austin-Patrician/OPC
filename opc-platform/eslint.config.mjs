@@ -113,7 +113,11 @@ const layerRules = [
 ];
 
 export default tseslint.config(
-  { ignores: ['**/node_modules/**', 'out/**', 'release/**', 'dist/**', 'coverage/**'] },
+  {
+    // `resources/ocr` holds downloaded model data and a minified ONNX Runtime
+    // Emscripten bundle, neither of which is our source.
+    ignores: ['**/node_modules/**', 'out/**', 'release/**', 'dist/**', 'coverage/**', 'resources/**'],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -173,5 +177,14 @@ export default tseslint.config(
     // The smoke script is renderer code executed by Electron; it needs browser globals.
     files: ['apps/main/src/smoke/smokeScript.js'],
     languageOptions: { globals: { ...globals.browser } },
+  },
+  {
+    // Asset/build scripts run in plain Node before Electron exists.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node, fetch: 'readonly' },
+    },
   },
 );

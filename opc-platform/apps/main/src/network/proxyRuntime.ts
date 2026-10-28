@@ -5,10 +5,11 @@ import {
   describeProxy,
   PROXY_ENV_KEYS,
   proxyBypassRules,
-  proxyEnvironment,
+  proxyChildEnvironment,
   proxyRules,
   type ResolvedProxy,
 } from './proxyConfig';
+import { createNetworkClient, type NetworkClient, type NetworkFetch } from './networkClient';
 
 /**
  * Applies the boss's proxy to every outgoing request the app can make.
@@ -17,20 +18,20 @@ import {
  *
  * 1. **Chromium** (renderer, `<img>`, `net.request`) — `session.setProxy`. This is
  *    also the path `net.fetch` uses, which is why the main process can borrow it.
- * 2. **main-process `fetch`** — pi-ai and the model/image code call
- *    `globalThis.fetch`; we replace it with Electron's `net.fetch`, which runs on
- *    Chromium's network stack (SOCKS, PAC, system proxy and proxy auth included)
- *    at the moment of the call, so a later save takes effect immediately.
- * 3. **child processes** (`git`, `npm`, workspace scripts) — `HTTP_PROXY` /
- *    `ALL_PROXY` / `NO_PROXY` in `process.env`, restored verbatim when the boss
- *    goes back to "direct" or "system".
+ * 2. **main-process `fetch`** — pi-ai and the model/image code call `fetch`.
+ *    Business code uses `networkClient` (the explicit seam); the global wrapper
+ *    below remains as a compatibility net for SDKs that capture `globalThis.fetch`
+ *    themselves (pi-durable's harness, OAuth flows).
+ * 3. **child processes** (`git`, `npm`, workspace scripts) — `networkClient.childEnv()`
+ *    gives each spawn the right variables. The process environment is also updated
+ *    for callers outside `runCommand`, but `direct` now genuinely clears it.
  *
  * Proxy credentials are supplied through `app.on('login')`: Chromium asks, we
  * answer from the saved config. The password never enters a URL that could leak
  * into a log.
  */
 
-/** The config currently in force; `null` only before the first apply. */
+/** The config currently in force; `null` only before the first successful apply. */
 let active: ResolvedProxy | null = null;
 /** Set while the settings page probes an unsaved draft, so auth uses those credentials. */
 let authOverride: { username: string; password: string } | null = null;
@@ -39,11 +40,33 @@ let probeSession: Session | null = null;
 
 /** Original values of the proxy env keys, captured before the first write. */
 const originalEnv = new Map<string, string | undefined>();
+/** The overlays currently in force for child processes. */
+let childOverrides: Record<string, string | null> | null = null;
 
 const DIAL_TIMEOUT_MS = 6_000;
 const EGRESS_TIMEOUT_MS = 10_000;
 /** Two independent IP echo services: one blocked region should not fail the probe. */
 const EGRESS_ENDPOINTS = ['https://api.ipify.org?format=json', 'https://ifconfig.me/ip'] as const;
+/** `resolveProxy` only answers "which route", it does not make a request. */
+const SYSTEM_PROXY_PROBE_URL = 'https://example.com/';
+
+/**
+ * The proxy-aware transport. `direct` stays on Node's stack: it must not even
+ * consult the OS proxy. `system` goes through Chromium as well, otherwise the
+ * main process would ignore the OS proxy the renderer is already following.
+ */
+let nodeFetch: NetworkFetch = (input, init) => globalThis.fetch(input, init);
+
+export const networkFetch: NetworkFetch = (input, init) => {
+  if (!active || active.mode === 'direct') return nodeFetch(input, init);
+  return net.fetch(input as never, init as never) as unknown as Promise<Response>;
+};
+
+/** Explicit network seam for services; see `networkClient.ts`. */
+export const networkClient: NetworkClient = createNetworkClient({
+  fetch: networkFetch,
+  childEnv: proxyChildEnv,
+});
 
 /**
  * Installs the two process-wide hooks. Called once from `bootstrap`, before the
@@ -53,15 +76,8 @@ export function connectProxyRuntime(): void {
   if (installed) return;
   installed = true;
 
-  const baseFetch = globalThis.fetch;
-  const proxyFetch: typeof globalThis.fetch = ((input, init) => {
-    // Only "direct" stays on Node's stack: it must not even consult the OS proxy.
-    // `system` goes through Chromium as well, otherwise the main process would
-    // ignore the OS proxy the renderer is already following.
-    if (!active || active.mode === 'direct') return baseFetch(input, init);
-    return net.fetch(input as never, init as never) as unknown as Promise<Response>;
-  }) as typeof globalThis.fetch;
-  globalThis.fetch = proxyFetch;
+  nodeFetch = globalThis.fetch;
+  globalThis.fetch = networkFetch;
 
   app.on('login', (event, _webContents, _details, authInfo, callback) => {
     // Only proxy challenges: a site's basic auth prompt must not receive these.
@@ -81,19 +97,38 @@ export function connectProxyRuntime(): void {
  * Applies a config to the live process. `session.setProxy` only affects *new*
  * connections, so pooled sockets are closed right after: without that, an open
  * HTTPS connection keeps talking to the old route for minutes.
+ *
+ * `active` and the environment move only after Chromium accepted the config, so
+ * a failed apply cannot leave fetch/env pointing at a route Chromium never took.
  */
 export async function applyProxy(config: ResolvedProxy): Promise<void> {
-  active = config;
-
   const ses = session.defaultSession;
+  // Apply first: `resolveProxy` answers from the session's *current* settings, so
+  // resolving before switching would report the previously configured proxy when
+  // the user just chose "system".
   await applyToSession(ses, config);
-  await ses.closeAllConnections();
+  const systemProxyResult =
+    config.mode === 'system' ? await resolveSystemProxy() : undefined;
+  const overrides = proxyChildEnvironment(config, systemProxyResult);
+  await ses.closeAllConnections().catch(() => undefined);
 
-  if (config.mode === 'manual') setProxyEnv(proxyEnvironment(config));
-  else restoreProxyEnv();
+  active = config;
+  childOverrides = overrides;
+  // Capture before computing the fallback: if the system proxy could not be
+  // resolved we restore the launch values, not "delete everything".
+  captureOriginalEnv(process.env);
+  applyEnvOverrides(process.env, overrides ?? originalOverrides());
 
   console.warn(`[OPC] 网络代理：${describeProxy(config)}`);
 }
+
+/** The environment a spawned process should inherit, proxy variables included. */
+export function proxyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  if (childOverrides) overlayEnv(env, childOverrides);
+  return env;
+}
+
 /** Shared by the default session and the throwaway probe session. */
 async function applyToSession(ses: Session, config: ResolvedProxy): Promise<void> {
   if (config.mode === 'manual') {
@@ -107,21 +142,48 @@ async function applyToSession(ses: Session, config: ResolvedProxy): Promise<void
   await ses.setProxy({ mode: config.mode });
 }
 
-function setProxyEnv(env: Record<string, string | null>): void {
-  for (const key of PROXY_ENV_KEYS) {
-    if (!originalEnv.has(key)) originalEnv.set(key, process.env[key]);
-  }
-  for (const [key, value] of Object.entries(env)) {
-    if (value === null) delete process.env[key];
-    else process.env[key] = value;
+/**
+ * Chromium is the authority for the system proxy. Child processes cannot read the
+ * OS setting, so we translate the resolved route into environment variables once
+ * per apply instead of leaving them unproxied.
+ */
+async function resolveSystemProxy(): Promise<string | undefined> {
+  try {
+    return await session.defaultSession.resolveProxy(SYSTEM_PROXY_PROBE_URL);
+  } catch (error) {
+    console.warn('[OPC] 无法解析系统代理，子进程沿用原有环境变量', error);
+    return undefined;
   }
 }
 
-function restoreProxyEnv(): void {
-  for (const [key, value] of originalEnv) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+function captureOriginalEnv(target: NodeJS.ProcessEnv): void {
+  for (const key of PROXY_ENV_KEYS) {
+    if (!originalEnv.has(key)) originalEnv.set(key, target[key]);
   }
+}
+
+function originalOverrides(): Record<string, string | null> {
+  const overrides: Record<string, string | null> = {};
+  for (const key of PROXY_ENV_KEYS) overrides[key] = originalEnv.get(key) ?? null;
+  return overrides;
+}
+
+/** Applies `null` as "remove the key". */
+function overlayEnv(target: NodeJS.ProcessEnv, overrides: Record<string, string | null>): void {
+  for (const key of PROXY_ENV_KEYS) {
+    if (!(key in overrides)) continue;
+    const value = overrides[key];
+    if (value === null) delete target[key];
+    else target[key] = value;
+  }
+}
+
+function applyEnvOverrides(
+  target: NodeJS.ProcessEnv,
+  overrides: Record<string, string | null>,
+): void {
+  captureOriginalEnv(target);
+  overlayEnv(target, overrides);
 }
 
 /**

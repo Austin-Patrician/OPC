@@ -75,6 +75,86 @@ describe('ModelConfigService.refreshModels', () => {  it('merges the fetched ids
       outputUsdPerM: 3,
     });
   });
+
+  it('fills vision from the built-in catalogue when the endpoint only lists ids', async () => {
+    service.saveProvider({
+      id: 'openai',
+      name: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+      api: 'openai-completions',
+      isCustom: false,
+    });
+    service.setModels('openai', [{ id: 'gpt-4o', name: 'GPT-4o', capability: 'chat' }]);
+
+    service.runtime.testProvider = async () => ({
+      ok: true,
+      message: 'ok',
+      models: [{ id: 'gpt-4o', name: 'gpt-4o', capability: 'chat' }],
+    });
+
+    const result = await service.refreshModels('openai');
+    const model = result.providers
+      .find((entry) => entry.id === 'openai')
+      ?.models.find((entry) => entry.id === 'gpt-4o');
+
+    expect(model?.vision).toBe(true);
+  });
+});
+
+describe('ModelConfigService.setModels', () => {
+  it('keeps capability flags, api and cache prices', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+    service.setModels('custom-relay', [
+      {
+        id: 'vision-model',
+        name: 'Vision model',
+        capability: 'chat',
+        api: 'openai-completions',
+        contextWindow: 64_000,
+        vision: true,
+        reasoning: true,
+        cacheReadUsdPerM: 0.1,
+        cacheWriteUsdPerM: 0.2,
+      },
+    ]);
+
+    expect(service.listProviders().find((entry) => entry.id === 'custom-relay')?.models).toEqual([
+      expect.objectContaining({
+        id: 'vision-model',
+        api: 'openai-completions',
+        vision: true,
+        reasoning: true,
+        cacheReadUsdPerM: 0.1,
+        cacheWriteUsdPerM: 0.2,
+      }),
+    ]);
+  });
+
+  it('does not erase flags when a later save omits them', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+    service.setModels('custom-relay', [
+      { id: 'vision-model', name: 'Vision', capability: 'chat', vision: true },
+    ]);
+    service.setModels('custom-relay', [
+      { id: 'vision-model', name: 'Vision renamed', capability: 'chat' },
+    ]);
+
+    expect(
+      service.listProviders().find((entry) => entry.id === 'custom-relay')?.models[0],
+    ).toMatchObject({ name: 'Vision renamed', vision: true });
+  });
 });
 
 describe('ModelConfigService.addModel', () => {

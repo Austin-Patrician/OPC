@@ -14,6 +14,11 @@ export interface AppPaths {
   logsDir: string;
   /** Scratch area for diagnostics that must not pollute real data. */
   probeDir: string;
+  /**
+   * Disposable cache (`cache/cache.db`). Unlike `userData` proper, deleting this
+   * directory is a supported operation — see `apps/main/src/cache/`.
+   */
+  cacheDir: string;
 }
 
 export function resolveAppPaths(): AppPaths {
@@ -26,5 +31,6 @@ export function resolveAppPaths(): AppPaths {
     workspaceDir: path.join(userData, 'workspace'),
     logsDir: path.join(userData, 'logs'),
     probeDir: path.join(userData, 'diagnostics'),
+    cacheDir: path.join(userData, 'cache'),
   };
 }

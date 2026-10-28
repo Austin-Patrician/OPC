@@ -34,6 +34,8 @@ const toModelOption = (model: CatalogModel): ModelOption => ({
   capability: model.type === 'classifier' ? 'chat' : model.type,
   api: model.api,
   contextWindow: model.contextWindow,
+  vision: model.vision,
+  reasoning: model.reasoning,
   inputUsdPerM: model.price?.input,
   outputUsdPerM: model.price?.output,
   cacheReadUsdPerM: model.price?.cacheRead,

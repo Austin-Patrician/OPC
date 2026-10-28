@@ -20,6 +20,10 @@ export interface BuiltinModelEntry {
   cacheReadUsdPerM: number;
   cacheWriteUsdPerM: number;
   contextWindow?: number;
+  /** Whether the built-in definition declares image input. */
+  vision?: boolean;
+  /** Whether the built-in definition declares reasoning support. */
+  reasoning?: boolean;
 }
 
 const DATE_SUFFIX = /-(?:\d{4}-\d{2}-\d{2}|\d{8}|\d{4})$/;

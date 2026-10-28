@@ -34,10 +34,14 @@ import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createImageToolExtension } from './imageTool';
+import { createOcrToolExtension } from './ocrTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
 import { createCommToolExtension } from '../comm/commTools';
 import type { CommService } from '../comm/commService';
 import { setWorkTaskServices, WorkTaskDefinition } from './workTaskDefinition';
+import type { NetworkClient } from '../network/networkClient';
+import type { OcrEngine } from '../ocr/service';
+import { RuntimeService } from '../runtime/service';
 
 /** How many manager rework rounds a task may take before it is parked for the boss. */
 const MAX_REVIEW_ROUNDS = 2;
@@ -68,6 +72,12 @@ export interface WorkServiceDeps {
   projects?: ProjectService;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
   comm?: CommService;
+  /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
+  network?: NetworkClient;
+  /** Company-wide base environment; absent = build one from `paths` + `network`. */
+  runtime?: RuntimeService;
+  /** Image → text (OCR) for employees whose model has no vision. */
+  ocr?: OcrEngine;
 }
 
 const REAPER_INTERVAL_MS = 10 * 60 * 1000;
@@ -86,11 +96,21 @@ export class WorkService {
   private readonly listeners = new Set<(task: WorkTask) => void>();
   private readonly budgetListeners = new Set<(budgets: Budget[]) => void>();
   private readonly harnesses = new Map<string, EmployeeHarness>();
+  private readonly runtime: RuntimeService;
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
     this.repository.seedEmployees(deps.agents);
+
+    // One environment for the whole company: every tool call and acceptance
+    // command resolves `node` / `python` through this service.
+    this.runtime =
+      deps.runtime ??
+      new RuntimeService(deps.db, {
+        userDataDir: deps.paths.userData,
+        ...(deps.network ? { network: deps.network } : {}),
+      });
 
     this.budgets = new BudgetService(new BudgetRepository(deps.db));
     for (const agent of deps.agents) this.budgets.ensureForEmployee(agent.id);
@@ -233,6 +253,8 @@ export class WorkService {
         const task = this.repository.getTask(taskId);
         if (task) this.emit(task);
       },
+      network: this.deps.network,
+      runtime: this.runtime,
     });
   }
 
@@ -824,12 +846,22 @@ export class WorkService {
     registry.install(createCodingTools());
     // Installed after the tools so it sees every call; `beforeTool` is the single
     // choke point for path policy and command wrapping.
-    registry.install(createSandboxExtension());
+    registry.install(
+      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
+    );
     registry.install(createToolLimitExtension());
 
     // The agent can draw, but only when a usable image provider exists.
     if (this.deps.images?.isAvailable()) {
       registry.install(createImageToolExtension({ generate: this.deps.images.generateBytes }));
+    }
+
+    // Text out of pictures for models without vision. Always installed: the tool
+    // is cheap to describe and the model decides when looking is necessary.
+    if (this.deps.ocr) {
+      registry.install(
+        createOcrToolExtension({ ocr: this.deps.ocr, defaultRoot: this.deps.paths.workspaceDir }),
+      );
     }
 
     // Every employee can keep a lesson for its future self.
@@ -915,8 +947,13 @@ export class WorkService {
               },
             }
           : undefined,
-        // Every tool call runs with the conversation's cwd as the workspace root.
-        env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? this.deps.paths.workspaceDir }),
+        // Every tool call runs with the conversation's cwd as the workspace root
+        // and the company base environment on its PATH.
+        env: ({ cwd }) =>
+          new NodeExecutionEnv({
+            cwd: cwd ?? this.deps.paths.workspaceDir,
+            shellEnv: this.runtime.envFor(),
+          }),
       },
       context,
     );

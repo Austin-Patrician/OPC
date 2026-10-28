@@ -10,7 +10,9 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
+    "prebuild": "node scripts/fetch-ocr-assets.mjs --check",
     "build": "electron-vite build",
+    "ocr:assets": "node scripts/fetch-ocr-assets.mjs",
     "start": "electron-vite preview",
     "pack:mac": "pnpm build && electron-builder --mac --dir",
     "dist:mac": "pnpm build && electron-builder --mac",
@@ -18,7 +20,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "format": "prettier --write .",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps && node scripts/fetch-ocr-assets.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^1.4.0",

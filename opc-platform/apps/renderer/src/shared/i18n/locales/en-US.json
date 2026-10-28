@@ -168,7 +168,8 @@
       "appearance": "Appearance & language",
       "compaction": "Workspace & compaction",
       "company": "Company & profile",
-      "network": "Network & proxy"
+      "network": "Network & proxy",
+      "runtime": "Runtimes"
     },
     "llm": {
       "desc": "Providers and models come from pi's built-in catalog; the default model and thinking level apply to the runtime.",
@@ -221,6 +222,7 @@
       "tableTitle": "Models & pricing",
       "col": {
         "name": "Name",
+        "capability": "Capabilities",
         "context": "Context",
         "default": "Default"
       },
@@ -427,6 +429,40 @@
       "saved": "Saved",
       "discard": "Discard",
       "unavailable": "Proxy settings are unavailable in this environment"
+    },
+    "runtime": {
+      "desc": "One base environment for the whole company: commands and acceptance scripts in the workspace run through the interpreters chosen here. Node and Python are both active, with no per-employee override.",
+      "globalNote": "This is a company-wide setting: changes apply to the next tool call and never interrupt a running task.",
+      "nodeTitle": "Node runtime",
+      "nodeDesc": "System Node wins by default; Electron's bundled Node is only the fallback when none is installed.",
+      "pythonTitle": "Python runtime",
+      "pythonDesc": "Point at the system Python 3, or at the interpreter inside a venv / conda environment.",
+      "current": "Current",
+      "auto": "Auto-select",
+      "autoHint": "Auto-select uses the first available interpreter",
+      "version": "v{{version}}",
+      "available": "Available",
+      "unavailable": "Unavailable",
+      "builtin": "Built-in",
+      "custom": "Custom",
+      "remove": "Remove",
+      "noProfiles": "No interpreter available yet",
+      "loading": "Reading runtimes…",
+      "refresh": "Detect again",
+      "probing": "Detecting…",
+      "addTitle": "Add a custom interpreter",
+      "addDesc": "Useful for one nvm version, a venv or a conda environment. Saving makes it current for its language.",
+      "kind": "Interpreter type",
+      "kindHint": "One Node and one Python can be active at the same time",
+      "binary": "Interpreter path",
+      "binaryHint": "Must be an executable; venv / conda variables are detected automatically",
+      "choose": "Choose file",
+      "name": "Environment name",
+      "nameHint": "Leave blank to name it after its directory",
+      "namePlaceholder": "e.g. project venv",
+      "inspectOk": "Interpreter works: v{{version}}",
+      "inspectFail": "Unavailable: {{detail}}",
+      "save": "Save and use"
     }
   },
   "org": {

@@ -7,6 +7,13 @@ files:
   - out/**
   - package.json
 asar: true
+# OCR models and the ONNX Runtime WASM binary live outside the asar so the
+# renderer can fetch them over the `opc-ocr://` protocol without unpacking.
+extraResources:
+  - from: resources/ocr
+    to: ocr
+    filter:
+      - '**/*'
 # Native addons and the loadable SQLite extension cannot run from inside asar.
 asarUnpack:
   - '**/*.node'

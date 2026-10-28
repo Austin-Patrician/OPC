@@ -4,6 +4,7 @@ import type { GeneratedImageResult } from '@opc/shared/ipc';
 import type { AppPaths } from '../env';
 import type { ModelConfigService } from './modelConfigService';
 import { generateImage } from './imageGeneration';
+import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
 
 interface ResolvedTarget {
   providerId: string;
@@ -24,6 +25,7 @@ export class ImageService {
   constructor(
     private readonly models: ModelConfigService,
     private readonly paths: AppPaths,
+    private readonly network: NetworkClient = defaultNetworkClient,
   ) {}
 
   generateBytes = async (input: { prompt: string; modelId?: string }) => {
@@ -36,6 +38,8 @@ export class ImageService {
         apiKey: resolved.apiKey,
         model: resolved.modelId,
         prompt: input.prompt,
+        providerId: resolved.providerId,
+        network: this.network,
       });
       return {
         ok: true as const,

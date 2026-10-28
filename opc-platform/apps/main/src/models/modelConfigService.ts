@@ -16,6 +16,7 @@ import { decryptSecret, encryptSecret } from './keyCipher';
 import type { FileCredentialStore } from './credentialStore';
 import { matchBuiltinModel, type BuiltinModelEntry } from './pricingMatch';
 import { ModelRuntime, PROVIDER_PRESETS } from './runtime';
+import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
 
 /** What a model-list refresh actually did, in words the UI can show. */
 export interface RefreshModelsResult {
@@ -52,12 +53,17 @@ export class ModelConfigService {
   private readonly repository: ModelConfigRepository;
   readonly runtime: ModelRuntime;
 
-  constructor(db: CompanyDatabase, credentials?: FileCredentialStore) {
+  constructor(
+    db: CompanyDatabase,
+    credentials?: FileCredentialStore,
+    network: NetworkClient = defaultNetworkClient,
+  ) {
     this.repository = new ModelConfigRepository(db);
     this.runtime = new ModelRuntime(
       this.repository,
       (providerId) => this.readKey(providerId),
       credentials,
+      network,
     );
 
     // First run: seed the presets so the page is not an empty form.
@@ -193,12 +199,29 @@ export class ModelConfigService {
     // Merge instead of replace: the endpoint only tells us ids. Existing prices,
     // context windows, capabilities and manually added models are the user's data
     // and must survive a refresh.
+    const catalogue = await this.builtinCatalogue();
     const existing = new Map(config.models.map((model) => [model.id, model]));
     const listedIds = new Set(listed.map((model) => model.id));
     const imported = listed.map((model) => {
       const previous = existing.get(model.id);
-      if (!previous) return model;
-      return { ...previous, id: model.id, name: previous.name || model.name };
+      const builtin = matchBuiltinModel(catalogue, { providerId, modelId: model.id });
+      if (previous) {
+        return {
+          ...previous,
+          id: model.id,
+          name: previous.name || model.name,
+          // Fill capabilities for rows stored before they were tracked; keep
+          // whatever the user/previous refresh already knew.
+          vision: previous.vision ?? builtin?.vision,
+          reasoning: previous.reasoning ?? builtin?.reasoning,
+        };
+      }
+      return {
+        ...model,
+        vision: model.vision ?? builtin?.vision,
+        reasoning: model.reasoning ?? builtin?.reasoning,
+        contextWindow: model.contextWindow ?? builtin?.contextWindow,
+      };
     });
     const kept = config.models.filter((model) => !listedIds.has(model.id));
     this.repository.saveModels(providerId, [...imported, ...kept]);
@@ -237,6 +260,10 @@ export class ModelConfigService {
       return {
         ...model,
         contextWindow: model.contextWindow || builtin.contextWindow || 0,
+        // Filling capability flags here repairs lists saved before the flags
+        // existed, in the same pass that already matched the built-in entry.
+        vision: builtin.vision ?? model.vision,
+        reasoning: builtin.reasoning ?? model.reasoning,
         inputUsdPerM: builtin.inputUsdPerM,
         outputUsdPerM: builtin.outputUsdPerM,
         cacheReadUsdPerM: builtin.cacheReadUsdPerM,
@@ -276,6 +303,8 @@ export class ModelConfigService {
           id?: string;
           cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
           contextWindow?: number;
+          input?: string[];
+          reasoning?: boolean;
         };
         if (!model.id || !model.cost) continue;
         entries.push({
@@ -286,6 +315,8 @@ export class ModelConfigService {
           cacheReadUsdPerM: model.cost.cacheRead ?? 0,
           cacheWriteUsdPerM: model.cost.cacheWrite ?? 0,
           contextWindow: model.contextWindow,
+          vision: model.input?.includes('image') ?? false,
+          reasoning: model.reasoning ?? false,
         });
       }
     }
@@ -338,9 +369,17 @@ export class ModelConfigService {
           id: model.id,
           name: model.name,
           capability: model.capability,
+          api: model.api ?? previous?.api,
           contextWindow: model.contextWindow ?? previous?.contextWindow,
+          // Capability flags travel with the model; the UI sends them from the
+          // catalog, and a re-import must not erase what was already known.
+          vision: model.vision ?? previous?.vision,
+          reasoning: model.reasoning ?? previous?.reasoning,
           inputUsdPerM: previous?.inputUsdPerM ?? model.inputUsdPerM,
           outputUsdPerM: previous?.outputUsdPerM ?? model.outputUsdPerM,
+          cacheReadUsdPerM: previous?.cacheReadUsdPerM ?? model.cacheReadUsdPerM,
+          cacheWriteUsdPerM: previous?.cacheWriteUsdPerM ?? model.cacheWriteUsdPerM,
+          tiers: model.tiers ?? previous?.tiers,
         };
       }),
     );

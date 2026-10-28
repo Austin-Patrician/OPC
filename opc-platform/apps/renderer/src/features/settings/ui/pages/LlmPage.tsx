@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyRound, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { Brain, Eye, KeyRound, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ProviderDraft } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
@@ -117,6 +117,8 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
           type: model.capability,
           api: model.api ?? entry.apis[0] ?? 'openai-completions',
           contextWindow: model.contextWindow,
+          vision: model.vision,
+          reasoning: model.reasoning,
           price: {
             input: model.inputUsdPerM ?? 0,
             output: model.outputUsdPerM ?? 0,
@@ -169,6 +171,8 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
           type: model.capability,
           api: model.api ?? provider.api,
           contextWindow: model.contextWindow,
+          vision: model.vision,
+          reasoning: model.reasoning,
           price: {
             input: model.inputUsdPerM ?? 0,
             output: model.outputUsdPerM ?? 0,
@@ -230,6 +234,8 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
         capability: model.type === 'classifier' ? 'chat' : model.type,
         api: model.api,
         contextWindow: model.contextWindow,
+        vision: model.vision,
+        reasoning: model.reasoning,
         inputUsdPerM: model.price?.input,
         outputUsdPerM: model.price?.output,
         cacheReadUsdPerM: model.price?.cacheRead,
@@ -767,6 +773,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                           <table className="w-full table-fixed border-collapse text-sm">
                             <colgroup>
                               <col />
+                              <col style={{ width: '4.5rem' }} />
                               <col style={{ width: '4.25rem' }} />
                               <col style={{ width: '4.5rem' }} />
                               <col style={{ width: '4.5rem' }} />
@@ -776,6 +783,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                             <thead>
                               <tr className="text-2xs text-ink-tertiary">
                                 <th className="px-3 py-1.5 text-left font-medium">{t('settings.llm.col.name')}</th>
+                                <th className="px-1 py-1.5 text-center font-medium">{t('settings.llm.col.capability')}</th>
                                 <th className="px-1 py-1.5 text-right font-medium">{t('settings.llm.col.context')}</th>
                                 <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.input')}</th>
                                 <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.output')}</th>
@@ -792,6 +800,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                           <table className="w-full table-fixed border-collapse text-sm">
                             <colgroup>
                               <col />
+                              <col style={{ width: '4.5rem' }} />
                               <col style={{ width: '4.25rem' }} />
                               <col style={{ width: '4.5rem' }} />
                               <col style={{ width: '4.5rem' }} />
@@ -807,6 +816,30 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                                   <td className="px-3 py-1.5">
                                     <div className="truncate text-sm-plus font-medium text-ink">{model.name}</div>
                                     <div className="truncate font-mono text-2xs text-ink-tertiary">{model.id}</div>
+                                  </td>
+                                  <td className="px-1 py-1.5">
+                                    {model.reasoning || model.vision ? (
+                                      <div className="flex items-center justify-center gap-1.5">
+                                        {model.reasoning ? (
+                                          <span title={t('settings.llm.reasoning')}>
+                                            <Brain
+                                              className="size-3.5 text-[#7A4CE0]"
+                                              aria-label={t('settings.llm.reasoning')}
+                                            />
+                                          </span>
+                                        ) : null}
+                                        {model.vision ? (
+                                          <span title={t('settings.llm.vision')}>
+                                            <Eye
+                                              className="size-3.5 text-success"
+                                              aria-label={t('settings.llm.vision')}
+                                            />
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    ) : (
+                                      <div className="text-center text-xs text-ink-quaternary">—</div>
+                                    )}
                                   </td>
                                   <td className="px-1 py-1.5 text-right font-mono text-xs text-ink-tertiary">
                                     {model.contextWindow ? formatContext(Math.round(model.contextWindow / 1000)) : '—'}
@@ -885,6 +918,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                                     </div>
                                   </div>
                                 </td>
+                                <td className="px-1 py-1.5" />
                                 <td className="px-1 py-1.5">
                                   <input
                                     value={customModel.contextWindow}

@@ -32,4 +32,48 @@ describe('opening an upgraded database', () => {
     expect(Number(db.pragma('user_version', { simple: true }))).toBeGreaterThan(0);
     db.close();
   });
+
+  it('widens a legacy budget scope CHECK to project and department', () => {
+    const file = `/tmp/opc-legacy-budget-${Date.now()}.db`;
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE budget (
+        id              TEXT PRIMARY KEY,
+        scope           TEXT NOT NULL CHECK (scope IN ('company','employee')),
+        scope_id        TEXT NOT NULL,
+        period_key      TEXT NOT NULL,
+        limit_tokens    INTEGER NOT NULL,
+        used_tokens     INTEGER NOT NULL DEFAULT 0,
+        reserved_tokens INTEGER NOT NULL DEFAULT 0,
+        warn_at         REAL NOT NULL DEFAULT 0.8,
+        hard_stop_at    REAL NOT NULL DEFAULT 1.0,
+        is_stopped      INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_budget_scope ON budget(scope, scope_id, period_key);
+    `);
+    legacy.close();
+
+    const db = openCompanyDatabase(file);
+    const { sql } = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'budget'")
+      .get() as { sql: string };
+    expect(sql).toContain("'project'");
+    expect(sql).toContain("'department'");
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO budget (id, scope, scope_id, period_key, limit_tokens, used_tokens,
+                               reserved_tokens, warn_at, hard_stop_at, is_stopped, created_at, updated_at)
+           VALUES ('b1', 'project', 'p1', '2026-10', 1000, 0, 0, 0.8, 1.0, 0, 0, 0)`,
+        )
+        .run(),
+    ).not.toThrow();
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'budget'")
+      .all() as { name: string }[];
+    expect(indexes.map((index) => index.name)).toContain('idx_budget_scope');
+    db.close();
+  });
 });
