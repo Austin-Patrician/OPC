@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Building2, Coins, Gauge, PauseCircle, RefreshCw, Wallet } from 'lucide-react';
+import { AlertTriangle, Building2, Coins, Gauge as Gauge2, PauseCircle, RefreshCw, Wallet } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BudgetOverview, BudgetView, CostCentersOverview, PayrollOverview } from '@opc/shared/ipc';
+import { Donut, Gauge, RankedBars } from '@/shared/ui/charts';
 import { PageHeader, Section } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
 
@@ -69,21 +70,28 @@ function PayrollSection({ periodKey }: { periodKey: string }) {
                   </span>
                   <span className="shrink-0 font-mono text-sm font-semibold text-ink">{money(line.spentUsd)}</span>
                 </div>
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    {/* 占比条：长度表示"占公司总花费的比例"，所以满格 = 100%，不是"最高的人"。 */}
+                    <div className="h-1 overflow-hidden rounded-full bg-surface-muted">
+                      <div
+                        className="h-full rounded-full bg-accent transition-[width] duration-500"
+                        style={{ width: `${Math.min(100, Math.round(line.share * 100))}%` }}
+                      />
+                    </div>
+                  </div>
+                  <span className="shrink-0 font-mono text-3xs text-ink-quaternary">
+                    {Math.round(line.share * 100)}%
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-3xs text-ink-quaternary">
                   <span className="font-mono">{line.tokensUsed.toLocaleString()} tok</span>
-                  <span>{t('budget.payrollShare', { percent: Math.round(line.share * 100) })}</span>
                   {line.budgetUsd !== undefined ? (
                     <span>{t('budget.payrollCap', { amount: money(line.budgetUsd) })}</span>
                   ) : (
                     <span>{t('budget.payrollUnpriced')}</span>
                   )}
                   <span className="ml-auto">{t('budget.payrollForecast', { amount: money(line.projectedUsd) })}</span>
-                </div>
-                <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/8">
-                  <div
-                    className="h-full rounded-full bg-accent"
-                    style={{ width: `${Math.min(100, Math.round(line.share * 100))}%` }}
-                  />
                 </div>
               </li>
             ))}
@@ -158,33 +166,25 @@ function CostCentersSection({ periodKey }: { periodKey: string }) {
       {lines.length === 0 ? (
         <p className="px-4 py-6 text-center text-sm text-ink-quaternary">{t('budget.costCentersEmpty')}</p>
       ) : (
-        <ul data-testid="cost-centers" className="divide-y divide-line">
-          {lines.map((line) => (
-            <li key={line.id} data-testid="cost-center-row" className="px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm-plus font-medium text-ink">{line.name}</span>
-                <span className="shrink-0 text-2xs text-ink-quaternary">
-                  {t('budget.costCentersPeople', { count: line.headcount })}
-                </span>
-                <span className="shrink-0 font-mono text-sm font-semibold text-ink">{money(line.spentUsd)}</span>
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
-                <span className="font-mono">{line.tokensUsed.toLocaleString()} tok</span>
-                <span>{t('budget.payrollShare', { percent: Math.round(line.share * 100) })}</span>
-                {line.budgetUsd !== undefined ? (
-                  <span>{t('budget.payrollCap', { amount: money(line.budgetUsd) })}</span>
-                ) : null}
-                <span className="ml-auto">{t('budget.payrollForecast', { amount: money(line.projectedUsd) })}</span>
-              </div>
-              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/8">
-                <div
-                  className="h-full rounded-full bg-accent"
-                  style={{ width: `${Math.min(100, Math.round(line.share * 100))}%` }}
-                />
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className="px-4 py-3.5" data-testid="cost-centers">
+          <RankedBars
+            ariaLabel={t('budget.costCentersTitle')}
+            emptyLabel={t('budget.costCentersEmpty')}
+            formatValue={money}
+            rows={lines.map((line) => ({
+              key: line.id,
+              label: line.name,
+              value: line.spentUsd,
+              caption: `${line.tokensUsed.toLocaleString()} tok · ${t('budget.costCentersPeople', {
+                count: line.headcount,
+              })} · ${Math.round(line.share * 100)}%`,
+              color: line.share > 0.5 ? 'var(--warning)' : 'var(--accent)',
+            }))}
+          />
+          <p className="mt-2 font-mono text-3xs text-ink-quaternary">
+            {t('budget.costCentersScale', { amount: money(view?.totalSpentUsd ?? 0) })}
+          </p>
+        </div>
       )}
 
       {unattributed > 0 ? (
@@ -196,6 +196,31 @@ function CostCentersSection({ periodKey }: { periodKey: string }) {
         </p>
       ) : null}
     </Section>
+  );
+}
+
+/**
+ * 一个小图标 + 数字 + 说明：概览区里的三个计数。
+ *
+ * 图标承担"这是哪一类"，数字承担"多少"；两者不重复，所以图标永远不解释数字。
+ */
+function MiniStat({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: typeof AlertTriangle;
+  label: string;
+  value: string;
+  tone: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Icon className="size-3.5 shrink-0 text-ink-quaternary" />
+      <span className="min-w-0 flex-1 truncate text-2xs text-ink-tertiary">{label}</span>
+      <span className={cn('shrink-0 font-mono text-sm font-semibold', tone)}>{value}</span>
+    </div>
   );
 }
 
@@ -259,6 +284,31 @@ export function BudgetPage() {
   const stopped = rows.filter((row) => row.state === 'stopped');
   const warned = rows.filter((row) => row.state === 'warn');
 
+  // Composition of the *caps*, not of the spend. `usedTokens` is charged to every axis
+  // of one run, so its four totals overlap and a share of them would be meaningless;
+  // `limitTokens` is set independently per axis, so this really is a partition.
+  const scopeSlices = SCOPE_ORDER.map((scope) => {
+    const inScope = rows.filter((row) => row.scope === scope);
+    return {
+      key: scope,
+      label: t(`budget.scope.${scope}`),
+      value: inScope.reduce((sum, row) => sum + row.limitTokens, 0),
+      color:
+        scope === 'company'
+          ? 'var(--text-quaternary)'
+          : scope === 'employee'
+            ? 'var(--accent)'
+            : scope === 'department'
+              ? 'var(--warning)'
+              : 'var(--success)',
+    };
+  });
+
+  const totalUsed = rows.reduce((sum, row) => sum + row.usedTokens, 0);
+  const totalLimit = rows.reduce((sum, row) => sum + row.limitTokens, 0);
+  const compact = (value: number) =>
+    value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}k` : `${value}`;
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
       <div className="mx-auto w-full max-w-[62rem] px-6 py-6">
@@ -296,6 +346,59 @@ export function BudgetPage() {
         ) : null}
 
         <div className="flex flex-col gap-4">
+          {/* 概览：一眼看到"钱烧到哪一维"以及整体水位。 */}
+          {rows.length > 0 ? (
+            <Section
+              title={t('budget.overviewTitle')}
+              description={t('budget.overviewHint')}
+              action={<Gauge2 className="size-4 text-ink-quaternary" />}
+            >
+              <div className="grid grid-cols-1 gap-5 px-4 py-4 sm:grid-cols-[auto_1fr]">
+                <div className="flex items-center gap-5">
+                  <Gauge
+                    ratio={totalLimit > 0 ? totalUsed / totalLimit : 0}
+                    label={t('budget.overviewTotal')}
+                    value={`${totalLimit > 0 ? Math.round((totalUsed / totalLimit) * 100) : 0}%`}
+                    caption={`${totalUsed.toLocaleString()} / ${totalLimit.toLocaleString()}`}
+                    size={92}
+                    testId="budget-gauge"
+                  />
+                  <div className="grid gap-2">
+                    <MiniStat
+                      icon={PauseCircle}
+                      label={t('budget.overviewStopped')}
+                      value={String(stopped.length)}
+                      tone={stopped.length > 0 ? 'text-danger' : 'text-ink'}
+                    />
+                    <MiniStat
+                      icon={AlertTriangle}
+                      label={t('budget.overviewWarned')}
+                      value={String(warned.length)}
+                      tone={warned.length > 0 ? 'text-warning' : 'text-ink'}
+                    />
+                    <MiniStat
+                      icon={Gauge2}
+                      label={t('budget.overviewAxes')}
+                      value={String(rows.length)}
+                      tone="text-ink"
+                    />
+                  </div>
+                </div>
+                <div className="min-w-0 border-t border-line pt-4 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-5">
+                  <div className="mb-2 text-2xs font-semibold text-ink-tertiary">
+                    {t('budget.overviewSplit')}
+                  </div>
+                  <Donut
+                    slices={scopeSlices}
+                    centreValue={compact(totalLimit)}
+                    centreLabel={t('budget.overviewCapShort')}
+                    emptyLabel={t('budget.overviewEmpty')}
+                  />
+                </div>
+              </div>
+            </Section>
+          ) : null}
+
           {overview && overview.paused.length > 0 ? (
             <Section
               title={`${t('budget.pausedTitle')} · ${overview.paused.length}`}
@@ -325,7 +428,7 @@ export function BudgetPage() {
           <Section
             title={t('budget.tableTitle')}
             description={t('budget.tableHint')}
-            action={<Gauge className="size-4 text-ink-quaternary" />}
+            action={<Gauge2 className="size-4 text-ink-quaternary" />}
           >
             <ul className="divide-y divide-line">
               {rows.map((budget) => {
@@ -354,34 +457,53 @@ export function BudgetPage() {
                       </span>
                     </div>
 
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-ink/8">
-                        <div
-                          className={cn(
-                            'h-full rounded-full',
-                            budget.state === 'stopped'
-                              ? 'bg-danger'
-                              : budget.state === 'warn'
-                                ? 'bg-warning'
-                                : 'bg-accent',
-                          )}
-                          style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
-                        />
+                    <div className="mt-2 flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-ink/8">
+                          <div
+                            className={cn(
+                              'h-full rounded-full transition-[width] duration-500',
+                              budget.state === 'stopped'
+                                ? 'bg-danger'
+                                : budget.state === 'warn'
+                                  ? 'bg-warning'
+                                  : 'bg-accent',
+                            )}
+                            style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
+                          />
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
+                          <span className="font-mono">
+                            {budget.usedTokens.toLocaleString()} / {budget.limitTokens.toLocaleString()}
+                          </span>
+                          <span>{t('budget.projected', { tokens: budget.projectedTokens.toLocaleString() })}</span>
+                          {budget.willExceed ? (
+                            <span className="text-warning">{t('budget.willExceed')}</span>
+                          ) : null}
+                          {budget.reservedTokens > 0 ? (
+                            <span>{t('budget.reserved', { tokens: budget.reservedTokens.toLocaleString() })}</span>
+                          ) : null}
+                        </div>
                       </div>
-                      <span className="shrink-0 text-xs-plus text-ink-tertiary">
-                        {budget.usedTokens.toLocaleString()} / {budget.limitTokens.toLocaleString()}
-                      </span>
+
+                      {/* The gauge repeats the same ratio as an arc: a hairline bar is
+                          precise but unreadable at a glance, an arc is the reverse. */}
+                      <Gauge
+                        ratio={ratio}
+                        label={t(`budget.scope.${budget.scope}`)}
+                        value={`${Math.round(ratio * 100)}%`}
+                        size={44}
+                        tone={
+                          budget.state === 'stopped'
+                            ? 'danger'
+                            : budget.state === 'warn'
+                              ? 'warning'
+                              : 'accent'
+                        }
+                      />
                     </div>
 
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
-                      <span>{t('budget.projected', { tokens: budget.projectedTokens.toLocaleString() })}</span>
-                      {budget.willExceed ? (
-                        <span className="text-warning">{t('budget.willExceed')}</span>
-                      ) : null}
-                      {budget.reservedTokens > 0 ? (
-                        <span>{t('budget.reserved', { tokens: budget.reservedTokens.toLocaleString() })}</span>
-                      ) : null}
-
                       {editing === key ? (
                         <span className="ml-auto flex items-center gap-1">
                           <input

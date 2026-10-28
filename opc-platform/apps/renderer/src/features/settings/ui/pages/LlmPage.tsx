@@ -295,7 +295,12 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     });
     await models.setModels(
       provider.id,
-      provider.models.map((model) => toStoredModel(model)),
+      provider.models
+        // Speech models belong to the Voice page. Materialising them as chat rows
+        // would register an ASR id as a chat model in the runtime, and it would
+        // then show up in the default-model dropdown.
+        .filter((model) => model.type !== 'asr' && model.type !== 'tts')
+        .map((model) => toStoredModel(model)),
     );
   };
 

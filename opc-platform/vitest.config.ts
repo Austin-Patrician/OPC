@@ -14,6 +14,9 @@ export default defineConfig({
     environment: 'node',
     include: [
       'apps/renderer/src/**/*.test.ts',
+      // Components are tested by rendering to static markup (react-dom/server), which
+      // needs no DOM — so a `.tsx` test is still a pure-logic test.
+      'apps/renderer/src/**/*.test.tsx',
       'apps/main/src/**/*.test.ts',
       'packages/**/src/**/*.test.ts',
     ],

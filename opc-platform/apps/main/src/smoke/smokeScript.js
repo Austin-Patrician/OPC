@@ -312,10 +312,18 @@
           );
           await new Promise((r) => setTimeout(r, 200));
 
-          // The per-row enable switch must persist `chatEnabled`. The first provider
-          // in the catalog is Amazon Bedrock; give it a throwaway key so the switch
-          // is not locked, toggle it, then put everything back.
-          const smokeProviderId = 'amazon-bedrock';
+          // The per-row enable switch must persist `chatEnabled`. A throwaway custom
+          // provider keeps this off the user's real configuration, and it is deleted
+          // again at the end.
+          const smokeProviderId = 'smoke-llm-switch';
+          await window.opc.models.saveProvider({
+            id: smokeProviderId,
+            name: 'Smoke Switch',
+            baseUrl: 'https://smoke.test/v1',
+            api: 'openai-completions',
+            isCustom: true,
+          });
+          await window.opc.models.addModel(smokeProviderId, { id: 'smoke/model-1' });
           await window.opc.models.setKey(smokeProviderId, 'smoke-key');
           document.querySelector('[data-testid="settings-page-appearance"]')?.dispatchEvent(
             new MouseEvent('click', { bubbles: true }),
@@ -325,22 +333,23 @@
             new MouseEvent('click', { bubbles: true }),
           );
           await new Promise((r) => setTimeout(r, 800));
+          [...document.querySelectorAll('[data-testid="provider-row"]')]
+            .find((row) => row.textContent?.includes('Smoke Switch'))
+            ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 600));
           const firstSwitch = () =>
             document.querySelector('[data-testid="llm-model-table"] [role="switch"]');
           const switchEnabledBefore = firstSwitch()?.getAttribute('aria-checked') === 'true';
+          const llmSwitchUnlocked = firstSwitch()?.hasAttribute('disabled') === false;
           firstSwitch()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise((r) => setTimeout(r, 700));
           const storedAfterToggle = await window.opc.models.list();
-          const chatFlags = (storedAfterToggle.find((entry) => entry.id === smokeProviderId)?.models ?? [])
-            .filter((model) => model.capability === 'chat')
-            .map((model) => model.chatEnabled);
-          const llmSwitchPersists = switchEnabledBefore && chatFlags.includes(false);
-          const llmSwitchUnlocked = firstSwitch()?.hasAttribute('disabled') === false;
-          // Put it back: re-enable, drop the key.
-          firstSwitch()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          await new Promise((r) => setTimeout(r, 500));
-          await window.opc.models.setKey(smokeProviderId, '');
-          await new Promise((r) => setTimeout(r, 200));
+          const toggled = (storedAfterToggle.find((entry) => entry.id === smokeProviderId)?.models ?? []).find(
+            (model) => model.id === 'smoke/model-1',
+          );
+          const llmSwitchPersists = switchEnabledBefore && toggled?.chatEnabled === false;
+          await window.opc.models.removeProvider(smokeProviderId);
+          await new Promise((r) => setTimeout(r, 400));
 
           // The key row's Save button must stay horizontal.
           const saveButton = [...document.querySelectorAll('button')]

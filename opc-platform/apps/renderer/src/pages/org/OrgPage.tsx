@@ -36,6 +36,7 @@ import type { OrgFactView } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { HireWizard } from './HireWizard';
 import { cn } from '@/shared/lib/cn';
+import { CapacityBar } from '@/shared/ui/charts';
 import { buttonClass, TextField } from '@/features/settings/ui/kit';
 
 type OrgView = 'tree' | 'board' | 'roster' | 'badge';
@@ -298,6 +299,7 @@ export function OrgPage() {
         {directoryOpen ? (
           <Directory
             departments={departments}
+            jobs={jobs}
             scopeId={scopeId}
             onScope={(id) => setScopeId(id)}
             onClose={() => setDirectoryOpen(false)}
@@ -336,6 +338,7 @@ export function OrgPage() {
               <TreeView
                 departments={visible}
                 boss={boss}
+                jobs={jobs}
                 zoom={zoom}
                 collapsed={collapsed}
                 onToggle={(id) =>
@@ -517,12 +520,14 @@ export function OrgPage() {
 
 function Directory({
   departments,
+  jobs,
   scopeId,
   onScope,
   onCreate,
   onClose,
 }: {
   departments: DepartmentNode[];
+  jobs: JobNode[];
   scopeId: string;
   onScope: (id: string) => void;
   onCreate: () => void;
@@ -530,6 +535,8 @@ function Directory({
 }) {
   const { t } = useTranslation();
   const total = departments.reduce((sum, node) => sum + node.members.length, 0);
+  const seatCap = jobs.reduce((sum, job) => sum + job.headcount, 0);
+  const seatFilled = jobs.reduce((sum, job) => sum + job.filled, 0);
   const rows = flattenTree(departments);
   const itemClass = (active: boolean) =>
     cn(
@@ -630,6 +637,21 @@ function Directory({
               </div>
             ))}
           </div>
+
+          {/* 编制水位：全公司所有部门的坑位加起来。没设编制就不画，不假装有上限。 */}
+          {seatCap > 0 ? (
+            <div className="mt-3 border-t border-line pt-2.5">
+              <div className="flex items-baseline justify-between text-2xs text-ink-tertiary">
+                <span>{t('org.jobs')}</span>
+                <span className="font-mono">
+                  {seatFilled}/{seatCap}
+                </span>
+              </div>
+              <div className="mt-1.5">
+                <CapacityBar filled={seatFilled} total={seatCap} ariaLabel={`${seatFilled}/${seatCap}`} />
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </aside>
@@ -777,6 +799,7 @@ function Toolbar({
 function TreeView({
   departments,
   boss,
+  jobs,
   zoom,
   collapsed,
   onToggle,
@@ -793,6 +816,7 @@ function TreeView({
   departments: DepartmentNode[];
   /** The one human: the root card is a person, not a hard-coded label. */
   boss: { name: string; avatar?: string };
+  jobs: JobNode[];
   zoom: number;
   collapsed: Set<string>;
   onToggle: (id: string) => void;
@@ -914,6 +938,7 @@ function TreeView({
             <DeptRow
               nodes={roots}
               all={departments}
+              jobs={jobs}
               collapsed={collapsed}
               onToggle={onToggle}
               onOpen={onOpen}
@@ -1004,6 +1029,8 @@ interface DeptTreeProps {
   onHire: (departmentId: string) => void;
   activeMemberId: string;
   activeDeptId: string;
+  /** Headcount slots, so a card can show "3 / 5 seats filled" at a glance. */
+  jobs: JobNode[];
 }
 
 function DeptRow({ nodes, all, ...props }: DeptTreeProps & { nodes: DepartmentNode[]; all: DepartmentNode[] }) {
@@ -1040,6 +1067,9 @@ function DeptCard({ node, all, ...props }: DeptTreeProps & { node: DepartmentNod
   const isCollapsed = props.collapsed.has(node.id);
   const kids = childrenOf(all, node.id);
   const total = node.members.length + kids.reduce((sum, child) => sum + child.members.length, 0);
+  const seats = props.jobs.filter((job) => job.departmentId === node.id);
+  const seatCap = seats.reduce((sum, job) => sum + job.headcount, 0);
+  const seatFilled = seats.reduce((sum, job) => sum + job.filled, 0);
 
   return (
     <div
@@ -1102,6 +1132,27 @@ function DeptCard({ node, all, ...props }: DeptTreeProps & { node: DepartmentNod
           {node.members.filter((member) => member.status === 'active').length}/{total}
         </span>
       </div>
+
+      {/* 编制水位：有坑才画，没设编制的部门不假装有。 */}
+      {seatCap > 0 ? (
+        <div className="flex items-center gap-2 border-t border-line px-3 py-1.5">
+          <div className="min-w-0 flex-1">
+            <CapacityBar
+              filled={seatFilled}
+              total={seatCap}
+              ariaLabel={`${node.name}: ${seatFilled}/${seatCap}`}
+            />
+          </div>
+          <span
+            className={cn(
+              'shrink-0 font-mono text-3xs',
+              seatFilled > seatCap ? 'text-danger' : seatFilled === seatCap ? 'text-warning' : 'text-ink-quaternary',
+            )}
+          >
+            {seatFilled}/{seatCap}
+          </span>
+        </div>
+      ) : null}
 
       {isCollapsed ? null : (
         <div className="border-t border-line">
@@ -1782,15 +1833,13 @@ function DepartmentJobs({
                     {job.filled}/{job.headcount}
                   </span>
                 </div>
-                <div className="mt-1 flex items-center gap-1">
-                  <div className="flex h-1 flex-1 gap-px overflow-hidden rounded-full bg-line">
-                    {Array.from({ length: Math.max(job.headcount, 0) }).map((_, index) => (
-                      <span
-                        key={index}
-                        className="flex-1"
-                        style={{ background: index < job.filled ? 'var(--accent)' : 'transparent' }}
-                      />
-                    ))}
+                <div className="mt-1 flex items-center gap-1.5">
+                  <div className="min-w-0 flex-1">
+                    <CapacityBar
+                      filled={job.filled}
+                      total={job.headcount}
+                      ariaLabel={`${job.title}: ${job.filled}/${job.headcount}`}
+                    />
                   </div>
                   <button
                     type="button"

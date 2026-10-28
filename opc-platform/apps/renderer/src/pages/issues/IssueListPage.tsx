@@ -15,6 +15,7 @@ import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTr
 import { isOverdue, sortIssues, type IssueSort } from './issueSort';
 import { buildTimeline, spendByDay } from './issueTimeline';
 import { buildBurndown, summariseByPerson } from './issueBurndown';
+import { Columns, StackedBar, Trend } from '@/shared/ui/charts';
 
 type Group = BoardGroup;
 
@@ -309,7 +310,6 @@ export function IssueListPage() {
             {(() => {
               const { bars, from, to } = buildTimeline(ordered);
               const spend = spendByDay(tasks);
-              const peak = Math.max(0.000001, ...spend.map((entry) => entry.usd));
               if (bars.length === 0) {
                 return <p className="py-16 text-center text-sm text-ink-quaternary">{t('issues.timelineEmpty')}</p>;
               }
@@ -360,61 +360,32 @@ export function IssueListPage() {
                     </div>
                     {(() => {
                       const points = buildBurndown(tasks);
-                      const peak = Math.max(1, ...points.map((point) => point.remaining));
-                      const toPath = (value: (point: (typeof points)[number]) => number) =>
-                        points
-                          .map((point, index) => {
-                            const x = (index / Math.max(1, points.length - 1)) * 100;
-                            const y = 100 - (value(point) / peak) * 100;
-                            return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
-                          })
-                          .join(' ');
+                      // Straight lines on purpose: a burndown that curves between two
+                      // real days is a claim the data never made.
                       return (
-                        <svg
-                          data-testid="issue-burndown"
-                          viewBox="0 0 100 100"
-                          preserveAspectRatio="none"
-                          className="h-28 w-full overflow-visible"
-                        >
-                          <path
-                            d={toPath((point) => point.ideal)}
-                            fill="none"
-                            stroke="var(--text-quaternary)"
-                            strokeWidth="0.6"
-                            strokeDasharray="2 2"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                          <path
-                            d={toPath((point) => point.remaining)}
-                            fill="none"
-                            stroke="var(--accent)"
-                            strokeWidth="1"
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        </svg>
+                        <Trend
+                          testId="issue-burndown"
+                          ariaLabel={t('issues.burndownTitle')}
+                          points={points.map((point) => ({
+                            label: point.day.slice(5),
+                            value: point.remaining,
+                            reference: point.ideal,
+                          }))}
+                          height={112}
+                          valueFormat={(value) => t('issues.remainingNow', { count: Math.round(value) })}
+                        />
                       );
                     })()}
-                    <div className="mt-1 flex justify-between font-mono text-3xs text-ink-quaternary">
-                      <span>{buildBurndown(tasks)[0]?.day}</span>
-                      <span>{t('issues.remainingNow', {
-                        count: buildBurndown(tasks).at(-1)?.remaining ?? 0,
-                      })}</span>
-                      <span>{buildBurndown(tasks).at(-1)?.day}</span>
-                    </div>
                   </div>
 
                   <div className="mt-8">
                     <div className="mb-2 text-2xs font-semibold text-ink-quaternary">{t('issues.spendTitle')}</div>
-                    <div className="flex h-20 items-end gap-1">
-                      {spend.map((entry) => (
-                        <span
-                          key={entry.day}
-                          title={`${entry.day} · $${entry.usd.toFixed(4)}`}
-                          className="flex-1 rounded-t bg-accent/70"
-                          style={{ height: `${Math.max(2, (entry.usd / peak) * 100)}%` }}
-                        />
-                      ))}
-                    </div>
+                    <Columns
+                      ariaLabel={t('issues.spendTitle')}
+                      points={spend.map((entry) => ({ label: entry.day.slice(5), value: entry.usd }))}
+                      height={80}
+                      valueFormat={(value) => `$${value.toFixed(4)}`}
+                    />
                   </div>
                 </>
               );
@@ -444,19 +415,51 @@ export function IssueListPage() {
                       setAssignee(person.assignee);
                       setMode('ledger');
                     }}
-                    className="flex w-full items-center gap-3 py-2 text-left text-xs hover:bg-surface-hover"
+                    className="w-full py-2 text-left text-xs hover:bg-surface-hover"
                   >
-                    <span className="min-w-0 flex-1 truncate text-ink">{person.assignee}</span>
-                    <span className="w-10 text-right font-mono text-ink-secondary">{person.total}</span>
-                    <span className="w-10 text-right font-mono text-accent">{person.doing}</span>
-                    <span className="w-10 text-right font-mono text-warning">{person.waiting}</span>
-                    <span className="w-10 text-right font-mono text-success">{person.done}</span>
-                    <span className="w-10 text-right font-mono text-danger">{person.stuck}</span>
-                    <span className="w-14 text-right font-mono text-ink-quaternary">
-                      {person.avgLeadHours === null ? '—' : `${person.avgLeadHours.toFixed(1)}h`}
+                    <span className="flex items-center gap-3">
+                      <span className="min-w-0 flex-1 truncate text-ink">{person.assignee}</span>
+                      <span className="w-10 text-right font-mono text-ink-secondary">{person.total}</span>
+                      <span className="w-10 text-right font-mono text-accent">{person.doing}</span>
+                      <span className="w-10 text-right font-mono text-warning">{person.waiting}</span>
+                      <span className="w-10 text-right font-mono text-success">{person.done}</span>
+                      <span className="w-10 text-right font-mono text-danger">{person.stuck}</span>
+                      <span className="w-14 text-right font-mono text-ink-quaternary">
+                        {person.avgLeadHours === null ? '—' : `${person.avgLeadHours.toFixed(1)}h`}
+                      </span>
+                      <span className="w-14 text-right font-mono text-success">
+                        ${person.usd.toFixed(2)}
+                      </span>
                     </span>
-                    <span className="w-14 text-right font-mono text-success">
-                      ${person.usd.toFixed(2)}
+                    {/* 数字精确，条子给形状：一眼看出这个人是"在推进"还是"卡住了"。 */}
+                    <span className="mt-1.5 flex items-center gap-3">
+                      <span className="min-w-0 flex-1">
+                        <StackedBar
+                          ariaLabel={person.assignee}
+                          segments={[
+                            { key: 'doing', label: t('issues.group.doing'), value: person.doing, color: 'var(--accent)' },
+                            {
+                              key: 'waiting',
+                              label: t('issues.group.manager-review'),
+                              value: person.waiting,
+                              color: 'var(--warning)',
+                            },
+                            {
+                              key: 'done',
+                              label: t('issues.group.delivered'),
+                              value: person.done,
+                              color: 'var(--success)',
+                            },
+                            {
+                              key: 'stuck',
+                              label: t('issues.group.blocked'),
+                              value: person.stuck,
+                              color: 'var(--danger)',
+                            },
+                          ]}
+                        />
+                      </span>
+                      <span className="w-[9.5rem] shrink-0" />
                     </span>
                   </button>
                 </li>
