@@ -1,5 +1,6 @@
 import { IPC, type SendMessageInput } from '@opc/shared/ipc';
 import type {
+  BundledRuntime,
   CompactionSettings,
   CompanyProfilePatch,
   CreateTaskInput,
@@ -48,6 +49,8 @@ interface RegisterOptions {
   network: NetworkProxyService;
   /** 全局基础运行环境（Node / Python），所有员工共用。 */
   runtime: RuntimeService;
+  /** 随应用分发的引擎（OCR）：只读，读的是磁盘而不是偏好。 */
+  bundled: { inspect: (verify: boolean) => Promise<BundledRuntime[]> };
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
@@ -82,6 +85,7 @@ export function registerIpc({
   company,
   network,
   runtime,
+  bundled,
   wakeEmployee,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
@@ -259,6 +263,9 @@ export function registerIpc({
     if (typeof profileId !== 'string') throw new Error('runtime:removeProfile 参数非法');
     return runtime.removeProfile(profileId);
   });
+
+  // Hashing the models is only worth it when the page opens (or the boss asks).
+  ipcMain.handle(IPC.runtime.bundled, (_event, verify: unknown) => bundled.inspect(verify === true));
 
   ipcMain.handle(IPC.company.get, () => company.get());
 

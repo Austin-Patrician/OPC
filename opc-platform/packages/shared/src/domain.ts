@@ -563,6 +563,48 @@ export interface RuntimeInspection {
   env: Record<string, string>;
 }
 
+/**
+ * Your own models ship *with* the app — the boss cannot pick another one, so
+ * these are never profiles. They still belong on the runtime page: "is this
+ * machine able to run OCR" is machine state, exactly like a missing interpreter.
+ */
+export interface BundledAsset {
+  id: string;
+  /** Path relative to the runtime root, e.g. `models/....onnx`. */
+  file: string;
+  /** Bytes on disk; undefined when the file is missing. */
+  bytes?: number;
+  /** Size the manifest promises, when it declares one. */
+  expectedBytes?: number;
+  /**
+   * `size` and `corrupt` are different failures: a truncated download and a
+   * file that changed under us need different fixes.
+   */
+  state: 'ok' | 'missing' | 'size' | 'corrupt';
+}
+
+export interface BundledRuntime {
+  id: string;
+  name: string;
+  /** What actually runs it, e.g. `onnxruntime-web · WASM/WebGPU`. */
+  engine: string;
+  version: string;
+  /** Absolute directory the assets are read from. */
+  root: string;
+  /** Bytes on disk across every asset. */
+  bytes: number;
+  state: 'ok' | 'incomplete' | 'corrupt';
+  /** Files were hashed against the manifest, not just sized. */
+  verified: boolean;
+  checkedAt: number;
+  /** The extension and tool this runtime powers, so the page can point at them. */
+  extension: string;
+  tool: string;
+  /** The engine's window is alive (OCR keeps it warm between calls). */
+  warm: boolean;
+  assets: BundledAsset[];
+}
+
 /** ── Model providers (slice A) ─────────────────────────────────────────── */
 
 export type ModelCapability = 'chat' | 'image' | 'classifier' | 'asr' | 'tts' | 'video';

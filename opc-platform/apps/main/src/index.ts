@@ -24,7 +24,7 @@ import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
 import { RuntimeService } from './runtime/service';
-import { resolveOcrAssetsDir } from './ocr/assets';
+import { inspectOcrRuntime, resolveOcrAssetsDir } from './ocr/assets';
 import { registerOcrScheme } from './ocr/protocol';
 import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
@@ -191,6 +191,16 @@ function attachSmokeTest(window: BrowserWindow) {
     })();
   });
 }
+
+/** Where the shipped models live: beside the app in dev, in Resources when packaged. */
+function ocrAssetsDir(): string {
+  return resolveOcrAssetsDir({
+    packaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+  });
+}
+
 /**
  * The OCR engine is a hidden renderer, created on first use. Constructing the
  * service only wires IPC; the window itself is lazy.
@@ -200,11 +210,7 @@ function ensureOcr(): OcrService {
   ocrService = new OcrService({
     preload: path.join(mainDir, '../preload/ocr.cjs'),
     rendererDir: path.join(mainDir, '../renderer'),
-    assetsDir: resolveOcrAssetsDir({
-      packaged: app.isPackaged,
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-    }),
+    assetsDir: ocrAssetsDir(),
     ...(process.env.ELECTRON_RENDERER_URL ? { devUrl: process.env.ELECTRON_RENDERER_URL } : {}),
   });
   return ocrService;
@@ -404,6 +410,7 @@ async function bootstrap(): Promise<void> {
       console.warn(`群消息没有 @，已交给负责人 ${result.targets[0].name}`);
     }
   };
+  const ocr = ensureOcr();
   work = new WorkService({
     db,
     paths: appPaths,
@@ -419,7 +426,7 @@ async function bootstrap(): Promise<void> {
     comm,
     network: networkClient,
     runtime: runtimeService,
-    ocr: ensureOcr(),
+    ocr,
   });
 
   // Rows created before issue keys existed get one now; new tasks allocate at insert.
@@ -447,6 +454,13 @@ async function bootstrap(): Promise<void> {
     company: new CompanyService(db),
     network,
     runtime: runtimeService,
+    // 设置 → 运行时: engines we ship are read-only, so the page reads the disk
+    // rather than a stored preference.
+    bundled: {
+      inspect: async (verify: boolean) => [
+        await inspectOcrRuntime({ root: ocrAssetsDir(), warm: ocr.warm(), verify }),
+      ],
+    },
     wakeEmployee: async (employeeId) =>
       heartbeat
         ? heartbeat.wakeNow(employeeId)

@@ -34,6 +34,7 @@ import type {
   ProxyConfig,
   ProxyConfigInput,
   ProxyTestResult,
+  BundledRuntime,
   RuntimeInspection,
   RuntimeKind,
   RuntimeProfileDraft,
@@ -198,6 +199,7 @@ export const IPC = {
     inspect: 'runtime:inspect',
     saveProfile: 'runtime:saveProfile',
     removeProfile: 'runtime:removeProfile',
+    bundled: 'runtime:bundled',
   },
   company: {
     get: 'company:get',
@@ -862,6 +864,11 @@ export interface RuntimeBridge {
   /** Adds a custom profile and makes it current for its language. */
   saveProfile(draft: RuntimeProfileDraft): Promise<RuntimeState>;
   removeProfile(profileId: string): Promise<RuntimeState>;
+  /**
+   * Engines that ship with the app (no choice to make, nothing to install).
+   * Sizes only by default; `verify` hashes every file against the manifest.
+   */
+  bundled(verify?: boolean): Promise<BundledRuntime[]>;
 }
 
 /**

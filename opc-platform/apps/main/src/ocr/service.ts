@@ -11,6 +11,14 @@ const IDLE_MS = 3 * 60_000;
 export interface OcrEngine {
   recognize(bytes: Uint8Array): Promise<OcrResult>;
   dispose(): Promise<void>;
+  /**
+   * Asset preflight, cheap enough to run per session: `false` means
+   * `ocr_image` would fail on its first call, so the tool is not installed.
+   * Absent on fakes, which are always usable.
+   */
+  assetsReady?(): boolean;
+  /** The hidden window is alive (kept warm between calls), for the runtime page. */
+  warm?(): boolean;
 }
 
 export interface OcrServiceOptions {
@@ -74,6 +82,21 @@ export class OcrService implements OcrEngine {
       () => undefined,
     );
     return result;
+  }
+
+  /** Assets on disk: false means `ocr_image` would fail, so it is not installed. */
+  assetsReady(): boolean {
+    try {
+      assertOcrAssets(this.options.assetsDir);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The hidden window is alive; it is destroyed after three idle minutes. */
+  warm(): boolean {
+    return this.window !== null && !this.window.isDestroyed();
   }
 
   async dispose(): Promise<void> {

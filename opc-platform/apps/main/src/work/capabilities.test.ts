@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppPaths } from '../env';
 import { OrgService } from '../org/orgService';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
+import type { OcrEngine } from '../ocr/service';
 import { WorkService } from './workService';
 
 /**
@@ -39,13 +40,14 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function workWith(org: OrgService): WorkService {
+function workWith(org: OrgService, ocr?: OcrEngine): WorkService {
   return new WorkService({
     db,
     paths,
     agents: [],
     upsertTaskCard: () => undefined,
     org,
+    ...(ocr ? { ocr } : {}),
   });
 }
 
@@ -114,5 +116,32 @@ describe('WorkService.capabilities', () => {
     expect(names).not.toContain('generate_image');
     expect(names).not.toContain('transcribe_audio');
     expect(names).not.toContain('text_to_speech');
+  });
+
+  it('installs ocr_image only when the shipped models are actually on disk', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '设计部', code: 'DE-01' });
+    org.hire({ name: '苏晚', role: '视觉设计师', departmentId: department.id });
+
+    // The tool needs a window, a WASM heap and 21 MB of models; `assetsReady`
+    // is the one honest answer to "would the first call work?".
+    const fake = (assetsReady: boolean) =>
+      ({
+        recognize: async () => ({ text: '', lines: [], confidence: 0 }),
+        dispose: async () => undefined,
+        assetsReady: () => assetsReady,
+      }) as unknown as OcrEngine;
+
+    const ready = await workWith(org, fake(true)).capabilities();
+    expect(ready.agents[0]?.tools.map((tool) => tool.name)).toContain('ocr_image');
+    expect(ready.agents[0]?.extensions.map((extension) => extension.name)).toContain('opc.ocr');
+
+    // Missing models mean an installed tool that fails on its first call, so the
+    // catalog must say "not installed" — 设置 → 运行时 explains why.
+    const missing = await workWith(org, fake(false)).capabilities();
+    expect(missing.agents[0]?.tools.map((tool) => tool.name)).not.toContain('ocr_image');
+    expect(missing.agents[0]?.extensions.map((extension) => extension.name)).not.toContain(
+      'opc.ocr',
+    );
   });
 });

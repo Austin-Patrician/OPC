@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
+  BundledRuntime,
   RuntimeInspection,
   RuntimeKind,
   RuntimeProfileDraft,
@@ -11,6 +12,10 @@ interface RuntimeViewState {
   loading: boolean;
   /** A forced re-detect is running (`--version` spawns). */
   probing: boolean;
+  /** Engines that ship with the app; `null` until the first read. */
+  bundled: BundledRuntime[] | null;
+  /** Files are being hashed against the manifest right now. */
+  verifying: boolean;
   error: string | null;
 }
 
@@ -32,6 +37,8 @@ export function useRuntime() {
     snapshot: null,
     loading: true,
     probing: false,
+    bundled: null,
+    verifying: false,
     error: null,
   });
 
@@ -40,12 +47,13 @@ export function useRuntime() {
   const load = useCallback(
     async (probe = false) => {
       if (!bridge) {
-        setState({
+        setState((previous) => ({
+          ...previous,
           snapshot: null,
           loading: false,
           probing: false,
           error: '当前环境没有运行时桥接（请用桌面应用启动）',
-        });
+        }));
         return;
       }
       setState((previous) => ({
@@ -56,7 +64,13 @@ export function useRuntime() {
       }));
       try {
         const snapshot = await (probe ? bridge.probe() : bridge.snapshot());
-        setState({ snapshot, loading: false, probing: false, error: null });
+        setState((previous) => ({
+          ...previous,
+          snapshot,
+          loading: false,
+          probing: false,
+          error: null,
+        }));
       } catch (error) {
         setState((previous) => ({
           ...previous,
@@ -69,9 +83,33 @@ export function useRuntime() {
     [bridge],
   );
 
+  /**
+   * Sizes first (instant), then one hash pass in the background: the page should
+   * not need a click to be able to say "these models are the right bytes".
+   */
+  const readBundled = useCallback(
+    async (verify: boolean) => {
+      if (!bridge?.bundled) return;
+      if (verify) setState((previous) => ({ ...previous, verifying: true }));
+      try {
+        const bundled = await bridge.bundled(verify);
+        setState((previous) => ({ ...previous, bundled }));
+      } catch (error) {
+        setState((previous) => ({ ...previous, error: reasonOf(error) }));
+      } finally {
+        if (verify) setState((previous) => ({ ...previous, verifying: false }));
+      }
+    },
+    [bridge],
+  );
+
   useEffect(() => {
     void load(false);
-  }, [load]);
+    void (async () => {
+      await readBundled(false);
+      await readBundled(true);
+    })();
+  }, [load, readBundled]);
 
   const run = useCallback(
     async <T,>(action: () => Promise<T> | undefined): Promise<T | undefined> => {
@@ -89,6 +127,7 @@ export function useRuntime() {
 
   const actions = {
     reload: (probe = false) => load(probe),
+    verifyBundled: () => readBundled(true),
     setActive: (kind: RuntimeKind, profileId: string | null) =>
       run(async () => {
         if (!bridge) return undefined;

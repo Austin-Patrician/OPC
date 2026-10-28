@@ -9,6 +9,7 @@ import {
   type SendMessageInput,
 } from '@opc/shared/ipc';
 import type {
+  BundledRuntime,
   Budget,
   HireInput,
   DepartmentEditInput,
@@ -79,6 +80,8 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.runtime.saveProfile, draft) as Promise<RuntimeState>,
     removeProfile: (profileId: string) =>
       ipcRenderer.invoke(IPC.runtime.removeProfile, profileId) as Promise<RuntimeState>,
+    bundled: (verify?: boolean) =>
+      ipcRenderer.invoke(IPC.runtime.bundled, verify === true) as Promise<BundledRuntime[]>,
   },
   company: {
     get: () => ipcRenderer.invoke(IPC.company.get) as Promise<CompanyProfile>,

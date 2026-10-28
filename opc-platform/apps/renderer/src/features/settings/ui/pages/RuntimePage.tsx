@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, TriangleAlert } from 'lucide-react';
 import type {
+  BundledAsset,
+  BundledRuntime,
   RuntimeInspection,
   RuntimeKind,
   RuntimeProfile,
@@ -33,6 +35,108 @@ function binaryHint(profile: RuntimeProfile, status: RuntimeStatus | undefined):
   if (status?.binary) return status.binary;
   if (profile.binary) return profile.binary;
   return '';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * One engine the app ships. Read-only on purpose: there is nothing to choose, so
+ * the only useful things to show are which files are on disk, whether they are
+ * the bytes the manifest promised, and whether the engine is currently warm.
+ */
+function BundledEngine({ engine }: { engine: BundledRuntime }) {
+  const { t } = useTranslation();
+  const tone = engine.state === 'ok' ? 'green' : engine.state === 'incomplete' ? 'red' : 'amber';
+  const broken = engine.assets.filter((asset) => asset.state !== 'ok');
+
+  return (
+    <div className="border-t border-line first:border-t-0">
+      <div className="px-4 pt-3.5 pb-2.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-base font-medium text-ink">{engine.name}</span>
+          <code className="font-mono text-2xs text-ink-quaternary">{engine.version}</code>
+          <StatusBadge tone={tone} label={t(`settings.runtime.bundledState.${engine.state}`)} />
+          <StatusBadge
+            tone={engine.verified ? 'blue' : 'gray'}
+            label={
+              engine.verified ? t('settings.runtime.verified') : t('settings.runtime.unverified')
+            }
+          />
+          {engine.verified ? (
+            <span className="text-2xs text-ink-quaternary">
+              {new Date(engine.checkedAt).toLocaleTimeString()}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-2xs text-ink-tertiary">
+          {engine.engine} · {formatBytes(engine.bytes)} ·{' '}
+          {t('settings.runtime.powers', { tool: engine.tool, extension: engine.extension })}
+        </p>
+      </div>
+
+      <ul className="mx-4 mb-3 overflow-hidden rounded-lg border border-line/70 bg-surface-muted/40">
+        {engine.assets.map((asset, index) => (
+          <li
+            key={asset.id}
+            className={cn(
+              'flex items-center gap-2 px-2.5 py-1',
+              index > 0 && 'border-t border-line/50',
+            )}
+          >
+            <AssetMark state={asset.state} />
+            <code
+              className="min-w-0 flex-1 truncate font-mono text-2xs text-ink-secondary"
+              title={asset.file}
+            >
+              {asset.file}
+            </code>
+            {asset.state === 'ok' ? (
+              <span className="shrink-0 font-mono text-2xs text-ink-tertiary">
+                {formatBytes(asset.bytes ?? 0)}
+              </span>
+            ) : (
+              <span className="shrink-0 font-mono text-2xs text-danger">
+                {asset.state === 'size'
+                  ? t('settings.runtime.sizeMismatch', {
+                      actual: formatBytes(asset.bytes ?? 0),
+                      expected: formatBytes(asset.expectedBytes ?? 0),
+                    })
+                  : t(`settings.runtime.assetState.${asset.state}`)}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {broken.length > 0 ? (
+        <div className="px-4 pb-3">
+          <Note tone="warn">{t('settings.runtime.bundledBroken', { count: broken.length })}</Note>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-line px-4 py-2">
+        <span className="min-w-0 flex-1 truncate text-2xs text-ink-quaternary">
+          <span className="mr-1">{t('settings.runtime.root')}</span>
+          <code className="font-mono text-ink-tertiary select-text">{engine.root}</code>
+        </span>
+        <span className="shrink-0 text-2xs text-ink-quaternary">
+          {engine.warm ? t('settings.runtime.warm') : t('settings.runtime.cold')}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** A file's state as a glyph: silence means fine, so only failures are loud. */
+function AssetMark({ state }: { state: BundledAsset['state'] }) {
+  if (state === 'ok') {
+    return <Check className="size-3 shrink-0 text-success/70" aria-hidden />;
+  }
+  return <TriangleAlert className="size-3 shrink-0 text-danger" aria-hidden />;
 }
 
 /**
@@ -321,6 +425,38 @@ export function RuntimePage() {
               </button>
             </div>
           </div>
+        </Section>
+
+        <Section
+          title={t('settings.runtime.bundledTitle')}
+          description={t('settings.runtime.bundledDesc')}
+          action={
+            <button
+              type="button"
+              className={buttonClass.secondary}
+              onClick={() => void runtime.verifyBundled()}
+              disabled={runtime.verifying || runtime.bundled === null}
+            >
+              {runtime.verifying ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ShieldCheck className="size-3.5" />
+              )}
+              {runtime.verifying
+                ? t('settings.runtime.verifying')
+                : t('settings.runtime.verify')}
+            </button>
+          }
+        >
+          {runtime.bundled === null ? (
+            <Row label={t('settings.runtime.loading')}>
+              <Loader2 className="size-4 animate-spin text-ink-tertiary" />
+            </Row>
+          ) : runtime.bundled.length === 0 ? (
+            <Row label={t('settings.runtime.bundledEmpty')} />
+          ) : (
+            runtime.bundled.map((engine) => <BundledEngine key={engine.id} engine={engine} />)
+          )}
         </Section>
       </div>
     </>

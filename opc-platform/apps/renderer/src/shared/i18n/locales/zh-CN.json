@@ -497,7 +497,31 @@
       "namePlaceholder": "例如：项目 venv",
       "inspectOk": "解释器可用：v{{version}}",
       "inspectFail": "不可用：{{detail}}",
-      "save": "保存并启用"
+      "save": "保存并启用",
+      "bundledTitle": "内置引擎",
+      "bundledDesc": "随应用一起分发，不能替换也不能移除；文件不全时，对应的工具不会装给任何员工。",
+      "bundledEmpty": "没有随应用分发的引擎。",
+      "verify": "重新校验",
+      "verifying": "校验中…",
+      "verified": "已比对 sha256",
+      "unverified": "仅比对大小",
+      "bundledState": {
+        "ok": "完整",
+        "incomplete": "缺文件",
+        "corrupt": "内容不符"
+      },
+      "assetState": {
+        "ok": "正常",
+        "missing": "缺失",
+        "size": "大小不符",
+        "corrupt": "内容不符"
+      },
+      "sizeMismatch": "实际 {{actual}}，期望 {{expected}}",
+      "bundledBroken": "{{count}} 个文件缺失或损坏，ocr_image 暂时不会安装给任何员工。开发环境运行 `pnpm ocr:assets`，已安装的应用请重新安装以恢复资源。",
+      "powers": "支撑 {{tool}}（{{extension}}）",
+      "root": "资源目录",
+      "warm": "引擎已预热，闲置 3 分钟后释放",
+      "cold": "引擎未启动，首次调用时预热"
     }
   },
   "org": {

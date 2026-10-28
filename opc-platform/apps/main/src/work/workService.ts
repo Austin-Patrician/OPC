@@ -854,9 +854,10 @@ export class WorkService {
       }
     }
 
-    // Text out of pictures for models without vision. Always installed: the tool
-    // is cheap to describe and the model decides when looking is necessary.
-    if (this.deps.ocr) {
+    // Text out of pictures for models without vision. Installed whenever the
+    // models are actually on disk: an installed tool that fails on its first
+    // call is worse than an absent one, and 设置 → 运行时 shows the detail.
+    if (this.deps.ocr && (this.deps.ocr.assetsReady?.() ?? true)) {
       registry.install(
         createOcrToolExtension({ ocr: this.deps.ocr, defaultRoot: this.deps.paths.workspaceDir }),
       );

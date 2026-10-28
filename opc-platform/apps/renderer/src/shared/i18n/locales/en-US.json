@@ -497,7 +497,31 @@
       "namePlaceholder": "e.g. project venv",
       "inspectOk": "Interpreter works: v{{version}}",
       "inspectFail": "Unavailable: {{detail}}",
-      "save": "Save and use"
+      "save": "Save and use",
+      "bundledTitle": "Bundled engines",
+      "bundledDesc": "Shipped with the app — not replaceable, not removable. When a file is missing, the tool it powers is not installed for anyone.",
+      "bundledEmpty": "No engines ship with this build.",
+      "verify": "Verify again",
+      "verifying": "Verifying…",
+      "verified": "sha256 checked",
+      "unverified": "sizes only",
+      "bundledState": {
+        "ok": "Complete",
+        "incomplete": "Missing files",
+        "corrupt": "Wrong contents"
+      },
+      "assetState": {
+        "ok": "OK",
+        "missing": "Missing",
+        "size": "Wrong size",
+        "corrupt": "Wrong contents"
+      },
+      "sizeMismatch": "{{actual}} on disk, {{expected}} expected",
+      "bundledBroken": "{{count}} file(s) missing or damaged, so ocr_image is installed for no one. Run `pnpm ocr:assets` in a dev checkout, or reinstall the app.",
+      "powers": "Powers {{tool}} ({{extension}})",
+      "root": "Assets",
+      "warm": "Engine warm · released after 3 idle minutes",
+      "cold": "Engine idle · warms on first call"
     }
   },
   "org": {
