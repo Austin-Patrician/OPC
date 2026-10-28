@@ -17,6 +17,7 @@ import { AuthService } from './models/authService';
 import { FileCredentialStore } from './models/credentialStore';
 import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
+import { SpeechService } from './models/speechService';
 import type { Agent, SubtaskDraft } from '@opc/shared/domain';
 import { MarketService } from './market/marketService';
 import { CompanyService } from './company/companyService';
@@ -34,6 +35,7 @@ import { CommService, commSettingsFrom } from './comm/commService';
 import { CommRepository } from './data/commRepository';
 import { CommScheduler } from './comm/scheduler';
 import { BudgetCenter } from './work/budgetCenter';
+import { PayrollService } from './work/payroll';
 import { applyCompanySetup, parseCompanySetup } from './setup/companySetup';
 import { BudgetService } from './work/budgetService';
 import { BudgetRepository } from './data/budgetRepository';
@@ -322,7 +324,50 @@ async function bootstrap(): Promise<void> {
   const facts = new OrgFactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
   const projects = new ProjectService(db);
-  const imageService = new ImageService(modelConfig, appPaths, networkClient);
+  const imageService = new ImageService(modelConfig, networkClient);
+  const speechService = new SpeechService(modelConfig, networkClient);
+
+  /**
+   * A trial run for the hiring market: the candidate's own charter, one real task,
+   * and the tokens it actually cost.
+   *
+   * The cost is recorded because it is half the decision — a candidate who is right
+   * but ten times as expensive is a different hire. Nothing is charged to a budget:
+   * a candidate has no employee row and therefore no budget to charge.
+   */
+  market.runTrial = async ({ candidate, prompt }) => {
+    const defaults = modelConfig.getDefaults().llm;
+    if (!defaults) throw new Error('未配置默认 LLM 模型');
+    const models = await modelConfig.runtime.createModels();
+    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
+    if (!model) throw new Error(`找不到模型 ${defaults.providerId}/${defaults.modelId}`);
+
+    const answer = await models.complete(model, {
+      systemPrompt: [
+        `你是「${candidate.name}」，应聘岗位是 ${candidate.role}（${candidate.level}）。`,
+        candidate.skills.length > 0 ? `你的技能：${candidate.skills.join('、')}` : '',
+        candidate.persona ? `你的工作规范：${candidate.persona}` : '',
+        '这是一次试跑：直接完成交给你的任务，给出可检查的产出，不要描述你打算怎么做。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    } as never);
+
+    const content = (answer as { content?: { type: string; text?: string }[] }).content ?? [];
+    const text = content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join('')
+      .trim();
+    const usage = (answer as { usage?: { totalTokens?: number; cost?: { total?: number } } }).usage;
+
+    return {
+      text: text || '（模型没有返回文本）',
+      tokens: usage?.totalTokens ?? 0,
+      costUsd: usage?.cost?.total ?? 0,
+    };
+  };
 
   // One runtime service for the whole process: employees, acceptance scripts and
   // the settings page must see exactly the same interpreters. The app-owned
@@ -343,11 +388,14 @@ async function bootstrap(): Promise<void> {
 
   // 预算中心 (§8): 自己的 BudgetService 实例，读写同一批行；工作循环仍然通过
   // WorkService 扣费，老板通过这里改额度并解除硬停。
+  const budgetService = new BudgetService(new BudgetRepository(db));
   const budgetCenter = new BudgetCenter({
-    budgets: new BudgetService(new BudgetRepository(db)),
+    budgets: budgetService,
     org,
     projects,
   });
+  // 薪酬视图是同一个账本的另一种读法，所以共用同一个 BudgetService 实例。
+  const payroll = new PayrollService({ db, budgets: budgetService, org });
 
   // §7.4: 群聊 @ 的路由交给通信层。老板在部门群里说话，没人被 @ 就只叫负责人。
   chat.routeGroupMessage = (input) => {
@@ -363,6 +411,7 @@ async function bootstrap(): Promise<void> {
     upsertTaskCard: (task) => chat?.upsertTaskCard(task),
     modelConfig,
     images: imageService,
+    speech: speechService,
     org,
     memory,
     facts,
@@ -386,6 +435,7 @@ async function bootstrap(): Promise<void> {
     chat,
     work,
     models: modelConfig,
+    speech: speechService,
     org,
     market,
     facts,
@@ -393,6 +443,7 @@ async function bootstrap(): Promise<void> {
     consolidationRuns,
     comm,
     budget: budgetCenter,
+    payroll,
     company: new CompanyService(db),
     network,
     runtime: runtimeService,
@@ -400,7 +451,6 @@ async function bootstrap(): Promise<void> {
       heartbeat
         ? heartbeat.wakeNow(employeeId)
         : { ok: false, message: '心跳未启动（无头模式），无法手动唤醒', items: 0 },
-    images: imageService,
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
   });
@@ -1077,7 +1127,7 @@ if (!hasLock) {
       });
       const cooledPeer = probeChat.turnState(warmed.conversationId ?? '');
 
-      const relationship = repo.relationship(manager.id, report.id, 'report');
+      const relationship = repo.relationship(manager.id, report.id);
       // §7.4: 群聊 @ 的路由 —— 没人 @ 只叫负责人，有人 @ 只叫被点名的人。
       const groupId = probeChat.ensureDepartmentGroup(org.list()[0]?.id ?? '');
       const routedOwner = comm.routeGroupMessage({
@@ -1140,7 +1190,7 @@ if (!hasLock) {
             guards: guards.map((guard) => guard.kind),
             woken,
             relationship: relationship
-              ? { kind: relationship.kind, strength: relationship.strength, interactions: relationship.interactionCount }
+              ? { strength: relationship.strength, interactions: relationship.interactionCount }
               : null,
             lifecycle: { escalated: escalatedState, reopened: reopenedState, cooledThreads: cooled.length },
           },
@@ -1929,7 +1979,7 @@ if (!hasLock) {
       ]);
       modelConfig.setDefault('image', { providerId: 'mock-image', modelId: 'mock/png-1' });
 
-      const images = new ImageService(modelConfig, appPaths);
+      const images = new ImageService(modelConfig);
         const probeOrg = new OrgService(db);
         ensureFirstCompany(probeOrg);
         const work = new WorkService({

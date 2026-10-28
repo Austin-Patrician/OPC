@@ -6,6 +6,7 @@ import type { Message } from '@/entities/message/model/types';
 import { DeliverableCard } from '@/entities/message/ui/DeliverableCard';
 import { TaskCard } from '@/entities/task/ui/TaskCard';
 import { RichText } from '@/entities/message/ui/RichText';
+import { SpeakButton } from './SpeakButton';
 import { TypingIndicator } from './TypingIndicator';
 
 interface MessageStreamProps {
@@ -125,6 +126,7 @@ function MessageRow({ message, agent }: { message: Message; agent?: Agent }) {
               </span>
             ) : null}
             <span className="text-2xs text-ink-quaternary">{message.timestamp}</span>
+            {message.text?.trim() ? <SpeakButton text={message.text} /> : null}
           </div>
           <div className="rounded-[0.625rem] border border-line/60 bg-bubble-agent px-3.5 py-2.5 text-md leading-[1.58] break-words whitespace-pre-wrap text-ink shadow-card">
             <RichText text={message.text ?? ''} />

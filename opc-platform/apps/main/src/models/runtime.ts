@@ -1,4 +1,5 @@
 import type { ModelOption, ProviderConfig, ProviderTestResult } from '@opc/shared/domain';
+import { isChatModelEnabled } from '@opc/shared/domain';
 import type { createProvider, Models } from '@earendil-works/pi-ai/models';
 
 /** Provider stream implementation (pi's `ProviderStreams`). */
@@ -186,7 +187,9 @@ export class ModelRuntime {
     // but their model ids often are; a global index keeps those rows correct.
     const globalCapabilities = builtinModels.length === 0 ? await globalBuiltinCapabilities() : null;
     const chatModels = config.models
-      .filter((model) => model.capability === 'chat')
+      // A model switched off on the LLM page is not registered at all, so the
+      // runtime cannot resolve it and the provider's list stays curated.
+      .filter((model) => model.capability === 'chat' && isChatModelEnabled(model))
       .map((model) => {
         const builtin = findBuiltinLike(builtinModels, model.id);
         const known = globalCapabilities?.get(normalizeModelId(model.id));

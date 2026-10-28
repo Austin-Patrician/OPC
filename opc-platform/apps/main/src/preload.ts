@@ -11,6 +11,10 @@ import {
 import type {
   Budget,
   HireInput,
+  DepartmentEditInput,
+  EvaluationInput,
+  JobEditInput,
+  JobInput,
   CatalogProvider,
   CompanyProfile,
   CompanyProfilePatch,
@@ -30,6 +34,10 @@ import type {
   RuntimeProfileDraft,
   RuntimeSnapshot,
   RuntimeState,
+  SpeechSynthesizeInput,
+  SpeechSynthesizeResult,
+  SpeechTranscribeInput,
+  SpeechTranscribeResult,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -111,8 +119,16 @@ const bridge: OpcBridge = {
     removeCandidate: (candidateId: string) => ipcRenderer.invoke(IPC.market.removeCandidate, candidateId),
     hireCandidate: (
       candidateId: string,
-      input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean },
+      input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean; jobId?: string },
     ) => ipcRenderer.invoke(IPC.market.hireCandidate, candidateId, input),
+    interviews: (candidateId?: string) => ipcRenderer.invoke(IPC.market.interviews, candidateId),
+    createInterview: (candidateId: string, taskPrompt: string) =>
+      ipcRenderer.invoke(IPC.market.createInterview, candidateId, taskPrompt),
+    runInterview: (interviewId: string) => ipcRenderer.invoke(IPC.market.runInterview, interviewId),
+    decideInterview: (input: unknown) => ipcRenderer.invoke(IPC.market.decideInterview, input),
+    packages: () => ipcRenderer.invoke(IPC.market.packages),
+    exportPackage: (input: unknown) => ipcRenderer.invoke(IPC.market.exportPackage, input),
+    verifyPackage: (packageId: string) => ipcRenderer.invoke(IPC.market.verifyPackage, packageId),
   },
   budget: {
     overview: () => ipcRenderer.invoke(IPC.budget.overview) as Promise<BudgetOverview>,
@@ -121,6 +137,8 @@ const bridge: OpcBridge = {
       scopeId: string;
       limitTokens: number;
     }) => ipcRenderer.invoke(IPC.budget.setLimit, input) as Promise<BudgetOverview>,
+    payroll: () => ipcRenderer.invoke(IPC.budget.payroll),
+    costCenters: () => ipcRenderer.invoke(IPC.budget.costCenters),
   },
   comm: {
     overview: () => ipcRenderer.invoke(IPC.comm.overview) as Promise<CommOverview>,
@@ -148,6 +166,8 @@ const bridge: OpcBridge = {
     archive: (projectId: string) => ipcRenderer.invoke(IPC.projects.archive, projectId),
     removeMember: (projectId: string, employeeId: string) =>
       ipcRenderer.invoke(IPC.projects.removeMember, projectId, employeeId),
+    setReportsTo: (projectId: string, employeeId: string, managerId: string | null) =>
+      ipcRenderer.invoke(IPC.projects.setReportsTo, projectId, employeeId, managerId),
   },
   facts: {
     list: (filter?: { employeeId?: string; departmentId?: string; projectId?: string }) =>
@@ -162,11 +182,28 @@ const bridge: OpcBridge = {
     setAvatar: (employeeId: string, dataUrl: string) =>
       ipcRenderer.invoke(IPC.org.setAvatar, employeeId, dataUrl),
     personnel: (input: unknown) => ipcRenderer.invoke(IPC.org.personnel, input),
-    createDepartment: (input: { name: string; code?: string; description?: string }) =>
+    createDepartment: (input: { name: string; code?: string; description?: string; parentId?: string }) =>
       ipcRenderer.invoke(IPC.org.createDepartment, input),
+    updateDepartment: (input: DepartmentEditInput) =>
+      ipcRenderer.invoke(IPC.org.updateDepartment, input),
+    archiveDepartment: (departmentId: string) =>
+      ipcRenderer.invoke(IPC.org.archiveDepartment, departmentId),
+    appointHead: (departmentId: string, employeeId: string | null) =>
+      ipcRenderer.invoke(IPC.org.appointHead, departmentId, employeeId),
+    appointActingHead: (departmentId: string, employeeId: string | null) =>
+      ipcRenderer.invoke(IPC.org.appointActingHead, departmentId, employeeId),
+    evaluations: (employeeId: string, limit?: number) =>
+      ipcRenderer.invoke(IPC.org.evaluations, employeeId, limit),
+    addEvaluation: (input: EvaluationInput) => ipcRenderer.invoke(IPC.org.addEvaluation, input),
+    jobs: (departmentId?: string) => ipcRenderer.invoke(IPC.org.jobs, departmentId),
+    createJob: (input: JobInput) => ipcRenderer.invoke(IPC.org.createJob, input),
+    updateJob: (input: JobEditInput) => ipcRenderer.invoke(IPC.org.updateJob, input),
+    archiveJob: (jobId: string) => ipcRenderer.invoke(IPC.org.archiveJob, jobId),
+    events: (employeeId: string, limit?: number) =>
+      ipcRenderer.invoke(IPC.org.events, employeeId, limit),
     hire: (input: HireInput) => ipcRenderer.invoke(IPC.org.hire, input),
-    transfer: (employeeId: string, departmentId: string, reportsToEmployeeId?: string) =>
-      ipcRenderer.invoke(IPC.org.transfer, employeeId, departmentId, reportsToEmployeeId),
+    transfer: (employeeId: string, departmentId: string, reportsToEmployeeId?: string, jobId?: string) =>
+      ipcRenderer.invoke(IPC.org.transfer, employeeId, departmentId, reportsToEmployeeId, jobId),
     fire: (employeeId: string) => ipcRenderer.invoke(IPC.org.fire, employeeId),
   },
   artifacts: {
@@ -196,10 +233,6 @@ const bridge: OpcBridge = {
       };
     },
   },
-  images: {
-    generate: (input: { prompt: string; modelId?: string }) =>
-      ipcRenderer.invoke(IPC.images.generate, input),
-  },
   models: {
     list: () => ipcRenderer.invoke(IPC.models.list) as Promise<ProviderConfig[]>,
     getCatalog: () => ipcRenderer.invoke(IPC.models.getCatalog) as Promise<CatalogProvider[]>,
@@ -215,7 +248,7 @@ const bridge: OpcBridge = {
     supportsOauth: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.supportsOauth, providerId) as Promise<boolean>,
     getDefaults: () => ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
-    setDefault: (role: 'llm' | 'image', ref: ModelRef | null) =>
+    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null) =>
       ipcRenderer.invoke(IPC.models.setDefault, role, ref),
     importFromPi: () => ipcRenderer.invoke(IPC.models.importFromPi),
     getCompaction: () => ipcRenderer.invoke(IPC.models.getCompaction) as Promise<CompactionSettings>,
@@ -233,6 +266,12 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.models.applyBuiltinPricing, providerId),
     getThinking: () => ipcRenderer.invoke(IPC.models.getThinking) as Promise<string>,
     setThinking: (level: string) => ipcRenderer.invoke(IPC.models.setThinking, level),
+  },
+  speech: {
+    transcribe: (input: SpeechTranscribeInput) =>
+      ipcRenderer.invoke(IPC.speech.transcribe, input) as Promise<SpeechTranscribeResult>,
+    synthesize: (input: SpeechSynthesizeInput) =>
+      ipcRenderer.invoke(IPC.speech.synthesize, input) as Promise<SpeechSynthesizeResult>,
   },
   work: {
     listTasks: (limit?: number) => ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,

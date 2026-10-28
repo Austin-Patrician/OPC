@@ -8,6 +8,8 @@ export interface ProjectMember {
   /** `paused` means a budget hard stop (§5.6), not a removal. */
   status: string;
   pauseReason?: string;
+  /** Project-internal reporting line, which may differ from the department one. */
+  reportsToEmployeeId?: string;
 }
 
 export interface ProjectGroup {
@@ -78,7 +80,8 @@ export class ProjectService {
 
     const members = this.db
       .prepare(
-        `SELECT a.project_group_id, a.employee_id, a.role, a.status, a.pause_reason, e.name
+        `SELECT a.project_group_id, a.employee_id, a.role, a.status, a.pause_reason,
+                a.reports_to_employee_id, e.name
            FROM assignment a JOIN employee e ON e.id = a.employee_id
           WHERE a.status IN ('active','paused')
           ORDER BY a.created_at`,
@@ -89,6 +92,7 @@ export class ProjectService {
       role: string;
       status: string;
       pause_reason: string | null;
+      reports_to_employee_id: string | null;
       name: string;
     }[];
 
@@ -108,6 +112,9 @@ export class ProjectService {
           role: member.role,
           status: member.status,
           ...(member.pause_reason ? { pauseReason: member.pause_reason } : {}),
+          ...(member.reports_to_employee_id
+            ? { reportsToEmployeeId: member.reports_to_employee_id }
+            : {}),
         })),
     }));
   };
@@ -142,18 +149,112 @@ export class ProjectService {
   };
 
   removeMember = (projectId: string, employeeId: string): void => {
+    const now = Date.now();
+    // Direct reports are handed to the departing member's own manager, exactly like a
+    // department transfer: a line pointing at someone who is no longer on the project
+    // is a dangling permission edge, and `subordinatesOf`-style reads would drop the
+    // whole branch silently.
+    const assignment = this.db
+      .prepare(
+        "SELECT id, reports_to_employee_id FROM assignment WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+      )
+      .get(projectId, employeeId) as
+      | { id: string; reports_to_employee_id: string | null }
+      | undefined;
+
+    this.db.transaction(() => {
+      if (assignment) {
+        this.db
+          .prepare(
+            `UPDATE assignment SET reports_to_employee_id = ?, updated_at = ?
+              WHERE project_group_id = ? AND reports_to_employee_id = ? AND status = 'active'`,
+          )
+          .run(assignment.reports_to_employee_id, now, projectId, employeeId);
+      }
+      this.db
+        .prepare(
+          "UPDATE assignment SET status = 'removed', reports_to_employee_id = NULL, updated_at = ? WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+        )
+        .run(now, projectId, employeeId);
+    })();
+  };
+
+  /**
+   * Sets the project-internal reporting line (matrix reporting).
+   *
+   * The department line says who owns your career; this one says who you hand work to
+   * inside one project. It is validated the same way the department line is: both ends
+   * must be on the project, and the edge cannot close a loop — a project cycle would
+   * make two people each other's reviewer.
+   */
+  setReportsTo = (projectId: string, employeeId: string, managerId: string | null): void => {
+    const project = this.db
+      .prepare("SELECT id FROM project_group WHERE id = ? AND status = 'active'")
+      .get(projectId);
+    if (!project) throw new Error('项目不存在或已归档');
+
+    const member = this.db
+      .prepare(
+        "SELECT id FROM assignment WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+      )
+      .get(projectId, employeeId);
+    if (!member) throw new Error('该员工不在这个项目里');
+
+    const manager = managerId || null;
+    if (manager) {
+      if (manager === employeeId) throw new Error('不能把自己设为项目内汇报对象');
+      const managerRow = this.db
+        .prepare(
+          "SELECT 1 AS ok FROM assignment WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+        )
+        .get(projectId, manager);
+      if (!managerRow) throw new Error('项目内汇报对象必须是本项目的在岗成员');
+
+      // Walk up the project chain; a cycle here would make the project's own
+      // review/report structure unreadable.
+      const seen = new Set<string>();
+      let cursor: string | null = manager;
+      while (cursor) {
+        if (cursor === employeeId) throw new Error('项目内汇报线不能成环');
+        if (seen.has(cursor)) return;
+        seen.add(cursor);
+        cursor = this.reportsToOf(projectId, cursor);
+      }
+    }
+
     this.db
       .prepare(
-        "UPDATE assignment SET status = 'removed', updated_at = ? WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+        'UPDATE assignment SET reports_to_employee_id = ?, updated_at = ? WHERE project_group_id = ? AND employee_id = ? AND status = ?',
       )
-      .run(Date.now(), projectId, employeeId);
+      .run(manager, Date.now(), projectId, employeeId, 'active');
+  };
+
+  /** Who this person hands work to inside one project, if anyone. */
+  private reportsToOf = (projectId: string, employeeId: string): string | null =>
+    (
+      this.db
+        .prepare(
+          "SELECT reports_to_employee_id FROM assignment WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+        )
+        .get(projectId, employeeId) as { reports_to_employee_id: string | null } | undefined
+    )?.reports_to_employee_id ?? null;
+
+  /** Direct reports inside one project (the matrix edge, not the department one). */
+  subordinatesIn = (projectId: string, managerId: string): ProjectMember[] => {
+    const project = this.list().find((entry) => entry.id === projectId);
+    if (!project) return [];
+    return project.members.filter(
+      (member) => member.reportsToEmployeeId === managerId && member.status === 'active',
+    );
   };
 
   archive = (projectId: string): void => {
     const now = Date.now();
     this.db.prepare("UPDATE project_group SET status = 'archived', updated_at = ? WHERE id = ?").run(now, projectId);
     this.db
-      .prepare("UPDATE assignment SET status = 'removed', updated_at = ? WHERE project_group_id = ? AND status = 'active'")
+      .prepare(
+        "UPDATE assignment SET status = 'removed', reports_to_employee_id = NULL, updated_at = ? WHERE project_group_id = ? AND status = 'active'",
+      )
       .run(now, projectId);
   };
 

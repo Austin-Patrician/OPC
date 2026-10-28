@@ -45,7 +45,9 @@ export function createImageToolExtension(deps: ImageToolDeps) {
             };
           }
 
-          const filename = sanitize(args.filename ?? `image-${Date.now()}.png`);
+          const extension =
+            generated.mimeType === 'image/jpeg' ? 'jpg' : generated.mimeType === 'image/webp' ? 'webp' : 'png';
+          const filename = sanitize(args.filename ?? `image-${Date.now()}.${extension}`);
           const written = await api.env?.writeFile(filename, generated.bytes, context);
           if (!written || !written.ok) {
             return {

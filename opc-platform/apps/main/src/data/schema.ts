@@ -16,10 +16,23 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 18;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
+
+/**
+ * The one human in the company.
+ *
+ * `'boss'` was a magic string spread through `employment_event.actor`,
+ * `evaluation.reviewer`, `acceptance.reviewer` and message sender ids. It is now the
+ * primary key of a real `app_user` row, so "who did this" resolves to a person with a
+ * name and a portrait instead of to a literal.
+ *
+ * The id stays stable on purpose: it is already written into existing rows, and
+ * renaming the boss must not rewrite history.
+ */
+export const BOSS_USER_ID = 'boss';
 
 const V1 = String.raw`
 -- ── 系统 ────────────────────────────────────────────────────────────────
@@ -65,11 +78,14 @@ CREATE TABLE IF NOT EXISTS department (
   -- Deprecated since v11: the head is position.is_head (§4.3). Kept nullable and
   -- unread for one release so a rollback still renders; OrgService never writes it.
   head_employee_id  TEXT,
+  -- The parent is a department, not a free-form label: a dangling id would hide a
+  -- whole subtree from the chart with no error anywhere.
   parent_id         TEXT,
   sort_order        INTEGER NOT NULL DEFAULT 0,
   deleted_at        INTEGER,
   created_at        INTEGER NOT NULL,
-  updated_at        INTEGER NOT NULL
+  updated_at        INTEGER NOT NULL,
+  FOREIGN KEY (parent_id) REFERENCES department(id)
 );
 CREATE INDEX IF NOT EXISTS idx_dept_company ON department(company_id, deleted_at);
 
@@ -337,8 +353,9 @@ CREATE TABLE IF NOT EXISTS org_fact (
 CREATE INDEX IF NOT EXISTS idx_fact_scope ON org_fact(company_id, scope_type, scope_id, valid_from DESC);
 
 -- ── 招聘 ────────────────────────────────────────────────────────────────
--- Imported agent packages that are not employees yet (§4.4, reduced: evaluation /
--- interview / employee_package are Phase 4 and will be added by migration).
+-- Imported agent packages that are not employees yet (§4.4). The rest of the
+-- recruitment domain arrives later by migration: evaluation in v15, interview
+-- and employee_package in v16.
 CREATE TABLE IF NOT EXISTS agent_candidate (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -697,8 +714,373 @@ CREATE INDEX IF NOT EXISTS idx_pos_reports_to ON position(reports_to_employee_id
   WHERE reports_to_employee_id IS NOT NULL;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
+/**
+ * V12: 人事档案补上「时间」与「唯一性」。
+ *
+ * 三件事，都是把应用层曾经"口头约定"的东西落到库里：
+ *
+ * 1. **部门名/代号唯一**。`createDepartment` 一直是先 SELECT 再 INSERT，并发、导入
+ *    公司模板、多窗口都能写出重名部门；重名会让组织图目录出现两行一模一样的条目，
+ *    而 `department_id` 又无法反查是哪一行。旧库里可能已经有重复，先改名再加索引，
+ *    否则 `CREATE UNIQUE INDEX` 会直接让升级失败。
+ * 2. **离职时间**。`employee.terminated_at` 从 v1 就在，但没有任何写入路径，导致
+ *    "他什么时候走的"永远无解。旧库里已离职的行用最后一次岗位变动时间补齐。
+ * 3. **离职不再占部门**。`employee.department_id` 是 `position` 的冗余列（见文件头
+ *    注释），离职时 position 软删了，这一列却还指着原部门。v11 起唯一权威是
+ *    `position`，这里把陈旧值清掉，免得下一个读它的地方被误导。
+ */
+const V12 = `
+-- ── 1. 旧数据去重（必须在建唯一索引之前）────────────────────────────────
+-- 重名部门：保留最早创建的那条，其余加 id 后缀，宁可名字难看也不能让升级失败。
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY company_id, LOWER(TRIM(name))
+    ORDER BY created_at, id
+  ) AS rn
+  FROM department
+  WHERE deleted_at IS NULL
+)
+UPDATE department
+SET name = name || ' · ' || substr(id, -4),
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 
+-- 重复代号同理；空代号不参与唯一性，多家部门都可以没有代号。
+WITH ranked AS (
+  SELECT id, ROW_NUMBER() OVER (
+    PARTITION BY company_id, UPPER(TRIM(code))
+    ORDER BY created_at, id
+  ) AS rn
+  FROM department
+  WHERE deleted_at IS NULL AND TRIM(code) <> ''
+)
+UPDATE department
+SET code = code || '-' || substr(id, -4),
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+-- ── 2. 唯一性写进索引 ───────────────────────────────────────────────────
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dept_name
+  ON department(company_id, LOWER(TRIM(name))) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dept_code
+  ON department(company_id, UPPER(TRIM(code)))
+  WHERE deleted_at IS NULL AND TRIM(code) <> '';
+
+-- ── 3. 补离职时间 ──────────────────────────────────────────────────────
+UPDATE employee
+SET terminated_at = COALESCE(
+      (SELECT MAX(p.deleted_at) FROM position p WHERE p.employee_id = employee.id),
+      updated_at
+    )
+WHERE status = 'terminated' AND terminated_at IS NULL;
+
+-- ── 4. 离职的人不再挂在部门上 ───────────────────────────────────────────
+UPDATE employee
+SET department_id = NULL
+WHERE status = 'terminated' AND department_id IS NOT NULL;
+`;
+
+/**
+ * V13: 部门层级真正生效。
+ *
+ * `department.parent_id` 从 v1 就声明了，但没有外键、没有索引、没有任何读写路径 ——
+ * 组织图因此只能是一层"老板 → 部门 → 人"的扁平面条。这一版把它变成事实：
+ *
+ * 1. **parent_id 是外键**（自引用）。悬空 id 会让整棵子树从图上消失，且没有任何报错；
+ *    SQLite 不能给已有表加外键，所以重建 `department` —— 那一步在
+ *    `repairDepartmentParentConstraint()` 里做（`PRAGMA foreign_keys` 在事务里无效），
+ *    这里只负责建索引，和 V9 是同一套做法。
+ * 2. **按 sort_order 排序**。列从 v1 就在，但排序一直靠 `created_at`；有了层级之后
+ *    "同级之间谁在前"必须能拖，否则新增部门永远排在最后。
+ *
+ * 迁移前先修数据：指向自己/已删除/不存在的 parent 置空，成环的边断开 —— 否则重建时
+ * 外键会拒绝，整个升级回滚。
+ */
+const V13 = `
+CREATE INDEX IF NOT EXISTS idx_dept_parent ON department(parent_id)
+  WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dept_sort ON department(deleted_at, parent_id, sort_order);
+`;
+
+/**
+ * V14: 职位目录 + 编制 + 人事事件。
+ *
+ * 前两批补的是"人在哪、归谁管、层级怎么画"。这一批补的是真实 HR 里最常被问的三件事：
+ *
+ * 1. **这个部门有几个坑（job / headcount）**。`position.title` 一直是自由文本，谁都能
+ *    叫自己"高级工程师"，也没有任何上限 —— 设计文档 §9.2 把"组织架构无限膨胀"列为三大
+ *    风险之一，而库里连一个能拒绝第 11 次招聘的数字都没有。`job` 是部门里的职位目录，
+ *    `headcount` 是编制上限；`position.job_id` 把人钉在某个坑上，`hire` 时校验。
+ * 2. **他什么时候、为什么变了（employment_event）**。`position` 的软删只能倒推出"换过
+ *    部门"，推不出"哪天换的、谁决定的、为什么"。人事事件是追加写的时间线：入职 / 调岗 /
+ *    晋升 / 任命负责人 / 免去负责人 / 离职 / 复职。
+ * 3. **职级能升（promote）**。`employee.level` 只展示不校验，也从来没有写入路径，所以
+ *    `promoted` 事件此前无处可来。
+ *
+ * `position.job_id` 故意不加外键：SQLite 不能给已有表加外键，而为一个可空的分组字段再重建
+ * 一次 `position` 不划算。`OrgService` 在写入时校验"职位存在、属于同一部门、未撤销"，
+ * 撤销职位是软删，所以历史岗位仍能解释清楚自己当初占的是哪个坑。
+ */
+const V14 = `
+CREATE TABLE IF NOT EXISTS job (
+  id            TEXT PRIMARY KEY,
+  department_id TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  level         TEXT NOT NULL DEFAULT 'P5',
+  -- 编制上限：0 表示"这个坑先占住但暂不招人"。
+  headcount     INTEGER NOT NULL DEFAULT 1 CHECK (headcount >= 0),
+  description   TEXT NOT NULL DEFAULT '',
+  deleted_at    INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  FOREIGN KEY (department_id) REFERENCES department(id)
+);
+-- 一个部门里同名职位只能有一个：两个"前端工程师"编制会让"还剩几个坑"无法回答。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dept_title
+  ON job(department_id, LOWER(TRIM(title))) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_job_dept ON job(department_id, deleted_at);
+
+ALTER TABLE position ADD COLUMN job_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_pos_job ON position(job_id) WHERE job_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS employment_event (
+  id                 TEXT PRIMARY KEY,
+  employee_id        TEXT NOT NULL,
+  kind               TEXT NOT NULL
+                     CHECK (kind IN ('hired','transferred','promoted','head_appointed',
+                                     'head_removed','terminated','reinstated','confirmed')),
+  -- 调岗/复职是"从哪到哪"，晋升是"从什么到什么"，所以前后各存一份。
+  from_department_id TEXT,
+  to_department_id   TEXT,
+  from_title         TEXT,
+  to_title           TEXT,
+  from_level         TEXT,
+  to_level           TEXT,
+  -- 'boss' 或员工 id：谁做的决定。
+  actor              TEXT NOT NULL DEFAULT 'boss',
+  reason             TEXT NOT NULL DEFAULT '',
+  at                 INTEGER NOT NULL,
+  created_at         INTEGER NOT NULL,
+  FOREIGN KEY (employee_id) REFERENCES employee(id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_employee ON employment_event(employee_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_recent ON employment_event(at DESC);
+`;
+
+/**
+ * V15: 绩效、试用期、项目内汇报、代理负责人。
+ *
+ * 第三批给了"编制"和"事件"，但没有回答三件真实 HR 每天在做的事：
+ *
+ * 1. **这个人干得怎么样（evaluation）**。`promoted` 事件此前没有任何依据：升谁、为什么升，
+ *    全凭老板记忆。绩效是独立事实（有周期、有维度、有评语），所以它是一张表而不是一个字段。
+ * 2. **试用期什么时候到期、有没有转正（probation_ends_at + confirmed）**。招聘时说好"试用
+ *    三个月"，但库里只有 `hired_at`，没有到期日，也没有"转正"这个动作 —— 于是所有员工永远
+ *    停在"新来的"。转正是一条人事事件，和晋升一样可追溯。
+ * 3. **项目里的汇报线（assignment.reports_to_employee_id）**。设计文档 §4.3 有这一列，
+ *    实现时被砍掉了，于是矩阵组织只剩"部门里归谁管"：一个项目里谁向谁交活，无数据可查。
+ * 4. **代理负责人（position.is_acting_head）**。负责人空缺时总得有人顶上，但 `is_head` 是
+ *    唯一且代表正式任命，不能拿它凑数 —— 否则"代理"和"正式"就再也分不开了。
+ */
+const V15 = `
+CREATE TABLE IF NOT EXISTS evaluation (
+  id            TEXT PRIMARY KEY,
+  employee_id   TEXT NOT NULL,
+  -- probation 转正评审 / periodic 周期性 / project 项目复盘 / exit 离职面谈
+  kind          TEXT NOT NULL DEFAULT 'periodic'
+                CHECK (kind IN ('probation','periodic','project','exit')),
+  -- 周期标识，如 '2026-Q3' / 'probation-2026-11'；空表示一次性评价。
+  period_key    TEXT NOT NULL DEFAULT '',
+  score_overall REAL NOT NULL CHECK (score_overall BETWEEN 1 AND 5),
+  score_quality REAL CHECK (score_quality IS NULL OR score_quality BETWEEN 1 AND 5),
+  score_speed   REAL CHECK (score_speed IS NULL OR score_speed BETWEEN 1 AND 5),
+  score_cost    REAL CHECK (score_cost IS NULL OR score_cost BETWEEN 1 AND 5),
+  summary       TEXT NOT NULL DEFAULT '',
+  -- 'boss' 或员工 id：谁评的。
+  reviewer      TEXT NOT NULL DEFAULT 'boss',
+  at            INTEGER NOT NULL,
+  created_at    INTEGER NOT NULL,
+  FOREIGN KEY (employee_id) REFERENCES employee(id)
+);
+CREATE INDEX IF NOT EXISTS idx_eval_emp ON evaluation(employee_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_period ON evaluation(employee_id, kind, period_key);
+
+-- 试用期到期日；NULL = 无试用期（老数据、或明确按正式员工入职）。
+ALTER TABLE employee ADD COLUMN probation_ends_at INTEGER;
+
+-- 项目内汇报：可不同于部门汇报线（矩阵组织）。
+ALTER TABLE assignment ADD COLUMN reports_to_employee_id TEXT;
+
+-- 代理负责人：与正式负责人（is_head）并存，但一个部门只有一个。
+ALTER TABLE position ADD COLUMN is_acting_head INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pos_acting_head
+  ON position(department_id) WHERE is_acting_head = 1 AND deleted_at IS NULL;
+`;
+
+/**
+ * V16: 招聘链路补完 —— 试跑面试 + 员工包。
+ *
+ * `agent_candidate` 从 v1 起就只是一个"导入→聘用"的暂存表，`schema.ts` 的注释一直写着
+ * "evaluation / interview / employee_package are Phase 4"。绩效（evaluation）在 v15 补上了，
+ * 这一版补剩下两个：
+ *
+ * 1. **interview（试跑）**。招聘最大的风险是"看简历很合适，上手就废"。所以面试不是聊天，
+ *    而是**用一个真实任务跑一遍**，记下产出、token 成本与耗时 —— 设计文档 §8 把成本当薪酬，
+ *    那么"这个人干这活要花多少钱"就是录用决策的一部分，而不是录用后才知道的事。
+ *
+ *    `candidate_id` 用 `ON DELETE SET NULL` 并另存姓名/岗位快照：聘用成功时候选人行会被删掉
+ *    （`market.remove`），而面试记录必须留下来解释"当初为什么招他"。
+ * 2. **employee_package（员工包）**。导出的 manifest 与 `parseAgentPackage` 读的是同一个
+ *    格式（`opc-agent-package@1`），所以导出的包可以被"导入本地 Agent 包"直接读回来 ——
+ *    这是"人可以被带走、被复制到另一家公司"的前提，也让员工包有了可校验的哈希与体积。
+ *
+ * 两张表都是追加写：面试记录不删，导出记录不删（谁在什么时候导出了谁，本身是敏感信息）。
+ */
+const V16 = `
+CREATE TABLE IF NOT EXISTS interview (
+  id             TEXT PRIMARY KEY,
+  -- 聘用后候选人行会被删除，所以外键是 SET NULL；姓名/岗位另有快照。
+  candidate_id   TEXT,
+  candidate_name TEXT NOT NULL,
+  candidate_role TEXT NOT NULL DEFAULT '',
+  task_prompt    TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','running','done','failed','cancelled')),
+  -- 老板的决定；NULL = 还没决定。
+  decision       TEXT CHECK (decision IN ('hire','reject')),
+  result         TEXT NOT NULL DEFAULT '',
+  error          TEXT,
+  tokens_used    INTEGER NOT NULL DEFAULT 0,
+  cost_usd       REAL NOT NULL DEFAULT 0,
+  duration_ms    INTEGER,
+  created_at     INTEGER NOT NULL,
+  finished_at    INTEGER,
+  FOREIGN KEY (candidate_id) REFERENCES agent_candidate(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_interview_candidate ON interview(candidate_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_interview_recent ON interview(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS employee_package (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('employee','team','company')),
+  name        TEXT NOT NULL,
+  version     TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- 导出到磁盘的实际位置，以及可校验的指纹：包会被复制、转发，内容必须能自证。
+  file_path   TEXT NOT NULL,
+  file_hash   TEXT NOT NULL,
+  file_size   INTEGER NOT NULL,
+  -- 包的清单（JSON）：包含谁、来自哪个部门/职位，供列表与再导入使用。
+  manifest    TEXT NOT NULL DEFAULT '{}',
+  license     TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_package_recent ON employee_package(created_at DESC);
+`;
+
+/**
+ * V17: `relationship` 只记"互动"，不再记"关系"。
+ *
+ * 这是我在梳理时点出的那处重复事实源，现在把它收敛掉：
+ *
+ * `relationship.kind` 存的是 `colleague` / `manager` / `report` / `collaborator`，而"谁是谁的
+ * 上级"的唯一权威是 `position.reports_to_employee_id`。问题是 kind 只在**第一次互动时**算一次
+ * 并落库，于是：
+ *
+ * 1. 组织调整后，旧行永远停在 `manager` —— 一个人换了上级，关系图还在说旧上级是他 manager；
+ * 2. 更糟的是唯一键是 `(from, to, kind)`：换了上级再聊一次会**插入第二行**，同一个方向的两条边
+ *    同时存在；而 `sendsInWindow` 按 `(from, to)` 只 `.get()` 一行，限流因此读到随机那条的
+ *    窗口计数 —— 限流可以被绕过。
+ *
+ * 所以这一版把 `kind` 从表里去掉：`relationship` 只回答"这两个人聊了多少、多熟、上次什么时候"，
+ * "是什么关系"由 `position` 现算（`CommService.relationships()`）。旧库里同一方向的多行会合并成
+ * 一行：互动次数求和、强度取最大、窗口取最新的那条。
+ */
+const V17 = `
+DROP INDEX IF EXISTS idx_rel_pair;
+DROP INDEX IF EXISTS idx_rel_from;
+DROP TABLE IF EXISTS relationship_rebuild;
+
+CREATE TABLE relationship_rebuild (
+  id                  TEXT PRIMARY KEY,
+  company_id          TEXT NOT NULL DEFAULT 'company-local',
+  from_employee_id    TEXT NOT NULL,
+  to_employee_id      TEXT NOT NULL,
+  -- 0..1: grows with interaction, decays with time (computed on read).
+  strength            REAL NOT NULL DEFAULT 0.5,
+  interaction_count   INTEGER NOT NULL DEFAULT 0,
+  last_interaction_at INTEGER,
+  window_started_at   INTEGER,
+  window_count        INTEGER NOT NULL DEFAULT 0,
+  note                TEXT,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
+);
+
+-- 合并同一方向的重复边：次数求和、强度取最大、窗口取最近一次开始的那行。
+INSERT INTO relationship_rebuild
+  (id, company_id, from_employee_id, to_employee_id, strength, interaction_count,
+   last_interaction_at, window_started_at, window_count, note, created_at, updated_at)
+SELECT MIN(id), company_id, from_employee_id, to_employee_id,
+       MAX(strength), SUM(interaction_count),
+       MAX(last_interaction_at), MAX(window_started_at),
+       (SELECT r2.window_count FROM relationship r2
+         WHERE r2.from_employee_id = relationship.from_employee_id
+           AND r2.to_employee_id = relationship.to_employee_id
+         ORDER BY COALESCE(r2.window_started_at, 0) DESC, r2.updated_at DESC
+         LIMIT 1),
+       MAX(note), MIN(created_at), MAX(updated_at)
+  FROM relationship
+ GROUP BY company_id, from_employee_id, to_employee_id;
+
+DROP TABLE relationship;
+ALTER TABLE relationship_rebuild RENAME TO relationship;
+
+-- 一个方向只有一条边：限流与"上次聊到哪"都必须读同一行。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rel_pair ON relationship(from_employee_id, to_employee_id);
+CREATE INDEX IF NOT EXISTS idx_rel_from ON relationship(from_employee_id, last_interaction_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rel_to ON relationship(to_employee_id, last_interaction_at DESC);
+`;
+
+/**
+ * V18: 公司里唯一的人类，变成一行真实数据。
+ *
+ * 到目前为止"老板"是散落在各处的字符串 `'boss'`：`employment_event.actor`、
+ * `evaluation.reviewer`、`acceptance.reviewer`、消息的 senderId。它能用，但没人能回答
+ * "这个人叫什么、长什么样"，而姓名与头像只能挤在 `app_setting` 的 `profile.bossName`
+ * 里 —— 一张偏好设置表。
+ *
+ * 这一版把**一个人**变成 `app_user` 里的一行：
+ *
+ * - `CHECK (id = 'boss')` 是产品决定的直接编码 —— **一个公司只有一个人类**，不是"暂时
+ *   只做了一个"。任何试图插入第二个人的语句都会被数据库拒绝，而不是靠代码自觉。
+ * - 迁移时从现有的 `profile.bossName` / `profile.bossAvatar` 取值，所以升级后名字和头像
+ *   不会丢；旧的两行**不删**（回滚一个版本仍能渲染），但 CompanyService 从此只读写新表。
+ * - `'boss'` 这个 id 保持不变：它已经写进历史事件与验收记录里了，改 id 等于改写历史。
+ */
+const V18 = `
+CREATE TABLE IF NOT EXISTS app_user (
+  id         TEXT PRIMARY KEY CHECK (id = 'boss'),
+  name       TEXT NOT NULL,
+  avatar     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO app_user (id, name, avatar, created_at, updated_at)
+VALUES (
+  'boss',
+  COALESCE(
+    NULLIF(TRIM((SELECT value FROM app_setting WHERE key = 'profile.bossName')), ''),
+    '老板'
+  ),
+  COALESCE((SELECT value FROM app_setting WHERE key = 'profile.bossAvatar'), ''),
+  CAST(strftime('%s','now') AS INTEGER) * 1000,
+  CAST(strftime('%s','now') AS INTEGER) * 1000
+);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

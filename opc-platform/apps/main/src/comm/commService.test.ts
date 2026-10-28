@@ -200,10 +200,26 @@ describe('sendDirectMessage', () => {
   it('grows the relationship in the right direction', () => {
     comm.sendDirectMessage({ fromEmployeeId: manager.id, toEmployeeId: report.id, text: 'x', now: NOW });
     const repo = new CommRepository(db);
-    const edge = repo.relationship(manager.id, report.id, 'report');
+    const edge = repo.relationship(manager.id, report.id);
     expect(edge?.strength).toBeGreaterThan(0.5);
     expect(edge?.interactionCount).toBe(1);
-    expect(repo.relationship(report.id, manager.id, 'manager')).toBeUndefined();
+    // The direction is not symmetric: a message down the line is not a message up it.
+    expect(repo.relationship(report.id, manager.id)).toBeUndefined();
+  });
+
+  it('derives the relationship kind from the org chart instead of storing it', () => {
+    comm.sendDirectMessage({ fromEmployeeId: report.id, toEmployeeId: manager.id, text: 'x', now: NOW });
+
+    const [edge] = comm.relationships(report.id);
+    expect(edge?.kind).toBe('manager');
+
+    // Re-org: the report moves under someone else. The stored counters stay, but the
+    // kind is now a colleague — it is a projection of `position`, not a copy of it.
+    org.personnel({ employeeId: report.id, action: 'set-manager', reportsToEmployeeId: '' });
+
+    expect(comm.relationships(report.id)[0]?.kind).toBe('colleague');
+    // The interaction itself was not thrown away by the reorg.
+    expect(comm.relationships(report.id)[0]?.interactionCount).toBe(1);
   });
 });
 

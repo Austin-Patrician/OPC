@@ -1,11 +1,291 @@
 import { useEffect, useState } from 'react';
-import { Award, Cpu, FileCode2, Network, PackagePlus, UserPlus, X, Zap } from 'lucide-react';
+import { Award, ChevronRight, Cpu, FileCode2, FlaskConical, Network, PackagePlus, UserPlus, X, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentCandidate, DepartmentNode, OrgMember } from '@opc/shared/domain';
+import type { AgentCandidate, DepartmentNode, EmployeePackageRecord, Interview, JobNode, OrgMember } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { Section } from '@/features/settings/ui/kit';
+import { buttonClass } from '@/features/settings/ui/kit';
 import { HireWizard } from '@/pages/org/HireWizard';
+
+/**
+ * Trial run for one candidate: a real task, a real answer, and what it cost.
+ *
+ * This is deliberately not a chat: the point of an interview here is to see the
+ * candidate's output on work that resembles the job, together with the tokens and
+ * money it burned — a hire that is right but ten times as expensive is a different
+ * decision, and finding that out after hiring is too late.
+ */
+function CandidateInterview({
+  candidate,
+  departmentId,
+  onHired,
+}: {
+  candidate: AgentCandidate;
+  departmentId: string;
+  onHired: () => void;
+}) {
+  const { t } = useTranslation();
+  const [runs, setRuns] = useState<Interview[]>([]);
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    try {
+      setRuns(await window.opc!.market.interviews(candidate.id));
+    } catch {
+      setRuns([]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate.id]);
+
+  const act = async (run: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      await load();
+      setBusy(false);
+    }
+  };
+
+  const latest = runs[0];
+  const runTrial = () =>
+    act(async () => {
+      const [created] = await window.opc!.market.createInterview(candidate.id, prompt.trim());
+      if (!created) throw new Error('创建试跑失败');
+      setRuns(await window.opc!.market.runInterview(created.id));
+      setPrompt('');
+    });
+
+  const decide = (decision: 'hire' | 'reject') =>
+    act(async () => {
+      if (!latest) return;
+      const result = await window.opc!.market.decideInterview({
+        interviewId: latest.id,
+        decision,
+        ...(decision === 'hire' ? { departmentId } : {}),
+      });
+      setRuns(result.interviews);
+      if (result.employeeId) onHired();
+    });
+
+  return (
+    <div className="rounded-lg border border-line bg-panel p-2.5">
+      <button
+        type="button"
+        data-testid="candidate-interview-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-1 font-mono text-3xs text-ink-tertiary hover:text-ink"
+      >
+        <FlaskConical className="size-3 text-accent" />
+        <span className="flex-1 text-left">{t('market.interview')}</span>
+        {runs.length > 0 ? <span className="font-mono text-3xs">{runs.length}</span> : null}
+        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+      </button>
+
+      {open ? (
+        <div className="mt-2 space-y-1.5">
+          {latest ? (
+            <div
+              data-testid="interview-result"
+              className="rounded-md border border-line bg-surface px-2 py-1.5"
+            >
+              <div className="flex items-center gap-1.5 text-3xs">
+                <span
+                  className={cn(
+                    'rounded px-1',
+                    latest.status === 'done'
+                      ? 'bg-success/12 text-success'
+                      : latest.status === 'failed'
+                        ? 'bg-danger/10 text-danger'
+                        : 'bg-surface-muted text-ink-tertiary',
+                  )}
+                >
+                  {t(`market.interviewStatus.${latest.status}`)}
+                </span>
+                {latest.decision ? (
+                  <span className="rounded bg-accent-soft px-1 text-accent-ink">
+                    {t(`market.interviewDecision.${latest.decision}`)}
+                  </span>
+                ) : null}
+                <span className="flex-1" />
+                <span className="font-mono text-ink-quaternary">
+                  {latest.tokensUsed.toLocaleString()} tok · ${latest.costUsd.toFixed(4)}
+                  {latest.durationMs !== undefined ? ` · ${(latest.durationMs / 1000).toFixed(1)}s` : ''}
+                </span>
+              </div>
+              <pre className="mt-1 max-h-32 overflow-y-auto font-mono text-3xs leading-relaxed whitespace-pre-wrap text-ink-secondary">
+                {latest.status === 'failed' ? (latest.error ?? '') : latest.result || '—'}
+              </pre>
+              {latest.status === 'done' && !latest.decision ? (
+                <div className="mt-1.5 flex gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="interview-hire"
+                    disabled={busy || !departmentId}
+                    onClick={() => void decide('hire')}
+                    className="h-6 flex-1 rounded-md bg-accent text-3xs font-medium text-white disabled:opacity-40"
+                  >
+                    {t('market.interviewHire')}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="interview-reject"
+                    disabled={busy}
+                    onClick={() => void decide('reject')}
+                    className="h-6 flex-1 rounded-md border border-line text-3xs text-ink-secondary hover:bg-surface-hover disabled:opacity-40"
+                  >
+                    {t('market.interviewReject')}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-3xs text-ink-quaternary">{t('market.interviewEmpty')}</p>
+          )}
+
+          <textarea
+            data-testid="interview-prompt"
+            rows={2}
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder={t('market.interviewPromptHint')}
+            className="w-full resize-none rounded-md border border-line bg-surface px-2 py-1.5 text-3xs text-ink outline-none focus:border-accent"
+          />
+          <button
+            type="button"
+            data-testid="interview-run"
+            disabled={busy || !prompt.trim()}
+            onClick={() => void runTrial()}
+            className={cn(buttonClass.secondary, 'h-6 w-full text-3xs disabled:opacity-40')}
+          >
+            {busy ? t('market.interviewRunning') : t('market.interviewRun')}
+          </button>
+          {error ? <p className="text-3xs text-danger">{error}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Recorded exports. The file lives on disk; this is the receipt, including the hash —
+ * a package gets copied and forwarded, so it has to be able to prove it is intact.
+ */
+function PackageLedger({ onChanged }: { onChanged: () => void }) {
+  const { t } = useTranslation();
+  const [records, setRecords] = useState<EmployeePackageRecord[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checks, setChecks] = useState<Record<string, { ok: boolean; reason?: string }>>({});
+
+  const load = async () => {
+    try {
+      setRecords(await window.opc!.market.packages());
+    } catch {
+      setRecords([]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const exportAll = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.opc!.market.exportPackage({
+        kind: 'company',
+        name: t('market.exportDefaultName'),
+      });
+      setRecords(result.packages);
+      if (!result.cancelled) onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title={`${t('market.packages')} · ${records.length}`}>
+      <div className="mb-2 flex items-center gap-2">
+        <button
+          type="button"
+          data-testid="export-company"
+          disabled={busy}
+          onClick={() => void exportAll()}
+          className={cn(buttonClass.secondary, 'h-7 text-2xs disabled:opacity-40')}
+        >
+          <PackagePlus className="size-3" />
+          {t('market.exportCompany')}
+        </button>
+        <span className="text-2xs text-ink-quaternary">{t('market.packagesHint')}</span>
+      </div>
+
+      {records.length === 0 ? (
+        <p className="text-2xs text-ink-quaternary">{t('market.packagesEmpty')}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {records.map((record) => {
+            const check = checks[record.id];
+            return (
+              <li
+                key={record.id}
+                data-testid="package-row"
+                className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5"
+              >
+                <div className="flex items-center gap-1.5 text-2xs">
+                  <span className="truncate font-medium text-ink">{record.name}</span>
+                  <span className="shrink-0 rounded bg-surface px-1 text-3xs text-ink-tertiary">
+                    {t(`market.packageKind.${record.kind}`)}
+                  </span>
+                  <span className="shrink-0 font-mono text-3xs text-ink-quaternary">
+                    {record.members.length} {t('market.people')} · {(record.fileSize / 1024).toFixed(1)} KB
+                  </span>
+                  <span className="flex-1" />
+                  <button
+                    type="button"
+                    data-testid="package-verify"
+                    onClick={() =>
+                      void window.opc!.market.verifyPackage(record.id).then((result) =>
+                        setChecks((current) => ({ ...current, [record.id]: result })),
+                      )
+                    }
+                    className="shrink-0 rounded px-1 text-3xs text-accent hover:bg-accent-soft"
+                  >
+                    {t('market.packageVerify')}
+                  </button>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-3xs text-ink-quaternary">
+                  {record.fileHash.slice(0, 16)}… · {record.members.map((member) => member.name).join('、')}
+                </div>
+                {check ? (
+                  <div className={cn('mt-0.5 text-3xs', check.ok ? 'text-success' : 'text-danger')}>
+                    {check.ok ? t('market.packageOk') : (check.reason ?? t('market.packageBroken'))}
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {error ? <p className="mt-1 text-2xs text-danger">{error}</p> : null}
+    </Section>
+  );
+}
 
 /**
  * Talent market, laid out like the design: a gradient hero with the custom-hire
@@ -18,6 +298,7 @@ export function MarketPage() {
   const [departments, setDepartments] = useState<DepartmentNode[]>([]);
   const [pool, setPool] = useState<OrgMember[]>([]);
   const [candidates, setCandidates] = useState<AgentCandidate[]>([]);
+  const [jobs, setJobs] = useState<JobNode[]>([]);
   const [targets, setTargets] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -34,14 +315,16 @@ export function MarketPage() {
     });
 
   const load = async () => {
-    const [tree, unplaced, imported] = await Promise.all([
+    const [tree, unplaced, imported, slots] = await Promise.all([
       window.opc!.org.list(),
       window.opc!.org.unplaced(),
       window.opc!.market.candidates(),
+      window.opc!.org.jobs(),
     ]);
     setDepartments(tree);
     setPool(unplaced);
     setCandidates(imported);
+    setJobs(slots);
     setHiredNames(new Set(tree.flatMap((node) => node.members).map((member) => member.name)));
   };
 
@@ -283,6 +566,14 @@ export function MarketPage() {
                         </dl>
                       ) : null}
                     </div>
+                    <CandidateInterview
+                      candidate={candidate}
+                      departmentId={target}
+                      onHired={() => {
+                        void load();
+                        setWizardOpen(false);
+                      }}
+                    />
                   </div>
 
                   <div className="space-y-2 border-t border-line pt-3">
@@ -401,12 +692,15 @@ export function MarketPage() {
           )}
         </Section>
 
+        <PackageLedger onChanged={() => void load()} />
+
         <p className="px-1 text-2xs leading-relaxed text-ink-quaternary">{t('market.footnote')}</p>
       </div>
 
       {wizardOpen ? (
         <HireWizard
           departments={departments}
+          jobs={jobs}
           defaultDepartmentId={departments[0]?.id ?? ''}
           onClose={() => setWizardOpen(false)}
           onSubmit={async (input) => {

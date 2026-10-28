@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Brain, ChevronDown, Eye, KeyRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ModelOption } from '@opc/shared/domain';
+import { isChatModelEnabled } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { AuthLoginPanel } from '@/features/settings/ui/pages/AuthLoginPanel';
@@ -93,7 +94,9 @@ export function StepModel() {
         api: provider.api,
         auth: provider.api,
         models: [],
-        modelCount: provider.models.filter((model) => model.capability === 'chat').length,
+        modelCount: provider.models.filter(
+          (model) => model.capability === 'chat' && isChatModelEnabled(model),
+        ).length,
       }));
 
     return [...fromCatalog, ...custom];
@@ -153,7 +156,7 @@ export function StepModel() {
     if (fromCatalog.length > 0) return fromCatalog;
     if (!selectedConfig) return [];
     return selectedConfig.models
-      .filter((model) => model.capability === 'chat')
+      .filter((model) => model.capability === 'chat' && isChatModelEnabled(model))
       .map<CatalogModel>((model) => ({
         id: model.id,
         name: model.name,

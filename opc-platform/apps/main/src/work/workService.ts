@@ -19,9 +19,11 @@ import { BudgetRepository } from '../data/budgetRepository';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import { BOSS_USER_ID } from '../data/schema';
 import { TaskRepository, taskWorkspaceRelPath } from '../data/taskRepository';
 import type { AppPaths } from '../env';
 import type { ImageService } from '../models/imageService';
+import type { SpeechService } from '../models/speechService';
 import type { OrgService } from '../org/orgService';
 import type { MemoryService } from '../memory/memoryService';
 import type { OrgFactService } from '../memory/orgFactService';
@@ -35,6 +37,7 @@ import { HarnessBrain } from './harnessBrain';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createImageToolExtension } from './imageTool';
 import { createOcrToolExtension } from './ocrTool';
+import { createSpeechToolExtension } from './speechTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
 import { createCommToolExtension } from '../comm/commTools';
 import type { CommService } from '../comm/commService';
@@ -66,6 +69,8 @@ export interface WorkServiceDeps {
   upsertTaskCard: (task: WorkTask) => void;
   modelConfig?: ModelConfigService;
   images?: ImageService;
+  /** Speech recognition / synthesis; each tool is installed only when usable. */
+  speech?: SpeechService;
   org?: OrgService;
   memory?: MemoryService;
   facts?: OrgFactService;
@@ -309,9 +314,9 @@ export class WorkService {
       {
         verdict: approve ? 'pass' : 'fail',
         reason: `老板终审：${note}`,
-        evidence: { command: ['boss', decision], exitCode: approve ? 0 : 1, stdoutTail: note, stderrTail: '', durationMs: 0 },
+        evidence: { command: [BOSS_USER_ID, decision], exitCode: approve ? 0 : 1, stdoutTail: note, stderrTail: '', durationMs: 0 },
       },
-      'boss',
+      BOSS_USER_ID,
     );
     this.repository.setStatus(taskId, approve ? 'delivered' : 'rejected', {
       finishedAt: Date.now(),
@@ -854,6 +859,23 @@ export class WorkService {
     // The agent can draw, but only when a usable image provider exists.
     if (this.deps.images?.isAvailable()) {
       registry.install(createImageToolExtension({ generate: this.deps.images.generateBytes }));
+    }
+
+    // Speech: each half is installed only when a model is enabled, so the model
+    // never sees a tool that can only fail.
+    const speech = this.deps.speech;
+    if (speech) {
+      const transcribe = speech.isAsrAvailable() ? speech.transcribe : undefined;
+      const synthesize = speech.isTtsAvailable() ? speech.synthesize : undefined;
+      if (transcribe || synthesize) {
+        registry.install(
+          createSpeechToolExtension({
+            transcribe,
+            synthesize,
+            defaultRoot: this.deps.paths.workspaceDir,
+          }),
+        );
+      }
     }
 
     // Text out of pictures for models without vision. Always installed: the tool

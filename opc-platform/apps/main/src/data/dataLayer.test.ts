@@ -4,6 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OrgService } from '../org/orgService';
 import { MemoryService } from '../memory/memoryService';
+import { MarketService } from '../market/marketService';
+import { CompanyService } from '../company/companyService';
 import { BudgetRepository } from './budgetRepository';
 import { openCompanyDatabase, probeSqlite, type CompanyDatabase } from './companyDatabase';
 import { SCHEMA_VERSION } from './schema';
@@ -140,6 +142,357 @@ describe('company.db', () => {
     const node = new OrgService(db).list().find((entry) => entry.id === department.id)!;
     expect(node.headEmployeeId).toBe(person.id);
     expect(node.members.find((member) => member.id === person.id)?.isHead).toBe(true);
+  });
+
+  it('deduplicates department names and backfills leaving times when upgrading to v12', () => {
+    const org = new OrgService(db);
+    const kept = org.createDepartment({ name: '工程部', code: 'EN-01' });
+    const person = org.hire({ name: '李雷', role: '工程师', departmentId: kept.id });
+
+    // A pre-v12 build only checked duplicates inside the service, so a template import
+    // or a second window could leave two departments with the same name and code.
+    // Drop the indexes to get that database back.
+    db.exec('DROP INDEX IF EXISTS idx_dept_name; DROP INDEX IF EXISTS idx_dept_code;');
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO department (id, name, code, description, color, created_at, updated_at)
+       VALUES ('dept-dup', '工程部', 'EN-01', '', '#111111', ?, ?)`,
+    ).run(now, now);
+    // And "terminated" was a status with no timestamp at all.
+    db.prepare("UPDATE employee SET status = 'terminated' WHERE id = ?").run(person.id);
+
+    db.pragma('user_version = 11');
+    db.close();
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    // The upgrade must not fail on the duplicates, and must keep every row.
+    const rows = db
+      .prepare('SELECT id, name, code FROM department WHERE deleted_at IS NULL ORDER BY created_at, id')
+      .all() as { id: string; name: string; code: string }[];
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.name.toUpperCase())).size).toBe(2);
+    expect(new Set(rows.map((row) => row.code.toUpperCase())).size).toBe(2);
+    expect(rows.filter((row) => row.name === '工程部')).toHaveLength(1);
+
+    const employee = db
+      .prepare('SELECT terminated_at, department_id FROM employee WHERE id = ?')
+      .get(person.id) as { terminated_at: number | null; department_id: string | null };
+    expect(employee.terminated_at).toBeGreaterThan(0);
+    expect(employee.department_id).toBeNull();
+
+    // From now on the index, not the service, is what refuses a duplicate.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO department (id, name, code, description, color, created_at, updated_at)
+           VALUES ('dept-late', '工程部', '', '', '#222222', ?, ?)`,
+        )
+        .run(now, now),
+    ).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it('gives department.parent_id its foreign key and repairs bad parents when upgrading to v13', () => {
+    const org = new OrgService(db);
+    const root = org.createDepartment({ name: '研发中心' });
+    const child = org.createDepartment({ name: '前端组' });
+    const other = org.createDepartment({ name: '市场部' });
+    // A pre-v13 build had the column but no constraint and no service code that wrote
+    // it, so anything could be in there: a dangling id, a self-reference, or a cycle.
+    // Put the table back in that shape (no FK, no indexes) and seed the bad rows.
+    db.pragma('foreign_keys = OFF');
+    db.exec('DROP TABLE department');
+    db.exec(`
+      CREATE TABLE department (
+        id                TEXT PRIMARY KEY,
+        company_id        TEXT NOT NULL DEFAULT 'company-local',
+        name              TEXT NOT NULL,
+        code              TEXT NOT NULL DEFAULT '',
+        description       TEXT NOT NULL DEFAULT '',
+        color             TEXT NOT NULL,
+        head_employee_id  TEXT,
+        parent_id         TEXT,
+        sort_order        INTEGER NOT NULL DEFAULT 0,
+        deleted_at        INTEGER,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL
+      );
+    `);
+    const now = Date.now();
+    const insert = db.prepare(
+      `INSERT INTO department (id, name, code, description, color, parent_id, created_at, updated_at)
+       VALUES (?, ?, '', '', '#000000', ?, ?, ?)`,
+    );
+    insert.run(root.id, '研发中心', 'dept-ghost', now, now);
+    insert.run(child.id, '前端组', child.id, now, now);
+    insert.run(other.id, '市场部', other.id, now, now);
+    db.pragma('foreign_keys = ON');
+    db.pragma('user_version = 12');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const parents = db
+      .prepare('SELECT id, parent_id FROM department ORDER BY created_at, id')
+      .all() as { id: string; parent_id: string | null }[];
+    // Every bad edge is detached, and no row is lost.
+    expect(parents).toHaveLength(3);
+    expect(parents.every((row) => row.parent_id === null)).toBe(true);
+
+    // The constraint the repair installed now refuses a dangling parent.
+    expect(() =>
+      db.prepare('UPDATE department SET parent_id = ? WHERE id = ?').run('dept-ghost', root.id),
+    ).toThrow(/FOREIGN KEY constraint failed/);
+
+    // And the tree is usable again from the service side.
+    const reopened = new OrgService(db);
+    reopened.updateDepartment({ id: child.id, parentId: root.id });
+    expect(reopened.list().find((node) => node.id === child.id)?.parentId).toBe(root.id);
+  });
+
+  it('adds jobs, headcount and the event log to an existing database', () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const person = org.hire({ name: '李雷', role: '工程师', departmentId: department.id });
+    // A v13 database has neither table nor column: drop them and wind the version back.
+    db.exec('DROP INDEX IF EXISTS idx_pos_job;');
+    db.exec('DROP TABLE IF EXISTS job; DROP TABLE IF EXISTS employment_event;');
+    db.exec('ALTER TABLE position DROP COLUMN job_id;');
+    db.pragma('user_version = 13');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    // The employee survived the upgrade, and the new tables exist and work.
+    const upgraded = new OrgService(db);
+    expect(upgraded.everyone().find((member) => member.id === person.id)?.name).toBe('李雷');
+
+    const job = upgraded.createJob({ departmentId: department.id, title: '前端工程师', headcount: 1 });
+    const hired = upgraded.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+    expect(hired.jobId).toBe(job.id);
+    expect(upgraded.events(hired.id)[0]?.kind).toBe('hired');
+    expect(() =>
+      upgraded.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id }),
+    ).toThrow(/编制已满/);
+  });
+
+  it('adds evaluations, probation and the confirmed event to an existing database', () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const person = org.hire({ name: '李雷', role: '工程师', departmentId: department.id });
+
+    // Wind the database back to the v14 shape: no evaluation table, no probation
+    // column, no acting-head flag, and an event CHECK that does not know `confirmed`.
+    db.exec('DROP TABLE IF EXISTS evaluation;');
+    db.exec('ALTER TABLE employee DROP COLUMN probation_ends_at;');
+    db.exec('DROP INDEX IF EXISTS idx_pos_acting_head;');
+    db.exec('ALTER TABLE position DROP COLUMN is_acting_head;');
+    db.exec('ALTER TABLE assignment DROP COLUMN reports_to_employee_id;');
+    db.exec('DROP INDEX IF EXISTS idx_event_employee; DROP INDEX IF EXISTS idx_event_recent;');
+    db.exec('DROP TABLE employment_event;');
+    db.exec(`
+      CREATE TABLE employment_event (
+        id                 TEXT PRIMARY KEY,
+        employee_id        TEXT NOT NULL,
+        kind               TEXT NOT NULL
+                           CHECK (kind IN ('hired','transferred','promoted','head_appointed',
+                                           'head_removed','terminated','reinstated')),
+        from_department_id TEXT,
+        to_department_id   TEXT,
+        from_title         TEXT,
+        to_title           TEXT,
+        from_level         TEXT,
+        to_level           TEXT,
+        actor              TEXT NOT NULL DEFAULT 'boss',
+        reason             TEXT NOT NULL DEFAULT '',
+        at                 INTEGER NOT NULL,
+        created_at         INTEGER NOT NULL,
+        FOREIGN KEY (employee_id) REFERENCES employee(id)
+      );
+    `);
+    db.pragma('user_version = 14');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const upgraded = new OrgService(db);
+    // The employee and their seat survived; probation simply reads as "none".
+    const kept = upgraded.everyone().find((member) => member.id === person.id)!;
+    expect(kept.name).toBe('李雷');
+    expect(kept.probationEndsAt).toBeUndefined();
+
+    // Probation, confirmation and reviews work on the upgraded schema…
+    const temp = upgraded.hire({
+      name: '甲',
+      role: '工程师',
+      departmentId: department.id,
+      probationDays: 30,
+    });
+    expect(temp.probationEndsAt).toBeGreaterThan(temp.hiredAt);
+    upgraded.personnel({ employeeId: temp.id, action: 'confirm' });
+    expect(upgraded.events(temp.id)[0]?.kind).toBe('confirmed');
+
+    const review = upgraded.addEvaluation({
+      employeeId: temp.id,
+      kind: 'probation',
+      scoreOverall: 4,
+      summary: '通过',
+    });
+    expect(review.scoreOverall).toBe(4);
+
+    // …and so does the acting head.
+    upgraded.appointActingHead(department.id, temp.id);
+    expect(upgraded.list().find((node) => node.id === department.id)?.actingHeadEmployeeId).toBe(temp.id);
+  });
+
+  it('adds the interview and package tables to an existing database', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    org.hire({ name: '李雷', role: '工程师', departmentId: department.id });
+
+    // Wind back to v15: the two recruitment tables do not exist yet.
+    db.exec('DROP TABLE IF EXISTS interview; DROP TABLE IF EXISTS employee_package;');
+    db.pragma('user_version = 15');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const upgraded = new OrgService(db);
+    const market = new MarketService(db, upgraded);
+    expect(upgraded.everyone().map((member) => member.name)).toContain('李雷');
+
+    // A trial run works on the upgraded schema, including the SET NULL foreign key.
+    const [candidate] = market.importJson(
+      JSON.stringify({ agents: [{ name: '周航', role: '前端工程师' }] }),
+      'test.json',
+    );
+    market.runTrial = async () => ({ text: 'ok', tokens: 5, costUsd: 0.001 });
+    const interview = market.createInterview(candidate!.id, '任务');
+    await market.runInterview(interview.id);
+    const { employeeId } = market.decideInterview({
+      interviewId: interview.id,
+      decision: 'hire',
+      departmentId: department.id,
+    });
+    expect(employeeId).toBeDefined();
+    // Deleting the candidate nulls the reference instead of blocking the delete.
+    expect(market.interviews()[0]?.candidateId).toBeUndefined();
+
+    // And so does an export.
+    const record = await market.exportPackage({
+      kind: 'company',
+      name: '全公司',
+      filePath: path.join(dir, 'pkg.json'),
+    });
+    expect(record.members.length).toBeGreaterThan(0);
+  });
+
+  it('merges duplicated relationship edges when upgrading to v17', () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const manager = org.hire({ name: '沈聿', role: '技术负责人', departmentId: department.id });
+    const report = org.hire({
+      name: '李雷',
+      role: '工程师',
+      departmentId: department.id,
+      reportsToEmployeeId: manager.id,
+    });
+
+    // A pre-v17 build keyed the edge on (from, to, kind). A reorg followed by another
+    // message therefore left two edges for the same direction, and the rate limiter —
+    // which reads by pair — could land on either one. Recreate that shape.
+    db.exec('DROP TABLE relationship;');
+    db.exec(`
+      CREATE TABLE relationship (
+        id                  TEXT PRIMARY KEY,
+        company_id          TEXT NOT NULL DEFAULT 'company-local',
+        from_employee_id    TEXT NOT NULL,
+        to_employee_id      TEXT NOT NULL,
+        kind                TEXT NOT NULL CHECK (kind IN ('colleague','manager','report','collaborator')),
+        strength            REAL NOT NULL DEFAULT 0.5,
+        interaction_count   INTEGER NOT NULL DEFAULT 0,
+        last_interaction_at INTEGER,
+        window_started_at   INTEGER,
+        window_count        INTEGER NOT NULL DEFAULT 0,
+        note                TEXT,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_rel_pair ON relationship(from_employee_id, to_employee_id, kind);
+    `);
+    const now = Date.now();
+    const insert = db.prepare(
+      `INSERT INTO relationship (id, company_id, from_employee_id, to_employee_id, kind, strength,
+                                 interaction_count, last_interaction_at, window_started_at, window_count,
+                                 created_at, updated_at)
+       VALUES (?, 'company-local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run('rel-a', report.id, manager.id, 'manager', 0.7, 4, now - 1000, now - 500, 2, now - 2000, now);
+    insert.run('rel-b', report.id, manager.id, 'colleague', 0.9, 3, now, now, 1, now - 1000, now);
+    db.pragma('user_version = 16');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const rows = db
+      .prepare('SELECT * FROM relationship WHERE from_employee_id = ? AND to_employee_id = ?')
+      .all(report.id, manager.id) as {
+      strength: number;
+      interaction_count: number;
+      window_started_at: number;
+      window_count: number;
+    }[];
+    // One edge per direction, with the history preserved rather than dropped.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.interaction_count).toBe(7);
+    expect(rows[0]?.strength).toBeCloseTo(0.9);
+    // The window comes from the most recent row, not a sum of stale ones.
+    expect(rows[0]?.window_started_at).toBe(now);
+    expect(rows[0]?.window_count).toBe(1);
+
+    // The new key is the pair itself: a second insert is a conflict, not a new row.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO relationship (id, company_id, from_employee_id, to_employee_id, strength,
+                                     interaction_count, window_count, created_at, updated_at)
+           VALUES ('rel-dup', 'company-local', ?, ?, 0.5, 0, 0, ?, ?)`,
+        )
+        .run(report.id, manager.id, now, now),
+    ).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it('turns the stored boss name and portrait into a single user row when upgrading to v18', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    // A v17 build kept the boss in `app_setting`, next to presentation preferences.
+    db.exec('DROP TABLE IF EXISTS app_user;');
+    db.prepare(
+      "INSERT INTO app_setting (key, value, updated_at) VALUES ('profile.bossName', '阿星', 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run();
+    db.prepare(
+      "INSERT INTO app_setting (key, value, updated_at) VALUES ('profile.bossAvatar', ?, 1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(png);
+    db.pragma('user_version = 17');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const rows = db.prepare('SELECT id, name, avatar FROM app_user').all() as {
+      id: string;
+      name: string;
+      avatar: string;
+    }[];
+    // Exactly one human, carrying the name and portrait that were already there.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ id: 'boss', name: '阿星', avatar: png });
+
+    // And the profile reads from the row, not from the old setting.
+    expect(new CompanyService(db).get().bossName).toBe('阿星');
+
+    // The legacy rows are left in place on purpose, so a one-version rollback renders.
+    const legacy = db
+      .prepare("SELECT value FROM app_setting WHERE key = 'profile.bossName'")
+      .get() as { value: string };
+    expect(legacy.value).toBe('阿星');
   });
 });
 

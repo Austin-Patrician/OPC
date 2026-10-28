@@ -323,8 +323,9 @@ token 降到 **18–20k**。
 |---|---|
 | 通用 · 外观与语言 | 主题卡（带三格缩略预览 + 选中态）/ 界面字号 / 字体 / 壁纸（含 URL 与上传）/ 语言 / 恢复默认 |
 | 通用 · 工作区与压缩 | 当前大脑模型 + 上下文窗口；自动压缩、触发阈值（给出按窗口计算的推荐值）、保留最近、后台提前量 |
-| 模型 · LLM | 「默认模型」卡（分组下拉 + 思考强度）+「模型服务商」双栏：236px 分组列表（搜索、图标、状态点）＋ 详情（凭据 / Base URL / **模型列表：名称 + ID + 推理与视觉徽标 + 上下文 + 悬浮「设为默认」**） |
+| 模型 · LLM | 「默认模型」卡（分组下拉 + 思考强度）+「模型服务商」双栏：236px 分组列表（搜索、图标、状态点）＋ 详情（凭据 / Base URL / **模型表：名称 + ID + 推理与视觉徽标 + 上下文 + 输入/输出单价 + 启用开关**，缓存价格列可折叠） |
 | 模型 · Image | OpenRouter 图像 Provider 卡 + 厂商筛选 chips + 图像模型列表（与设计同构） |
+| 模型 · Voice | ASR / TTS 分段切换 + Provider 双栏 + 模型开关（`voiceEnabled`）+ 默认语音模型选择 |
 | 自检 | 7 项现场探针 |
 | 关于 | 应用卡（渐变图标 + 版本）/ 版本信息表 / pi 项目三链接 |
 
@@ -334,6 +335,16 @@ token 降到 **18–20k**。
 
 **思考强度**不是摆设：`defaultThinkingLevel` 存进主进程设置，`HarnessBrain` 建会话时作为
 `agent.thinkingLevel` 传进 pi。
+
+**模型表的启用开关（`chatEnabled`）**：每一行都能单独停用，停用后该模型**不会注册进运行时**
+（`ModelRuntime` 只挑 `chatEnabled !== false` 的行），所以一个 Provider 带 600 个模型也不会把
+harness 撑爆。字段是 **opt-out**：没有这个字段的老数据一律视为启用，升级不会让已有配置失效。
+停用当前默认模型时会清空 `default.llm` 并给出提示，避免 Agent 回复在解析阶段失败。
+
+**模型表的列折叠**：默认只显示 名称 / 能力 / 上下文 / 输入 / 输出 / 启用；缓存读、缓存写属于
+「更多列」，由表头右侧的按钮展开（偏好写进 `localStorage`）。表格整体横向可滚动，列宽固定、
+名称列吃掉剩余空间，长名字有 `title` 兜底。表头和表体在同一个滚动容器里，`thead` 用
+`position: sticky` 固定——横向滚动时列不会错位。
 
 **压缩是真的接上去的**：`compaction.enabled / reserveTokens / keepRecentTokens /
 backgroundTokens` 存进 `app_setting`，每次打开 Harness 时透传给
@@ -373,11 +384,12 @@ running 行」清扫。验证后 `running=0`、`active 预留=0`。
 
 **图像生成**
 
-- 主进程 `generateImage()`：`POST {baseUrl}/images/generations`（OpenAI 兼容），支持
-  `b64_json` 与「只返回 url 再下载」两种返回；产物写入 `userData/images/`，返回 data URL 供即时预览。
-- Image 页新增「生成图像」：提示词 + 生成按钮 + 预览（显示模型与字节数）；未配 Key / 未选模型时给出明确原因。
-- **验证方式**：4 个集成测试跑在本地 mock HTTP 服务上——b64 解码、url 回退下载、HTTP 500 透传、
-  非 JSON 拒绝；全部在 `pnpm test` 里。
+- 主进程 `generateImage()`：三种协议（`openai-images` / `openrouter-images` / `google-images`），
+  支持 `b64_json`、`data:` URL 与「只返回 url 再下载」等返回形态；字节由 Agent 工具写进任务工作区。
+- 设置页只负责配置：Image 页填 Base URL + API Key 保存，再设默认模型即可；**不提供生成测试区块**，
+  实际出图走 Agent 的 `generate_image` 工具。
+- **验证方式**：8 个集成测试跑在本地 mock HTTP 服务上——三种协议的请求形状、b64/url 解码、HTTP 500
+  透传、非 JSON 拒绝、纯文本拒答；全部在 `pnpm test` 里。
 
 ### B 片：负责人拆解 + 三条硬约束
 
@@ -422,8 +434,103 @@ OPC_DECOMPOSE_PROBE=1 electron .
 - **员工档案齐全**：头像（可上传，128px 裁剪后存 data URL）、入职时间、状态、底层模型、技能栈、
   **汇报关系**（上级 + 下属名单）、**履职数据**（已完成交付 / 在跑任务 / 累计 tokens / 当日算力花费）；
   `costTodayUsd` 来自任务账本（`COALESCE(finished_at, created_at)` 落在今天的 `cost_usd` 求和），不是编的日薪；
+- **一个公司只有一个人类，这件事写进了数据库**（schema v18）：`'boss'` 以前是散落在
+  `employment_event.actor`、`evaluation.reviewer`、`acceptance.reviewer`、消息 senderId 里的
+  魔字符串，姓名头像只能挤在 `app_setting` 的 `profile.bossName` 里（一张偏好设置表）。
+  现在老板是 `app_user` 里的一行：`id='boss'`、`name`、`avatar`，并且
+  **`CHECK (id = 'boss')`** —— 插入第二个人会被数据库直接拒绝，而不是靠代码自觉。
+  迁移时从旧的 `profile.bossName` / `profile.bossAvatar` 取值（名字头像不丢），旧行保留一个版本
+  以便回滚；`CompanyService` 从此只读写新表，所以**重置偏好不会再抹掉老板的名字**。
+  `'boss'` 这个 id 保持不变 —— 它已经写进历史事件与验收记录，改 id 等于改写历史。
+  组织图的根卡片与员工档案里的汇报链现在显示真实的姓名与头像（不再是硬编码的「老板」），
+  人事记录也显示「由 阿星」而不是 `boss`。
+- **关系图谱只剩一个事实源**（schema v17）：`relationship.kind` 以前是 `position.reports_to_employee_id`
+  的一份拷贝，而且只在**第一次互动时**算一次落库，于是组织调整后旧行永远停在 `manager`；更糟的是唯一键是
+  `(from, to, kind)`，换过上级再聊一次会插入**第二行**，而限流按 `(from, to)` 只读一行 —— 限流可以被绕过。
+  现在 `relationship` 只记互动（次数/强度/窗口/上次时间），"是什么关系"由 `position` 现算
+  （`CommService.relationships()`），所以调岗后立刻读成 `colleague`；升级时同一方向的重复边会合并
+  （次数求和、强度取最大、窗口取最新那条），唯一键收敛成 `(from, to)`。
+- **成本中心视图**：预算页在薪酬之后再加一块「成本中心（本月）」，部门/项目两个 tab。
+  与薪酬同源不同轴：账本在结算时为 project / department / employee / company **各写一行**
+  （token 与金额完全相同），所以每条轴只读自己那一行 —— 加起来会把同一次花费算四遍。
+  同时显式给出**对账差额**「另有 $X 无法归属」：部门/项目轴只在结算时知道它的情况下才记账，
+  两条轴的合计通常小于公司合计，差额是事实而不是错误，藏起来会让两份报表永远对不上。
+  已归档部门的钱仍然留在报表里（名字从 `department` 表按 id 取，不是从在岗列表取）。
+- **薪酬视图**：预算页新增「薪酬（本月）」，把同一个 `budget_ledger` 读成钱 —— 每人的已花金额、占比、
+  按已观测单价折算的"月薪"、以及直线外推的预计月末。三个数字来源不同，所以标签分开写：**已花是事实，
+  折合月薪与预计月末是推算**。只取 `scope='employee'` 的账本行（一次任务会同时结算员工/项目/部门/公司
+  四条，加起来会把同一次花费算四遍）；一次都没花过就没有单价，此时月薪留空而不是填 0（0 会被读成"免费"）。
+  离职的人不在薪酬名单里，但他的花费仍留在账本上。
+  **按月过滤**：`budget_ledger` 自己没有 `period_key`，月份挂在 `budget_id` 上，所以查询要
+  join `budget` —— 否则"本月"会把上个月的钱一起算进来（这一批顺手修掉了上一批埋的这个 bug）。
+- **招聘链路补完了**（schema v16）：`schema.ts` 里 `agent_candidate` 的注释一直写着
+  "evaluation / interview / employee_package are Phase 4"，绩效在 v15 补上，这一版补剩下两个：
+  - **`interview`（试跑面试）**：招聘最大的风险是"简历很合适、上手就废"。所以面试不是聊天，而是
+    **用一个真实任务跑一遍**，记下产出、token 数与金额、耗时。成本本身就是决策的一部分 ——
+    一个做得对但贵十倍的人，是另一个决定，而这件事必须在录用**之前**知道。
+    `runTrial` 由 bootstrap 注入（走已配置的模型）；没配模型时给出「没有可用的模型，无法试跑」
+    而不是假装跑过。**失败也是一条记录**（`status='failed'` + `error`），不会从列表里消失。
+    `candidate_id` 是 `ON DELETE SET NULL` 且另存姓名/岗位快照：录用时候选人行会被删掉，
+    而面试记录必须留下来解释"当初为什么招他"。`reject` 不把候选人移出市场（"不适合这个岗" ≠
+    "从池子里删掉"）；`hire` 走的是市场卡同一个 `hire` 路径，不另开一条隐晦的第二实现。
+  - **`employee_package`（员工包）**：导出的 manifest 与 `parseAgentPackage` 读的是同一个信封
+    （`opc-agent-package@1`），所以**导出的包可以被「导入本地 Agent 包」直接读回来** ——
+    换台机器就能复原一个人。每条导出记录都存 SHA-256 与体积，「校验」会重新哈希磁盘文件，
+    能报「文件已改变」/「文件已不存在」（包会被复制转发，必须能自证）。
+    市场页底部是员工包台账，员工档案里有「导出员工包」（单人）。
+- **绩效、试用期、矩阵汇报、代理负责人是真的**（schema v15）：
+  - `evaluation`（绩效）：周期（`probation` / `periodic` / `project` / `exit`）+ 周期标识（`2026-Q3`）
+    + 总评分与质量/速度/成本三个分项（1–5，越界直接报中文错误，不是裸 SQLite 报错）+ 评语 + 评价人。
+    离职后也能评（离职面谈）；`promoted` 事件终于有了依据。员工档案新增「绩效」区块：历史列表 + 一行内联录入。
+  - **试用期**：`employee.probation_ends_at` 是一个**日期**而不是布尔值 —— "试用期到哪天"才是排评审的依据。
+    招聘向导可填天数；档案页显示「试用期至 X」并给一个「转正」按钮，`personnel({action:'confirm'})`
+    清空日期并写一条 `confirmed` 人事事件，所以"什么时候转的正"可查。试用期负数直接拒绝。
+  - **项目内汇报**（`assignment.reports_to_employee_id`）：矩阵组织的那条边。项目页成员标签上点 ↰ 即可
+    指定"在这个项目里向谁交活"，它与部门汇报线互不影响；两端必须是本项目在岗成员、不能成环；成员被移出时
+    下属自动交给他的上级，项目归档时整条线清空。设计文档 §4.3 有这一列，之前的实现把它砍掉了。
+  - **代理负责人**（`position.is_acting_head`）：负责人空缺（或休假）时顶班的人。它是独立标志而不是第二个
+    `is_head`，因为"正式问责"和"临时代管"是两个问题；两者可并存（负责人休假），但正式任命新负责人时代理
+    自动结束。一个部门只有一个代理（部分唯一索引），同部门重落座会保住这个标志，代理本人离职即失效。
+- **编制与人事事件是真的**（schema v14）：
+  - `job`（部门职位目录）+ `headcount`（编制上限）+ `position.job_id`：招聘时可以选一个职位，选完
+    自动带出岗位名与职级并占一个坑；**编制满了直接拒绝**（`「前端工程师」编制已满（2/2）`），
+    拒绝发生在写入之前，不会留下半个员工。编制不能改到低于在岗人数，还有人在岗的职位不能撤销。
+    离职/调岗会释放坑位；调岗到别的部门会自动解绑（职位属于某一个部门，不能跨部门借编制）。
+  - `employment_event`（人事事件时间线）：入职 / 调岗 / 职级变动 / 任命负责人 / 免去负责人 / 离职 /
+    复职，各带前值与后值（部门、岗位名、职级）、执行人、原因与时间。**写在同一个事务里**，所以
+    回滚不会留下"已调岗"的假记录；事件只追加不修改，员工离职后仍然可查。
+  - `org.personnel({action:'promote'})` 支持改职级（`employee.level` 以前只展示、没有任何写入路径）；
+    `org.appointHead(departmentId, employeeId | null)` 补上"任命/免去负责人"——此前负责人只能靠
+    "招聘时勾选"或"建部门时指定"，负责人一走部门就永远空缺。
+  - 部门档案新增「编制」区块（`已占/总编`、每格一个坑的进度条、一键 +1 编制、撤销职位、
+    **另有 N 人未占编制**——计划外用工不藏起来）与负责人下拉；员工档案新增「人事记录」时间线；
+    招聘向导新增「编制职位」下拉（只列还有空位的职位）。
+- **顺手修掉一个静默丢字段**：`org:hire` 的 IPC 校验一直没转发 `skills` / `persona`，向导里填的
+  技能与岗位职责在落库前就被丢掉了；现在一并写入。
+- **部门层级是真的**（schema v13）：`department.parent_id` 以前是死字段（无外键、无读写），组织图只能
+  是"老板 → 部门 → 人"的扁平面条。现在：
+  - `parent_id` 是自引用外键（旧库由 `repairDepartmentParentConstraint()` 重建表补上，升级前先断开
+    悬空 / 自指 / 成环的边，否则外键会让整个升级回滚）；
+  - 画布是**递归渲染**的：`DeptRow` 一层层画总线 + 下引线，部门卡显示"几个下级"，折叠只收起子树；
+  - 组织目录是**按层级缩进的树**，面包屑显示"公司 › 研发中心 › 前端组"（可逐级点回去）；
+  - **聚焦一个部门 = 聚焦它整棵子树**（树/看板/名单/名片墙一致），不再"只看这个部门自己"；
+  - `updateDepartment` 支持改名 / 改代号 / 改描述 / 换上级（`parentId: null` 是显式移到顶层，
+    不传则保持不动，和 `transfer` 同一套三态约定）；换上级后自动排到新兄弟的最后；
+  - `sortOrder` 是**兄弟之间的位置**而不是调用方随便写的数字：写入时整排重编号，否则两个部门
+    抢同一个槽位、排序又退回 `created_at`；
+  - `archiveDepartment` 软删，但**还有在岗员工或下级部门时拒绝**——否则那些岗位会静默从图上消失；
+  - 部门档案新增「部门设置」区块（改名/代号/职能、上级下拉、撤销二次确认），新建部门可选上级。
+- **组织变更立刻反映到 IM**：`register.ts` 的每个 org 变更通道都走同一个 `refreshOrg()`，读一次
+  `org.list()` 后交给 `chat.syncOrg()`。以前快照只在启动时建一次，**新入职的人不进部门群、调岗的人
+  还留在原群**，直到重启；现在部门群成员是 `position` 的实时投影（空群也保留，空群是真实状态）。
 - **人事操作合并成一个入口**：`org.personnel({action})` 支持 `transfer`（调岗到部门）、`set-manager`（换汇报对象/取消）、
   `terminate`（离职）、`reinstate`（复职），右栏一个下拉搞定，不再散落成按钮；
+- **人事档案补上了时间与约束**（schema v12）：`terminate` 会写 `employee.terminated_at` 并清掉冗余的
+  `employee.department_id`（档案页显示「离职」日期），`reinstate` 把它清空；**调岗保留岗位名与汇报线**——
+  `transfer(employeeId, departmentId)` 不传第三参就沿用原汇报线（看板拖拽正是这样调用，以前会把上级拖没），
+  传 `''` 才是显式取消；复职从最后一条已关闭的 `position` 恢复部门、岗位名、汇报对象；
+  `createDepartment` 改为先校验负责人再整体写事务（以前负责人不在岗会留下一个空部门）；
+  部门名/代号唯一性落成唯一索引（`LOWER(TRIM(name))` / `UPPER(TRIM(code))`，空代号不参与），升级时先给历史重名加后缀；
 - **画布缩放真的生效**：外层按 `自然尺寸 × zoom` 预留空间，内层 `scale`，所以放大不再只是像素拉伸；
   缩放条固定在**右下角**（设计同款），**左下角**是状态图例（在岗 / 执行中 / 离职 + 有任务在跑的部门数）；
 - **名单表可滚动**：表头 sticky，`min-h-0 + overflow-auto` 在面板内滚动；
@@ -543,11 +650,20 @@ OPC_ORG_PROBE=1 electron .
 | 位置 | 之前 | 现在 |
 |---|---|---|
 | LLM 页 | 只有 pi 目录里的 18 个 Provider，无法添加自定义端点 | 底部「添加 Provider」→ 内联表单（id/name/Base URL/API），可填 Key、手动加模型、设默认、删除 |
-| Image 页 | 写死 OpenRouter + 静态目录 | 列表来自**数据库里所有 `capability: 'image'` 的模型**，可按 Provider 筛选、手动添加、删除、设默认 |
+| Image 页 | 写死 OpenRouter + 静态目录 | 列表 = 数据库里的 `capability: 'image'` 模型 **+ 内置图像目录**（pi 的 OpenRouter 63 个，加上内置的 OpenAI / Gemini）；Provider 右侧直接填 Base URL 与 API Key，保存即启用 |
 | ImageService | 默认 provider 写死 `openrouter` | 从 `defaults.image` 解析；任何配好 Key 且拥有 image 模型的 Provider 都能出图 |
 
-OpenRouter 的 63 个图像模型只作为**一次性种子**写入数据库（`IMAGE_MODELS`），之后一切以配置为准，
-自定义图像端点与它完全平等。图标仍按模型自身品牌显示（`openai/gpt-image-1` → OpenAI 图标）。
+OpenRouter 的 63 个图像模型来自 pi 的内置目录（`getBuiltinImageModels('openrouter')`）。Image 页把它们
+当内置模型直接列出：在右侧填好 Base URL 与 API Key 点「保存」，配置、凭证和该 Provider 的内置图像模型
+会一起落库，随后就能在表里设默认。没有单独的「导入模型」步骤——**保存配置即启用**，自定义图像端点与
+内置端点完全平等。图标仍按模型自身品牌显示（`openai/gpt-image-1` → OpenAI 图标）。
+
+**OpenAI / Google Gemini 直接接入**：pi 的图片注册表只有 OpenRouter，所以这两家由主进程目录补上
+（`apps/main/src/models/catalog.ts` 的 `DIRECT_IMAGE_MODELS`）——OpenAI 的 `gpt-*-image*` 与 Gemini 的
+`gemini-*-image*` / `gemini-nano-banana-*` 默认出现在 Image 页，模型 id 与 pi 的 OpenRouter 目录一一对应
+（去掉 `openai/`、`google/` 前缀），因此同一个名字在中转和官方端点都通用。每家 Provider 的 Base URL 与
+API Key 都在 Image 页就地编辑（LLM 页也同步），换成中转/代理端点不需要改代码；模型自带 `api` 协议决定
+请求形状。
 
 **为什么这步在工具之前**：`generate_image` 工具需要回答"用哪个 provider、哪个模型"。如果图像
 provider 还写死，工具就只能服务一种后端。现在工具只需要读 `defaults.image` + 该 provider 的
@@ -563,17 +679,25 @@ Base URL/Key，逻辑与设置页完全一致。
 - 仅在存在「有 Key 且拥有图像模型」的 provider 时才注册，避免给模型一个必然失败的工具；
 - 3 个单测覆盖：写入并回显、路径扁平化、失败返回 `isError` 而不写文件。
 
-协议：图像模型带 `api` 字段，支持 `openai-images`（OpenAI 兼容 `/images/generations`）与
-`openrouter-images`（pi 原生）。目前两者都走同一 HTTP 管线（pi 的 image API 需要 OpenRouter
-OAuth/Key 才能实跑），UI 里可以看到并选择模型所用的协议。
+协议：图像模型带 `api` 字段，支持三种协议，各自走正确的 HTTP 端点：
 
-Image 页改成与 LLM 一致的**左 Provider / 右模型表**：
+| `api` | 端点 | 说明 |
+|---|---|---|
+| `openai-images` | `POST /images/generations` | OpenAI 及兼容中转；b64 或 url 都能落盘 |
+| `openrouter-images` | `POST /chat/completions` + `modalities: ['image','text']` | OpenRouter / pi 原生图像 API（OpenRouter 没有 /images 端点） |
+| `google-images` | `POST /models/{model}:generateContent` + `x-goog-api-key` | Gemini 原生图像生成，读 `inlineData` |
 
-- 左侧只列「拥有图像模型」的 Provider（图标 + 模型数 + 凭证状态点）；
-- 右侧顶部是生成区块（提示词 + 生成 + 预览），下面是模型表（名称+品牌图标 / 协议 / 默认 / 删除）；
+Image 页与 LLM 一致的**左 Provider / 右配置 + 模型表**：
+
+- 左侧列出「拥有图像模型」的 Provider：已配置的来自数据库，未配置的来自内置目录（OpenRouter 63 个、OpenAI、Gemini）；
+- 右侧顶部是 **Base URL + API Key** 两个输入框和一个「保存」：一次保存写入 Provider 行、凭证和内置图像模型，状态徽标随即变成「已配置 Key」；
+- 下面是模型表（名称+品牌图标 / 协议（可改） / 默认 / 删除）；设置页不再提供「生成测试」区块，只负责配置；
 - 模型表 `max-h-22rem` + 内部滚动 + 粘性表头，**卡片不会被模型数量拉长**；
-- 表下是「添加图像模型」：模型 id + 协议下拉；
+- 表下是「添加图像模型」：模型 id + 协议下拉（写入 `capability: 'image'`），用于目录里没有的中转模型；
 - 顶部「添加 Provider」复用同一个 modal，自定义图像端点添加后即出现在左侧。
+
+表里的「协议」对已配置的行是下拉框：中转把同一个模型暴露成另一种 API 形态时，只改这一行即可，
+不用改代码；还没保存过配置的内置行沿用目录自带的协议。
 
 **图像任务的验收（按你的口径）**：只要"图片能通过 HTTP 以 200 返回"就算通过，质量交给模型判断。
 
@@ -584,9 +708,8 @@ Image 页改成与 LLM 一致的**左 Provider / 右模型表**：
 - 独立验证过（不依赖模型）：有 PNG → `PASS image-200`（exit 0）；空目录或只有文本 →
   `FAIL 工作区没有图片文件`（exit 1）。
 
-**全局默认生图模型**：Image 页顶部新增一个 `default.image` 选择器（按 Provider 分组列出全部
-图像模型），它同时驱动设置页的"生成"按钮和 Agent 的 `generate_image` 工具——不再只能靠行内
-「设为默认」猜。
+**全局默认生图模型**：Image 页顶部有一个 `default.image` 选择器（按 Provider 分组列出全部图像模型），
+它驱动 Agent 的 `generate_image` 工具；表内每行的「设为默认」也是同一个设置。
 
 **端到端验证（本地 mock 图像端点，不需要真 Key）**：
 
@@ -613,6 +736,52 @@ OPC_IMAGE_LOOP_PROBE=1 electron .
 
 **还没做的**：图像生成的线上行为仍需真实图像 Key（本机只有 mock 服务的测试证据）；
 `openrouter-images` 尚未走 pi 原生实现。
+
+### 语音模型（ASR / TTS）+ Voice 页 + 两个 Agent 工具
+
+详细设计见 `docs/speech.md`，这里只记要点。
+
+语音和图像的关键差别：**Xiaomi 的 ASR/TTS 就是 [OI] 兼容的 `/v1/chat/completions`**，所以完全复用已有的
+`xiaomi` provider 行（Base URL + Key），不新增 Provider，只新增 `capability: 'asr' | 'tts'` 与一个
+`api: 'xiaomi-audio'` 协议：
+
+| 模型 | 类型 | 请求要点 |
+|---|---|---|
+| `mimo-v2.5-asr` | ASR | user message 里放 `input_audio`（mp3/wav 的 data URL），`asr_options.language` 取 `auto/zh/en` |
+| `mimo-v2.5-tts` | TTS | 待读文本放在 **assistant** message，`audio.voice` 选预置音色，结果在 `message.audio.data`（base64） |
+| `-voiceclone` / `-voicedesign` | TTS | 前者要音频样本 base64，后者用 user message 描述音色且不接受 `voice` |
+
+**为什么要有 `voiceEnabled`**：LLM 页会把 provider 的整个目录落库，语音模型也会被写成 `chat` 行；
+「行存在」不等于「已启用」。所以开关单独一个字段，运行时只认 `capability === role && voiceEnabled`。
+
+**设置页**：`设置 → 模型 → Voice`，一个页面用分段开关切 ASR / TTS（两者共用 Provider 与 Key）。
+语音不按 token 计价（ASR ¥0.5/小时、TTS 限时免费），因此**没有价格列**，只留一句计费说明。
+
+列表只显示**真正拥有该角色语音模型**的 Provider：LLM 页建的自定义 Provider 是给 chat 用的，
+不会漏进来。唯一例外是刚在本页新建、还没加模型的那一行（`includeProviderId` 显式传入），
+否则它会在创建后立刻从列表消失，用户根本没法给它加模型。Image 页用同一套规则。
+
+**麦克风**：`MediaRecorder` 在 Chromium 产出 webm/opus，Xiaomi 只收 mp3/wav，所以渲染层用
+`OfflineAudioContext` 重采样到 16kHz 并手写 WAV 头，不引入 ffmpeg。音频字节经 IPC 交给主进程，
+Key 始终不进入渲染进程。
+
+**工具**（`apps/main/src/work/speechTool.ts`），按可用性分别安装，模型不会看到注定失败的工具：
+
+```ts
+transcribe_audio({ path, language?: 'auto' | 'zh' | 'en' })   // 工作区音频 → 文本
+text_to_speech({ text, filename?, voice?, format?: 'mp3' | 'wav' })  // 文本 → 工作区音频
+```
+
+- 音频路径必须在工作区内（`..` 与外部符号链接都拒绝），≤ 25MB；
+- 转写 ≤ 12000 字符内联，更长时全文写入 `<音频名>.transcript.md`；
+- 合成文本 ≤ 4000 字符，超出**拒绝**而不是截断（截断会读出半句话）。
+
+验证：`speech.test.ts`（协议，本地 mock HTTP，覆盖 ASR/TTS/voicedesign/voiceclone/[OI] 双端点/HTTP 500）、
+`speechService.test.ts`（未启用 / 缺 Key / 未配置）、`speechTool.test.ts`（路径、格式、大小、截断、落盘）。
+
+**还没做的**：voiceclone 需要样本上传入口（目前只有 API 层）；TTS 不做流式，长文本要等整段返回；
+聊天录音不落盘，只用于转写。
+
 
 **沙箱的边界（必须说清楚）**：Seatbelt 不是虚拟机，仍与宿主共享内核；没有 CPU/内存配额；
 Linux 的 bwrap 路径只做了 argv 构造与单测，**未在真机验证**；`sandbox-exec` 已被 Apple 标记弃用；

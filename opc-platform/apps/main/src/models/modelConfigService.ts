@@ -38,6 +38,8 @@ export interface ApplyPricingResult {
 
 const DEFAULT_LLM_KEY = 'default.llm';
 const DEFAULT_IMAGE_KEY = 'default.image';
+const DEFAULT_ASR_KEY = 'default.asr';
+const DEFAULT_TTS_KEY = 'default.tts';
 const COMPACTION_KEY = 'compaction';
 const THINKING_KEY = 'default.thinking';
 
@@ -125,6 +127,7 @@ export class ModelConfigService {
       name?: string;
       contextWindow?: number;
       api?: string;
+      capability?: ModelOption['capability'];
       inputUsdPerM?: number;
       outputUsdPerM?: number;
       cacheReadUsdPerM?: number;
@@ -143,8 +146,13 @@ export class ModelConfigService {
         id,
         name: input.name?.trim() || id,
         api: input.api?.trim() || provider.api,
-        // Chat is the only capability a hand-added model has until proven otherwise.
-        capability: 'chat',
+        // Chat is the default a hand-added model has until proven otherwise;
+        // the Image page passes `image` explicitly.
+        capability: input.capability ?? 'chat',
+        // A hand-added model is enabled for the feature it was added under;
+        // the LLM page's default `chat` leaves both switches off.
+        imageEnabled: input.capability === 'image' ? true : undefined,
+        voiceEnabled: input.capability === 'asr' || input.capability === 'tts' ? true : undefined,
         contextWindow: input.contextWindow ?? 0,
         inputUsdPerM: input.inputUsdPerM ?? 0,
         outputUsdPerM: input.outputUsdPerM ?? 0,
@@ -375,6 +383,11 @@ export class ModelConfigService {
           // catalog, and a re-import must not erase what was already known.
           vision: model.vision ?? previous?.vision,
           reasoning: model.reasoning ?? previous?.reasoning,
+          // Feature switches are part of the row: a re-import or price save
+          // must not silently disable an image/voice model.
+          imageEnabled: model.imageEnabled ?? previous?.imageEnabled,
+          voiceEnabled: model.voiceEnabled ?? previous?.voiceEnabled,
+          chatEnabled: model.chatEnabled ?? previous?.chatEnabled,
           inputUsdPerM: previous?.inputUsdPerM ?? model.inputUsdPerM,
           outputUsdPerM: previous?.outputUsdPerM ?? model.outputUsdPerM,
           cacheReadUsdPerM: previous?.cacheReadUsdPerM ?? model.cacheReadUsdPerM,
@@ -426,10 +439,17 @@ export class ModelConfigService {
   getDefaults = (): ModelDefaults => ({
     llm: this.readRef(DEFAULT_LLM_KEY),
     image: this.readRef(DEFAULT_IMAGE_KEY),
+    asr: this.readRef(DEFAULT_ASR_KEY),
+    tts: this.readRef(DEFAULT_TTS_KEY),
   });
 
-  setDefault = (role: 'llm' | 'image', ref: ModelRef | null): ModelDefaults => {
-    const key = role === 'llm' ? DEFAULT_LLM_KEY : DEFAULT_IMAGE_KEY;
+  setDefault = (role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null): ModelDefaults => {
+    const key = {
+      llm: DEFAULT_LLM_KEY,
+      image: DEFAULT_IMAGE_KEY,
+      asr: DEFAULT_ASR_KEY,
+      tts: DEFAULT_TTS_KEY,
+    }[role];
     if (ref) this.repository.setSetting(key, `${ref.providerId}::${ref.modelId}`);
     else this.repository.setSetting(key, '');
     return this.getDefaults();

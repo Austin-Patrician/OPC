@@ -274,12 +274,73 @@
           );
           await new Promise((r) => setTimeout(r, 300));
           location.hash = '#/settings';
-          await new Promise((r) => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, 400));
+          // `#/settings` alone lands on 外观; the provider list only exists on the
+          // LLM page, so this check has to walk there first.
+          document.querySelector('[data-testid="settings-group-models"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 200));
+          document.querySelector('[data-testid="settings-page-llm"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 700));
           const providerRows = document.querySelectorAll('[data-testid="provider-row"]').length;
           const providerIcons = document.querySelectorAll('img[src*="provider-icons"]').length;
-          const llmTableScrollable = Boolean(
-            document.querySelector('[data-testid="llm-model-table"]')?.classList.contains('overflow-y-auto'),
+          const llmTable = document.querySelector('[data-testid="llm-model-table"]');
+          const llmTableScrollable = Boolean(llmTable?.classList.contains('overflow-auto'));
+          // Per-row enable switches + the collapsible cache columns.
+          const llmEnableSwitches = document.querySelectorAll(
+            '[data-testid="llm-model-table"] [role="switch"]',
+          ).length;
+          const llmModelRows = document.querySelectorAll('[data-testid="llm-model-row"]').length;
+          const llmColumnsToggle = Boolean(document.querySelector('[data-testid="toggle-columns"]'));
+          // How much room the name column actually gets in the default view, and
+          // how many names still need the tooltip.
+          const llmNameCell = document.querySelector('[data-testid="llm-model-row"] td');
+          const llmNameWidth = llmNameCell ? Math.round(llmNameCell.getBoundingClientRect().width) : 0;
+          const llmTruncatedNames = [
+            ...document.querySelectorAll('[data-testid="llm-model-row"] td:first-child > div:first-child'),
+          ].filter((node) => node.scrollWidth > node.clientWidth + 1).length;
+          const llmWidthBefore = llmTable ? llmTable.scrollWidth : 0;
+          document.querySelector('[data-testid="toggle-columns"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
           );
+          await new Promise((r) => setTimeout(r, 250));
+          const llmWidthAfter = llmTable ? llmTable.scrollWidth : 0;
+          const llmColumnsExpand = llmWidthAfter > llmWidthBefore;
+          const llmHorizontalScroll = llmTable ? llmTable.scrollWidth > llmTable.clientWidth : false;
+          // Restore the folded default so later checks see the same layout a user does.
+          document.querySelector('[data-testid="toggle-columns"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 200));
+
+          // The per-row enable switch must persist `chatEnabled`. The first provider
+          // in the catalog is Amazon Bedrock; give it a throwaway key so the switch
+          // is not locked, toggle it, then put everything back.
+          const smokeProviderId = 'amazon-bedrock';
+          await window.opc.models.setKey(smokeProviderId, 'smoke-key');
+          document.querySelector('[data-testid="settings-page-appearance"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 200));
+          document.querySelector('[data-testid="settings-page-llm"]')?.dispatchEvent(
+            new MouseEvent('click', { bubbles: true }),
+          );
+          await new Promise((r) => setTimeout(r, 800));
+          const firstSwitch = () =>
+            document.querySelector('[data-testid="llm-model-table"] [role="switch"]');
+          const switchEnabledBefore = firstSwitch()?.getAttribute('aria-checked') === 'true';
+          firstSwitch()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 700));
+          const storedAfterToggle = await window.opc.models.list();
+          const chatFlags = (storedAfterToggle.find((entry) => entry.id === smokeProviderId)?.models ?? [])
+            .filter((model) => model.capability === 'chat')
+            .map((model) => model.chatEnabled);
+          const llmSwitchPersists = switchEnabledBefore && chatFlags.includes(false);
+          const llmSwitchUnlocked = firstSwitch()?.hasAttribute('disabled') === false;
+          // Put it back: re-enable, drop the key.
+          firstSwitch()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 500));
+          await window.opc.models.setKey(smokeProviderId, '');
+          await new Promise((r) => setTimeout(r, 200));
 
           // The key row's Save button must stay horizontal.
           const saveButton = [...document.querySelectorAll('button')]
@@ -495,6 +556,15 @@
             builtinProtected,
             providerIcons,
             llmTableScrollable,
+            llmModelRows,
+            llmEnableSwitches,
+            llmColumnsToggle,
+            llmColumnsExpand,
+            llmHorizontalScroll,
+            llmNameWidth,
+            llmTruncatedNames,
+            llmSwitchPersists,
+            llmSwitchUnlocked,
             saveBox,
             imageIcons,
             imageRows,

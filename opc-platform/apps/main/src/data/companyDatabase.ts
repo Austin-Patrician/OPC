@@ -28,6 +28,8 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   repairAcceptanceTemplateConstraint(db);
   repairBudgetScopeConstraint(db);
   repairLegacyColumns(db);
+  repairDepartmentParentConstraint(db);
+  repairEmploymentEventKindConstraint(db);
   migrate(db);
   return db;
 }
@@ -163,6 +165,147 @@ export function repairBudgetScopeConstraint(db: CompanyDatabase): boolean {
   } catch (error) {
     db.exec('ROLLBACK');
     throw new Error(`重建 budget 表以允许 project/department 预算失败：${String(error)}`, { cause: error });
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  return true;
+}
+
+/**
+ * Gives `department.parent_id` its self-referencing foreign key.
+ *
+ * v1 declared the column but never constrained it, and `CREATE TABLE IF NOT EXISTS`
+ * keeps that shape forever. A dangling parent id is silent: the department and
+ * everything under it simply vanish from the chart. SQLite cannot add a foreign key
+ * to an existing table, so the table is rebuilt — the same dance as the task/budget
+ * repairs above, and for the same reason: `PRAGMA foreign_keys` is a no-op inside a
+ * transaction, and `employee` / `position` / `project_group` all reference
+ * `department`, so the drop has to happen with enforcement off.
+ *
+ * Data is repaired first (self-parent, missing parent, parent pointing at a deleted
+ * department, and cycles). Without that the rebuilt table would refuse the copy and
+ * every launch would fail to upgrade. Idempotent.
+ */
+export function repairDepartmentParentConstraint(db: CompanyDatabase): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'department'")
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+  if (/REFERENCES\s+["']?department["']?\s*\(/i.test(row.sql)) return false;
+
+  const rows = db.prepare('SELECT id, parent_id, deleted_at FROM department').all() as {
+    id: string;
+    parent_id: string | null;
+    deleted_at: number | null;
+  }[];
+  const live = new Set(rows.filter((entry) => entry.deleted_at === null).map((entry) => entry.id));
+  const parents = new Map<string, string | null>(rows.map((entry) => [entry.id, entry.parent_id]));
+
+  const detach = db.prepare(
+    'UPDATE department SET parent_id = NULL, updated_at = ? WHERE id = ?',
+  );
+  const now = Date.now();
+
+  // A parent must exist, be alive, and not be the department itself.
+  for (const entry of rows) {
+    const parent = parents.get(entry.id) ?? null;
+    if (parent !== null && (parent === entry.id || !live.has(parent))) {
+      parents.set(entry.id, null);
+      detach.run(now, entry.id);
+    }
+  }
+
+  // Break cycles by detaching the edge that closes the loop.
+  for (const entry of rows) {
+    const seen = new Set<string>([entry.id]);
+    let cursor = parents.get(entry.id) ?? null;
+    while (cursor) {
+      if (seen.has(cursor)) {
+        parents.set(entry.id, null);
+        detach.run(now, entry.id);
+        break;
+      }
+      seen.add(cursor);
+      cursor = parents.get(cursor) ?? null;
+    }
+  }
+
+  const indexes = (
+    db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'department' AND sql IS NOT NULL",
+      )
+      .all() as { name: string; sql: string }[]
+  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
+
+  const renamed = row.sql.replace(/^CREATE TABLE\s+["']?department["']?/i, 'CREATE TABLE department_rebuild');
+  const close = renamed.lastIndexOf(')');
+  const rebuilt = `${renamed.slice(0, close)},\n  FOREIGN KEY (parent_id) REFERENCES department(id)\n${renamed.slice(close)}`;
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec('INSERT INTO department_rebuild SELECT * FROM department');
+    db.exec('DROP TABLE department');
+    db.exec('ALTER TABLE department_rebuild RENAME TO department');
+    for (const index of indexes) db.exec(index.sql);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw new Error(`重建 department 表以给 parent_id 加外键失败：${String(error)}`, { cause: error });
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  return true;
+}
+
+/**
+ * Widens `employment_event.kind` to include `confirmed` (转正).
+ *
+ * Same SQLite limitation as the two repairs above: a CHECK cannot be altered, so the
+ * table is rebuilt. Nothing references `employment_event`, so the drop is safe, but
+ * `foreign_keys` is still turned off around it for the same reason the others do it —
+ * the table has an outgoing foreign key to `employee` and a half-rebuilt table must
+ * never be visible to the migrator.
+ *
+ * Idempotent: no-op once the constraint already lists `confirmed`.
+ */
+export function repairEmploymentEventKindConstraint(db: CompanyDatabase): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employment_event'")
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+  if (row.sql.includes("'confirmed'")) return false;
+
+  const kindCheck = /CHECK\s*\(\s*kind\s+IN\s*\(([^)]*)\)\s*\)/i.exec(row.sql);
+  if (!kindCheck) return false;
+
+  const kinds = ['hired', 'transferred', 'promoted', 'head_appointed', 'head_removed', 'terminated', 'reinstated', 'confirmed'];
+  const rebuilt = row.sql
+    .replace(/^CREATE TABLE\s+["']?employment_event["']?/i, 'CREATE TABLE employment_event_rebuild')
+    .replace(kindCheck[0], `CHECK (kind IN (${kinds.map((kind) => `'${kind}'`).join(',')}))`);
+
+  const indexes = (
+    db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'employment_event' AND sql IS NOT NULL",
+      )
+      .all() as { name: string; sql: string }[]
+  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec('INSERT INTO employment_event_rebuild SELECT * FROM employment_event');
+    db.exec('DROP TABLE employment_event');
+    db.exec('ALTER TABLE employment_event_rebuild RENAME TO employment_event');
+    for (const index of indexes) db.exec(index.sql);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw new Error(`重建 employment_event 表以加入 confirmed 事件失败：${String(error)}`, { cause: error });
   } finally {
     db.pragma('foreign_keys = ON');
   }

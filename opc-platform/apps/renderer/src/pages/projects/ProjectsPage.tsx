@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Archive, FolderPlus, Plus, Users, X } from 'lucide-react';
+import { Archive, CornerUpLeft, FolderPlus, Plus, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DepartmentNode, OrgMember } from '@opc/shared/domain';
 import type { OrgFactView, ProjectView } from '@opc/shared/ipc';
@@ -105,6 +105,7 @@ export function ProjectsPage() {
   const [departments, setDepartments] = useState<DepartmentNode[]>([]);
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [openFor, setOpenFor] = useState<string | null>(null);
+  const [reporting, setReporting] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({ name: '', code: '', description: '', departmentId: '' });
   const [error, setError] = useState<string | null>(null);
@@ -260,25 +261,52 @@ export function ProjectsPage() {
                       </p>
 
                       <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                        {project.members.map((member) => (
-                          <span
-                            key={member.employeeId}
-                            data-testid="project-member"
-                            className="flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-2xs text-ink-secondary"
-                          >
-                            {member.name}
-                            <button
-                              type="button"
-                              aria-label={`${t('projects.remove')} ${member.name}`}
-                              onClick={() =>
-                                void run(() => window.opc!.projects.removeMember(project.id, member.employeeId))
-                              }
-                              className="text-ink-quaternary hover:text-danger"
+                        {project.members.map((member) => {
+                          const manager = project.members.find(
+                            (entry) => entry.employeeId === member.reportsToEmployeeId,
+                          );
+                          return (
+                            <span
+                              key={member.employeeId}
+                              data-testid="project-member"
+                              className="flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-2xs text-ink-secondary"
                             >
-                              <X className="size-2.5" />
-                            </button>
-                          </span>
-                        ))}
+                              {member.name}
+                              {manager ? (
+                                <span
+                                  title={`${t('projects.reportsTo')} ${manager.name}`}
+                                  className="flex items-center gap-0.5 text-3xs text-accent"
+                                >
+                                  <CornerUpLeft className="size-2.5" />
+                                  {manager.name}
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                aria-label={`${t('projects.setReportsTo')} ${member.name}`}
+                                data-testid="project-member-reports"
+                                onClick={() =>
+                                  setReporting((current) =>
+                                    current === member.employeeId ? null : member.employeeId,
+                                  )
+                                }
+                                className="text-ink-quaternary hover:text-accent"
+                              >
+                                <CornerUpLeft className="size-2.5" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`${t('projects.remove')} ${member.name}`}
+                                onClick={() =>
+                                  void run(() => window.opc!.projects.removeMember(project.id, member.employeeId))
+                                }
+                                className="text-ink-quaternary hover:text-danger"
+                              >
+                                <X className="size-2.5" />
+                              </button>
+                            </span>
+                          );
+                        })}
                         <button
                           type="button"
                           data-testid="project-add-member"
@@ -289,6 +317,42 @@ export function ProjectsPage() {
                           {t('projects.addMember')}
                         </button>
                       </div>
+
+                      {/* Project-internal reporting: who hands work to whom inside this
+                          project, which may differ from the department line. */}
+                      {project.members.some((member) => member.employeeId === reporting) ? (
+                        <label className="mt-1.5 flex items-center gap-1.5 text-2xs text-ink-tertiary">
+                          <CornerUpLeft className="size-3 shrink-0 text-accent" />
+                          <span className="shrink-0">
+                            {t('projects.reportsTo')}
+                            {': '}
+                            {project.members.find((member) => member.employeeId === reporting)?.name}
+                          </span>
+                          <select
+                            data-testid="project-reports-to"
+                            value={
+                              project.members.find((member) => member.employeeId === reporting)
+                                ?.reportsToEmployeeId ?? ''
+                            }
+                            onChange={(event) => {
+                              const managerId = event.target.value || null;
+                              void run(() =>
+                                window.opc!.projects.setReportsTo(project.id, reporting!, managerId),
+                              );
+                            }}
+                            className="h-6 min-w-0 flex-1 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink outline-none focus:border-accent"
+                          >
+                            <option value="">{t('projects.noReportsTo')}</option>
+                            {project.members
+                              .filter((entry) => entry.employeeId !== reporting)
+                              .map((entry) => (
+                                <option key={entry.employeeId} value={entry.employeeId}>
+                                  {entry.name} · {entry.role}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      ) : null}
 
                       <ProjectRules projectId={project.id} />
 

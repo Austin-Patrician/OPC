@@ -241,7 +241,11 @@ export interface OrgMember {
   title: string;
   departmentId: string;
   reportsToEmployeeId?: string;
+  /** The job (and its headcount slot) this seat occupies, when the department has one. */
+  jobId?: string;
   isHead: boolean;
+  /** Covers the head seat while it is vacant; never the same person as `isHead`. */
+  isActingHead: boolean;
   activeTasks: number;
   tokensUsed: number;
   skills: string[];
@@ -250,6 +254,10 @@ export interface OrgMember {
   avatar: string;
   /** When the employee joined, ms epoch. */
   hiredAt: number;
+  /** When they left, ms epoch; unset while employed. Set by `terminate`, cleared by `reinstate`. */
+  terminatedAt?: number;
+  /** Probation end, ms epoch; unset means no probation (or already confirmed). */
+  probationEndsAt?: number;
   /** Today's model spend in USD, summed from the task ledger. */
   costTodayUsd: number;
   /** Deliverables the system and the manager both accepted. */
@@ -257,7 +265,7 @@ export interface OrgMember {
 }
 
 /** Everything the boss can do to a person, in one operation rather than three. */
-export type PersonnelAction = 'transfer' | 'terminate' | 'reinstate' | 'set-manager';
+export type PersonnelAction = 'transfer' | 'terminate' | 'reinstate' | 'set-manager' | 'promote' | 'confirm';
 
 export interface PersonnelInput {
   employeeId: string;
@@ -265,6 +273,12 @@ export interface PersonnelInput {
   /** transfer: target department; set-manager: manager id ('' clears it). */
   departmentId?: string;
   reportsToEmployeeId?: string;
+  /** promote: the new level ("P6"). */
+  level?: string;
+  /** promote: a new seat title, when the promotion also renames the seat. */
+  title?: string;
+  /** Why: recorded on the employment event, so the timeline can explain itself. */
+  reason?: string;
 }
 
 /** An agent package that has been imported but not hired yet. */
@@ -287,8 +301,93 @@ export interface DepartmentNode {
   code: string;
   description: string;
   color: string;
+  /** Parent department; unset for a top-level department. */
+  parentId?: string;
+  /** Order among siblings; the chart renders by it, not by creation time. */
+  sortOrder: number;
   headEmployeeId?: string;
+  /** Covers the seat while it is vacant or its holder is away; never both roles at once. */
+  actingHeadEmployeeId?: string;
   members: OrgMember[];
+}
+
+/** Everything the boss can change about a department, in one operation. */
+export interface DepartmentEditInput {
+  id: string;
+  name?: string;
+  code?: string;
+  description?: string;
+  /** `null` moves it to the top level; omitted leaves the parent alone. */
+  parentId?: string | null;
+  sortOrder?: number;
+}
+
+/**
+ * A headcount slot: "this department has N seats called 高级前端工程师".
+ *
+ * `headcount` is a cap, not a count — `filled` is derived from live positions, so the
+ * two can never disagree. A job with `headcount: 0` is a seat that exists on paper but
+ * is not open for hiring yet.
+ */
+export interface JobNode {
+  id: string;
+  departmentId: string;
+  title: string;
+  level: string;
+  headcount: number;
+  /** Live positions sitting in this job. */
+  filled: number;
+  description: string;
+}
+
+export interface JobInput {
+  departmentId: string;
+  title: string;
+  level?: string;
+  headcount?: number;
+  description?: string;
+}
+
+export interface JobEditInput {
+  id: string;
+  title?: string;
+  level?: string;
+  headcount?: number;
+  description?: string;
+}
+
+/**
+ * One entry in an employee's HR timeline.
+ *
+ * The position table can only tell you "they moved"; it cannot tell you when, who
+ * decided, or why — it overwrites nothing but keeps no reason either. This is the
+ * append-only record that answers those questions.
+ */
+export type EmploymentEventKind =
+  | 'hired'
+  | 'transferred'
+  | 'promoted'
+  | 'head_appointed'
+  | 'head_removed'
+  | 'terminated'
+  | 'reinstated'
+  /** Probation passed: the employee is now permanent. */
+  | 'confirmed';
+
+export interface EmploymentEvent {
+  id: string;
+  employeeId: string;
+  kind: EmploymentEventKind;
+  fromDepartmentId?: string;
+  toDepartmentId?: string;
+  fromTitle?: string;
+  toTitle?: string;
+  fromLevel?: string;
+  toLevel?: string;
+  /** `'boss'` or an employee id. */
+  actor: string;
+  reason: string;
+  at: number;
 }
 
 export interface HireInput {
@@ -303,6 +402,102 @@ export interface HireInput {
   skills?: string[];
   /** Free-form charter injected into the agent's system prompt. */
   persona?: string;
+  /** Which headcount slot this hire fills; checked against `job.headcount`. */
+  jobId?: string;
+  /** Probation length in days; 0 / unset means hired as a permanent employee. */
+  probationDays?: number;
+}
+
+/** One performance review. Scores are 1–5; the overall score is the only required one. */
+export type EvaluationKind = 'probation' | 'periodic' | 'project' | 'exit';
+
+export interface Evaluation {
+  id: string;
+  employeeId: string;
+  kind: EvaluationKind;
+  /** Period label, e.g. `2026-Q3`; `''` for a one-off review. */
+  periodKey: string;
+  scoreOverall: number;
+  scoreQuality?: number;
+  scoreSpeed?: number;
+  scoreCost?: number;
+  summary: string;
+  /** `'boss'` or an employee id. */
+  reviewer: string;
+  at: number;
+}
+
+export interface EvaluationInput {
+  employeeId: string;
+  kind?: EvaluationKind;
+  periodKey?: string;
+  scoreOverall: number;
+  scoreQuality?: number;
+  scoreSpeed?: number;
+  scoreCost?: number;
+  summary?: string;
+  reviewer?: string;
+}
+
+/** ── 招聘：试跑面试与员工包 (§4.4) ─────────────────────────────────────── */
+
+export type InterviewStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+export type InterviewDecision = 'hire' | 'reject';
+
+/**
+ * One trial run of a candidate on a real task.
+ *
+ * `tokensUsed` / `costUsd` / `durationMs` are recorded because they are part of the
+ * decision, not trivia: a candidate who is right but ten times as expensive is a
+ * different hire from one who is right and cheap.
+ */
+export interface Interview {
+  id: string;
+  /** Unset once the candidate has been hired and their market row removed. */
+  candidateId?: string;
+  /** Snapshot: the interview has to explain itself after the candidate is gone. */
+  candidateName: string;
+  candidateRole: string;
+  taskPrompt: string;
+  status: InterviewStatus;
+  decision?: InterviewDecision;
+  result: string;
+  error?: string;
+  tokensUsed: number;
+  costUsd: number;
+  durationMs?: number;
+  createdAt: number;
+  finishedAt?: number;
+}
+
+export type EmployeePackageKind = 'employee' | 'team' | 'company';
+
+/** A recorded export. The file itself lives on disk; this is the receipt. */
+export interface EmployeePackageRecord {
+  id: string;
+  kind: EmployeePackageKind;
+  name: string;
+  version: string;
+  description: string;
+  filePath: string;
+  /** SHA-256 of the file, so a copied package can prove it is the one exported. */
+  fileHash: string;
+  fileSize: number;
+  /** Who is in the package, and where they sat when it was taken. */
+  members: { name: string; role: string; level: string; department: string }[];
+  license: string;
+  createdAt: number;
+}
+
+export interface ExportPackageInput {
+  kind: EmployeePackageKind;
+  name: string;
+  description?: string;
+  license?: string;
+  /** Empty means the whole company (kind `company`). */
+  employeeIds?: string[];
+  /** Where to write it; the caller picks the path through a save dialog. */
+  filePath: string;
 }
 
 /** ── Runtime environments (global base environment) ────────────────────── */
@@ -370,7 +565,7 @@ export interface RuntimeInspection {
 
 /** ── Model providers (slice A) ─────────────────────────────────────────── */
 
-export type ModelCapability = 'chat' | 'image' | 'classifier' | 'video';
+export type ModelCapability = 'chat' | 'image' | 'classifier' | 'asr' | 'tts' | 'video';
 
 /** One selectable model, flattened for the UI. */
 export interface ModelOption {
@@ -392,12 +587,39 @@ export interface ModelOption {
   cacheWriteUsdPerM?: number;
   /** Context-bucket pricing: rates above `inputTokensAbove` input tokens. */
   tiers?: PriceTier[];
+  /**
+   * Switched on for image generation (Settings → Image).
+   *
+   * An image-capable row can sit in the list for other reasons — the LLM page
+   * materialises a provider's whole catalog, image models included — so "the row
+   * exists" must never be read as "this model is enabled for images".
+   */
+  imageEnabled?: boolean;
+  /**
+   * Switched on for speech (Settings → Voice). Separate from `capability`
+   * because the LLM page materialises a provider's whole catalog, voice models
+   * included; a stored row alone must not make the mic or read-aloud resolve
+   * to it.
+   */
+  voiceEnabled?: boolean;
+  /**
+   * Switched on for chat (Settings → LLM). Absent means enabled: every row
+   * stored before this switch existed keeps working, so the flag is opt-out.
+   * A disabled model is not registered with the runtime, which is how a
+   * provider with 600 catalog models stays usable.
+   */
+  chatEnabled?: boolean;
+}
+
+/** A chat row is usable unless it was explicitly switched off. */
+export function isChatModelEnabled(model: { chatEnabled?: boolean }): boolean {
+  return model.chatEnabled !== false;
 }
 
 export interface CatalogModel {
   id: string;
   name: string;
-  type: 'chat' | 'image' | 'classifier';
+  type: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
   api: string;
   contextWindow?: number;
   reasoning?: boolean;
@@ -421,7 +643,7 @@ export interface CatalogProvider {
   id: string;
   baseUrl: string;
   apis: string[];
-  counts: { chat: number; image: number; classifier: number };
+  counts: { chat: number; image: number; classifier: number; asr: number; tts: number };
   models: CatalogModel[];
 }
 
@@ -468,6 +690,49 @@ export interface ModelDefaults {
   /** Writes deliverables for tasks. */
   llm: ModelRef | null;
   image: ModelRef | null;
+  /** Speech recognition (microphone input). */
+  asr: ModelRef | null;
+  /** Speech synthesis (read aloud). */
+  tts: ModelRef | null;
+}
+
+/** ── Speech (ASR / TTS) ────────────────────────────────────────────────── */
+
+export type SpeechLanguage = 'auto' | 'zh' | 'en';
+
+export interface SpeechTranscribeInput {
+  /** Raw audio bytes, never a data URL: the renderer records and sends WAV. */
+  audio: Uint8Array;
+  mimeType: string;
+  language?: SpeechLanguage;
+  /** Explicit model; omitted means the configured default ASR model. */
+  modelId?: string;
+}
+
+export interface SpeechTranscribeResult {
+  ok: boolean;
+  text?: string;
+  model?: string;
+  /** Audio duration reported by the provider, when it does. */
+  seconds?: number;
+  error?: string;
+}
+
+export interface SpeechSynthesizeInput {
+  text: string;
+  /** Built-in voice id (Xiaomi) or an OpenAI voice name. */
+  voice?: string;
+  format?: 'wav' | 'mp3';
+  /** Explicit model; omitted means the configured default TTS model. */
+  modelId?: string;
+}
+
+export interface SpeechSynthesizeResult {
+  ok: boolean;
+  bytes?: Uint8Array;
+  mimeType?: string;
+  model?: string;
+  error?: string;
 }
 
 export interface ModelRef {

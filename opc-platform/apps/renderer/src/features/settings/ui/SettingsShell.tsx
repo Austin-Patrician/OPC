@@ -7,13 +7,25 @@ import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
 import { LlmPage } from './pages/LlmPage';
 import { NetworkPage } from './pages/NetworkPage';
+import { VoicePage } from './pages/VoicePage';
 import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { useTranslation } from 'react-i18next';
 import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
-const PAGE_IDS = ['appearance', 'company', 'compaction', 'runtime', 'llm', 'image', 'network', 'selfcheck', 'about'] as const;
+const PAGE_IDS = [
+  'appearance',
+  'company',
+  'compaction',
+  'runtime',
+  'llm',
+  'image',
+  'voice',
+  'network',
+  'selfcheck',
+  'about',
+] as const;
 
 type PageId = (typeof PAGE_IDS)[number];
 
@@ -43,7 +55,6 @@ export function SettingsShell() {
   const setPage = (next: PageId) => {
     setSearchParams(next === 'appearance' ? {} : { page: next }, { replace: true });
   };
-  const [llmFocus, setLlmFocus] = useState<string | undefined>(undefined);
 
   const groups: Group[] = [
     {
@@ -66,6 +77,7 @@ export function SettingsShell() {
       pages: [
         { id: 'llm', label: 'LLM' },
         { id: 'image', label: 'Image' },
+        { id: 'voice', label: 'Voice' },
       ],
     },
     {
@@ -108,17 +120,11 @@ export function SettingsShell() {
       case 'runtime':
         return <RuntimePage />;
       case 'llm':
-        return <LlmPage key={llmFocus ?? 'default'} initialProviderId={llmFocus} />;
+        return <LlmPage />;
       case 'image':
-        return (
-          <ImagePage
-            onOpenLlmProvider={(providerId) => {
-              setLlmFocus(providerId);
-              setPage('llm');
-              setCollapsed((previous) => ({ ...previous, models: false }));
-            }}
-          />
-        );
+        return <ImagePage />;
+      case 'voice':
+        return <VoicePage />;
       case 'selfcheck':
         return <SelfCheckPage />;
       case 'network':

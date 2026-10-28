@@ -332,6 +332,37 @@ export class ChatService {
     return conversation.id;
   };
 
+  /**
+   * Re-reads the org and re-derives everything that is a projection of it.
+   *
+   * The snapshot used to be built once at startup, which made the org chart and the
+   * IM side disagree the moment someone was hired or moved: a new employee never
+   * joined their department group until the app restarted. A department group's
+   * roster is a view of `position`, so it is recomputed here rather than stored.
+   */
+  syncOrg = (agents: Agent[], departments: ChatSnapshot['departments']): void => {
+    const roster = new Map<string, string[]>();
+    for (const agent of agents) {
+      const bucket = roster.get(agent.departmentId);
+      if (bucket) bucket.push(agent.id);
+      else roster.set(agent.departmentId, [agent.id]);
+    }
+
+    let changed = false;
+    const conversations = this.snapshot.conversations.map((conversation) => {
+      if (conversation.kind !== 'group' || !conversation.departmentId) return conversation;
+      const members = roster.get(conversation.departmentId) ?? [];
+      const before = conversation.memberIds;
+      if (before.length === members.length && before.every((id, index) => id === members[index])) {
+        return conversation;
+      }
+      changed = true;
+      return { ...conversation, memberIds: members };
+    });
+
+    this.commit({ agents, departments, ...(changed ? { conversations } : {}) });
+  };
+
   /** Runs consolidation for one conversation (no-op without a summariser). */
   consolidateConversation = async (conversationId: string): Promise<{ written: number; skipped?: string }> => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);

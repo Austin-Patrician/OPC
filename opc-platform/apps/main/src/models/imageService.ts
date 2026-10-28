@@ -1,7 +1,4 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import type { GeneratedImageResult } from '@opc/shared/ipc';
-import type { AppPaths } from '../env';
+import type { ProviderConfig } from '@opc/shared/domain';
 import type { ModelConfigService } from './modelConfigService';
 import { generateImage } from './imageGeneration';
 import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
@@ -11,20 +8,21 @@ interface ResolvedTarget {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  /** `ModelOption.api` — selects the wire protocol in `generateImage`. */
+  protocol: string;
 }
 
 /**
- * Image generation for both entry points:
- *  - the settings page (`generate`, saves to `userData/images`)
- *  - the agent tool (`generateBytes`, the tool writes into the task workspace)
+ * Image generation for the agent tool (`generateBytes`); the settings page only
+ * configures providers/models. The tool writes the returned bytes into the task
+ * workspace, so artifacts/acceptance pick them up.
  *
- * Provider resolution is shared, so "which provider/model" is answered once:
- * explicit model → configured default image model → any configured image model.
+ * Provider resolution: explicit model → configured default image model → any
+ * configured image model (preferring one that has a key).
  */
 export class ImageService {
   constructor(
     private readonly models: ModelConfigService,
-    private readonly paths: AppPaths,
     private readonly network: NetworkClient = defaultNetworkClient,
   ) {}
 
@@ -39,6 +37,7 @@ export class ImageService {
         model: resolved.modelId,
         prompt: input.prompt,
         providerId: resolved.providerId,
+        protocol: resolved.protocol,
         network: this.network,
       });
       return {
@@ -52,31 +51,6 @@ export class ImageService {
     }
   };
 
-  generate = async (input: { prompt: string; modelId?: string }): Promise<GeneratedImageResult> => {
-    const prompt = input.prompt.trim();
-    if (!prompt) return { ok: false, error: '提示词为空' };
-
-    const result = await this.generateBytes({ prompt, modelId: input.modelId });
-    if (!result.ok || !result.bytes) return { ok: false, error: result.error };
-
-    try {
-      const dir = path.join(this.paths.userData, 'images');
-      fs.mkdirSync(dir, { recursive: true });
-      const fileName = `${Date.now()}-${result.model.replace(/[^\w.-]+/g, '_')}.png`;
-      fs.writeFileSync(path.join(dir, fileName), result.bytes);
-
-      return {
-        ok: true,
-        fileName,
-        dataUrl: `data:${result.mimeType};base64,${Buffer.from(result.bytes).toString('base64')}`,
-        bytes: result.bytes.byteLength,
-        model: result.model,
-      };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  };
-
   /** True when at least one provider owns an image model and has credentials. */
   isAvailable = (): boolean =>
     this.models
@@ -86,21 +60,25 @@ export class ImageService {
   private resolveTarget(input: { modelId?: string }): ResolvedTarget | { error: string } {
     const providers = this.models.listProviders();
     const defaults = this.models.getDefaults();
+    const ownsImage = (provider: ProviderConfig) =>
+      provider.models.some((model) => model.capability === 'image');
 
     const explicit = input.modelId
       ? providers.find((provider) => provider.models.some((model) => model.id === input.modelId))
       : undefined;
+    // Prefer a provider that can actually authenticate: after importing several
+    // built-ins (OpenRouter + OpenAI + Gemini), the first one in the list may
+    // still be keyless.
+    const fallbackProvider =
+      providers.find((provider) => provider.hasKey && ownsImage(provider)) ??
+      providers.find(ownsImage);
     const providerId =
-      input.modelId && explicit
-        ? explicit.id
-        : (defaults.image?.providerId ??
-          providers.find((provider) => provider.models.some((model) => model.capability === 'image'))?.id);
+      input.modelId && explicit ? explicit.id : (defaults.image?.providerId ?? fallbackProvider?.id);
     const modelId =
       input.modelId ??
       (providerId === defaults.image?.providerId ? defaults.image?.modelId : undefined) ??
-      providers
-        .find((provider) => provider.id === providerId)
-        ?.models.find((model) => model.capability === 'image')?.id;
+      providers.find((provider) => provider.id === providerId)?.models.find((model) => model.capability === 'image')
+        ?.id;
 
     if (!providerId || !modelId) {
       return { error: '请先添加并选择一个图像模型（设置 → 模型 → Image）' };
@@ -114,11 +92,21 @@ export class ImageService {
     // endpoint needs a plain bearer key, so say so instead of failing obscurely.
     if (!apiKey) return { error: `${providerId} 没有可用的 API Key（OAuth 凭证不支持图像接口）` };
 
+    const protocol = provider.models.find((model) => model.id === modelId)?.api ?? 'openai-images';
     return {
       providerId,
       modelId,
-      baseUrl: provider.baseUrl || 'https://openrouter.ai/api/v1',
+      // A row saved without a base URL still has to reach the right host; it
+      // follows the model's protocol rather than always defaulting to OpenRouter.
+      baseUrl: provider.baseUrl || DEFAULT_BASE_URLS[protocol] || DEFAULT_BASE_URLS['openai-images']!,
       apiKey,
+      protocol,
     };
   }
 }
+
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  'openai-images': 'https://api.openai.com/v1',
+  'openrouter-images': 'https://openrouter.ai/api/v1',
+  'google-images': 'https://generativelanguage.googleapis.com/v1beta',
+};

@@ -1,4 +1,4 @@
-import type { Agent, HireInput } from '@opc/shared/domain';
+import type { Agent, DepartmentNode, HireInput } from '@opc/shared/domain';
 import type { OrgService } from '../org/orgService';
 
 /**
@@ -115,8 +115,8 @@ export function ensureFirstCompany(org: OrgService): {
 }
 
 /** Chat/pi need `Agent` rows; they come from the org table, not from fixtures. */
-export function agentsFromOrg(org: OrgService): Agent[] {
-  return org.list().flatMap((department) =>
+export function agentsFromDepartments(departments: DepartmentNode[]): Agent[] {
+  return departments.flatMap((department) =>
     department.members.map((member) => ({
       id: member.id,
       name: member.name,
@@ -124,6 +124,8 @@ export function agentsFromOrg(org: OrgService): Agent[] {
       level: member.level,
       departmentId: department.id,
       model: member.model,
+      // `position` is the authority: a member row exists only while seated, and
+      // `status` there is the employment state, not the agent's runtime state.
       status: 'online' as const,
       skills: member.skills,
       briefMd: member.persona,
@@ -131,8 +133,12 @@ export function agentsFromOrg(org: OrgService): Agent[] {
   );
 }
 
-export function chatDepartmentsFromOrg(org: OrgService) {
-  return org.list().map((department) => ({
+export function agentsFromOrg(org: OrgService): Agent[] {
+  return agentsFromDepartments(org.list());
+}
+
+export function chatDepartmentsFromDepartments(departments: DepartmentNode[]) {
+  return departments.map((department) => ({
     id: department.id,
     name: department.name,
     code: department.code,
@@ -141,4 +147,8 @@ export function chatDepartmentsFromOrg(org: OrgService) {
     leadAgentId: department.headEmployeeId ?? '',
     groupConversationId: '',
   }));
+}
+
+export function chatDepartmentsFromOrg(org: OrgService) {
+  return chatDepartmentsFromDepartments(org.list());
 }

@@ -11,8 +11,10 @@ import type {
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type { OrgService } from '../org/orgService';
 
-/** Cadence and brakes, read from company.db settings on bootstrap (§4.2). */
-export interface CommSettings {
+/** An interaction edge plus the org relationship derived from the chart. */
+export type RelationshipEdge = Relationship & { kind: RelationshipKind };
+
+/** Cadence and brakes, read from company.db settings on bootstrap (§4.2). */export interface CommSettings {
   /** How often an employee with waiting work is woken by the scheduler. */
   heartbeatMs: number;
   /** Wakes per employee per day, including the ones it asks for itself. */
@@ -184,6 +186,10 @@ export class CommService {
       return { ok: false, code: 'TARGET_INACTIVE', message: `${target.name} 已不在岗，消息未发出` };
     }
 
+    // `kind` is computed from the live org chart for this send only (it decides the
+    // priority); it is no longer stored on the relationship row, which keeps only the
+    // interaction counters. Storing it made the edge go stale on every reorg and put
+    // two rows on the same pair.
     const kind = relationshipKind(sender, target);
     const sent = this.deps.repository.sendsInWindow(sender.id, target.id, now);
     if (sent >= this.settings.dmPerHour) {
@@ -237,7 +243,6 @@ export class CommService {
     this.deps.repository.recordInteraction({
       fromEmployeeId: sender.id,
       toEmployeeId: target.id,
-      kind,
       now,
     });
 
@@ -478,7 +483,24 @@ export class CommService {
     this.changed();
   };
 
-  relationships = (employeeId?: string): Relationship[] => this.deps.repository.relationships(employeeId);
+  /**
+   * Interaction edges with their org relationship derived on read.
+   *
+   * `manager` / `report` are a projection of `position.reports_to_employee_id`, not a
+   * stored copy: after a reorg the edge immediately reads as `colleague` instead of
+   * claiming a reporting line that no longer exists.
+   */
+  relationships = (employeeId?: string): RelationshipEdge[] => {
+    const edges = this.deps.repository.relationships(employeeId);
+    if (edges.length === 0) return [];
+    const managerOf = new Map(
+      this.deps.org.everyone().map((member) => [member.id, member.reportsToEmployeeId]),
+    );
+    return edges.map((edge) => ({
+      ...edge,
+      kind: relationshipKindBetween(managerOf, edge.fromEmployeeId, edge.toEmployeeId),
+    }));
+  };
 
   guards = (employeeId?: string, limit = 50): GuardEvent[] => this.deps.repository.guards(employeeId, limit);
 
@@ -547,8 +569,30 @@ function relationshipKind(
   sender: { id: string; reportsToEmployeeId?: string },
   target: { id: string; reportsToEmployeeId?: string },
 ): RelationshipKind {
+  return relationshipKindBetween(
+    new Map([
+      [sender.id, sender.reportsToEmployeeId],
+      [target.id, target.reportsToEmployeeId],
+    ]),
+    sender.id,
+    target.id,
+  );
+}
+
+/**
+ * The org relationship between two people, read from the chart rather than stored.
+ *
+ * `manager` / `report` come from `position.reports_to_employee_id`; anything else is a
+ * colleague. `collaborator` is not produced here — it is a project-scoped fact and
+ * belongs with `assignment`, not with an interaction counter.
+ */
+function relationshipKindBetween(
+  managerOf: Map<string, string | undefined>,
+  fromId: string,
+  toId: string,
+): RelationshipKind {
   // Talking upward to my own manager; talking downward to one of my reports.
-  if (sender.reportsToEmployeeId === target.id) return 'manager';
-  if (target.reportsToEmployeeId === sender.id) return 'report';
+  if (managerOf.get(fromId) === toId) return 'manager';
+  if (managerOf.get(toId) === fromId) return 'report';
   return 'colleague';
 }

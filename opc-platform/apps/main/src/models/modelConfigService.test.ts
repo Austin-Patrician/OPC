@@ -136,6 +136,67 @@ describe('ModelConfigService.setModels', () => {
     ]);
   });
 
+  it('keeps the image/voice switches across a later save', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+    service.setModels('custom-relay', [
+      {
+        id: 'image-1',
+        name: 'Image 1',
+        capability: 'image',
+        api: 'openai-images',
+        imageEnabled: true,
+      },
+      {
+        id: 'asr-1',
+        name: 'ASR 1',
+        capability: 'asr',
+        api: 'openai-audio',
+        voiceEnabled: true,
+      },
+    ]);
+    // A price/name edit from the settings table re-sends the rows without the
+    // switches; they must survive.
+    service.setModels('custom-relay', [
+      { id: 'image-1', name: 'Image 1 renamed', capability: 'image', api: 'openai-images' },
+      { id: 'asr-1', name: 'ASR 1', capability: 'asr', api: 'openai-audio' },
+    ]);
+
+    const models = service.listProviders().find((entry) => entry.id === 'custom-relay')?.models ?? [];
+    expect(models.find((model) => model.id === 'image-1')).toMatchObject({
+      name: 'Image 1 renamed',
+      imageEnabled: true,
+    });
+    expect(models.find((model) => model.id === 'asr-1')).toMatchObject({ voiceEnabled: true });
+  });
+
+  it('keeps a chat model switched off across a price save', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+    service.setModels('custom-relay', [
+      { id: 'chat-1', name: 'Chat 1', capability: 'chat', chatEnabled: false },
+    ]);
+    // The price editor re-sends the row without the flag.
+    service.setModels('custom-relay', [
+      { id: 'chat-1', name: 'Chat 1', capability: 'chat', inputUsdPerM: 1.5 },
+    ]);
+
+    expect(service.listProviders().find((entry) => entry.id === 'custom-relay')?.models[0]).toMatchObject({
+      chatEnabled: false,
+      inputUsdPerM: 1.5,
+    });
+  });
+
   it('does not erase flags when a later save omits them', () => {
     service.saveProvider({
       id: 'custom-relay',
@@ -190,6 +251,52 @@ describe('ModelConfigService.addModel', () => {
         cacheWriteUsdPerM: 0.5,
       },
     ]);
+  });
+
+  it('enables a hand-added voice model for its feature', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+
+    service.addModel('custom-relay', {
+      id: 'asr-1',
+      name: 'ASR 1',
+      api: 'openai-audio',
+      capability: 'asr',
+    });
+
+    expect(service.listProviders().find((entry) => entry.id === 'custom-relay')?.models[0]).toMatchObject({
+      id: 'asr-1',
+      capability: 'asr',
+      voiceEnabled: true,
+    });
+  });
+
+  it('stores an explicit image capability (Image page import)', () => {
+    service.saveProvider({
+      id: 'custom-relay',
+      name: 'Custom relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+
+    service.addModel('custom-relay', {
+      id: 'relay/image-1',
+      name: 'Image 1',
+      api: 'openai-images',
+      capability: 'image',
+    });
+
+    expect(service.listProviders().find((entry) => entry.id === 'custom-relay')?.models[0]).toMatchObject({
+      id: 'relay/image-1',
+      capability: 'image',
+      api: 'openai-images',
+    });
   });
 });
 

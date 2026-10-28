@@ -1,19 +1,46 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Brain, Eye, KeyRound, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { Brain, ChevronDown, Eye, KeyRound, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { CatalogModel, ProviderDraft } from '@opc/shared/domain';
+import type { CatalogModel, ModelOption, ProviderDraft } from '@opc/shared/domain';
+import { isChatModelEnabled } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
-import { PROVIDER_GROUPS, THINKING_LEVELS, formatContext, providerMeta, type ThinkingLevel } from '@/shared/providers/catalog';
+import {
+  PROVIDER_GROUPS,
+  THINKING_LEVELS,
+  formatContext,
+  providerMeta,
+  type ThinkingLevel,
+} from '@/shared/providers/catalog';
 import { providerIconUrl } from '@/shared/providers/visuals';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { cn } from '@/shared/lib/cn';
-import { buttonClass, KeyTag, PageHeader, Section, SecretField, Segmented, SelectField, StatusBadge, TextField } from '../kit';
+import {
+  buttonClass,
+  KeyTag,
+  PageHeader,
+  Section,
+  SecretField,
+  Segmented,
+  SelectField,
+  StatusBadge,
+  TextField,
+  Toggle,
+} from '../kit';
 import { AddProviderDialog } from './AddProviderDialog';
 import { AuthLoginPanel } from './AuthLoginPanel';
 import { ProviderIconDialog, type ProviderIconChoice } from './ProviderIconDialog';
 
 const OTHER_GROUP = { id: 'other', label: '其他' };
+
+/** Remembers whether the cache price columns are expanded. */
+const COLUMNS_STORAGE_KEY = 'opc.llm.columns.v1';
+
+/** Price columns always shown; the cache pair is behind the column switch. */
+const BASE_PRICE_FIELDS = ['input', 'output'] as const;
+const ADVANCED_PRICE_FIELDS = ['cacheRead', 'cacheWrite'] as const;
+const ALL_PRICE_FIELDS = [...BASE_PRICE_FIELDS, ...ADVANCED_PRICE_FIELDS] as const;
+type PriceField = (typeof ALL_PRICE_FIELDS)[number];
 
 /** A blank row at the bottom of the model table; its columns are edited in place. */
 const EMPTY_MODEL_DRAFT = {
@@ -25,6 +52,28 @@ const EMPTY_MODEL_DRAFT = {
   cacheRead: '',
   cacheWrite: '',
 };
+
+/**
+ * A catalog row in the stored shape. Classifiers and speech models are imported
+ * as chat rows: configuring a provider on the LLM page must not switch them on
+ * for their own feature — the Image/Voice pages upgrade those ids explicitly.
+ */
+function toStoredModel(model: CatalogModel): ModelOption {
+  return {
+    id: model.id,
+    name: model.name,
+    capability:
+      model.type === 'classifier' || model.type === 'asr' || model.type === 'tts' ? 'chat' : model.type,
+    api: model.api,
+    contextWindow: model.contextWindow,
+    vision: model.vision,
+    reasoning: model.reasoning,
+    inputUsdPerM: model.price?.input,
+    outputUsdPerM: model.price?.output,
+    cacheReadUsdPerM: model.price?.cacheRead,
+    cacheWriteUsdPerM: model.price?.cacheWrite,
+  };
+}
 
 interface DisplayProvider {
   id: string;
@@ -96,6 +145,24 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
+  /**
+   * Column folding: the table defaults to name / capability / context / input /
+   * output / enabled. The cache prices are the advanced pair, remembered across
+   * visits because it is a reading preference, not provider state.
+   */
+  const [showAdvancedColumns, setShowAdvancedColumns] = useState(
+    () => localStorage.getItem(COLUMNS_STORAGE_KEY) === 'all',
+  );
+
+  const priceFields: readonly PriceField[] = showAdvancedColumns ? ALL_PRICE_FIELDS : BASE_PRICE_FIELDS;
+
+  const toggleAdvancedColumns = () => {
+    setShowAdvancedColumns((previous) => {
+      const next = !previous;
+      localStorage.setItem(COLUMNS_STORAGE_KEY, next ? 'all' : 'base');
+      return next;
+    });
+  };
 
   const configured = useMemo(
     () => new Map(models.providers.map((provider) => [provider.id, provider])),
@@ -228,20 +295,47 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     });
     await models.setModels(
       provider.id,
-      provider.models.map((model) => ({
-        id: model.id,
-        name: model.name,
-        capability: model.type === 'classifier' ? 'chat' : model.type,
-        api: model.api,
-        contextWindow: model.contextWindow,
-        vision: model.vision,
-        reasoning: model.reasoning,
-        inputUsdPerM: model.price?.input,
-        outputUsdPerM: model.price?.output,
-        cacheReadUsdPerM: model.price?.cacheRead,
-        cacheWriteUsdPerM: model.price?.cacheWrite,
-      })),
+      provider.models.map((model) => toStoredModel(model)),
     );
+  };
+
+  /**
+   * One row's switch. Writes straight away (like the Image/Voice pages): a
+   * switch is a decision, not a draft, and the Save button belongs to the
+   * key/base-URL/price edits.
+   *
+   * The current list is read from the bridge rather than from `configured`,
+   * which is a render-time snapshot: `ensureProvider` may have just written
+   * hundreds of rows, and writing back a stale list would drop them.
+   */
+  const setModelEnabled = async (provider: DisplayProvider, model: CatalogModel, enabled: boolean) => {
+    const bridge = window.opc?.models;
+    if (!bridge || !selectedConfig?.hasKey) return;
+    setSaving(true);
+    setSaveError(null);
+    setModelNotice(null);
+    try {
+      await ensureProvider(provider);
+      const stored = (await bridge.list()).find((entry) => entry.id === provider.id)?.models ?? [];
+      const next = stored.some((entry) => entry.id === model.id)
+        ? stored.map((entry) =>
+            entry.id === model.id ? { ...entry, capability: 'chat' as const, chatEnabled: enabled } : entry,
+          )
+        : [...stored, { ...toStoredModel(model), chatEnabled: enabled }];
+      await models.setModels(provider.id, next);
+
+      // A disabled default would make every agent reply fail at resolve time.
+      const current = models.defaults.llm;
+      if (!enabled && current?.providerId === provider.id && current.modelId === model.id) {
+        await models.setDefault('llm', null);
+        setModelNotice(t('settings.llm.defaultCleared', { name: model.name }));
+      }
+      await models.reload();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const readyCount = providers.filter((provider) => statusOf(provider.id).tone === 'green').length;
@@ -257,7 +351,9 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
   const defaultValue = models.defaults.llm
     ? `${models.defaults.llm.providerId}::${models.defaults.llm.modelId}`
     : '';
-  const pricedModels = selectedConfig ? new Map(selectedConfig.models.map((model) => [model.id, model])) : new Map();
+  const storedById = selectedConfig
+    ? new Map(selectedConfig.models.map((model) => [model.id, model]))
+    : new Map<string, ModelOption>();
 
   // Load the stored key lazily per selection: the field is always shown masked,
   // and the eye reveals it without a round-trip.
@@ -307,13 +403,15 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
   }, [customOpen]);
 
   const priceOf = (model: CatalogModel) => {
-    const local = pricedModels.get(model.id);
-    return priceDraft[model.id] ?? {
-      input: local?.inputUsdPerM ?? model.price?.input ?? 0,
-      output: local?.outputUsdPerM ?? model.price?.output ?? 0,
-      cacheRead: local?.cacheReadUsdPerM ?? model.price?.cacheRead ?? 0,
-      cacheWrite: local?.cacheWriteUsdPerM ?? model.price?.cacheWrite ?? 0,
-    };
+    const local = storedById.get(model.id);
+    return (
+      priceDraft[model.id] ?? {
+        input: local?.inputUsdPerM ?? model.price?.input ?? 0,
+        output: local?.outputUsdPerM ?? model.price?.output ?? 0,
+        cacheRead: local?.cacheReadUsdPerM ?? model.price?.cacheRead ?? 0,
+        cacheWrite: local?.cacheWriteUsdPerM ?? model.price?.cacheWrite ?? 0,
+      }
+    );
   };
 
   // Everything in the detail panel is a draft until the single Save button runs:
@@ -446,7 +544,9 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                   .map((provider) => (
                     <optgroup key={provider.id} label={provider.name}>
                       {provider.models
-                        .filter((model) => model.capability === 'chat')
+                        // Only models that are actually registered with the
+                        // runtime can be the default.
+                        .filter((model) => model.capability === 'chat' && isChatModelEnabled(model))
                         .map((model) => (
                           <option key={model.id} value={`${provider.id}::${model.id}`}>
                             {model.name}
@@ -529,7 +629,9 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                               size="sm"
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm-plus font-medium text-ink">{provider.name}</span>
+                              <span className="block truncate text-sm-plus font-medium text-ink">
+                                {provider.name}
+                              </span>
                               <span className="block truncate font-mono text-2xs text-ink-tertiary">
                                 {provider.counts.chat} chat
                               </span>
@@ -601,6 +703,17 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                             classifier: selected.counts.classifier,
                           })}
                         </span>
+                        {chatModels.length > 0 ? (
+                          <span className="text-xs text-ink-tertiary">
+                            ·{' '}
+                            {t('settings.llm.enabledCount', {
+                              enabled: chatModels.filter((model) =>
+                                isChatModelEnabled(storedById.get(model.id) ?? {}),
+                              ).length,
+                              total: chatModels.length,
+                            })}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
@@ -614,11 +727,7 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                             dirty ? 'text-ink-tertiary' : 'text-success',
                           )}
                         >
-                          {dirty
-                            ? t('settings.llm.unsaved')
-                            : savedNotice
-                              ? t('settings.llm.saved')
-                              : null}
+                          {dirty ? t('settings.llm.unsaved') : savedNotice ? t('settings.llm.saved') : null}
                         </span>
                         {selectedConfig?.isCustom ? (
                           <button
@@ -707,8 +816,32 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
 
                     <div>
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-ink-secondary">{t('settings.llm.tableTitle')}</span>
+                        <span className="text-sm font-medium text-ink-secondary">
+                          {t('settings.llm.tableTitle')}
+                        </span>
                         <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            data-testid="toggle-columns"
+                            aria-pressed={showAdvancedColumns}
+                            title={
+                              showAdvancedColumns
+                                ? t('settings.llm.columnsHide')
+                                : t('settings.llm.columnsShow')
+                            }
+                            onClick={toggleAdvancedColumns}
+                            className="flex items-center gap-0.5 text-xs text-accent-ink hover:text-accent"
+                          >
+                            {showAdvancedColumns
+                              ? t('settings.llm.columnsHide')
+                              : t('settings.llm.columnsShow')}
+                            <ChevronDown
+                              className={cn(
+                                'size-3 transition-transform',
+                                showAdvancedColumns && 'rotate-180',
+                              )}
+                            />
+                          </button>
                           <button
                             type="button"
                             data-testid="refresh-models"
@@ -719,13 +852,17 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                                 !result
                                   ? null
                                   : result.ok
-                                    ? `${result.message}${result.added.length > 0 ? t('settings.llm.fetchAdded', {
-                                      ids: result.added.slice(0, 5).join('、'),
-                                      more:
-                                        result.added.length > 5
-                                          ? `${t('settings.llm.more')} ${result.added.length - 5}`
-                                          : '',
-                                    }) : t('settings.llm.fetchNothingNew')}`
+                                    ? `${result.message}${
+                                        result.added.length > 0
+                                          ? t('settings.llm.fetchAdded', {
+                                              ids: result.added.slice(0, 5).join('、'),
+                                              more:
+                                                result.added.length > 5
+                                                  ? `${t('settings.llm.more')} ${result.added.length - 5}`
+                                                  : '',
+                                            })
+                                          : t('settings.llm.fetchNothingNew')
+                                      }`
                                     : `${result.message}`,
                               );
                             }}
@@ -761,205 +898,268 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
                       </div>
 
                       {customError ? <p className="mb-2 text-xs text-danger">{customError}</p> : null}
-                      {modelNotice ? (
-                        <p className="mb-2 text-2xs text-ink-tertiary">{modelNotice}</p>
-                      ) : null}
+                      {modelNotice ? <p className="mb-2 text-2xs text-ink-tertiary">{modelNotice}</p> : null}
 
                       <div className="overflow-hidden rounded-lg border border-line">
-                        {/* Header and body are separate tables so the scrollbar starts
-                            below the column titles instead of running past them. Both
-                            reserve the same gutter, which keeps the columns aligned. */}
-                        <div className="overflow-y-auto border-b border-line bg-surface-muted [scrollbar-gutter:stable]">
-                          <table className="w-full table-fixed border-collapse text-sm">
+                        {/* One table in one scroller: horizontal scrolling keeps the
+                            header aligned with the body, and a sticky header survives
+                            the vertical scroll. The cache columns are folded away by
+                            default so the name column keeps its room. */}
+                        <div
+                          data-testid="llm-model-table"
+                          className="max-h-[22rem] overflow-auto [scrollbar-gutter:stable]"
+                        >
+                          <table
+                            className="w-full table-fixed border-collapse text-sm"
+                            style={{ minWidth: showAdvancedColumns ? '47.5rem' : '38rem' }}
+                          >
                             <colgroup>
                               <col />
                               <col style={{ width: '4.5rem' }} />
                               <col style={{ width: '4.25rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
+                              <col style={{ width: '4.75rem' }} />
+                              <col style={{ width: '4.75rem' }} />
+                              {showAdvancedColumns ? (
+                                <>
+                                  <col style={{ width: '4.75rem' }} />
+                                  <col style={{ width: '4.75rem' }} />
+                                </>
+                              ) : null}
+                              <col style={{ width: '3.25rem' }} />
                             </colgroup>
                             <thead>
                               <tr className="text-2xs text-ink-tertiary">
-                                <th className="px-3 py-1.5 text-left font-medium">{t('settings.llm.col.name')}</th>
-                                <th className="px-1 py-1.5 text-center font-medium">{t('settings.llm.col.capability')}</th>
-                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.llm.col.context')}</th>
-                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.input')}</th>
-                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.output')}</th>
-                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheRead')}</th>
-                                <th className="px-1 py-1.5 text-right font-medium">{t('settings.pricing.cacheWrite')}</th>
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-3 py-1.5 text-left font-medium">
+                                  {t('settings.llm.col.name')}
+                                </th>
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-center font-medium">
+                                  {t('settings.llm.col.capability')}
+                                </th>
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-right font-medium">
+                                  {t('settings.llm.col.context')}
+                                </th>
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-right font-medium">
+                                  {t('settings.pricing.input')}
+                                </th>
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-right font-medium">
+                                  {t('settings.pricing.output')}
+                                </th>
+                                {showAdvancedColumns ? (
+                                  <>
+                                    <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-right font-medium">
+                                      {t('settings.pricing.cacheRead')}
+                                    </th>
+                                    <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-right font-medium">
+                                      {t('settings.pricing.cacheWrite')}
+                                    </th>
+                                  </>
+                                ) : null}
+                                <th className="sticky top-0 z-10 border-b border-line bg-surface-muted px-1 py-1.5 text-center font-medium">
+                                  <span className="sr-only">{t('settings.llm.col.enabled')}</span>
+                                </th>
                               </tr>
                             </thead>
-                          </table>
-                        </div>
-                        <div
-                          data-testid="llm-model-table"
-                          className="max-h-[22rem] overflow-y-auto [scrollbar-gutter:stable]"
-                        >
-                          <table className="w-full table-fixed border-collapse text-sm">
-                            <colgroup>
-                              <col />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.25rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                              <col style={{ width: '4.5rem' }} />
-                            </colgroup>
                             <tbody className="[&>tr:first-child]:border-t-0">
-                            {chatModels.map((model) => {
-                              const price = priceOf(model);
-                              const priceDirty = Boolean(priceDraft[model.id]);
-                              return (
-                                <tr key={model.id} className="border-t border-line align-middle">
-                                  <td className="px-3 py-1.5">
-                                    <div className="truncate text-sm-plus font-medium text-ink">{model.name}</div>
-                                    <div className="truncate font-mono text-2xs text-ink-tertiary">{model.id}</div>
-                                  </td>
-                                  <td className="px-1 py-1.5">
-                                    {model.reasoning || model.vision ? (
-                                      <div className="flex items-center justify-center gap-1.5">
-                                        {model.reasoning ? (
-                                          <span title={t('settings.llm.reasoning')}>
-                                            <Brain
-                                              className="size-3.5 text-[#7A4CE0]"
-                                              aria-label={t('settings.llm.reasoning')}
-                                            />
-                                          </span>
-                                        ) : null}
-                                        {model.vision ? (
-                                          <span title={t('settings.llm.vision')}>
-                                            <Eye
-                                              className="size-3.5 text-success"
-                                              aria-label={t('settings.llm.vision')}
-                                            />
-                                          </span>
-                                        ) : null}
+                              {chatModels.map((model) => {
+                                const price = priceOf(model);
+                                const priceDirty = Boolean(priceDraft[model.id]);
+                                const enabled = isChatModelEnabled(storedById.get(model.id) ?? {});
+                                return (
+                                  <tr
+                                    key={model.id}
+                                    data-testid="llm-model-row"
+                                    className="border-t border-line align-middle"
+                                  >
+                                    <td className="px-3 py-1.5">
+                                      <div
+                                        className="truncate text-sm-plus font-medium text-ink"
+                                        title={model.name}
+                                      >
+                                        {model.name}
                                       </div>
-                                    ) : (
-                                      <div className="text-center text-xs text-ink-quaternary">—</div>
-                                    )}
+                                      <div
+                                        className="truncate font-mono text-2xs text-ink-tertiary"
+                                        title={model.id}
+                                      >
+                                        {model.id}
+                                      </div>
+                                    </td>
+                                    <td className="px-1 py-1.5">
+                                      {model.reasoning || model.vision ? (
+                                        <div className="flex items-center justify-center gap-1.5">
+                                          {model.reasoning ? (
+                                            <span title={t('settings.llm.reasoning')}>
+                                              <Brain
+                                                className="size-3.5 text-[#7A4CE0]"
+                                                aria-label={t('settings.llm.reasoning')}
+                                              />
+                                            </span>
+                                          ) : null}
+                                          {model.vision ? (
+                                            <span title={t('settings.llm.vision')}>
+                                              <Eye
+                                                className="size-3.5 text-success"
+                                                aria-label={t('settings.llm.vision')}
+                                              />
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      ) : (
+                                        <div className="text-center text-xs text-ink-quaternary">—</div>
+                                      )}
+                                    </td>
+                                    <td className="px-1 py-1.5 text-right font-mono text-xs text-ink-tertiary">
+                                      {model.contextWindow
+                                        ? formatContext(Math.round(model.contextWindow / 1000))
+                                        : '—'}
+                                    </td>
+                                    {priceFields.map((field) => (
+                                      <td key={field} className="px-1 py-1.5">
+                                        <input
+                                          type="number"
+                                          step="0.001"
+                                          min={0}
+                                          aria-label={`${model.id} ${field}`}
+                                          disabled={!enabled}
+                                          value={price[field]}
+                                          onChange={(event) =>
+                                            setPriceDraft((previous) => ({
+                                              ...previous,
+                                              [model.id]: { ...price, [field]: Number(event.target.value) },
+                                            }))
+                                          }
+                                          className={cn(
+                                            'h-6 w-full rounded border bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-45',
+                                            priceDirty
+                                              ? 'border-accent'
+                                              : 'border-transparent hover:border-line',
+                                          )}
+                                        />
+                                      </td>
+                                    ))}
+                                    <td className="px-1 py-1.5">
+                                      {/* `chatEnabled` is opt-out, so a provider that
+                                          was never configured shows its rows on but
+                                          locked: there is no key to call them with. */}
+                                      <div className="flex items-center justify-center">
+                                        <Toggle
+                                          label={`${model.name} ${t('settings.llm.col.enabled')}`}
+                                          checked={enabled}
+                                          disabled={!selectedConfig?.hasKey || saving}
+                                          title={
+                                            selectedConfig?.hasKey
+                                              ? undefined
+                                              : t('settings.llm.enableNeedsKey')
+                                          }
+                                          onChange={(next) => void setModelEnabled(selected, model, next)}
+                                        />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {customOpen ? (
+                                <tr
+                                  ref={customRowRef}
+                                  data-testid="custom-model-row"
+                                  className="border-t border-accent/40 bg-accent/5 align-middle"
+                                >
+                                  <td className="px-3 py-1.5">
+                                    <div className="flex items-center gap-1.5">
+                                      <div className="min-w-0 flex-1">
+                                        <input
+                                          value={customModel.name}
+                                          onChange={(event) =>
+                                            setCustomModel((current) => ({
+                                              ...current,
+                                              name: event.target.value,
+                                            }))
+                                          }
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Escape') cancelCustomModel();
+                                          }}
+                                          aria-label={t('settings.llm.col.name')}
+                                          placeholder={t('settings.llm.nameOptional')}
+                                          className="h-6 w-full rounded border border-line bg-surface px-1 text-sm-plus font-medium text-ink outline-none focus:border-accent"
+                                        />
+                                        <input
+                                          data-testid="custom-model-id"
+                                          autoFocus
+                                          value={customModel.id}
+                                          onChange={(event) =>
+                                            setCustomModel((current) => ({
+                                              ...current,
+                                              id: event.target.value,
+                                            }))
+                                          }
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Escape') cancelCustomModel();
+                                          }}
+                                          aria-label={t('settings.llm.modelId')}
+                                          placeholder="model-id"
+                                          spellCheck={false}
+                                          className="mt-1 h-6 w-full rounded border border-line bg-surface px-1 font-mono text-2xs text-ink outline-none focus:border-accent"
+                                        />
+                                      </div>
+                                      <div className="flex shrink-0 flex-col gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={cancelCustomModel}
+                                          aria-label={t('common.cancel')}
+                                          title={t('common.cancel')}
+                                          className="flex size-5 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-ink/5"
+                                        >
+                                          <X className="size-3" />
+                                        </button>
+                                      </div>
+                                    </div>
                                   </td>
-                                  <td className="px-1 py-1.5 text-right font-mono text-xs text-ink-tertiary">
-                                    {model.contextWindow ? formatContext(Math.round(model.contextWindow / 1000)) : '—'}
+                                  <td className="px-1 py-1.5" />
+                                  <td className="px-1 py-1.5">
+                                    <input
+                                      value={customModel.contextWindow}
+                                      onChange={(event) =>
+                                        setCustomModel((current) => ({
+                                          ...current,
+                                          contextWindow: event.target.value,
+                                        }))
+                                      }
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Escape') cancelCustomModel();
+                                      }}
+                                      aria-label={t('settings.llm.col.context')}
+                                      placeholder="128000"
+                                      inputMode="numeric"
+                                      className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
+                                    />
                                   </td>
-                                  {(['input', 'output', 'cacheRead', 'cacheWrite'] as const).map((field) => (
+                                  {priceFields.map((field) => (
                                     <td key={field} className="px-1 py-1.5">
                                       <input
                                         type="number"
                                         step="0.001"
                                         min={0}
-                                        aria-label={`${model.id} ${field}`}
-                                        value={price[field]}
+                                        value={customModel[field]}
                                         onChange={(event) =>
-                                          setPriceDraft((previous) => ({
-                                            ...previous,
-                                            [model.id]: { ...price, [field]: Number(event.target.value) },
+                                          setCustomModel((current) => ({
+                                            ...current,
+                                            [field]: event.target.value,
                                           }))
                                         }
-                                        className={cn(
-                                          'h-6 w-full rounded border bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent',
-                                          priceDirty ? 'border-accent' : 'border-transparent hover:border-line',
-                                        )}
+                                        aria-label={`${t('settings.llm.modelId')} ${field}`}
+                                        placeholder="0"
+                                        className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
                                       />
                                     </td>
                                   ))}
+                                  <td className="px-1 py-1.5" />
                                 </tr>
-                              );
-                            })}
-                            {customOpen ? (
-                              <tr
-                                ref={customRowRef}
-                                data-testid="custom-model-row"
-                                className="border-t border-accent/40 bg-accent/5 align-middle"
-                              >
-                                <td className="px-3 py-1.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <div className="min-w-0 flex-1">
-                                      <input
-                                        value={customModel.name}
-                                        onChange={(event) =>
-                                          setCustomModel((current) => ({ ...current, name: event.target.value }))
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === 'Escape') cancelCustomModel();
-                                        }}
-                                        aria-label={t('settings.llm.col.name')}
-                                        placeholder={t('settings.llm.nameOptional')}
-                                        className="h-6 w-full rounded border border-line bg-surface px-1 text-sm-plus font-medium text-ink outline-none focus:border-accent"
-                                      />
-                                      <input
-                                        data-testid="custom-model-id"
-                                        autoFocus
-                                        value={customModel.id}
-                                        onChange={(event) =>
-                                          setCustomModel((current) => ({ ...current, id: event.target.value }))
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === 'Escape') cancelCustomModel();
-                                        }}
-                                        aria-label={t('settings.llm.modelId')}
-                                        placeholder="model-id"
-                                        spellCheck={false}
-                                        className="mt-1 h-6 w-full rounded border border-line bg-surface px-1 font-mono text-2xs text-ink outline-none focus:border-accent"
-                                      />
-                                    </div>
-                                    <div className="flex shrink-0 flex-col gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={cancelCustomModel}
-                                        aria-label={t('common.cancel')}
-                                        title={t('common.cancel')}
-                                        className="flex size-5 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-ink/5"
-                                      >
-                                        <X className="size-3" />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="px-1 py-1.5" />
-                                <td className="px-1 py-1.5">
-                                  <input
-                                    value={customModel.contextWindow}
-                                    onChange={(event) =>
-                                      setCustomModel((current) => ({
-                                        ...current,
-                                        contextWindow: event.target.value,
-                                      }))
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Escape') cancelCustomModel();
-                                    }}
-                                    aria-label={t('settings.llm.col.context')}
-                                    placeholder="128000"
-                                    inputMode="numeric"
-                                    className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
-                                  />
-                                </td>
-                                {(['input', 'output', 'cacheRead', 'cacheWrite'] as const).map((field) => (
-                                  <td key={field} className="px-1 py-1.5">
-                                    <input
-                                      type="number"
-                                      step="0.001"
-                                      min={0}
-                                      value={customModel[field]}
-                                      onChange={(event) =>
-                                        setCustomModel((current) => ({ ...current, [field]: event.target.value }))
-                                      }
-                                      aria-label={`${t('settings.llm.modelId')} ${field}`}
-                                      placeholder="0"
-                                      className="h-6 w-full rounded border border-line bg-surface px-1 text-right font-mono text-2xs text-ink outline-none focus:border-accent"
-                                    />
-                                  </td>
-                                ))}
-                              </tr>
-                            ) : null}
-                          </tbody>
-                        </table>
+                              ) : null}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                    <p className="mt-1.5 text-xs text-ink-tertiary">{t('settings.pricing.hint')}</p>
+                      <p className="mt-1.5 text-xs text-ink-tertiary">{t('settings.pricing.hint')}</p>
                     </div>
 
                     {models.error ? <p className="text-xs text-danger">{models.error}</p> : null}
@@ -987,7 +1187,11 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
 
       {addOpen ? (
         <AddProviderDialog
-          apiKinds={Array.from(new Set(providers.flatMap((provider) => provider.apis))).sort()}
+          apiKinds={Array.from(new Set(providers.flatMap((provider) => provider.apis)))
+            // Speech protocols are per-model, not a chat transport: offering one
+            // as a provider's `api` would produce a provider pi cannot talk to.
+            .filter((api) => api !== 'xiaomi-audio' && api !== 'openai-audio')
+            .sort()}
           onClose={() => setAddOpen(false)}
           onCreate={(draft: ProviderDraft) => {
             void models.saveProvider(draft);

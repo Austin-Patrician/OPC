@@ -49,7 +49,7 @@ describe('CompanyService', () => {
     expect(row).toEqual({ name: '星河内容工作室', industry: 'content' });
   });
 
-  it('keeps vision, brand colour and boss name in app_setting and merges patches', () => {
+  it('keeps vision and brand colour in app_setting, and the boss in app_user', () => {
     company.update({ name: '星河', vision: '做内容工厂', colorId: 'violet', bossName: '阿星' });
     const afterName = company.update({ name: '星河工作室' });
 
@@ -59,14 +59,37 @@ describe('CompanyService', () => {
     expect(afterName.colorId).toBe('violet');
     expect(afterName.bossName).toBe('阿星');
 
+    // Presentation lives in app_setting…
     const keys = db
       .prepare("SELECT key FROM app_setting WHERE key LIKE 'profile.%' ORDER BY key")
       .all() as { key: string }[];
-    expect(keys.map((entry) => entry.key)).toEqual([
-      'profile.bossName',
-      'profile.colorId',
-      'profile.vision',
-    ]);
+    expect(keys.map((entry) => entry.key)).toEqual(['profile.colorId', 'profile.vision']);
+
+    // …but the human is a row, so a preferences reset cannot wipe their name.
+    const boss = db.prepare('SELECT id, name FROM app_user').all() as { id: string; name: string }[];
+    expect(boss).toEqual([{ id: 'boss', name: '阿星' }]);
+  });
+
+  it('has exactly one human, enforced by the schema', () => {
+    // The product decision is "one company, one human", so it is a constraint rather
+    // than a convention: a second user row cannot be inserted at all.
+    expect(() =>
+      db
+        .prepare('INSERT INTO app_user (id, name, avatar, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run('user-2', '另一个人类', '', Date.now(), Date.now()),
+    ).toThrow(/CHECK constraint failed/);
+
+    expect((db.prepare('SELECT COUNT(*) AS n FROM app_user').get() as { n: number }).n).toBe(1);
+  });
+
+  it('brings a hand-deleted boss row back instead of failing the write', () => {
+    db.exec('DELETE FROM app_user');
+    expect(company.get().bossName).toBe(DEFAULT_BOSS_NAME);
+
+    const updated = company.update({ bossName: '阿星' });
+
+    expect(updated.bossName).toBe('阿星');
+    expect(company.boss()).toEqual({ id: 'boss', name: '阿星', avatar: '' });
   });
 
   it('survives a reopen: the profile is not renderer state', () => {

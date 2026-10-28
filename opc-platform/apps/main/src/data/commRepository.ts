@@ -40,11 +40,20 @@ export interface GuardEvent {
   createdAt: number;
 }
 
+/**
+ * A directional interaction edge: how much two people have talked, not who they are
+ * to each other.
+ *
+ * `kind` is deliberately absent: it used to be a stored copy of
+ * `position.reports_to_employee_id`, which went stale on every reorg and — because the
+ * unique key included it — could put two edges on the same pair, making the rate limit
+ * read an arbitrary one. `CommService.relationships()` derives the kind from the org
+ * chart on read, so it is always current and there is only ever one row per direction.
+ */
 export interface Relationship {
   id: string;
   fromEmployeeId: string;
   toEmployeeId: string;
-  kind: RelationshipKind;
   strength: number;
   interactionCount: number;
   lastInteractionAt?: number;
@@ -72,7 +81,6 @@ interface RelationshipRow {
   id: string;
   from_employee_id: string;
   to_employee_id: string;
-  kind: string;
   strength: number;
   interaction_count: number;
   last_interaction_at: number | null;
@@ -344,17 +352,14 @@ export class CommRepository {
     return changed;
   };
 
-  relationship = (
-    fromEmployeeId: string,
-    toEmployeeId: string,
-    kind: RelationshipKind,
-  ): Relationship | undefined => {
+  /** One directional edge, if the two have ever interacted. */
+  relationship = (fromEmployeeId: string, toEmployeeId: string): Relationship | undefined => {
     const row = this.db
       .prepare(
         `SELECT * FROM relationship
-          WHERE from_employee_id = ? AND to_employee_id = ? AND kind = ?`,
+          WHERE from_employee_id = ? AND to_employee_id = ?`,
       )
-      .get(fromEmployeeId, toEmployeeId, kind) as RelationshipRow | undefined;
+      .get(fromEmployeeId, toEmployeeId) as RelationshipRow | undefined;
     return row ? toRelationship(row) : undefined;
   };
 
@@ -388,20 +393,15 @@ export class CommRepository {
   };
 
   /** One exchange: strength up a notch, counters up one, window rolled if stale. */
-  recordInteraction = (input: {
-    fromEmployeeId: string;
-    toEmployeeId: string;
-    kind: RelationshipKind;
-    now: number;
-  }): void => {
+  recordInteraction = (input: { fromEmployeeId: string; toEmployeeId: string; now: number }): void => {
     const windowFloor = input.now - HOUR;
     this.db
       .prepare(
-        `INSERT INTO relationship (id, company_id, from_employee_id, to_employee_id, kind, strength,
+        `INSERT INTO relationship (id, company_id, from_employee_id, to_employee_id, strength,
                                    interaction_count, last_interaction_at, window_started_at, window_count,
                                    created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)
-         ON CONFLICT(from_employee_id, to_employee_id, kind) DO UPDATE SET
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)
+         ON CONFLICT(from_employee_id, to_employee_id) DO UPDATE SET
            strength = MIN(?, strength + ?),
            interaction_count = interaction_count + 1,
            last_interaction_at = excluded.last_interaction_at,
@@ -416,7 +416,6 @@ export class CommRepository {
         COMPANY_ID,
         input.fromEmployeeId,
         input.toEmployeeId,
-        input.kind,
         0.5 + STRENGTH_PER_INTERACTION,
         input.now,
         input.now,
@@ -453,7 +452,6 @@ function toRelationship(row: RelationshipRow): Relationship {
     id: row.id,
     fromEmployeeId: row.from_employee_id,
     toEmployeeId: row.to_employee_id,
-    kind: row.kind as RelationshipKind,
     strength: row.strength,
     interactionCount: row.interaction_count,
     ...(row.last_interaction_at !== null ? { lastInteractionAt: row.last_interaction_at } : {}),

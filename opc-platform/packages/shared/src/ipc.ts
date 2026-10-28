@@ -12,6 +12,15 @@ import type {
   CompanyProfile,
   CompanyProfilePatch,
   DepartmentNode,
+  DepartmentEditInput,
+  EmploymentEvent,
+  EmployeePackageRecord,
+  Evaluation,
+  EvaluationInput,
+  Interview,
+  JobEditInput,
+  JobInput,
+  JobNode,
   AgentCandidate,
   HireInput,
   PersonnelInput,
@@ -30,6 +39,10 @@ import type {
   RuntimeProfileDraft,
   RuntimeSnapshot,
   RuntimeState,
+  SpeechSynthesizeInput,
+  SpeechSynthesizeResult,
+  SpeechTranscribeInput,
+  SpeechTranscribeResult,
   WorkTask,
 } from './domain';
 
@@ -78,14 +91,22 @@ export const IPC = {
     getThinking: 'models:getThinking',
     setThinking: 'models:setThinking',
   },
-  images: {
-    generate: 'images:generate',
+  speech: {
+    transcribe: 'speech:transcribe',
+    synthesize: 'speech:synthesize',
   },
   market: {
     candidates: 'market:candidates',
     importPackage: 'market:import',
     removeCandidate: 'market:remove',
     hireCandidate: 'market:hire',
+    interviews: 'market:interviews',
+    createInterview: 'market:createInterview',
+    runInterview: 'market:runInterview',
+    decideInterview: 'market:decideInterview',
+    packages: 'market:packages',
+    exportPackage: 'market:exportPackage',
+    verifyPackage: 'market:verifyPackage',
   },
   facts: {
     list: 'facts:list',
@@ -100,6 +121,7 @@ export const IPC = {
     assign: 'projects:assign',
     archive: 'projects:archive',
     removeMember: 'projects:removeMember',
+    setReportsTo: 'projects:setReportsTo',
   },
   org: {
     list: 'org:list',
@@ -108,6 +130,17 @@ export const IPC = {
     setAvatar: 'org:setAvatar',
     personnel: 'org:personnel',
     createDepartment: 'org:createDepartment',
+    updateDepartment: 'org:updateDepartment',
+    archiveDepartment: 'org:archiveDepartment',
+    appointHead: 'org:appointHead',
+    appointActingHead: 'org:appointActingHead',
+    evaluations: 'org:evaluations',
+    addEvaluation: 'org:addEvaluation',
+    jobs: 'org:jobs',
+    createJob: 'org:createJob',
+    updateJob: 'org:updateJob',
+    archiveJob: 'org:archiveJob',
+    events: 'org:events',
     hire: 'org:hire',
     transfer: 'org:transfer',
     fire: 'org:fire',
@@ -139,6 +172,8 @@ export const IPC = {
   budget: {
     overview: 'budget:overview',
     setLimit: 'budget:setLimit',
+    payroll: 'budget:payroll',
+    costCenters: 'budget:costCenters',
   },
   comm: {
     overview: 'comm:overview',
@@ -281,6 +316,8 @@ export interface ModelsBridge {
       name?: string;
       contextWindow?: number;
       api?: string;
+      /** Defaults to `chat`; the Image/Voice pages add their models explicitly. */
+      capability?: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
       /** USD per 1M tokens; omitted/0 means "unknown". */
       inputUsdPerM?: number;
       outputUsdPerM?: number;
@@ -291,7 +328,7 @@ export interface ModelsBridge {
   /** True only for providers pi can log into with OAuth; the rest use an API key. */
   supportsOauth(providerId: string): Promise<boolean>;
   getDefaults(): Promise<ModelDefaults>;
-  setDefault(role: 'llm' | 'image', ref: ModelRef | null): Promise<ModelDefaults>;
+  setDefault(role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null): Promise<ModelDefaults>;
   /** Imports an existing pi config as providers (explicit user action). */
   importFromPi(): Promise<{ imported: number; providers: ProviderConfig[] }>;
   getCompaction(): Promise<CompactionSettings>;
@@ -314,17 +351,6 @@ export interface ModelsBridge {
   ): Promise<ProviderConfig[]>;
   getThinking(): Promise<string>;
   setThinking(level: string): Promise<string>;
-}
-
-export interface GeneratedImageResult {
-  ok: boolean;
-  /** File name inside the user's images directory. */
-  fileName?: string;
-  /** data: URL for immediate preview. */
-  dataUrl?: string;
-  bytes?: number;
-  model?: string;
-  error?: string;
 }
 
 export interface AuthPromptRequest {
@@ -364,8 +390,36 @@ export interface MarketBridge {
   removeCandidate(candidateId: string): Promise<AgentCandidate[]>;
   hireCandidate(
     candidateId: string,
-    input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean },
+    input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean; jobId?: string },
   ): Promise<{ candidates: AgentCandidate[]; employeeId: string }>;
+
+  /** Trial runs, newest first; pass a candidate id to narrow it down. */
+  interviews(candidateId?: string): Promise<Interview[]>;
+  /** Creates a trial run; it still has to be executed with `runInterview`. */
+  createInterview(candidateId: string, taskPrompt: string): Promise<Interview[]>;
+  /** Executes a trial run on the configured model and records the outcome. */
+  runInterview(interviewId: string): Promise<Interview[]>;
+  /** Records the decision; `hire` also hires the candidate. */
+  decideInterview(input: {
+    interviewId: string;
+    decision: 'hire' | 'reject';
+    departmentId?: string;
+    reportsToEmployeeId?: string;
+    jobId?: string;
+  }): Promise<{ interviews: Interview[]; candidates: AgentCandidate[]; employeeId?: string }>;
+
+  /** Recorded exports, newest first. */
+  packages(): Promise<EmployeePackageRecord[]>;
+  /** Opens a save dialog, writes the package, and records the receipt. */
+  exportPackage(input: {
+    kind: 'employee' | 'team' | 'company';
+    name: string;
+    description?: string;
+    license?: string;
+    employeeIds?: string[];
+  }): Promise<{ packages: EmployeePackageRecord[]; path?: string; cancelled?: boolean }>;
+  /** Re-hashes the file on disk and compares it with the recorded hash. */
+  verifyPackage(packageId: string): Promise<{ ok: boolean; reason?: string }>;
 }
 
 export interface OrgFactView {
@@ -387,7 +441,16 @@ export interface ProjectView {
   description: string;
   departmentId: string;
   status: 'active' | 'archived';
-  members: { employeeId: string; name: string; role: string }[];
+  members: {
+    employeeId: string;
+    name: string;
+    role: string;
+    /** `paused` is a budget hard stop, not a removal. */
+    status?: string;
+    pauseReason?: string;
+    /** Project-internal reporting line, which may differ from the department one. */
+    reportsToEmployeeId?: string;
+  }[];
 }
 
 export interface ConsolidationRunView {
@@ -413,6 +476,8 @@ export interface ProjectsBridge {
   assign(projectId: string, employeeId: string, role?: string): Promise<ProjectView[]>;
   archive(projectId: string): Promise<ProjectView[]>;
   removeMember(projectId: string, employeeId: string): Promise<ProjectView[]>;
+  /** Project-internal reporting line (matrix); `null` clears it. */
+  setReportsTo(projectId: string, employeeId: string, managerId: string | null): Promise<ProjectView[]>;
 }
 
 export interface FactsBridge {
@@ -441,9 +506,28 @@ export interface OrgBridge {
     code?: string;
     description?: string;
     headEmployeeId?: string;
+    parentId?: string;
   }): Promise<DepartmentNode[]>;
+  /** Rename / re-code / re-describe, or move a department in the tree. */
+  updateDepartment(input: DepartmentEditInput): Promise<DepartmentNode[]>;
+  /** Soft-deletes a department; refuses while it still holds people or children. */
+  archiveDepartment(departmentId: string): Promise<DepartmentNode[]>;
+  /** Appoints the head of a department; `null` clears the seat. */
+  appointHead(departmentId: string, employeeId: string | null): Promise<DepartmentNode[]>;
+  /** Appoints the person covering a vacant head seat; `null` clears it. */
+  appointActingHead(departmentId: string, employeeId: string | null): Promise<DepartmentNode[]>;
+  /** Performance reviews for one employee, newest first. */
+  evaluations(employeeId: string, limit?: number): Promise<Evaluation[]>;
+  addEvaluation(input: EvaluationInput): Promise<Evaluation[]>;
+  /** Headcount slots, all or for one department. `filled` is derived from seats. */
+  jobs(departmentId?: string): Promise<JobNode[]>;
+  createJob(input: JobInput): Promise<JobNode[]>;
+  updateJob(input: JobEditInput): Promise<JobNode[]>;
+  archiveJob(jobId: string): Promise<JobNode[]>;
+  /** One employee's HR timeline, newest first. */
+  events(employeeId: string, limit?: number): Promise<EmploymentEvent[]>;
   hire(input: HireInput): Promise<DepartmentNode[]>;
-  transfer(employeeId: string, departmentId: string, reportsToEmployeeId?: string): Promise<DepartmentNode[]>;
+  transfer(employeeId: string, departmentId: string, reportsToEmployeeId?: string, jobId?: string): Promise<DepartmentNode[]>;
   fire(employeeId: string): Promise<DepartmentNode[]>;
 }
 
@@ -452,10 +536,6 @@ export interface ArtifactsBridge {
   read(taskId: string, relPath: string): Promise<ArtifactReadResult>;
   /** "Download": native save dialog + copy, so it works under file:// too. */
   saveAs(taskId: string, relPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
-}
-
-export interface ImagesBridge {
-  generate(input: { prompt: string; modelId?: string }): Promise<GeneratedImageResult>;
 }
 
 /**
@@ -575,10 +655,94 @@ export interface BudgetOverview {
   paused: PausedAssignmentView[];
 }
 
+/**
+ * 薪酬视图 (§8): what each person actually cost this month, in money.
+ *
+ * Not a second ledger — a read model over `budget_ledger` (the employee axis only)
+ * and `budget` (the cap). `budgetUsd` and `projectedUsd` are conversions at the
+ * *observed* price, so they are absent/zero until the person has spent anything.
+ */
+export interface PayrollLine {
+  employeeId: string;
+  name: string;
+  title: string;
+  level: string;
+  departmentId: string;
+  departmentName: string;
+  status: string;
+  tokensUsed: number;
+  spentUsd: number;
+  limitTokens: number;
+  /** The token cap in money, at the observed rate; unset when there is no spend. */
+  budgetUsd?: number;
+  /** Straight-line projection to period end — a projection, not a fact. */
+  projectedUsd: number;
+  /** Share of the company's spend this period, 0..1. */
+  share: number;
+}
+
+export interface PayrollOverview {
+  generatedAt: number;
+  periodKey: string;
+  lines: PayrollLine[];
+  totalSpentUsd: number;
+  totalProjectedUsd: number;
+  headcount: number;
+}
+
+/**
+ * One cost centre: what this department or project spent this month.
+ *
+ * Read from its own ledger axis (`scope='department'` / `scope='project'`), never by
+ * summing employee rows: a single run writes one row per axis with identical numbers,
+ * so adding them would bill the same work several times.
+ */
+export interface CostCenterLine {
+  id: string;
+  name: string;
+  kind: 'department' | 'project';
+  spentUsd: number;
+  tokensUsed: number;
+  /** Share of the company's total spend this month, 0..1. */
+  share: number;
+  /** People seated in the department / assigned to the project. */
+  headcount: number;
+  limitTokens: number;
+  /** The cap in money, at the observed rate; unset when there is no spend to price. */
+  budgetUsd?: number;
+  /** Straight-line projection to period end — a projection, not a fact. */
+  projectedUsd: number;
+}
+
+/**
+ * Cost centres plus two **reconciliation lines**.
+ *
+ * The department and project axes only exist when they were known at settle time, so
+ * their totals are usually smaller than the employee total. The gap is spend that
+ * cannot be attributed — a fact, not an error — and hiding it would leave two reports
+ * that never reconcile.
+ */
+export interface CostCentersOverview {
+  generatedAt: number;
+  periodKey: string;
+  departments: CostCenterLine[];
+  projects: CostCenterLine[];
+  /** Total charged on the employee axis this month: the denominator for `share`. */
+  totalSpentUsd: number;
+  /** Spend that no department axis recorded. */
+  unattributedDepartmentUsd: number;
+  /** Spend that no project axis recorded. */
+  unattributedProjectUsd: number;
+}
+
 export interface BudgetBridge {
   overview(): Promise<BudgetOverview>;
   /** 老板改额度；把额度提回阈值以下会解除硬停并恢复被暂停的任职。 */
   setLimit(input: { scope: BudgetScope; scopeId: string; limitTokens: number }): Promise<BudgetOverview>;
+  /** 薪酬视图：本月每个人花了多少钱。 */
+  payroll(): Promise<PayrollOverview>;
+  /** 成本中心：本月每个部门、每个项目花了多少钱（含无法归属的差额）。 */
+  costCenters(): Promise<CostCentersOverview>;
 }
 
 export interface CommWakeResult {  ok: boolean;
@@ -647,6 +811,15 @@ export interface RuntimeBridge {
   removeProfile(profileId: string): Promise<RuntimeState>;
 }
 
+/**
+ * Speech runs in the main process because the API key never leaves it. The
+ * renderer records WAV and plays back the returned bytes; it never sees the key.
+ */
+export interface SpeechBridge {
+  transcribe(input: SpeechTranscribeInput): Promise<SpeechTranscribeResult>;
+  synthesize(input: SpeechSynthesizeInput): Promise<SpeechSynthesizeResult>;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -659,7 +832,7 @@ export interface OpcBridge {
   chat: ChatBridge;
   work: WorkBridge;
   models: ModelsBridge;
-  images: ImagesBridge;
+  speech: SpeechBridge;
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
   org: OrgBridge;

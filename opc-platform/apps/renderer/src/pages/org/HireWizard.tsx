@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DepartmentNode, HireInput, OrgMember } from '@opc/shared/domain';
+import type { DepartmentNode, HireInput, JobNode, OrgMember } from '@opc/shared/domain';
 import { cn } from '@/shared/lib/cn';
 import { buttonClass } from '@/features/settings/ui/kit';
 
@@ -21,11 +21,14 @@ export interface HireDraft extends HireInput {
  */
 export function HireWizard({
   departments,
+  jobs,
   defaultDepartmentId,
   onClose,
   onSubmit,
 }: {
   departments: DepartmentNode[];
+  /** Headcount slots; the wizard only offers the ones in the selected department. */
+  jobs: JobNode[];
   defaultDepartmentId: string;
   onClose: () => void;
   onSubmit: (input: HireDraft) => Promise<void>;
@@ -46,14 +49,23 @@ export function HireWizard({
     isHead: false,
     skills: [],
     persona: '',
+    jobId: undefined,
   });
 
   const patch = (next: Partial<HireDraft>) => setDraft((current) => ({ ...current, ...next }));
 
   const members: OrgMember[] = departments.find((node) => node.id === draft.departmentId)?.members ?? [];
+  // Only open slots are offerable: picking a full one would just fail on submit, and a
+  // wizard that lets you fill in four steps before refusing is a bad wizard.
+  const openJobs = jobs.filter(
+    (job) => job.departmentId === draft.departmentId && job.filled < job.headcount,
+  );
+  const selectedJob = openJobs.find((job) => job.id === draft.jobId);
   const canAdvance =
     step === 0
-      ? draft.name.trim().length > 0 && (draft.title ?? '').trim().length > 0 && draft.departmentId !== ''
+      ? draft.name.trim().length > 0 &&
+        ((draft.title ?? '').trim().length > 0 || Boolean(selectedJob)) &&
+        draft.departmentId !== ''
       : true;
 
   const addSkill = () => {
@@ -160,6 +172,33 @@ export function HireWizard({
                   className={input}
                 />
               </label>
+              <label className="block">
+                {label(t('wizard.job'))}
+                <select
+                  data-testid="wizard-job"
+                  value={draft.jobId ?? ''}
+                  onChange={(event) => {
+                    const job = openJobs.find((entry) => entry.id === event.target.value);
+                    // Picking a slot fills in the seat's own title and level: they are
+                    // properties of the job, not something the boss should retype.
+                    patch({
+                      jobId: job?.id,
+                      ...(job ? { title: job.title, role: job.title, level: job.level } : {}),
+                    });
+                  }}
+                  className={input}
+                >
+                  <option value="">{t('wizard.jobNone')}</option>
+                  {openJobs.map((job) => (
+                    <option key={job.id} value={job.id}>
+                      {job.title} · {job.level} ({job.filled}/{job.headcount})
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-2xs text-ink-quaternary">
+                  {openJobs.length === 0 ? t('wizard.jobNoneOpen') : t('wizard.jobHint')}
+                </span>
+              </label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
                   {label(t('org.level'))}
@@ -180,7 +219,10 @@ export function HireWizard({
                   <select
                     data-testid="wizard-department"
                     value={draft.departmentId}
-                    onChange={(event) => patch({ departmentId: event.target.value, reportsToEmployeeId: undefined })}
+                    onChange={(event) =>
+                      // A job belongs to one department, so changing department drops it.
+                      patch({ departmentId: event.target.value, reportsToEmployeeId: undefined, jobId: undefined })
+                    }
                     className={input}
                   >
                     {departments.map((node) => (
@@ -282,6 +324,20 @@ export function HireWizard({
                 ) : null}
               </div>
               <label className="block">
+                {label(t('wizard.probation'))}
+                <input
+                  data-testid="wizard-probation"
+                  value={draft.probationDays === undefined ? '' : String(draft.probationDays)}
+                  inputMode="numeric"
+                  onChange={(event) => {
+                    const digits = event.target.value.replace(/[^\d]/g, '');
+                    patch({ probationDays: digits ? Number(digits) : undefined });
+                  }}
+                  placeholder={t('wizard.probationHint')}
+                  className={input}
+                />
+              </label>
+              <label className="block">
                 {label(t('wizard.persona'))}
                 <textarea
                   rows={4}
@@ -302,6 +358,11 @@ export function HireWizard({
                 [t('wizard.role'), draft.title ?? ''],
                 [t('org.level'), draft.level ?? ''],
                 [t('wizard.department'), departments.find((node) => node.id === draft.departmentId)?.name ?? ''],
+                [t('wizard.job'), selectedJob ? `${selectedJob.title} (${selectedJob.filled}/${selectedJob.headcount})` : t('wizard.jobNone')],
+                [
+                  t('wizard.probation'),
+                  draft.probationDays ? t('wizard.probationDays', { count: draft.probationDays }) : t('wizard.probationNone'),
+                ],
                 [
                   t('wizard.reportsTo'),
                   members.find((member) => member.id === draft.reportsToEmployeeId)?.name ?? t('wizard.noManager'),

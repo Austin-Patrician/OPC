@@ -88,4 +88,42 @@ describe('ModelRuntime.createModels', () => {
 
     expect(model?.input).toContain('image');
   });
+
+  it('does not register a chat model that was switched off', async () => {
+    const config: ProviderConfig = {
+      ...baseConfig,
+      models: [
+        { id: 'kept', name: 'Kept', capability: 'chat', api: 'openai-completions' },
+        {
+          id: 'switched-off',
+          name: 'Switched off',
+          capability: 'chat',
+          api: 'openai-completions',
+          chatEnabled: false,
+        },
+      ],
+    };
+    const repository = {
+      listProviders: () => [config],
+    } as unknown as ModelConfigRepository;
+    const runtime = new ModelRuntime(repository, () => 'test-key');
+
+    expect(await runtime.resolveModel('custom-relay', 'kept')).toBeTruthy();
+    expect(await runtime.resolveModel('custom-relay', 'switched-off')).toBeUndefined();
+  });
+
+  it('treats a row stored before the switch existed as enabled', async () => {
+    const config: ProviderConfig = {
+      ...baseConfig,
+      // No `chatEnabled`: every provider configured before the toggle shipped.
+      models: [{ id: 'legacy', name: 'Legacy', capability: 'chat', api: 'openai-completions' }],
+    };
+    const repository = {
+      listProviders: () => [config],
+    } as unknown as ModelConfigRepository;
+
+    expect(
+      await new ModelRuntime(repository, () => 'test-key').resolveModel('custom-relay', 'legacy'),
+    ).toBeTruthy();
+  });
 });

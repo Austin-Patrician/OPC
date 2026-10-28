@@ -1,24 +1,31 @@
 import type { CompanyProfile, CompanyProfilePatch } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
-import { COMPANY_ID } from '../data/schema';
+import { BOSS_USER_ID, COMPANY_ID } from '../data/schema';
 
 /**
- * The `company` row and the profile bits that have no column of their own.
+ * The `company` row, the boss, and the profile bits that have no column of their own.
  *
  * `company.name` / `company.industry` are real columns (§4), so the company's
  * identity is business data, not a UI preference: it survives a reinstall of the
  * renderer, travels with a database copy, and is visible to the main process.
- * Vision, brand colour and the boss's display name have no column, so they are
- * `app_setting` rows — the same table the model defaults use.
+ *
+ * **The boss is a row, not a setting.** Name and portrait live in `app_user`
+ * (`id = 'boss'`, the only human this product has), because "老板" is a person the rest
+ * of the schema already references: `employment_event.actor`, `evaluation.reviewer`
+ * and `acceptance.reviewer` all carry that id. Keeping the name in `app_setting` made
+ * the human a preference, which is exactly what a preferences reset would wipe.
+ *
+ * Vision and brand colour stay `app_setting` rows: those really are presentation.
  *
  * Writes are clamped here, not in the UI: the renderer's `maxLength` is a hint, and
  * a hostile or buggy caller must not be able to store an unbounded string.
  */
 const KEY_VISION = 'profile.vision';
 const KEY_COLOR = 'profile.colorId';
-const KEY_BOSS = 'profile.bossName';
 const KEY_LOGO = 'profile.logo';
-const KEY_BOSS_AVATAR = 'profile.bossAvatar';
+// `profile.bossName` / `profile.bossAvatar` are no longer read or written here: the v18
+// migration copied them into `app_user`, and the old rows are left in place so a
+// rollback one version still renders the boss.
 
 export const DEFAULT_COMPANY_NAME = '我的公司';
 export const DEFAULT_BOSS_NAME = '老板';
@@ -48,6 +55,7 @@ export class CompanyService {
     const row = this.db
       .prepare('SELECT id, name, industry FROM company WHERE id = ?')
       .get(COMPANY_ID) as CompanyRow | undefined;
+    const boss = this.boss();
 
     return {
       id: row?.id ?? COMPANY_ID,
@@ -55,9 +63,25 @@ export class CompanyService {
       industry: row?.industry ?? '',
       vision: this.setting(KEY_VISION) ?? '',
       colorId: this.setting(KEY_COLOR) ?? DEFAULT_COMPANY_COLOR,
-      bossName: this.setting(KEY_BOSS) ?? DEFAULT_BOSS_NAME,
+      bossName: boss.name,
       logo: this.setting(KEY_LOGO) || undefined,
-      bossAvatar: this.setting(KEY_BOSS_AVATAR) || undefined,
+      bossAvatar: boss.avatar || undefined,
+    };
+  };
+
+  /**
+   * The single human. Read through this rather than `app_setting`, and treat a missing
+   * row as "the defaults" instead of an error: a database that predates v18 and one
+   * that has been hand-edited should both still open.
+   */
+  boss = (): { id: string; name: string; avatar: string } => {
+    const row = this.db
+      .prepare('SELECT id, name, avatar FROM app_user WHERE id = ?')
+      .get(BOSS_USER_ID) as { id: string; name: string; avatar: string } | undefined;
+    return {
+      id: BOSS_USER_ID,
+      name: row?.name?.trim() || DEFAULT_BOSS_NAME,
+      avatar: row?.avatar ?? '',
     };
   };
 
@@ -75,11 +99,29 @@ export class CompanyService {
 
       if (patch.vision !== undefined) this.setSetting(KEY_VISION, clamp(patch.vision, LIMITS.vision), now);
       if (patch.colorId !== undefined) this.setSetting(KEY_COLOR, clamp(patch.colorId, LIMITS.colorId), now);
-      if (patch.bossName !== undefined) {
-        this.setSetting(KEY_BOSS, clamp(patch.bossName, LIMITS.bossName) || DEFAULT_BOSS_NAME, now);
-      }
       if (patch.logo !== undefined) this.setSetting(KEY_LOGO, clampImage(patch.logo), now);
-      if (patch.bossAvatar !== undefined) this.setSetting(KEY_BOSS_AVATAR, clampImage(patch.bossAvatar), now);
+
+      // The boss is one row, upserted rather than inserted: the migration seeds it, and
+      // a hand-deleted row must come back instead of failing the write.
+      if (patch.bossName !== undefined || patch.bossAvatar !== undefined) {
+        const before = this.boss();
+        this.db
+          .prepare(
+            `INSERT INTO app_user (id, name, avatar, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name, avatar = excluded.avatar, updated_at = excluded.updated_at`,
+          )
+          .run(
+            BOSS_USER_ID,
+            patch.bossName === undefined
+              ? before.name
+              : clamp(patch.bossName, LIMITS.bossName) || DEFAULT_BOSS_NAME,
+            patch.bossAvatar === undefined ? before.avatar : clampImage(patch.bossAvatar),
+            now,
+            now,
+          );
+      }
     });
 
     write();

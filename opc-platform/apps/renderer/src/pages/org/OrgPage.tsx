@@ -12,16 +12,26 @@ import {
   List,
   Network,
   PanelLeft,
+  PackagePlus,
   Plus,
   Search,
   UserPlus,
+  UserCog,
   Users,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DepartmentNode, OrgMember, PersonnelInput } from '@opc/shared/domain';
+import type {
+  DepartmentEditInput,
+  DepartmentNode,
+  EmploymentEvent,
+  Evaluation,
+  JobNode,
+  OrgMember,
+  PersonnelInput,
+} from '@opc/shared/domain';
 import type { OrgFactView } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { HireWizard } from './HireWizard';
@@ -40,6 +50,83 @@ const VIEWS: { id: OrgView; icon: typeof Network; labelKey: string }[] = [
   { id: 'roster', icon: List, labelKey: 'org.view.roster' },
   { id: 'badge', icon: BadgeCheck, labelKey: 'org.view.badge' },
 ];
+
+/** Children of `parentId` (undefined = top level), already in chart order. */
+function childrenOf(departments: DepartmentNode[], parentId?: string): DepartmentNode[] {
+  return departments.filter((node) => (node.parentId ?? '') === (parentId ?? ''));
+}
+
+/** A department and everything under it: what "focus this department" means. */
+function subtreeIds(departments: DepartmentNode[], rootId: string): Set<string> {
+  const ids = new Set<string>();
+  const walk = (id: string) => {
+    if (ids.has(id)) return;
+    ids.add(id);
+    for (const child of childrenOf(departments, id)) walk(child.id);
+  };
+  walk(rootId);
+  return ids;
+}
+
+/** Root → … → the department itself, for the breadcrumb. */
+function ancestorsOf(departments: DepartmentNode[], id: string): DepartmentNode[] {
+  const byId = new Map(departments.map((node) => [node.id, node]));
+  const chain: DepartmentNode[] = [];
+  const seen = new Set<string>();
+  let cursor = byId.get(id);
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    chain.unshift(cursor);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+  }
+  return chain;
+}
+
+/** Pre-order walk, so the directory can render a tree as a flat indented list. */
+function flattenTree(departments: DepartmentNode[]): { node: DepartmentNode; depth: number }[] {
+  const rows: { node: DepartmentNode; depth: number }[] = [];
+  const walk = (parentId: string | undefined, depth: number) => {
+    for (const node of childrenOf(departments, parentId)) {
+      rows.push({ node, depth });
+      walk(node.id, depth + 1);
+    }
+  };
+  walk(undefined, 0);
+  return rows;
+}
+
+/**
+ * The one human in this company.
+ *
+ * Read from the company profile (which reads the single `app_user` row) rather than
+ * hard-coding a label: the org chart's root card is a person, and it should show the
+ * name and portrait the boss actually set. Falls back to the translated default while
+ * the IPC call is in flight, so the card never renders empty.
+ */
+function useBossIdentity(): { name: string; avatar?: string } {
+  const { t } = useTranslation();
+  const [profile, setProfile] = useState<{ name: string; avatar?: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void window.opc?.company
+      .get()
+      .then((next) => {
+        if (alive) {
+          setProfile({
+            name: next.bossName,
+            ...(next.bossAvatar ? { avatar: next.bossAvatar } : {}),
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return profile ?? { name: t('org.founder') };
+}
 
 /**
  * Org chart, aligned with the design:
@@ -63,6 +150,8 @@ export function OrgPage() {
   const [directoryOpen, setDirectoryOpen] = useState(true);
   const [newDeptOpen, setNewDeptOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [jobs, setJobs] = useState<JobNode[]>([]);
+  const boss = useBossIdentity();
 
   useEffect(() => {
     localStorage.setItem(VIEW_KEY, view);
@@ -72,6 +161,13 @@ export function OrgPage() {
     const list = await window.opc!.org.list();
     setDepartments(list);
     setScopeId((current) => (current === '' ? '' : list.some((n) => n.id === current) ? current : ''));
+    // Jobs are only needed by the hire wizard and the department panel; loading them
+    // with the chart keeps "which slots are open" from being a stale second fetch.
+    try {
+      setJobs(await window.opc!.org.jobs());
+    } catch {
+      setJobs([]);
+    }
   };
 
   useEffect(() => {
@@ -107,7 +203,14 @@ export function OrgPage() {
       member.role.toLowerCase().includes(needle));
 
   const filtered = departments.map((node) => ({ ...node, members: node.members.filter(keep) }));
-  const visible = scopeId ? filtered.filter((node) => node.id === scopeId) : filtered;
+  // Focusing a department means focusing its whole subtree: a division that shows
+  // only its own empty seat is not what "看这个部门" means.
+  const scopeIds = useMemo(
+    () => (scopeId ? subtreeIds(departments, scopeId) : undefined),
+    [departments, scopeId],
+  );
+  const visible = scopeIds ? filtered.filter((node) => scopeIds.has(node.id)) : filtered;
+  const scopeChain = scopeId ? ancestorsOf(departments, scopeId) : [];
 
   const selectedMember = memberId ? membersById.get(memberId) : undefined;
   const selectedDepartment = deptId ? departments.find((node) => node.id === deptId) : undefined;
@@ -219,8 +322,9 @@ export function OrgPage() {
                 0,
               ),
             }}
-            scopeName={departments.find((node) => node.id === scopeId)?.name}
+            scopeChain={scopeChain}
             onScopeHome={() => setScopeId('')}
+            onScope={(id) => setScopeId(id)}
             directoryOpen={directoryOpen}
             onShowDirectory={() => setDirectoryOpen(true)}
             query={query}
@@ -231,6 +335,7 @@ export function OrgPage() {
             {view === 'tree' ? (
               <TreeView
                 departments={visible}
+                boss={boss}
                 zoom={zoom}
                 collapsed={collapsed}
                 onToggle={(id) =>
@@ -272,7 +377,7 @@ export function OrgPage() {
             {view === 'board' ? (
               <BoardView
                 departments={filtered}
-                scopeId={scopeId}
+                scopeIds={scopeIds}
                 onOpen={openMember}
                 onOpenDept={(id) => {
                   setMemberId('');
@@ -288,12 +393,12 @@ export function OrgPage() {
               />
             ) : null}
             {view === 'roster' ? (
-              <RosterView departments={filtered} scopeId={scopeId} onOpen={openMember} membersById={membersById} />
+              <RosterView departments={filtered} scopeIds={scopeIds} onOpen={openMember} membersById={membersById} />
             ) : null}
             {view === 'badge' ? (
               <BadgeView
                 departments={filtered}
-                scopeId={scopeId}
+                scopeIds={scopeIds}
                 onOpen={openMember}
                 activeMemberId={memberId}
               />
@@ -334,6 +439,7 @@ export function OrgPage() {
               {selectedMember ? (
                 <MemberDetail
                   member={selectedMember}
+                  boss={boss}
                   manager={
                     selectedMember.reportsToEmployeeId
                       ? membersById.get(selectedMember.reportsToEmployeeId)
@@ -352,9 +458,23 @@ export function OrgPage() {
               ) : (
                 <DepartmentSummary
                   department={selectedDepartment}
+                  departments={departments}
                   onHire={() => setHireFor(selectedDepartment!.id)}
                   onOpenGroup={() => openDepartmentGroup(selectedDepartment!.id)}
                   onOpenMember={openMember}
+                  onUpdate={(input) => void act(() => window.opc!.org.updateDepartment(input))}
+                  onAppointHead={(employeeId) =>
+                    void act(() => window.opc!.org.appointHead(selectedDepartment!.id, employeeId))
+                  }
+                  onAppointActingHead={(employeeId) =>
+                    void act(() => window.opc!.org.appointActingHead(selectedDepartment!.id, employeeId))
+                  }
+                  onArchive={() =>
+                    void act(async () => {
+                      await window.opc!.org.archiveDepartment(selectedDepartment!.id);
+                      setDeptId('');
+                    })
+                  }
                 />
               )}
             </div>
@@ -365,6 +485,7 @@ export function OrgPage() {
       {hireFor !== null ? (
         <HireWizard
           departments={departments}
+          jobs={jobs}
           defaultDepartmentId={hireFor || scopeId}
           onClose={() => setHireFor(null)}
           onSubmit={async (input) => {
@@ -379,6 +500,8 @@ export function OrgPage() {
       {newDeptOpen ? (
         <NewDepartmentModal
           employees={allMembers.filter((member) => member.status === 'active')}
+          departments={departments}
+          defaultParentId={scopeId}
           onClose={() => setNewDeptOpen(false)}
           onSubmit={async (input) => {
             await act(async () => {
@@ -407,6 +530,7 @@ function Directory({
 }) {
   const { t } = useTranslation();
   const total = departments.reduce((sum, node) => sum + node.members.length, 0);
+  const rows = flattenTree(departments);
   const itemClass = (active: boolean) =>
     cn(
       'flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm-plus transition-colors',
@@ -448,13 +572,14 @@ function Directory({
         </button>
 
         <div className="mt-0.5 ml-[1.0625rem] space-y-px border-l border-line pl-1.5">
-          {departments.map((node) => (
+          {rows.map(({ node, depth }) => (
             <button
               key={node.id || 'unassigned'}
               type="button"
               data-testid="org-department"
               onClick={() => onScope(node.id)}
               title={node.description}
+              style={depth > 0 ? { paddingLeft: `${0.5 + depth * 0.6}rem` } : undefined}
               className={itemClass(scopeId === node.id)}
             >
               <span aria-hidden className="size-2 shrink-0 rounded-[3px]" style={{ background: node.color }} />
@@ -517,8 +642,9 @@ function Toolbar({
   status,
   setStatus,
   counts,
-  scopeName,
+  scopeChain,
   onScopeHome,
+  onScope,
   directoryOpen,
   onShowDirectory,
   query,
@@ -529,8 +655,10 @@ function Toolbar({
   status: StatusFilter;
   setStatus: (status: StatusFilter) => void;
   counts: { all: number; active: number; terminated: number };
-  scopeName?: string;
+  /** Root → focused department, so a nested department shows where it sits. */
+  scopeChain: DepartmentNode[];
   onScopeHome: () => void;
+  onScope: (departmentId: string) => void;
   directoryOpen: boolean;
   onShowDirectory: () => void;
   query: string;
@@ -566,15 +694,28 @@ function Toolbar({
       <span className="h-5 w-px shrink-0 bg-line" />
 
       <div className="flex min-w-0 items-center gap-1 text-sm">
-        <button type="button" onClick={onScopeHome} className={cn('shrink-0', scopeName ? 'text-ink-tertiary hover:text-ink' : 'font-medium text-ink')}>
+        <button
+          type="button"
+          onClick={onScopeHome}
+          className={cn('shrink-0', scopeChain.length > 0 ? 'text-ink-tertiary hover:text-ink' : 'font-medium text-ink')}
+        >
           {t('org.company')}
         </button>
-        {scopeName ? (
-          <>
-            <ChevronRight className="size-3 text-ink-quaternary" />
-            <span className="truncate font-medium text-ink">{scopeName}</span>
-          </>
-        ) : null}
+        {scopeChain.map((node, index) => (
+          <span key={node.id} className="flex min-w-0 items-center gap-1">
+            <ChevronRight className="size-3 shrink-0 text-ink-quaternary" />
+            <button
+              type="button"
+              onClick={() => onScope(node.id)}
+              className={cn(
+                'truncate',
+                index === scopeChain.length - 1 ? 'font-medium text-ink' : 'text-ink-tertiary hover:text-ink',
+              )}
+            >
+              {node.name}
+            </button>
+          </span>
+        ))}
       </div>
 
       <div className="relative ml-1 w-40">
@@ -635,6 +776,7 @@ function Toolbar({
 /** Canvas tree with the design's connector bus: trunk → horizontal → drops. */
 function TreeView({
   departments,
+  boss,
   zoom,
   collapsed,
   onToggle,
@@ -649,6 +791,8 @@ function TreeView({
   onToggleMember,
 }: {
   departments: DepartmentNode[];
+  /** The one human: the root card is a person, not a hard-coded label. */
+  boss: { name: string; avatar?: string };
   zoom: number;
   collapsed: Set<string>;
   onToggle: (id: string) => void;
@@ -676,6 +820,11 @@ function TreeView({
   // and the scroll area stays the size of the unscaled layout.
   const content = useRef<HTMLDivElement>(null);
   const [natural, setNatural] = useState({ w: 0, h: 0 });
+  // Roots of what is being shown: with no scope that is every top-level department;
+  // when a department is focused, its subtree is rendered from that department down.
+  const roots = departments.filter(
+    (node) => !node.parentId || !departments.some((parent) => parent.id === node.parentId),
+  );
 
   useEffect(() => {
     const canvas = ref.current;
@@ -744,10 +893,10 @@ function TreeView({
             className="w-[20rem] overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-[0_8px_24px_-10px_rgba(0,153,255,0.4)]"
           >
             <div className="flex items-center gap-3 px-4 pt-3.5 pb-3">
-              <Avatar name="老板" size="lg" status="online" />
+              <Avatar name={boss.name} src={boss.avatar} size="lg" status="online" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-lg font-bold text-ink">{t('org.founder')}</span>
+                  <span className="truncate text-lg font-bold text-ink">{boss.name}</span>
                   <span className="rounded bg-accent px-1.5 text-2xs font-semibold text-white">CEO</span>
                 </div>
                 <div className="mt-0.5 text-xs text-ink-tertiary">{t('org.founderRole')}</div>
@@ -755,104 +904,27 @@ function TreeView({
               <Crown className="size-4 shrink-0 text-warning" />
             </div>
             <div className="grid grid-cols-3 border-t border-line bg-accent-soft/40 py-2 text-center">
-              <Metric value={String(departments.length)} label={t('org.directDepartments')} />
+              <Metric value={String(roots.length)} label={t('org.directDepartments')} />
               <Metric value={String(totalMembers)} label={t('org.people')} className="border-x border-line" />
               <Metric value={String(departments.filter((node) => node.headEmployeeId).length)} label={t('org.heads')} />
             </div>
           </div>
 
-          {departments.length > 0 ? <span className="h-7 w-px" style={{ background: LINE }} /> : null}
-
-          {/* Department row on a shared bus line */}
-          <div className="flex items-start">
-            {departments.map((node, index) => {
-              const isCollapsed = collapsed.has(node.id);
-              return (
-                <div key={node.id || 'unassigned'} className="relative px-3 pt-7">
-                  {index > 0 ? (
-                    <span className="absolute top-0 right-1/2 left-0 h-px" style={{ background: LINE }} />
-                  ) : null}
-                  {index < departments.length - 1 ? (
-                    <span className="absolute top-0 right-0 left-1/2 h-px" style={{ background: LINE }} />
-                  ) : null}
-                  <span className="absolute top-0 left-1/2 h-7 w-px" style={{ background: LINE }} />
-
-                  <div
-                    data-org-card
-                    data-testid="org-card"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onOpenDept(node.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') onOpenDept(node.id);
-                    }}
-                    className={cn(
-                      'w-[15.5rem] cursor-pointer overflow-hidden rounded-xl border bg-surface shadow-card transition-colors',
-                      activeDeptId === node.id ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-ink/20',
-                    )}
-                  >
-                    <div className="h-[3px]" style={{ background: node.color }} />
-                    <div className="p-3">
-                      <div className="flex items-start gap-2.5">
-                        <span
-                          className="flex size-8 shrink-0 items-center justify-center rounded-lg"
-                          style={{ background: `${node.color}1A`, color: node.color }}
-                        >
-                          <Building2 className="size-4" />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-base font-bold leading-tight text-ink">{node.name}</div>
-                          <div className="mt-0.5 truncate text-2xs text-ink-tertiary">
-                            {node.members.length} {t('org.people')}
-                            {node.code ? ` · ${node.code}` : ''}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          aria-label={t('org.hire')}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onHire(node.id);
-                          }}
-                          className="rounded p-1 text-ink-quaternary hover:bg-ink/5 hover:text-accent"
-                        >
-                          <Plus className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between border-t border-line px-3 py-1">
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onToggle(node.id);
-                        }}
-                        className="text-2xs text-ink-tertiary hover:text-ink"
-                      >
-                        {isCollapsed ? `${t('org.expand')} ▸` : `${t('org.collapse')} ▾`}
-                      </button>
-                      <span className="font-mono text-2xs text-ink-quaternary">
-                        {node.members.filter((member) => member.status === 'active').length}/{node.members.length}
-                      </span>
-                    </div>
-
-                    {isCollapsed ? null : (
-                      <div className="border-t border-line">
-                        <MemberTree
-                          members={node.members}
-                          onOpen={onOpen}
-                          activeMemberId={activeMemberId}
-                          collapsed={collapsedMembers}
-                          onToggle={onToggleMember}
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          {departments.length > 0 ? (
+            <DeptRow
+              nodes={roots}
+              all={departments}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onOpen={onOpen}
+              onOpenDept={onOpenDept}
+              onHire={onHire}
+              activeMemberId={activeMemberId}
+              activeDeptId={activeDeptId}
+              collapsedMembers={collapsedMembers}
+              onToggleMember={onToggleMember}
+            />
+          ) : null}
         </div>
       </div>
     </div>
@@ -912,9 +984,143 @@ function TreeView({
       </div>
     </div>
   );
-}function BoardView({
+} 
+
+/**
+ * One level of the org chart: a horizontal bus, and one column per department.
+ *
+ * Recursive, because a department can have departments under it — the chart used to
+ * be a single flat row, which is what made `parent_id` decorative. The bus lines are
+ * drawn by each column's two half-rules so the row stays centred however many
+ * children there are.
+ */
+interface DeptTreeProps {
+  collapsed: Set<string>;
+  collapsedMembers: Set<string>;
+  onToggle: (id: string) => void;
+  onToggleMember: (id: string) => void;
+  onOpen: (member: OrgMember) => void;
+  onOpenDept: (departmentId: string) => void;
+  onHire: (departmentId: string) => void;
+  activeMemberId: string;
+  activeDeptId: string;
+}
+
+function DeptRow({ nodes, all, ...props }: DeptTreeProps & { nodes: DepartmentNode[]; all: DepartmentNode[] }) {
+  if (nodes.length === 0) return null;
+
+  return (
+    <div className="flex flex-col items-center">
+      <span className="h-7 w-px" style={{ background: LINE }} />
+      <div className="flex items-start">
+        {nodes.map((node, index) => (
+          <div key={node.id || 'unassigned'} className="relative flex flex-col items-center px-3 pt-7">
+            {index > 0 ? (
+              <span className="absolute top-0 right-1/2 left-0 h-px" style={{ background: LINE }} />
+            ) : null}
+            {index < nodes.length - 1 ? (
+              <span className="absolute top-0 right-0 left-1/2 h-px" style={{ background: LINE }} />
+            ) : null}
+            <span className="absolute top-0 left-1/2 h-7 w-px" style={{ background: LINE }} />
+
+            <DeptCard node={node} all={all} {...props} />
+
+            {props.collapsed.has(node.id) ? null : (
+              <DeptRow nodes={childrenOf(all, node.id)} all={all} {...props} />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DeptCard({ node, all, ...props }: DeptTreeProps & { node: DepartmentNode; all: DepartmentNode[] }) {
+  const { t } = useTranslation();
+  const isCollapsed = props.collapsed.has(node.id);
+  const kids = childrenOf(all, node.id);
+  const total = node.members.length + kids.reduce((sum, child) => sum + child.members.length, 0);
+
+  return (
+    <div
+      data-org-card
+      data-testid="org-card"
+      role="button"
+      tabIndex={0}
+      onClick={() => props.onOpenDept(node.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') props.onOpenDept(node.id);
+      }}
+      className={cn(
+        'w-[15.5rem] cursor-pointer overflow-hidden rounded-xl border bg-surface shadow-card transition-colors',
+        props.activeDeptId === node.id ? 'border-accent ring-1 ring-accent' : 'border-line hover:border-ink/20',
+      )}
+    >
+      <div className="h-[3px]" style={{ background: node.color }} />
+      <div className="p-3">
+        <div className="flex items-start gap-2.5">
+          <span
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg"
+            style={{ background: `${node.color}1A`, color: node.color }}
+          >
+            <Building2 className="size-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-base font-bold leading-tight text-ink">{node.name}</div>
+            <div className="mt-0.5 truncate text-2xs text-ink-tertiary">
+              {node.members.length} {t('org.people')}
+              {kids.length > 0 ? ` · ${t('org.subDepartments', { count: kids.length })}` : ''}
+              {node.code ? ` · ${node.code}` : ''}
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label={t('org.hire')}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onHire(node.id);
+            }}
+            className="rounded p-1 text-ink-quaternary hover:bg-ink/5 hover:text-accent"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between border-t border-line px-3 py-1">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onToggle(node.id);
+          }}
+          className="text-2xs text-ink-tertiary hover:text-ink"
+        >
+          {isCollapsed ? `${t('org.expand')} ▸` : `${t('org.collapse')} ▾`}
+        </button>
+        <span className="font-mono text-2xs text-ink-quaternary">
+          {node.members.filter((member) => member.status === 'active').length}/{total}
+        </span>
+      </div>
+
+      {isCollapsed ? null : (
+        <div className="border-t border-line">
+          <MemberTree
+            members={node.members}
+            onOpen={props.onOpen}
+            activeMemberId={props.activeMemberId}
+            collapsed={props.collapsedMembers}
+            onToggle={props.onToggleMember}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoardView({
   departments,
-  scopeId,
+  scopeIds,
   onOpen,
   onOpenDept,
   onHire,
@@ -924,7 +1130,7 @@ function TreeView({
   activeMemberId,
 }: {
   departments: DepartmentNode[];
-  scopeId: string;
+  scopeIds?: Set<string>;
   onOpen: (member: OrgMember) => void;
   onOpenDept: (departmentId: string) => void;
   onHire: (departmentId: string) => void;
@@ -937,19 +1143,25 @@ function TreeView({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overDeptId, setOverDeptId] = useState<string | null>(null);
-  const scopedName = departments.find((node) => node.id === scopeId)?.name;
+  const scopedName = departments.find(
+    (node) =>
+      node.id &&
+      scopeIds?.has(node.id) &&
+      // The focused root is the one whose parent is not part of the scope.
+      !(node.parentId && scopeIds?.has(node.parentId)),
+  )?.name;
   const dragging = departments.flatMap((node) => node.members).find((member) => member.id === draggingId);
 
   useEffect(() => {
-    if (!scopeId) return;
+    if (!scopeIds) return;
     const scroller = scrollerRef.current;
-    const column = scroller?.querySelector<HTMLElement>(`[data-dept-col="${scopeId}"]`);
+    const column = scroller?.querySelector<HTMLElement>('[data-in-scope="true"]');
     if (!scroller || !column) return;
     scroller.scrollTo({
       left: column.offsetLeft - (scroller.clientWidth - column.offsetWidth) / 2,
       behavior: 'smooth',
     });
-  }, [scopeId]);
+  }, [scopeIds]);
 
   const endDrag = () => {
     setDraggingId(null);
@@ -969,7 +1181,7 @@ function TreeView({
 
       <div ref={scrollerRef} className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-5 pt-2.5 pb-5">
         {departments.map((node) => {
-          const outOfScope = Boolean(scopeId) && node.id !== scopeId;
+          const outOfScope = Boolean(scopeIds) && !scopeIds!.has(node.id);
           const lead = node.members.find((member) => member.isHead);
           const spend = node.members.reduce((sum, member) => sum + member.costTodayUsd, 0);
           const canDrop = Boolean(dragging) && dragging!.departmentId !== node.id;
@@ -979,6 +1191,7 @@ function TreeView({
             <section
               key={node.id}
               data-dept-col={node.id}
+              data-in-scope={outOfScope ? 'false' : 'true'}
               data-testid="board-column"
               onDragOver={(event) => {
                 if (!canDrop) return;
@@ -1179,18 +1392,20 @@ function MemberStatus({ member }: { member: OrgMember }) {
 
 function RosterView({
   departments,
-  scopeId,
+  scopeIds,
   onOpen,
   membersById,
 }: {
   departments: DepartmentNode[];
-  scopeId: string;
+  scopeIds?: Set<string>;
   onOpen: (member: OrgMember) => void;
   membersById: Map<string, OrgMember>;
 }) {
   const { t } = useTranslation();
   const rows = departments.flatMap((node) => node.members.map((member) => ({ member, department: node })));
-  const scopedName = departments.find((node) => node.id === scopeId)?.name;
+  const scopedName = departments.find(
+    (node) => node.id && scopeIds?.has(node.id) && !(node.parentId && scopeIds?.has(node.parentId)),
+  )?.name;
 
   return (
     <div className="flex h-full min-h-0 flex-col px-5 py-3">
@@ -1220,7 +1435,7 @@ function RosterView({
                 onClick={() => onOpen(member)}
                 className={cn(
                   'cursor-pointer border-t border-line hover:bg-surface-hover',
-                  scopeId ? (department.id === scopeId ? 'bg-accent-soft/50' : 'opacity-50') : '',
+                  scopeIds ? (scopeIds.has(department.id) ? 'bg-accent-soft/50' : 'opacity-50') : '',
                 )}
               >
                 <td className="px-3 py-1.5">
@@ -1255,12 +1470,12 @@ function RosterView({
 
 function BadgeView({
   departments,
-  scopeId,
+  scopeIds,
   onOpen,
   activeMemberId,
 }: {
   departments: DepartmentNode[];
-  scopeId: string;
+  scopeIds?: Set<string>;
   onOpen: (member: OrgMember) => void;
   activeMemberId: string;
 }) {
@@ -1274,15 +1489,15 @@ function BadgeView({
             data-testid="badge-group"
             className={cn(
               'rounded-xl transition-opacity',
-              scopeId && node.id !== scopeId ? 'opacity-50' : '',
-              scopeId && node.id === scopeId ? 'ring-1 ring-accent' : '',
+              scopeIds && !scopeIds.has(node.id) ? 'opacity-50' : '',
+              scopeIds && scopeIds.has(node.id) ? 'ring-1 ring-accent' : '',
             )}
           >
             <div className="mb-2.5 flex items-center gap-2">
               <span aria-hidden className="h-4 w-1 rounded-full" style={{ background: node.color }} />
               <h3 className="text-base-plus font-bold text-ink">{node.name}</h3>
               <span className="text-2xs text-ink-quaternary">{node.members.length}</span>
-              {scopeId && node.id !== scopeId ? (
+              {scopeIds && !scopeIds.has(node.id) ? (
                 <span className="rounded bg-surface-muted px-1 text-3xs text-ink-quaternary">{t('org.outOfScope')}</span>
               ) : null}
             </div>
@@ -1332,22 +1547,36 @@ function BadgeView({
 
 function DepartmentSummary({
   department,
+  departments,
   onHire,
   onOpenGroup,
   onOpenMember,
+  onUpdate,
+  onArchive,
+  onAppointHead,
+  onAppointActingHead,
 }: {
   department?: DepartmentNode;
+  departments: DepartmentNode[];
   onHire: () => void;
   onOpenGroup: () => void;
   onOpenMember: (member: OrgMember) => void;
+  onUpdate: (input: DepartmentEditInput) => void;
+  onArchive: () => void;
+  onAppointHead: (employeeId: string | null) => void;
+  onAppointActingHead: (employeeId: string | null) => void;
 }) {
   const { t } = useTranslation();
   if (!department) return <p className="text-sm text-ink-tertiary">{t('org.pickDepartment')}</p>;
 
   const lead = department.members.find((member) => member.isHead);
+  const acting = department.members.find((member) => member.isActingHead);
   const spend = department.members.reduce((sum, member) => sum + member.costTodayUsd, 0);
   const done = department.members.reduce((sum, member) => sum + member.tasksDone, 0);
   const working = department.members.filter((member) => member.activeTasks > 0).length;
+  const parent = department.parentId
+    ? departments.find((node) => node.id === department.parentId)
+    : undefined;
 
   return (
     <>
@@ -1362,6 +1591,9 @@ function DepartmentSummary({
           <div className="min-w-0">
             <h3 className="text-base-plus leading-snug font-bold text-ink">{department.name}</h3>
             <div className="mt-0.5 font-mono text-2xs text-ink-quaternary">{department.code || '—'}</div>
+            <div className="mt-0.5 text-2xs text-ink-tertiary">
+              {parent ? parent.name : t('org.topLevel')}
+            </div>
           </div>
         </div>
         <p className="mt-3 text-xs leading-relaxed text-ink-secondary">{department.description || '—'}</p>
@@ -1388,12 +1620,58 @@ function DepartmentSummary({
 
       <DepartmentFacts departmentId={department.id} />
 
+      <DepartmentJobs departmentId={department.id} members={department.members} onHire={onHire} />
+
+      <DepartmentSettings
+        department={department}
+        departments={departments}
+        onUpdate={onUpdate}
+        onArchive={onArchive}
+      />
+
       <DossierSection title={t('org.head')}>
         {lead ? (
           <MemberRow member={lead} isLead onClick={() => onOpenMember(lead)} />
         ) : (
           <p className="text-xs text-ink-quaternary">{t('org.headVacant')}</p>
         )}
+        <select
+          data-testid="dept-head-select"
+          value={lead?.id ?? ''}
+          onChange={(event) => onAppointHead(event.target.value || null)}
+          className="mt-2 h-7 w-full rounded-md bg-surface-muted px-2 text-xs text-ink outline-none focus:ring-1 focus:ring-accent"
+        >
+          <option value="">{t('org.headNone')}</option>
+          {department.members
+            .filter((member) => member.status === 'active')
+            .map((member) => (
+              <option key={member.id} value={member.id}>
+                {member.name} · {member.title}
+              </option>
+            ))}
+        </select>
+
+        <div className="mt-2.5 flex items-center gap-2 text-xs">
+          <span className="flex shrink-0 items-center gap-1 text-ink-tertiary">
+            <UserCog className="size-3.5" />
+            {t('org.actingHead')}
+          </span>
+          <select
+            data-testid="dept-acting-head"
+            value={acting?.id ?? ''}
+            onChange={(event) => onAppointActingHead(event.target.value || null)}
+            className="h-7 min-w-0 flex-1 rounded-md bg-surface-muted px-2 text-xs text-ink outline-none focus:ring-1 focus:ring-accent"
+          >
+            <option value="">{t('org.actingHeadNone')}</option>
+            {department.members
+              .filter((member) => member.status === 'active' && member.id !== lead?.id)
+              .map((member) => (
+                <option key={member.id} value={member.id}>
+                  {member.name} · {member.title}
+                </option>
+              ))}
+          </select>
+        </div>
       </DossierSection>
 
       <DossierSection title={`${t('org.members')} · ${department.members.length}`}>
@@ -1413,6 +1691,184 @@ function DepartmentSummary({
         )}
       </DossierSection>
     </>
+  );
+}
+
+/**
+ * Headcount slots for one department.
+ *
+ * `filled / headcount` is the only number here that the boss actually acts on: it is
+ * what refuses the next hire. `filled` is derived from live seats by the service, so
+ * the two can never drift apart the way a stored counter would.
+ */
+function DepartmentJobs({
+  departmentId,
+  members,
+  onHire,
+}: {
+  departmentId: string;
+  members: OrgMember[];
+  onHire: () => void;
+}) {
+  const { t } = useTranslation();
+  const [jobs, setJobs] = useState<JobNode[]>([]);
+  const [title, setTitle] = useState('');
+  const [headcount, setHeadcount] = useState('1');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setJobs(await window.opc!.org.jobs(departmentId));
+    } catch {
+      setJobs([]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departmentId]);
+
+  const act = async (run: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await run();
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const total = jobs.reduce((sum, job) => sum + job.headcount, 0);
+  const filled = jobs.reduce((sum, job) => sum + job.filled, 0);
+  // People without a slot are not hidden: a department whose jobs say 2/2 but has four
+  // people is over establishment, and that is exactly what the boss needs to see.
+  const unplanned = members.filter((member) => member.status === 'active' && !member.jobId).length;
+
+  return (
+    <DossierSection title={`${t('org.jobs')} · ${filled}/${total}`}>
+      {unplanned > 0 ? (
+        <p className="mb-1.5 text-2xs text-ink-quaternary">
+          {t('org.jobsUnplanned', { count: unplanned })}
+        </p>
+      ) : null}
+      {jobs.length === 0 ? (
+        <p className="text-xs text-ink-quaternary">{t('org.jobsEmpty')}</p>
+      ) : (
+        <ul data-testid="dept-jobs" className="space-y-1.5">
+          {jobs.map((job) => {
+            const full = job.filled >= job.headcount;
+            return (
+              <li
+                key={job.id}
+                data-testid="dept-job-row"
+                className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-2xs font-medium text-ink">{job.title}</span>
+                  <span className="shrink-0 rounded bg-surface px-1 font-mono text-3xs text-ink-tertiary">
+                    {job.level}
+                  </span>
+                  <span
+                    className={cn(
+                      'shrink-0 font-mono text-3xs',
+                      full ? 'text-danger' : 'text-success',
+                    )}
+                  >
+                    {job.filled}/{job.headcount}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-1">
+                  <div className="flex h-1 flex-1 gap-px overflow-hidden rounded-full bg-line">
+                    {Array.from({ length: Math.max(job.headcount, 0) }).map((_, index) => (
+                      <span
+                        key={index}
+                        className="flex-1"
+                        style={{ background: index < job.filled ? 'var(--accent)' : 'transparent' }}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={t('org.jobHeadcount')}
+                    title={t('org.jobHeadcount')}
+                    onClick={() =>
+                      void act(() =>
+                        window.opc!.org.updateJob({ id: job.id, headcount: job.headcount + 1 }),
+                      )
+                    }
+                    className="flex size-5 shrink-0 items-center justify-center rounded text-ink-quaternary hover:bg-ink/5 hover:text-ink"
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('org.jobRemove')}
+                    title={t('org.jobRemove')}
+                    onClick={() => void act(() => window.opc!.org.archiveJob(job.id))}
+                    className="flex size-5 shrink-0 items-center justify-center rounded text-ink-quaternary hover:bg-ink/5 hover:text-danger"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="mt-2 flex gap-1.5">
+        <input
+          data-testid="dept-job-title"
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder={t('org.jobTitleHint')}
+          className="h-7 min-w-0 flex-1 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
+        />
+        <input
+          data-testid="dept-job-headcount"
+          value={headcount}
+          inputMode="numeric"
+          onChange={(event) => setHeadcount(event.target.value.replace(/[^\d]/g, ''))}
+          aria-label={t('org.jobHeadcount')}
+          className="h-7 w-12 shrink-0 rounded-md border border-line bg-surface px-2 text-center font-mono text-xs text-ink outline-none focus:border-accent"
+        />
+        <button
+          type="button"
+          data-testid="dept-job-add"
+          disabled={busy || !title.trim()}
+          onClick={() =>
+            void act(async () => {
+              await window.opc!.org.createJob({
+                departmentId,
+                title: title.trim(),
+                headcount: Number(headcount || '1'),
+              });
+              setTitle('');
+              setHeadcount('1');
+            })
+          }
+          className={cn(buttonClass.secondary, 'h-7 shrink-0 px-2 text-2xs disabled:opacity-40')}
+        >
+          <Plus className="size-3" />
+        </button>
+      </div>
+      {jobs.some((job) => job.filled < job.headcount) ? (
+        <button
+          type="button"
+          onClick={onHire}
+          className="mt-1.5 flex h-7 w-full items-center justify-center gap-1 rounded-md text-2xs text-ink-tertiary hover:bg-surface-hover hover:text-accent"
+        >
+          <UserPlus className="size-3" />
+          {t('org.hireInto')}
+        </button>
+      ) : null}
+      {error ? <p className="mt-1 text-2xs text-danger">{error}</p> : null}
+    </DossierSection>
   );
 }
 
@@ -1521,6 +1977,149 @@ function DepartmentFacts({ departmentId }: { departmentId: string }) {
   );
 }
 
+/**
+ * Rename / re-code / re-parent / archive.
+ *
+ * One section, because these are all "the card does not say what this department
+ * actually is" edits and the boss reaches for them from the same panel. Re-parenting
+ * is a plain select: the option list excludes the department's own subtree, so the
+ * only way to try a cycle is to call the IPC directly — and the service refuses that
+ * too.
+ */
+function DepartmentSettings({
+  department,
+  departments,
+  onUpdate,
+  onArchive,
+}: {
+  department: DepartmentNode;
+  departments: DepartmentNode[];
+  onUpdate: (input: DepartmentEditInput) => void;
+  onArchive: () => void;
+}) {
+  const { t } = useTranslation();
+  const [name, setName] = useState(department.name);
+  const [code, setCode] = useState(department.code);
+  const [description, setDescription] = useState(department.description);
+  const [confirming, setConfirming] = useState(false);
+
+  // Another department selected, or this one saved: start from what is stored.
+  useEffect(() => {
+    setName(department.name);
+    setCode(department.code);
+    setDescription(department.description);
+    setConfirming(false);
+  }, [department.id, department.name, department.code, department.description]);
+
+  const dirty =
+    name.trim() !== department.name ||
+    code.trim().toUpperCase() !== department.code ||
+    description.trim() !== department.description;
+  const blocked = subtreeIds(departments, department.id);
+
+  return (
+    <DossierSection title={t('org.deptSettings')}>
+      <div className="space-y-1.5">
+        <input
+          data-testid="dept-name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder={t('org.nameHint')}
+          className="h-7 w-full rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
+        />
+        <input
+          data-testid="dept-code"
+          value={code}
+          onChange={(event) => setCode(event.target.value.toUpperCase())}
+          placeholder={t('org.deptCode')}
+          className="h-7 w-full rounded-md border border-line bg-surface px-2 font-mono text-xs text-ink outline-none focus:border-accent"
+        />
+        <textarea
+          data-testid="dept-description"
+          rows={2}
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder={t('org.deptDescriptionPlaceholder')}
+          className="w-full resize-none rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-accent"
+        />
+        <button
+          type="button"
+          data-testid="dept-save"
+          disabled={!dirty || !name.trim()}
+          onClick={() =>
+            onUpdate({
+              id: department.id,
+              name: name.trim(),
+              code: code.trim().toUpperCase(),
+              description: description.trim(),
+            })
+          }
+          className={cn(buttonClass.secondary, 'h-7 w-full text-2xs disabled:opacity-40')}
+        >
+          {t('org.deptSave')}
+        </button>
+
+        <label className="mt-2 flex items-center gap-2 text-xs">
+          <span className="flex shrink-0 items-center gap-1 text-ink-tertiary">
+            <Network className="size-3.5" />
+            {t('org.parentDepartment')}
+          </span>
+          <select
+            data-testid="dept-parent"
+            value={department.parentId ?? ''}
+            onChange={(event) => onUpdate({ id: department.id, parentId: event.target.value || null })}
+            className="h-7 min-w-0 flex-1 rounded-md bg-surface-muted px-2 text-xs text-ink outline-none focus:ring-1 focus:ring-accent"
+          >
+            <option value="">{t('org.topLevel')}</option>
+            {departments
+              .filter((node) => !blocked.has(node.id))
+              .map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name}
+                </option>
+              ))}
+          </select>
+        </label>
+
+        {confirming ? (
+          <div className="mt-2 rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+            <p className="text-2xs leading-relaxed text-danger">
+              {t('org.archiveConfirm', { name: department.name })}
+            </p>
+            <div className="mt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                className="h-6 rounded-md px-2 text-2xs text-ink-tertiary hover:bg-ink/5"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="dept-archive-confirm"
+                onClick={onArchive}
+                className="h-6 rounded-md bg-danger px-2 text-2xs font-medium text-white"
+              >
+                {t('org.archiveDepartment')}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-testid="dept-archive"
+            onClick={() => setConfirming(true)}
+            className="mt-2 flex h-7 w-full items-center justify-center gap-1 rounded-md border border-danger/30 text-2xs text-danger hover:bg-danger/5"
+          >
+            <X className="size-3" />
+            {t('org.archiveDepartment')}
+          </button>
+        )}
+      </div>
+    </DossierSection>
+  );
+}
+
 function MemberRow({ member, isLead, onClick }: { member: OrgMember; isLead: boolean; onClick: () => void }) {
   return (
     <button
@@ -1550,15 +2149,20 @@ function MemberRow({ member, isLead, onClick }: { member: OrgMember; isLead: boo
 function NewDepartmentModal({
   onClose,
   employees,
+  departments,
+  defaultParentId,
   onSubmit,
 }: {
   employees: OrgMember[];
+  departments: DepartmentNode[];
+  defaultParentId?: string;
   onClose: () => void;
   onSubmit: (input: {
     name: string;
     code?: string;
     description?: string;
     headEmployeeId?: string;
+    parentId?: string;
   }) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -1566,6 +2170,7 @@ function NewDepartmentModal({
   const [code, setCode] = useState('');
   const [description, setDescription] = useState('');
   const [headEmployeeId, setHeadEmployeeId] = useState('');
+  const [parentId, setParentId] = useState(defaultParentId ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1579,6 +2184,7 @@ function NewDepartmentModal({
         code: code.trim().toUpperCase() || undefined,
         description: description.trim() || undefined,
         headEmployeeId: headEmployeeId || undefined,
+        parentId: parentId || undefined,
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -1622,6 +2228,21 @@ function NewDepartmentModal({
               placeholder="PD-01"
               className="h-8 w-full rounded-md border border-line bg-surface px-2 font-mono text-sm text-ink outline-none focus:border-accent"
             />
+          </Field>
+          <Field label={t('org.parentDepartment')} hint={t('org.topLevel')}>
+            <select
+              data-testid="new-dept-parent"
+              value={parentId}
+              onChange={(event) => setParentId(event.target.value)}
+              className="h-8 w-full rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
+            >
+              <option value="">{t('org.topLevel')}</option>
+              {departments.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name}
+                </option>
+              ))}
+            </select>
           </Field>
           <Field label={t('org.head')} hint={t('org.headHint')}>
             <select
@@ -1685,6 +2306,7 @@ function Metric({ value, label, className = '' }: { value: string; label: string
 
 function MemberDetail({
   member,
+  boss,
   manager,
   reports,
   departments,
@@ -1694,6 +2316,8 @@ function MemberDetail({
   onOpenDeptGroup,
 }: {
   member: OrgMember;
+  /** The single human: the reporting chain starts at a person, not at a label. */
+  boss: { name: string; avatar?: string };
   manager?: OrgMember;
   reports: OrgMember[];
   departments: DepartmentNode[];
@@ -1800,7 +2424,7 @@ function MemberDetail({
       <DossierSection title={t('org.reporting')}>
         <ol>
           {[
-            { key: 'ceo', label: t('org.founder'), role: t('org.founderRole'), onClick: undefined },
+            { key: 'ceo', label: boss.name, role: t('org.founderRole'), onClick: undefined },
             ...(manager && manager.id !== member.id
               ? [
                   {
@@ -1817,7 +2441,11 @@ function MemberDetail({
               {index < list.length - 1 ? (
                 <span aria-hidden className="absolute top-6 bottom-0 left-[11.5px] w-px bg-line" />
               ) : null}
-              <Avatar name={node.label} size="xs" />
+              <Avatar
+                name={node.label}
+                {...(node.key === 'ceo' && boss.avatar ? { src: boss.avatar } : {})}
+                size="xs"
+              />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm-plus font-medium text-ink">{node.label}</div>
                 <div className="truncate text-2xs text-ink-quaternary">{node.role}</div>
@@ -1843,7 +2471,31 @@ function MemberDetail({
           <StatTile label={t('org.dailyCost')} value={`$${member.costTodayUsd.toFixed(2)}`} accent="text-success" />
           <StatTile label={t('org.hiredAt')} value={new Date(member.hiredAt || Date.now()).toLocaleDateString()} />
         </div>
+        {member.terminatedAt ? (
+          <p className="mt-2 text-2xs text-ink-quaternary">
+            {t('org.terminatedAt')} {new Date(member.terminatedAt).toLocaleDateString()}
+          </p>
+        ) : null}
+        {member.probationEndsAt ? (
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-warning/10 px-2.5 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-2xs text-ink-secondary">
+              {t('org.probationUntil', { date: new Date(member.probationEndsAt).toLocaleDateString() })}
+            </span>
+            <button
+              type="button"
+              data-testid="confirm-probation"
+              onClick={() => onPersonnel({ employeeId: member.id, action: 'confirm' })}
+              className="h-6 shrink-0 rounded-md bg-accent px-2 text-2xs font-medium text-white"
+            >
+              {t('org.confirm')}
+            </button>
+          </div>
+        ) : null}
       </DossierSection>
+
+      <EmploymentTimeline employeeId={member.id} departments={departments} bossName={boss.name} />
+
+      <PerformanceReviews employeeId={member.id} />
 
       <DossierSection title={t('org.stack')}>
         <div className="flex items-center gap-2 rounded-lg bg-surface-muted px-3 py-2 text-xs text-ink">
@@ -1964,9 +2616,268 @@ function MemberDetail({
             {t('org.reinstate')}
           </button>
         )}
+
+        <button
+          type="button"
+          data-testid="export-employee-package"
+          onClick={() =>
+            void window.opc!.market.exportPackage({
+              kind: 'employee',
+              name: member.name,
+              employeeIds: [member.id],
+            })
+          }
+          className={cn(buttonClass.secondary, 'mt-2 w-full')}
+        >
+          <PackagePlus className="size-3.5" />
+          {t('org.exportPackage')}
+        </button>
       </DossierSection>
     </>
   );
+}
+
+/**
+ * The HR timeline for one person: what happened, when, and — for promotions — from
+ * what to what. Derived nothing: these rows are written by the org service inside the
+ * same transaction as the change, so the history cannot drift from the seat.
+ */
+/**
+ * Performance reviews for one person.
+ *
+ * The list is the point: a single score is an opinion, a series is a trend, and the
+ * trend is what a promotion decision is supposed to rest on. The form stays open so
+ * writing one does not mean finding a separate page.
+ */
+function PerformanceReviews({ employeeId }: { employeeId: string }) {
+  const { t } = useTranslation();
+  const [reviews, setReviews] = useState<Evaluation[]>([]);
+  const [score, setScore] = useState('4');
+  const [kind, setKind] = useState<Evaluation['kind']>('periodic');
+  const [periodKey, setPeriodKey] = useState('');
+  const [summary, setSummary] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setReviews(await window.opc!.org.evaluations(employeeId));
+    } catch {
+      setReviews([]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeId]);
+
+  const submit = async () => {
+    const value = Number(score);
+    if (busy || !Number.isFinite(value)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setReviews(
+        await window.opc!.org.addEvaluation({
+          employeeId,
+          kind,
+          periodKey: periodKey.trim() || undefined,
+          scoreOverall: value,
+          summary: summary.trim() || undefined,
+        }),
+      );
+      setSummary('');
+      setPeriodKey('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <DossierSection title={`${t('org.reviews')} · ${reviews.length}`}>
+      {reviews.length === 0 ? (
+        <p className="text-xs text-ink-quaternary">{t('org.reviewsEmpty')}</p>
+      ) : (
+        <ul data-testid="reviews" className="space-y-1.5">
+          {reviews.map((review) => (
+            <li
+              key={review.id}
+              data-testid="review-row"
+              className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5"
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="rounded bg-surface px-1 text-3xs text-ink-tertiary">
+                  {t(`org.reviewKind.${review.kind}`)}
+                </span>
+                {review.periodKey ? (
+                  <span className="truncate font-mono text-3xs text-ink-quaternary">{review.periodKey}</span>
+                ) : null}
+                <span className="flex-1" />
+                <span className="shrink-0 font-mono text-2xs font-semibold text-ink">
+                  {review.scoreOverall.toFixed(1)}
+                </span>
+                <span className="shrink-0 text-3xs text-ink-quaternary">/5</span>
+              </div>
+              {review.summary ? (
+                <p className="mt-1 line-clamp-2 text-2xs leading-relaxed text-ink-secondary">{review.summary}</p>
+              ) : null}
+              <div className="mt-0.5 font-mono text-3xs text-ink-quaternary">
+                {new Date(review.at).toLocaleDateString()}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-2 space-y-1.5">
+        <div className="flex gap-1.5">
+          <select
+            data-testid="review-kind"
+            value={kind}
+            onChange={(event) => setKind(event.target.value as Evaluation['kind'])}
+            className="h-7 min-w-0 flex-1 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none focus:border-accent"
+          >
+            {(['probation', 'periodic', 'project', 'exit'] as const).map((value) => (
+              <option key={value} value={value}>
+                {t(`org.reviewKind.${value}`)}
+              </option>
+            ))}
+          </select>
+          <input
+            data-testid="review-score"
+            value={score}
+            inputMode="decimal"
+            onChange={(event) => setScore(event.target.value.replace(/[^\d.]/g, ''))}
+            aria-label={t('org.reviewScore')}
+            className="h-7 w-12 shrink-0 rounded-md border border-line bg-surface px-1.5 text-center font-mono text-xs text-ink outline-none focus:border-accent"
+          />
+          <input
+            data-testid="review-period"
+            value={periodKey}
+            onChange={(event) => setPeriodKey(event.target.value)}
+            placeholder={t('org.reviewPeriodHint')}
+            className="h-7 w-24 shrink-0 rounded-md border border-line bg-surface px-1.5 font-mono text-xs text-ink outline-none focus:border-accent"
+          />
+        </div>
+        <input
+          data-testid="review-summary"
+          value={summary}
+          onChange={(event) => setSummary(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void submit();
+          }}
+          placeholder={t('org.reviewSummaryHint')}
+          className="h-7 w-full rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
+        />
+        <button
+          type="button"
+          data-testid="review-add"
+          disabled={busy || !score.trim()}
+          onClick={() => void submit()}
+          className={cn(buttonClass.secondary, 'h-7 w-full text-2xs disabled:opacity-40')}
+        >
+          {t('org.reviewAdd')}
+        </button>
+        {error ? <p className="text-2xs text-danger">{error}</p> : null}
+      </div>
+    </DossierSection>
+  );
+}
+
+function EmploymentTimeline({
+  employeeId,
+  departments,
+  bossName,
+}: {
+  employeeId: string;
+  departments: DepartmentNode[];
+  /** `'boss'` is the only human actor; show their name rather than the literal id. */
+  bossName: string;
+}) {
+  const { t } = useTranslation();
+  const [events, setEvents] = useState<EmploymentEvent[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    void window.opc!.org
+      .events(employeeId, 30)
+      .then((rows) => {
+        if (alive) setEvents(rows);
+      })
+      .catch(() => {
+        if (alive) setEvents([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [employeeId]);
+
+  if (events.length === 0) return null;
+  const nameOf = (id?: string) => (id ? departments.find((node) => node.id === id)?.name ?? '—' : '');
+
+  return (
+    <DossierSection title={`${t('org.timeline')} · ${events.length}`}>
+      <ol data-testid="employment-timeline" className="space-y-2">
+        {events.map((event, index) => (
+          <li key={event.id} className="relative flex gap-2.5 pb-0.5">
+            {index < events.length - 1 ? (
+              <span aria-hidden className="absolute top-4 bottom-0 left-[3.5px] w-px bg-line" />
+            ) : null}
+            <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-accent" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xs font-medium text-ink">{t(`org.event.${event.kind}`)}</span>
+                <span className="font-mono text-3xs text-ink-quaternary">
+                  {new Date(event.at).toLocaleDateString()}
+                </span>
+              </div>
+              <div className="mt-0.5 truncate text-3xs text-ink-tertiary">
+                {describeEvent(event, nameOf, t)}
+              </div>
+              <div className="mt-0.5 truncate text-3xs text-ink-quaternary">
+                {event.actor === 'boss'
+                  ? t('org.eventBy', { name: bossName })
+                  : t('org.eventBy', { name: nameOf(event.actor) })}
+                {event.reason ? ` · ${event.reason}` : ''}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </DossierSection>
+  );
+}
+
+/** One line per event kind: a move shows both ends, a promotion shows both levels. */
+function describeEvent(
+  event: EmploymentEvent,
+  nameOf: (id?: string) => string,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  switch (event.kind) {
+    case 'transferred':
+      return event.fromDepartmentId
+        ? `${nameOf(event.fromDepartmentId)} → ${nameOf(event.toDepartmentId)}`
+        : nameOf(event.toDepartmentId);
+    case 'promoted':
+      return [event.fromLevel, event.toLevel].filter(Boolean).join(' → ') +
+        (event.toTitle && event.toTitle !== event.fromTitle ? ` · ${event.toTitle}` : '');
+    case 'reinstated':
+      return nameOf(event.toDepartmentId);
+    case 'confirmed':
+      return nameOf(event.toDepartmentId);
+    case 'hired':
+    case 'head_appointed':
+      return [nameOf(event.toDepartmentId), event.toTitle].filter(Boolean).join(' · ');
+    case 'terminated':
+    case 'head_removed':
+      return [nameOf(event.fromDepartmentId), event.fromTitle].filter(Boolean).join(' · ');
+    default:
+      return t('org.event.unknown');
+  }
 }
 
 function DossierSection({ title, children }: { title: string; children: React.ReactNode }) {

@@ -14,6 +14,7 @@ export type NetworkRequestInit = Parameters<NetworkFetch>[1];
 export type NetworkPurpose =
   | 'model'
   | 'image'
+  | 'speech'
   | 'tool'
   | 'probe'
   | 'acceptance'

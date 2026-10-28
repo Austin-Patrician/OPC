@@ -5,11 +5,13 @@ import {
   Clock,
   Folder,
   Image as ImageIcon,
+  Loader2,
   Mic,
   MonitorSmartphone,
   Scissors,
   Send,
   Smile,
+  Square,
   Zap,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -17,6 +19,7 @@ import type { Agent } from '@/entities/agent/model/types';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { QUICK_PROMPTS } from '../model/quickPrompts';
+import { useVoiceRecorder } from '../model/useVoiceRecorder';
 import { IconButton } from '@/shared/ui/IconButton';
 
 interface ComposerProps {
@@ -35,7 +38,17 @@ export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: Comp
   const [text, setText] = useState('');
   const [showMention, setShowMention] = useState(false);
   const [showQuickPrompts, setShowQuickPrompts] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const recorder = useVoiceRecorder({
+    onTranscript: (transcript) => {
+      setText((previous) => (previous.trim() ? `${previous.trim()} ${transcript}` : transcript));
+      setVoiceError(null);
+      textareaRef.current?.focus();
+    },
+    onError: (message) => setVoiceError(message),
+  });
 
   const canSend = text.trim().length > 0;
 
@@ -141,8 +154,24 @@ export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: Comp
           <IconButton label={t('chat.action.devices')} className="hidden sm:inline-flex">
             <MonitorSmartphone className="size-[1.125rem]" strokeWidth={1.6} />
           </IconButton>
-          <IconButton label={t('chat.action.voice')} className="hidden md:inline-flex">
-            <Mic className="size-[1.125rem]" strokeWidth={1.6} />
+          <IconButton
+            label={recorder.state === 'recording' ? t('chat.speech.recording') : t('chat.action.voice')}
+            active={recorder.state === 'recording'}
+            disabled={recorder.state === 'transcribing'}
+            onClick={() => {
+              setVoiceError(null);
+              if (recorder.state === 'recording') recorder.stop();
+              else void recorder.start();
+            }}
+            className={cn('hidden md:inline-flex', recorder.state === 'recording' && 'text-danger')}
+          >
+            {recorder.state === 'transcribing' ? (
+              <Loader2 className="size-[1.125rem] animate-spin" strokeWidth={1.6} />
+            ) : recorder.state === 'recording' ? (
+              <Square className="size-[1.125rem] fill-current" strokeWidth={1.6} />
+            ) : (
+              <Mic className="size-[1.125rem]" strokeWidth={1.6} />
+            )}
           </IconButton>
 
           <div className="ml-2 hidden items-center gap-1.5 border-l border-line-strong pl-2 lg:flex">
@@ -171,6 +200,17 @@ export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: Comp
       </div>
 
       <div className="flex flex-1 flex-col px-4 pt-1 pb-2">
+        {recorder.state === 'recording' ? (
+          <p className="pb-1 text-xs text-danger">{t('chat.speech.recording')}</p>
+        ) : recorder.state === 'transcribing' ? (
+          <p className="pb-1 text-xs text-ink-tertiary">{t('chat.speech.transcribing')}</p>
+        ) : voiceError ? (
+          <p className="pb-1 text-xs text-danger">
+            {voiceError.includes('请先添加并选择')
+              ? t('chat.speech.noAsr')
+              : `${t('chat.speech.transcribeFailed')}：${voiceError}`}
+          </p>
+        ) : null}
         <textarea
           ref={textareaRef}
           value={text}

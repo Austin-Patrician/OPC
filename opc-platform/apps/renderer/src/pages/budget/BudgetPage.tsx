@@ -1,11 +1,204 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Gauge, PauseCircle, RefreshCw, Wallet } from 'lucide-react';
+import { AlertTriangle, Building2, Coins, Gauge, PauseCircle, RefreshCw, Wallet } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { BudgetOverview, BudgetView } from '@opc/shared/ipc';
+import type { BudgetOverview, BudgetView, CostCentersOverview, PayrollOverview } from '@opc/shared/ipc';
 import { PageHeader, Section } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
 
 /** 展示顺序：钱最先被决策的维度排在最前（§8.1）。 */
+/**
+ * 薪酬视图：把同一个账本读成"这个月每个人花了多少钱"。
+ *
+ * 三列数字的来源各不相同，所以标签必须诚实：
+ * - 已花 = 账本里真实结算过的金额（事实）；
+ * - 折合月薪 = 用**已观测到的**单价把 token 上限折算成钱（推算，没花过就没有）；
+ * - 预计月末 = 按当前速度直线外推到月底（预测）。
+ */
+function PayrollSection({ periodKey }: { periodKey: string }) {
+  const { t } = useTranslation();
+  const [view, setView] = useState<PayrollOverview | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void window.opc?.budget
+      .payroll()
+      .then((next) => {
+        if (alive) setView(next);
+      })
+      .catch(() => {
+        if (alive) setView(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [periodKey]);
+
+  const lines = view?.lines ?? [];
+  const money = (value: number) => `$${value.toFixed(2)}`;
+
+  return (
+    <Section
+      title={`${t('budget.payrollTitle')} · ${view?.headcount ?? 0}`}
+      description={t('budget.payrollHint')}
+      action={<Coins className="size-4 text-ink-quaternary" />}
+    >
+      {lines.length === 0 ? (
+        <p className="px-4 py-6 text-center text-sm text-ink-quaternary">{t('budget.payrollEmpty')}</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 border-b border-line px-4 py-2.5 text-sm">
+            <span className="text-ink-tertiary">
+              {t('budget.payrollTotal')}{' '}
+              <span className="font-mono font-semibold text-ink">{money(view?.totalSpentUsd ?? 0)}</span>
+            </span>
+            <span className="text-ink-tertiary">
+              {t('budget.payrollProjected')}{' '}
+              <span className="font-mono text-ink-secondary">{money(view?.totalProjectedUsd ?? 0)}</span>
+            </span>
+          </div>
+          <ul data-testid="payroll" className="divide-y divide-line">
+            {lines.map((line) => (
+              <li key={line.employeeId} data-testid="payroll-row" className="px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm-plus font-medium text-ink">
+                    {line.name}
+                    <span className="ml-1.5 text-xs text-ink-quaternary">
+                      {line.title}
+                      {line.departmentName ? ` · ${line.departmentName}` : ''}
+                    </span>
+                  </span>
+                  <span className="shrink-0 font-mono text-sm font-semibold text-ink">{money(line.spentUsd)}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
+                  <span className="font-mono">{line.tokensUsed.toLocaleString()} tok</span>
+                  <span>{t('budget.payrollShare', { percent: Math.round(line.share * 100) })}</span>
+                  {line.budgetUsd !== undefined ? (
+                    <span>{t('budget.payrollCap', { amount: money(line.budgetUsd) })}</span>
+                  ) : (
+                    <span>{t('budget.payrollUnpriced')}</span>
+                  )}
+                  <span className="ml-auto">{t('budget.payrollForecast', { amount: money(line.projectedUsd) })}</span>
+                </div>
+                <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/8">
+                  <div
+                    className="h-full rounded-full bg-accent"
+                    style={{ width: `${Math.min(100, Math.round(line.share * 100))}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Section>
+  );
+}
+
+/**
+ * 成本中心：本月每个部门、每个项目各花了多少钱。
+ *
+ * 与薪酬视图同源不同轴。两条轴只在"结算时知道它"的情况下才记账，所以合计数通常小于
+ * 公司合计；差额作为**无法归属**显式列出来，而不是让两份报表对不上。
+ */
+function CostCentersSection({ periodKey }: { periodKey: string }) {
+  const { t } = useTranslation();
+  const [view, setView] = useState<CostCentersOverview | null>(null);
+  const [axis, setAxis] = useState<'department' | 'project'>('department');
+
+  useEffect(() => {
+    let alive = true;
+    void window.opc?.budget
+      .costCenters()
+      .then((next) => {
+        if (alive) setView(next);
+      })
+      .catch(() => {
+        if (alive) setView(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [periodKey]);
+
+  const money = (value: number) => `$${value.toFixed(2)}`;
+  const lines = axis === 'department' ? (view?.departments ?? []) : (view?.projects ?? []);
+  const unattributed =
+    axis === 'department' ? (view?.unattributedDepartmentUsd ?? 0) : (view?.unattributedProjectUsd ?? 0);
+
+  return (
+    <Section
+      title={`${t('budget.costCentersTitle')} · ${lines.length}`}
+      description={t('budget.costCentersHint')}
+      action={<Building2 className="size-4 text-ink-quaternary" />}
+    >
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+        {(['department', 'project'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            data-testid={`cost-axis-${value}`}
+            aria-pressed={axis === value}
+            onClick={() => setAxis(value)}
+            className={cn(
+              'rounded-md px-2 py-0.5 text-xs transition-colors',
+              axis === value
+                ? 'bg-surface-active font-medium text-ink'
+                : 'text-ink-tertiary hover:text-ink',
+            )}
+          >
+            {t(`budget.scope.${value}`)}
+          </button>
+        ))}
+        <span className="flex-1" />
+        <span className="text-xs-plus text-ink-quaternary">
+          {t('budget.costCentersTotal', { amount: money(view?.totalSpentUsd ?? 0) })}
+        </span>
+      </div>
+
+      {lines.length === 0 ? (
+        <p className="px-4 py-6 text-center text-sm text-ink-quaternary">{t('budget.costCentersEmpty')}</p>
+      ) : (
+        <ul data-testid="cost-centers" className="divide-y divide-line">
+          {lines.map((line) => (
+            <li key={line.id} data-testid="cost-center-row" className="px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm-plus font-medium text-ink">{line.name}</span>
+                <span className="shrink-0 text-2xs text-ink-quaternary">
+                  {t('budget.costCentersPeople', { count: line.headcount })}
+                </span>
+                <span className="shrink-0 font-mono text-sm font-semibold text-ink">{money(line.spentUsd)}</span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs-plus text-ink-quaternary">
+                <span className="font-mono">{line.tokensUsed.toLocaleString()} tok</span>
+                <span>{t('budget.payrollShare', { percent: Math.round(line.share * 100) })}</span>
+                {line.budgetUsd !== undefined ? (
+                  <span>{t('budget.payrollCap', { amount: money(line.budgetUsd) })}</span>
+                ) : null}
+                <span className="ml-auto">{t('budget.payrollForecast', { amount: money(line.projectedUsd) })}</span>
+              </div>
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/8">
+                <div
+                  className="h-full rounded-full bg-accent"
+                  style={{ width: `${Math.min(100, Math.round(line.share * 100))}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {unattributed > 0 ? (
+        <p
+          data-testid="cost-unattributed"
+          className="border-t border-line px-4 py-2 text-xs-plus text-ink-tertiary"
+        >
+          {t('budget.costCentersUnattributed', { amount: money(unattributed) })}
+        </p>
+      ) : null}
+    </Section>
+  );
+}
+
 const SCOPE_ORDER = ['project', 'department', 'employee', 'company'] as const;
 
 /**
@@ -227,6 +420,9 @@ export function BudgetPage() {
               })}
             </ul>
           </Section>
+
+          <PayrollSection periodKey={overview?.periodKey ?? ''} />
+          <CostCentersSection periodKey={overview?.periodKey ?? ''} />
 
           <Section
             title={`${t('budget.alertsTitle')} · ${overview?.alerts.length ?? 0}`}
