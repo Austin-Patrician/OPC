@@ -460,6 +460,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.org.list, () => org.list());
+  ipcMain.handle(IPC.capabilities.list, () => work.capabilities());
   ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
     consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
   );

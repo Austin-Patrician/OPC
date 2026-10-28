@@ -1053,6 +1053,85 @@
       "company": "公司"
     }
   },
+  "capabilities": {
+    "title": "技能与工具",
+    "subtitle": "这里列出每个 Agent 在当前配置下、新开工作会话时真正装进运行时的扩展与工具——不是一份手写文档，而是直接读取注册表。模型、图像、语音或汇报关系一变，刷新后清单就跟着变。",
+    "refresh": "刷新",
+    "unknownExtension": "未登记的扩展，能力以工具清单为准。",
+    "overviewTitle": "能力总览",
+    "overviewHint": "公司当前在岗 Agent 的能力合集。",
+    "honesty": "「档案技能」只是员工档案上的标签，用于人才市场、搜索与展示，不会注入提示词；真正决定 Agent 能做什么的，是下面的扩展与工具。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有下属时，对应工具不会出现。",
+    "stats": {
+      "agents": "在岗 Agent",
+      "extensions": "扩展",
+      "tools": "工具",
+      "skills": "档案技能标签"
+    },
+    "extensionsTitle": "扩展与工具",
+    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的 Agent 人数。",
+    "extensionAgents": "{{count}} 名 Agent",
+    "extensionToolCount": "{{count}} 个工具",
+    "extensionNoTools": "无工具",
+    "counts": {
+      "hooks": "{{count}} 个策略钩子",
+      "tasks": "{{count}} 个任务定义",
+      "sections": "{{count}} 段提示词"
+    },
+    "deferred": "按需加载",
+    "agentTitle": "按 Agent 查看",
+    "agentHint": "展开一个人，看他自己的注册表里装了什么。",
+    "agentExtensions": "{{count}} 个扩展",
+    "agentTools": "{{count}} 个工具",
+    "agentExtensionsLabel": "扩展",
+    "agentSkillsLabel": "档案技能（仅展示）",
+    "agentToolsLabel": "可调用工具",
+    "head": "负责人",
+    "noSkills": "未填写标签",
+    "empty": "还没有在岗 Agent。",
+    "loadError": "读取能力清单失败：{{message}}",
+    "extensions": {
+      "work": {
+        "title": "工作流任务",
+        "description": "把一张任务卡变成可恢复、可验收的持久任务；崩溃后能接着跑。"
+      },
+      "coding": {
+        "title": "文件与命令",
+        "description": "读写工作区文件、执行 shell 命令，是所有交付物的基础工具。"
+      },
+      "sandbox": {
+        "title": "沙箱策略",
+        "description": "所有工具调用的唯一闸门：限制读写路径，并把命令关进系统沙箱。"
+      },
+      "limits": {
+        "title": "调用上限",
+        "description": "每个任务的工具调用次数上限，防止小模型陷入循环、把预算烧穿。"
+      },
+      "image": {
+        "title": "图像生成",
+        "description": "调用已配置的图像模型，把提示词画成文件存进工作区。"
+      },
+      "speech": {
+        "title": "语音",
+        "description": "语音转写与语音合成；只安装已经启用的那一半。"
+      },
+      "ocr": {
+        "title": "文字识别",
+        "description": "把图片里的文字读出来，供没有视觉能力的模型使用。"
+      },
+      "memory": {
+        "title": "长期记忆",
+        "description": "把经验写进个人记忆，留给未来的自己复用。"
+      },
+      "comm": {
+        "title": "同事沟通",
+        "description": "给同事发消息、查最近会话、确认已读；消耗的是对方的唤醒额度。"
+      },
+      "decompose": {
+        "title": "任务拆分",
+        "description": "把大任务拆成子任务交给下属；只有带汇报线的管理者才会安装。"
+      }
+    }
+  },
   "onboarding": {
     "ariaLabel": "OPC 新手引导",
     "skip": "跳过引导",

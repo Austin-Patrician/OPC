@@ -9,9 +9,10 @@ import type {
   TaskError,
   WorkTask,
 } from '@opc/shared/domain';
+import type { AgentCapability, CapabilityCatalog } from '@opc/shared/ipc';
 import type { Context } from '@earendil-works/chord/context';
 import { createRegistry, defineExtension } from '@earendil-works/pi-durable';
-import type { Conversation, Harness } from '@earendil-works/pi-durable';
+import type { Conversation, Harness, Registry } from '@earendil-works/pi-durable';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -751,7 +752,174 @@ export class WorkService {
     this.harnesses.clear();
   };
 
+  /**
+   * The capability catalogue shown on the 「技能与工具」 page.
+   *
+   * Every row is read from the same `buildRegistry()` the worker installs, so a
+   * tool that runtime conditions exclude (no image provider, no speech model, no
+   * subordinates) cannot appear here. `skills` rides along as metadata: it is an
+   * archive tag and is never injected into the prompt.
+   */
+  capabilities = async (): Promise<CapabilityCatalog> => {
+    const departmentOf = new Map<string, { id: string; name: string }>();
+    for (const department of this.deps.org?.list() ?? []) {
+      for (const member of department.members) {
+        departmentOf.set(member.id, { id: department.id, name: department.name });
+      }
+    }
+
+    const employees = (this.deps.org?.everyone() ?? []).filter(
+      (employee) => employee.status === 'active',
+    );
+
+    const agents: AgentCapability[] = [];
+    for (const employee of employees) {
+      const snapshot = (await this.buildRegistry(employee.id)).snapshot();
+      const department = departmentOf.get(employee.id);
+      agents.push({
+        employeeId: employee.id,
+        name: employee.name,
+        role: employee.role,
+        level: employee.level,
+        model: employee.model,
+        avatar: employee.avatar,
+        departmentId: department?.id ?? employee.departmentId,
+        departmentName: department?.name ?? '',
+        isHead: employee.isHead,
+        skills: employee.skills,
+        extensions: snapshot.installed().map((extension) => ({
+          name: extension.name,
+          tools: (extension.tools ?? []).map((tool) => tool.name),
+          hooks: extension.hooks?.length ?? 0,
+          tasks: extension.tasks?.length ?? 0,
+          sections: extension.sections?.length ?? 0,
+        })),
+        tools: snapshot.tools().map(({ extension, tool }) => ({
+          name: tool.name,
+          description: tool.description,
+          extension: extension.name,
+          deferred: tool.deferred === true,
+        })),
+      });
+    }
+
+    agents.sort((left, right) => left.name.localeCompare(right.name));
+    return { generatedAt: Date.now(), agents };
+  };
+
   // ── internals ──────────────────────────────────────────────────────────
+
+  /**
+   * Builds the extension registry for one employee.
+   *
+   * This is the single source of truth for "what can this agent do": the harness
+   * opens with this registry, and the capability page reads it. Conditions live
+   * here on purpose, so the page can never describe a tool the model does not get.
+   */
+  private async buildRegistry(employeeId: string): Promise<Registry> {
+    const { createCodingTools } = await import('@earendil-works/pi-durable/tools');
+
+    // The registry carries our durable task definition and pi's coding tools:
+    // without the former a resumed task is "blocked: missing_task"; without the
+    // latter the model has nothing to act with.
+    const registry = createRegistry();
+    registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
+    registry.install(createCodingTools());
+    // Installed after the tools so it sees every call; `beforeTool` is the single
+    // choke point for path policy and command wrapping.
+    registry.install(
+      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
+    );
+    registry.install(createToolLimitExtension());
+
+    // The agent can draw, but only when a usable image provider exists.
+    if (this.deps.images?.isAvailable()) {
+      registry.install(createImageToolExtension({ generate: this.deps.images.generateBytes }));
+    }
+
+    // Speech: each half is installed only when a model is enabled, so the model
+    // never sees a tool that can only fail.
+    const speech = this.deps.speech;
+    if (speech) {
+      const transcribe = speech.isAsrAvailable() ? speech.transcribe : undefined;
+      const synthesize = speech.isTtsAvailable() ? speech.synthesize : undefined;
+      if (transcribe || synthesize) {
+        registry.install(
+          createSpeechToolExtension({
+            transcribe,
+            synthesize,
+            defaultRoot: this.deps.paths.workspaceDir,
+          }),
+        );
+      }
+    }
+
+    // Text out of pictures for models without vision. Always installed: the tool
+    // is cheap to describe and the model decides when looking is necessary.
+    if (this.deps.ocr) {
+      registry.install(
+        createOcrToolExtension({ ocr: this.deps.ocr, defaultRoot: this.deps.paths.workspaceDir }),
+      );
+    }
+
+    // Every employee can keep a lesson for its future self.
+    if (this.deps.memory) {
+      const memory = this.deps.memory;
+      registry.install(
+        createRememberToolExtension({
+          employeeId,
+          taskId: () => currentTaskIdFor(employeeId),
+          remember: async ({ content, kind }) =>
+            memory.remember({
+              employeeId,
+              kind,
+              content,
+              scope: { type: 'personal' },
+              sourceType: 'task',
+              sourceId: currentTaskIdFor(employeeId),
+            }),
+        }),
+      );
+    }
+
+    // Everyone can talk to a colleague (F5); the tool spends the *other* person's
+    // wake quota, which is what stops a chatty agent from waking the whole company.
+    if (this.deps.comm) {
+      const comm = this.deps.comm;
+      registry.install(
+        createCommToolExtension({
+          employeeId,
+          colleagues: () =>
+            (this.deps.org?.list().flatMap((department) => department.members) ?? [])
+              .filter((member) => member.id !== employeeId && member.status === 'active')
+              .map((member) => ({
+                id: member.id,
+                name: member.name,
+                role: `${member.role} · ${member.level}`,
+                reportsToMe: member.reportsToEmployeeId === employeeId,
+                manager: member.id === this.reportingLineOf(employeeId),
+              })),
+          sendDirectMessage: (input) => comm.sendDirectMessage(input),
+          ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
+          currentConversationId: () => comm.latestConversationId(employeeId),
+        }),
+      );
+    }
+
+    // Managers can decompose; individual contributors cannot (the org chart decides).
+    if ((this.deps.org?.subordinatesOf(employeeId) ?? []).length > 0) {
+      registry.install(
+        createDecomposeToolExtension({
+          requesterId: employeeId,
+          parentTaskId: () => currentTaskIdFor(employeeId),
+          decompose: (parentId, requesterId, subtasks) =>
+            this.decompose(parentId, requesterId, subtasks),
+        }),
+      );
+    }
+
+    return registry;
+  }
 
   /**
    * F8: 预算硬停的落地动作（§5.6）。
@@ -837,116 +1005,12 @@ export class WorkService {
 
     const { Harness } = await import('@earendil-works/pi-durable');
     const { openNodeSqliteStorage } = await import('@earendil-works/pi-durable/storage/sqlite/node');
-    const { createCodingTools } = await import('@earendil-works/pi-durable/tools');
     const { NodeExecutionEnv } = await import('@earendil-works/pi-durable/env/node');
 
     const context = await getBackgroundContext();
     const storagePath = path.join(this.deps.paths.agentsDir, `${employeeId}.sqlite`);
 
-    // The registry carries our durable task definition and pi's coding tools:
-    // without the former a resumed task is "blocked: missing_task"; without the
-    // latter the model has nothing to act with.
-    const registry = createRegistry();
-    registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
-    registry.install(createCodingTools());
-    // Installed after the tools so it sees every call; `beforeTool` is the single
-    // choke point for path policy and command wrapping.
-    registry.install(
-      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
-    );
-    registry.install(createToolLimitExtension());
-
-    // The agent can draw, but only when a usable image provider exists.
-    if (this.deps.images?.isAvailable()) {
-      registry.install(createImageToolExtension({ generate: this.deps.images.generateBytes }));
-    }
-
-    // Speech: each half is installed only when a model is enabled, so the model
-    // never sees a tool that can only fail.
-    const speech = this.deps.speech;
-    if (speech) {
-      const transcribe = speech.isAsrAvailable() ? speech.transcribe : undefined;
-      const synthesize = speech.isTtsAvailable() ? speech.synthesize : undefined;
-      if (transcribe || synthesize) {
-        registry.install(
-          createSpeechToolExtension({
-            transcribe,
-            synthesize,
-            defaultRoot: this.deps.paths.workspaceDir,
-          }),
-        );
-      }
-    }
-
-    // Text out of pictures for models without vision. Always installed: the tool
-    // is cheap to describe and the model decides when looking is necessary.
-    if (this.deps.ocr) {
-      registry.install(
-        createOcrToolExtension({ ocr: this.deps.ocr, defaultRoot: this.deps.paths.workspaceDir }),
-      );
-    }
-
-    // Every employee can keep a lesson for its future self.
-    if (this.deps.memory) {
-      const memory = this.deps.memory;
-      const member = this.deps.org
-        ?.list()
-        .flatMap((department) => department.members)
-        .find((entry) => entry.id === employeeId);
-      registry.install(
-        createRememberToolExtension({
-          employeeId,
-          taskId: () => currentTaskIdFor(employeeId),
-          remember: async ({ content, kind }) =>
-            memory.remember({
-              employeeId,
-              kind,
-              content,
-              scope: { type: 'personal' },
-              sourceType: 'task',
-              sourceId: currentTaskIdFor(employeeId),
-            }),
-        }),
-      );
-      void member;
-    }
-
-    // Everyone can talk to a colleague (F5); the tool spends the *other* person's
-    // wake quota, which is what stops a chatty agent from waking the whole company.
-    if (this.deps.comm) {
-      const comm = this.deps.comm;
-      registry.install(
-        createCommToolExtension({
-          employeeId,
-          colleagues: () =>
-            (this.deps.org?.list().flatMap((department) => department.members) ?? [])
-              .filter((member) => member.id !== employeeId && member.status === 'active')
-              .map((member) => ({
-                id: member.id,
-                name: member.name,
-                role: `${member.role} · ${member.level}`,
-                reportsToMe: member.reportsToEmployeeId === employeeId,
-                manager: member.id === this.reportingLineOf(employeeId),
-              })),
-          sendDirectMessage: (input) => comm.sendDirectMessage(input),
-          ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
-          currentConversationId: () => comm.latestConversationId(employeeId),
-        }),
-      );
-    }
-
-    // Managers can decompose; individual contributors cannot (the org chart decides).
-    const subordinates = this.deps.org?.subordinatesOf(employeeId) ?? [];
-    if (subordinates.length > 0) {
-      registry.install(
-        createDecomposeToolExtension({
-          requesterId: employeeId,
-          parentTaskId: () => currentTaskIdFor(employeeId),
-          decompose: (parentId, requesterId, subtasks) =>
-            this.decompose(parentId, requesterId, subtasks),
-        }),
-      );
-    }
+    const registry = await this.buildRegistry(employeeId);
 
     const models = this.deps.modelConfig
       ? await this.deps.modelConfig.runtime.createModels()

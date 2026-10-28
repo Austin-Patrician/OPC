@@ -1,4 +1,4 @@
-import { Archive, Grid3x3, Hash, Smartphone } from 'lucide-react';
+import { Archive, Hash, Smartphone } from 'lucide-react';
 import { PlaceholderPage } from './PlaceholderPage';
 
 export function ChannelsPage() {
@@ -14,17 +14,6 @@ export function DeliverablesPage() {
       titleKey="nav.deliverables"
       descriptionKey="market.description"
       comingSoonKey="market.comingSoon"
-    />
-  );
-}
-
-export function SkillsPage() {
-  return (
-    <PlaceholderPage
-      icon={Grid3x3}
-      titleKey="nav.skills"
-      descriptionKey="org.description"
-      comingSoonKey="org.comingSoon"
     />
   );
 }

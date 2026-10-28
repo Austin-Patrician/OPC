@@ -300,6 +300,9 @@ const bridge: OpcBridge = {
       };
     },
   },
+  capabilities: {
+    list: () => ipcRenderer.invoke(IPC.capabilities.list),
+  },
   diagnostics: {
     report: () => ipcRenderer.invoke(IPC.diagnostics.report),
   },

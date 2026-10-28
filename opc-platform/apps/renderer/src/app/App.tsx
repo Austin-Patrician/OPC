@@ -4,14 +4,10 @@ import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
 import { BudgetPage } from '@/pages/budget/BudgetPage';
+import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
-import {
-  ChannelsPage,
-  DeliverablesPage,
-  DevicePage,
-  SkillsPage,
-} from '@/pages/placeholder/staticPages';
+import { ChannelsPage, DeliverablesPage, DevicePage } from '@/pages/placeholder/staticPages';
 import { IssueListPage } from '@/pages/issues/IssueListPage';
 import { ProjectsPage } from '@/pages/projects/ProjectsPage';
 import { MarketPage } from '@/pages/market/MarketPage';
@@ -42,7 +38,7 @@ export function App() {
         <Route path="budget" element={<BudgetPage />} />
           <Route path="channels" element={<ChannelsPage />} />
           <Route path="deliverables" element={<DeliverablesPage />} />
-          <Route path="skills" element={<SkillsPage />} />
+          <Route path="skills" element={<CapabilitiesPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="device" element={<DevicePage />} />
           <Route path="settings" element={<SettingsPage />} />

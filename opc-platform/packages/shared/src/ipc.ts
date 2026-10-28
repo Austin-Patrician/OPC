@@ -204,6 +204,9 @@ export const IPC = {
     update: 'company:update',
     changedEvent: 'company:changed',
   },
+  capabilities: {
+    list: 'capabilities:list',
+  },
 } as const;
 
 export interface ChatSnapshot {
@@ -463,6 +466,54 @@ export interface ConsolidationRunView {
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
+}
+
+/** One tool exactly as the runtime installed it for an agent. */
+export interface CapabilityTool {
+  name: string;
+  description: string;
+  /** Extension that registered it. */
+  extension: string;
+  /** Offered only through `tool_search` instead of every request. */
+  deferred: boolean;
+}
+
+/**
+ * One installed extension. Hooks / tasks / sections are counted because some
+ * extensions (`opc.sandbox`, `opc.limits`, `opc.work`) add no tools at all.
+ */
+export interface CapabilityExtension {
+  name: string;
+  tools: string[];
+  hooks: number;
+  tasks: number;
+  sections: number;
+}
+
+export interface AgentCapability {
+  employeeId: string;
+  name: string;
+  role: string;
+  level: string;
+  model: string;
+  avatar: string;
+  departmentId: string;
+  departmentName: string;
+  isHead: boolean;
+  /** Archive tags from the employee record; never injected into the prompt. */
+  skills: string[];
+  extensions: CapabilityExtension[];
+  tools: CapabilityTool[];
+}
+
+export interface CapabilityCatalog {
+  generatedAt: number;
+  agents: AgentCapability[];
+}
+
+export interface CapabilitiesBridge {
+  /** Installed extensions and tools per active employee, read from the live registry. */
+  list(): Promise<CapabilityCatalog>;
 }
 
 export interface MemoryBridge {
@@ -836,6 +887,7 @@ export interface OpcBridge {
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
   org: OrgBridge;
+  capabilities: CapabilitiesBridge;
   facts: FactsBridge;
   projects: ProjectsBridge;
   memory: MemoryBridge;

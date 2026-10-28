@@ -1053,6 +1053,85 @@
       "company": "Company"
     }
   },
+  "capabilities": {
+    "title": "Skills & tools",
+    "subtitle": "What each agent installs at runtime under the current configuration when it opens a work session — read straight from the registry, not a hand-written document. Change a model, an image/voice provider, or a reporting line and this list follows on refresh.",
+    "refresh": "Refresh",
+    "unknownExtension": "Unregistered extension; trust the tool list below.",
+    "overviewTitle": "Capability overview",
+    "overviewHint": "Everything the company's active agents can do, combined.",
+    "honesty": "\"Profile skills\" are tags on the employee record for the talent market, search, and display — they are never injected into the prompt. What an agent can really do is the extensions and tools below. Conditional capabilities follow the environment: without an image/voice model, or without reports, those tools simply do not appear.",
+    "stats": {
+      "agents": "Active agents",
+      "extensions": "Extensions",
+      "tools": "Tools",
+      "skills": "Profile skill tags"
+    },
+    "extensionsTitle": "Extensions & tools",
+    "extensionsHint": "Grouped by extension, listed once; the badge counts how many agents install it.",
+    "extensionAgents": "{{count}} agents",
+    "extensionToolCount": "{{count}} tools",
+    "extensionNoTools": "No tools",
+    "counts": {
+      "hooks": "{{count}} policy hooks",
+      "tasks": "{{count}} task definitions",
+      "sections": "{{count}} prompt sections"
+    },
+    "deferred": "On demand",
+    "agentTitle": "By agent",
+    "agentHint": "Expand a person to see what is installed in their own registry.",
+    "agentExtensions": "{{count}} extensions",
+    "agentTools": "{{count}} tools",
+    "agentExtensionsLabel": "Extensions",
+    "agentSkillsLabel": "Profile skills (display only)",
+    "agentToolsLabel": "Callable tools",
+    "head": "Head",
+    "noSkills": "No tags",
+    "empty": "No active agents yet.",
+    "loadError": "Could not read the capability catalogue: {{message}}",
+    "extensions": {
+      "work": {
+        "title": "Workflow tasks",
+        "description": "Turns a task card into a durable, resumable, reviewable task that survives a crash."
+      },
+      "coding": {
+        "title": "Files & commands",
+        "description": "Read, write, and edit workspace files, and run shell commands — the base of every deliverable."
+      },
+      "sandbox": {
+        "title": "Sandbox policy",
+        "description": "The single gate for every tool call: constrains paths and wraps commands in the OS sandbox."
+      },
+      "limits": {
+        "title": "Call limit",
+        "description": "Caps tool calls per task so a weak model cannot loop and burn the budget."
+      },
+      "image": {
+        "title": "Image generation",
+        "description": "Calls the configured image model and writes the resulting picture into the workspace."
+      },
+      "speech": {
+        "title": "Speech",
+        "description": "Transcription and synthesis; only the enabled half is installed."
+      },
+      "ocr": {
+        "title": "Text recognition",
+        "description": "Reads text out of images for models without vision."
+      },
+      "memory": {
+        "title": "Long-term memory",
+        "description": "Saves a lesson to personal memory for the agent's future self."
+      },
+      "comm": {
+        "title": "Colleague messaging",
+        "description": "Message a colleague, look up the latest conversation, acknowledge; it spends their wake quota."
+      },
+      "decompose": {
+        "title": "Task decomposition",
+        "description": "Splits a large task into subtasks for reports; installed only for managers with a reporting line."
+      }
+    }
+  },
   "onboarding": {
     "ariaLabel": "OPC getting-started guide",
     "skip": "Skip guide",
