@@ -9,7 +9,7 @@ import { assertOcrAssets, inspectOcrAssets, inspectOcrRuntime, OCR_MODEL_FILES }
  * The shipped OCR assets are the one thing a tool call depends on that the *user*
  * can break (a partial copy, a replaced file). These tests pin the difference
  * between "not downloaded yet" and "the wrong bytes", because the runtime page
- * shows exactly that distinction.
+ * turns each into a different sentence.
  */
 
 let dir: string;
@@ -73,69 +73,58 @@ afterEach(() => {
 });
 
 describe('OCR assets', () => {
-  it('reports a complete runtime, and hashes only when asked', async () => {
+  it('reports a complete engine with its version', async () => {
     const root = makeAssets();
 
-    const sized = await inspectOcrRuntime({ root, warm: false });
-    expect(sized.state).toBe('ok');
-    expect(sized.verified).toBe(false);
-    expect(sized.assets).toHaveLength(5);
-    expect(sized.bytes).toBe(DET.byteLength + REC.byteLength + DICT.byteLength + ORT_MJS.byteLength + ORT_WASM.byteLength);
+    const report = inspectOcrAssets(root);
+    expect(report).toEqual({ state: 'ok', missing: [], wrongSize: [] });
+    expect(() => assertOcrAssets(root)).not.toThrow();
 
-    const hashed = await inspectOcrRuntime({ root, warm: true, verify: true });
-    expect(hashed.state).toBe('ok');
-    expect(hashed.verified).toBe(true);
-    expect(hashed.warm).toBe(true);
-    expect(hashed.assets.every((asset) => asset.state === 'ok')).toBe(true);
-    expect(hashed.tool).toBe('ocr_image');
-    expect(hashed.extension).toBe('opc.ocr');
+    // The page hashes on open, without being asked.
+    const runtime = await inspectOcrRuntime(root);
+    expect(runtime).toMatchObject({
+      id: 'ppocrv5',
+      name: 'PP-OCRv5',
+      version: 'ppocrv5-mobile',
+      state: 'ok',
+      broken: 0,
+    });
   });
 
-  it('tells a missing file apart from a truncated one', async () => {
+  it('names the missing file and the one that is the wrong size', async () => {
     const root = makeAssets({ [`models/${OCR_MODEL_FILES.recognition}`]: null });
+    writeFileSync(path.join(root, 'models', OCR_MODEL_FILES.detection), DET.subarray(0, 4));
 
-    const missing = inspectOcrAssets(root);
-    expect(missing.state).toBe('incomplete');
-    expect(missing.assets.find((asset) => asset.file.endsWith(OCR_MODEL_FILES.recognition))?.state).toBe(
-      'missing',
-    );
-    expect(() => assertOcrAssets(root)).toThrow(/PP-OCRv5_mobile_rec_infer\.onnx/);
+    const report = inspectOcrAssets(root);
+    expect(report.state).toBe('incomplete');
+    expect(report.missing).toEqual([`models/${OCR_MODEL_FILES.recognition}`]);
+    expect(report.wrongSize).toEqual([`models/${OCR_MODEL_FILES.detection}`]);
 
-    rmSync(path.join(root, 'models', OCR_MODEL_FILES.recognition), { force: true });
-    writeFileSync(path.join(root, 'models', OCR_MODEL_FILES.recognition), REC.subarray(0, 4));
+    // A re-fetch fixes both, and the message has to say which is which.
+    expect(() => assertOcrAssets(root)).toThrow(/缺失 models\/PP-OCRv5_mobile_rec_infer\.onnx/);
+    expect(() => assertOcrAssets(root)).toThrow(/大小不符 models\/PP-OCRv5_mobile_det_infer\.onnx/);
 
-    const truncated = inspectOcrAssets(root);
-    expect(truncated.state).toBe('incomplete');
-    expect(
-      truncated.assets.find((asset) => asset.file.endsWith(OCR_MODEL_FILES.recognition)),
-    ).toMatchObject({ state: 'size', expectedBytes: REC.byteLength, bytes: 4 });
-    // The message must say *why*, not just which file.
-    expect(() => assertOcrAssets(root)).toThrow(/大小不符/);
+    const runtime = await inspectOcrRuntime(root);
+    expect(runtime).toMatchObject({ state: 'incomplete', broken: 2 });
   });
 
-  it('catches a same-size file whose bytes changed, only with verify', async () => {
+  it('catches a same-size file whose bytes changed', async () => {
     const root = makeAssets({ [`models/${OCR_MODEL_FILES.detection}`]: Buffer.alloc(DET.byteLength, 7) });
 
-    // A size check cannot see this: that is the whole reason the button exists.
+    // A size check cannot see this; the page's hash pass is the only thing that can.
     expect(inspectOcrAssets(root).state).toBe('ok');
     expect(() => assertOcrAssets(root)).not.toThrow();
 
-    const verified = await inspectOcrRuntime({ root, warm: false, verify: true });
-    expect(verified.state).toBe('corrupt');
-    expect(
-      verified.assets.find((asset) => asset.file.endsWith(OCR_MODEL_FILES.detection))?.state,
-    ).toBe('corrupt');
+    const runtime = await inspectOcrRuntime(root);
+    expect(runtime).toMatchObject({ state: 'corrupt', broken: 1 });
   });
 
   it('falls back to the built-in file list when the manifest is gone', async () => {
     const root = makeAssets();
     rmSync(path.join(root, 'manifest.json'));
 
-    const runtime = await inspectOcrRuntime({ root, warm: false });
+    const runtime = await inspectOcrRuntime(root);
     expect(runtime.state).toBe('ok');
     expect(runtime.version).toBe('ppocrv5-mobile');
-    expect(runtime.assets.map((asset) => asset.file)).toContain(
-      `models/${OCR_MODEL_FILES.detection}`,
-    );
   });
 });

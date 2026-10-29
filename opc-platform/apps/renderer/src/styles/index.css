@@ -223,14 +223,15 @@
 
 /* ── Electron window chrome ─────────────────────────────────────────────
  * Inside Electron the OS owns the window buttons: hide the decorative traffic
- * lights and reserve the pixels the native controls occupy.
+ * lights. The macOS avatar drops below the real lights (see `TitleBar`), so the
+ * rail's first row starts lower to clear it.
  */
 [data-shell='electron'] .titlebar-traffic {
   display: none;
 }
 
-[data-shell='electron'][data-platform='macos'] .titlebar-leading {
-  padding-left: 4.5rem;
+[data-shell='electron'][data-platform='macos'] .nav-rail {
+  padding-top: 2.75rem;
 }
 
 /* Windows caption buttons are painted above the page. Keep the title bar's own

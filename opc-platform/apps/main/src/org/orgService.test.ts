@@ -472,55 +472,116 @@ describe('department tree', () => {
 });
 
 /**
- * Headcount: a job is a seat with a number attached. The number is the point — without
- * a cap "组织架构无限膨胀" is not a risk, it is the default.
+ * 岗位是公司级职务（测试工程师、产品经理、CFO），编制才是部门的事。
+ *
+ * The two used to be one row, which made "测试工程师" a different job in every
+ * department. Here the shared definition and the per-department plan are tested
+ * separately, because that is the distinction the model has to keep.
  */
 describe('jobs and headcount', () => {
-  function dept() {
-    const department = org.createDepartment({ name: '工程部' });
-    const job = org.createJob({ departmentId: department.id, title: '前端工程师', level: 'P5', headcount: 2 });
-    return { department, job };
+  function dept(name = '工程部') {
+    return org.createDepartment({ name });
   }
 
-  it('derives filled from live seats, never stores it', () => {
-    const { department, job } = dept();
-    expect(job.filled).toBe(0);
-    expect(job.headcount).toBe(2);
+  it('defines a job once for the whole company', () => {
+    const department = dept();
+    const job = org.createJob({ title: '测试工程师', level: 'P5' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 2 });
 
-    org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+    const [stored] = org.jobs();
+    expect(stored).toMatchObject({ title: '测试工程师', headcount: 2, filled: 0 });
+    expect(stored?.seats).toEqual([
+      expect.objectContaining({ departmentId: department.id, departmentName: '工程部', headcount: 2 }),
+    ]);
 
-    const after = org.jobs(department.id)[0]!;
-    expect(after.filled).toBe(1);
-    expect(after.headcount).toBe(2);
+    // The same title cannot be redefined: that is how "测试工程师 / QA / 测试" split.
+    expect(() => org.createJob({ title: ' 测试工程师 ' })).toThrow('公司里已有岗位');
+  });
+
+  it('shares one job across departments while each keeps its own cap', () => {
+    const engineering = dept();
+    const quality = dept('质量部');
+    const job = org.createJob({ title: '测试工程师' });
+    org.setJobSeat({ jobId: job.id, departmentId: engineering.id, headcount: 1 });
+    org.setJobSeat({ jobId: job.id, departmentId: quality.id, headcount: 2 });
+
+    org.hire({ name: '甲', role: '工程师', departmentId: engineering.id, jobId: job.id });
+    org.hire({ name: '乙', role: '工程师', departmentId: quality.id, jobId: job.id });
+
+    const stored = org.jobs().find((entry) => entry.id === job.id)!;
+    expect(stored.filled).toBe(2);
+    expect(stored.headcount).toBe(3);
+    expect(stored.seats.map((seat) => [seat.departmentName, seat.filled, seat.headcount])).toEqual([
+      ['工程部', 1, 1],
+      ['质量部', 1, 2],
+    ]);
+
+    // 工程部 is full, 质量部 still has room: the cap is per department, not global.
+    expect(() =>
+      org.hire({ name: '丙', role: '工程师', departmentId: engineering.id, jobId: job.id }),
+    ).toThrow(/编制已满（1\/1）/);
+    expect(() =>
+      org.hire({ name: '丁', role: '工程师', departmentId: quality.id, jobId: job.id }),
+    ).not.toThrow();
+  });
+
+  it('lets a department hire without a planned seat, and reports it as unplanned', () => {
+    const department = dept();
+    const job = org.createJob({ title: 'CFO' });
+
+    // No department_job row means "not planned", not "not allowed" — small companies
+    // hire first and write the plan later.
+    const hired = org.hire({ name: '甲', role: '财务', departmentId: department.id, jobId: job.id });
+    expect(hired.jobId).toBe(job.id);
+    expect(org.jobs(department.id)[0]?.filled).toBe(1);
+    expect(org.jobs(department.id)[0]?.headcount).toBe(0);
   });
 
   it('refuses the hire that would exceed the cap, leaving nothing behind', () => {
-    const { department, job } = dept();
-    org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
-    org.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id });
+    const department = dept();
+    const job = org.createJob({ title: '前端工程师' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 1 });
 
-    expect(() => org.hire({ name: '丙', role: '工程师', departmentId: department.id, jobId: job.id })).toThrow(
-      /编制已满（2\/2）/,
-    );
-    // No half-created employee: the check runs before the transaction.
-    expect(org.list().flatMap((node) => node.members)).toHaveLength(2);
+    org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+
+    expect(() =>
+      org.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id }),
+    ).toThrow(/编制已满（1\/1）/);
+    expect(org.list().flatMap((node) => node.members)).toHaveLength(1);
   });
 
-  it('inherits the job title and level when the hire does not name them', () => {
-    const { department, job } = dept();
-    const hired = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+  it('inherits the job title, level, skills and model when the hire does not name them', () => {
+    const department = dept();
+    const job = org.createJob({
+      title: '测试工程师',
+      level: 'P6',
+      description: '对每个交付写一条能失败的检查，再让它通过。',
+      skills: [' Playwright ', 'SQL', 'sql', ''],
+      model: 'job-default',
+      modelRef: { providerId: 'prov-a', modelId: 'model-a' },
+    });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 1 });
 
-    expect(hired.title).toBe('前端工程师');
-    expect(hired.level).toBe('P5');
-    expect(hired.jobId).toBe(job.id);
+    expect(job.skills).toEqual(['Playwright', 'SQL']);
+    expect(job.model).toBe('job-default');
+    expect(job.modelRef).toEqual({ providerId: 'prov-a', modelId: 'model-a' });
+
+    const hired = org.hire({ name: '甲', role: '随便写的', departmentId: department.id, jobId: job.id });
+    expect(hired.role).toBe('测试工程师');
+    expect(hired.title).toBe('测试工程师');
+    expect(hired.level).toBe('P6');
+    expect(hired.skills).toEqual(['Playwright', 'SQL']);
+    expect(hired.model).toBe('job-default');
+    expect(hired.modelRef).toEqual({ providerId: 'prov-a', modelId: 'model-a' });
   });
 
   it('keeps its own seat when re-seated in the same department at full headcount', () => {
-    const department = org.createDepartment({ name: '工程部' });
-    const job = org.createJob({ departmentId: department.id, title: '前端工程师', headcount: 1 });
+    const department = dept();
+    const job = org.createJob({ title: '前端工程师' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 1 });
     const hired = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
 
-    // A single-seat job is "full" of this very person; moving them within the same
+    // A single-seat plan is "full" of this very person; moving them within the same
     // department must not read that as "no room left".
     const moved = org.transfer(hired.id, department.id);
 
@@ -528,62 +589,97 @@ describe('jobs and headcount', () => {
     expect(org.jobs(department.id)[0]!.filled).toBe(1);
   });
 
-  it('refuses a job from another department', () => {    const { job } = dept();
-    const other = org.createDepartment({ name: '市场部' });
-
-    expect(() => org.hire({ name: '甲', role: '工程师', departmentId: other.id, jobId: job.id })).toThrow(
-      '该职位不属于目标部门',
-    );
-  });
-
-  it('releases the slot when someone leaves and frees it for the next hire', () => {
-    const { department, job } = dept();
-    const first = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
-    org.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id });
-
-    org.fire(first.id);
-    expect(org.jobs(department.id)[0]!.filled).toBe(1);
-
-    expect(() =>
-      org.hire({ name: '丙', role: '工程师', departmentId: department.id, jobId: job.id }),
-    ).not.toThrow();
-  });
-
-  it('drops the job when someone moves to another department', () => {
-    const { department, job } = dept();
+  it('keeps the job when someone moves to another department', () => {
+    const department = dept();
+    const other = dept('市场部');
+    const job = org.createJob({ title: '测试工程师' });
     const hired = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
-    const other = org.createDepartment({ name: '市场部' });
 
     const moved = org.transfer(hired.id, other.id);
 
-    // A job belongs to one department; carrying it across would charge another team's
-    // headcount.
-    expect(moved.jobId).toBeUndefined();
-    expect(org.jobs(department.id)[0]!.filled).toBe(0);
+    // 职务 is company-wide: moving desks does not change what the person does. The new
+    // department simply has no plan for it yet.
+    expect(moved.jobId).toBe(job.id);
+    expect(moved.title).toBe('测试工程师');
   });
 
-  it('refuses to shrink the cap below the people already seated', () => {
-    const { department, job } = dept();
+  it('refuses to shrink a department cap below the people already seated there', () => {
+    const department = dept();
+    const job = org.createJob({ title: '前端工程师' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 2 });
     org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
     org.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id });
 
-    expect(() => org.updateJob({ id: job.id, headcount: 1 })).toThrow(/编制不能小于在岗人数（当前 2 人）/);
+    expect(() =>
+      org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 1 }),
+    ).toThrow(/编制不能小于在岗人数（当前 2 人）/);
     expect(org.jobs(department.id)[0]!.headcount).toBe(2);
   });
 
   it('refuses to archive a job that still has people in it', () => {
-    const { department, job } = dept();
+    const department = dept();
+    const job = org.createJob({ title: '前端工程师' });
     org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
 
     expect(() => org.archiveJob(job.id)).toThrow(/还有 1 人在岗/);
-    expect(org.jobs(department.id)).toHaveLength(1);
+    expect(org.jobs()).toHaveLength(1);
   });
 
-  it('keeps job titles unique per department', () => {
-    const { department } = dept();
-    expect(() => org.createJob({ departmentId: department.id, title: ' 前端工程师 ' })).toThrow(
-      '已有职位',
-    );
+  it('drops the department plan when the job is archived', () => {
+    const department = dept();
+    const job = org.createJob({ title: '前端工程师' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 2 });
+
+    org.archiveJob(job.id);
+
+    expect(org.jobs()).toHaveLength(0);
+    expect(org.jobs(department.id)).toHaveLength(0);
+  });
+
+  it('never rewrites a live employee when the job changes', () => {
+    const department = dept();
+    const job = org.createJob({ title: '测试工程师', skills: ['Playwright'], model: 'job-first' });
+    const hired = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+
+    org.updateJob({ id: job.id, skills: ['SQL'], model: 'job-second' });
+
+    // Someone may have tuned their own stack; a job edit must not undo it.
+    const unchanged = org.list().flatMap((node) => node.members).find((entry) => entry.id === hired.id)!;
+    expect(unchanged.skills).toEqual(['Playwright']);
+    expect(unchanged.model).toBe('job-first');
+  });
+
+  it('pushes the job onto its occupants only when asked to sync', () => {
+    const department = dept();
+    const job = org.createJob({ title: '测试工程师', skills: ['Playwright'], model: 'job-first' });
+    org.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 2 });
+    const first = org.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
+    org.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id });
+
+    org.updateJob({ id: job.id, skills: ['SQL', 'Playwright'], model: 'job-second', modelRef: null });
+    expect(org.syncJob(job.id)).toBe(2);
+
+    const member = org
+      .list()
+      .flatMap((node) => node.members)
+      .find((entry) => entry.id === first.id)!;
+    expect(member.skills).toEqual(['SQL', 'Playwright']);
+    expect(member.model).toBe('job-second');
+    expect(member.modelRef).toBeUndefined();
+  });
+
+  it('clears a job default with an explicit null', () => {
+    const job = org.createJob({
+      title: '测试工程师',
+      modelRef: { providerId: 'prov-a', modelId: 'model-a' },
+    });
+
+    // Omitted = keep; null = back to "inherit the company default".
+    org.updateJob({ id: job.id, description: '只改职责' });
+    expect(org.jobs()[0]!.modelRef).toEqual({ providerId: 'prov-a', modelId: 'model-a' });
+
+    org.updateJob({ id: job.id, modelRef: null });
+    expect(org.jobs()[0]!.modelRef).toBeUndefined();
   });
 });
 
@@ -881,3 +977,92 @@ describe('acting head', () => {
   });
 });
 
+
+describe('employee model & tool policy', () => {
+  it('updates the charter in place and rejects an unknown employee', () => {
+    const { worker } = team();
+
+    org.setPersona(worker.id, '先给结论，再给证据。');
+
+    expect(org.everyone().find((entry) => entry.id === worker.id)?.persona).toBe('先给结论，再给证据。');
+    org.setPersona(worker.id, '');
+    expect(org.everyone().find((entry) => entry.id === worker.id)?.persona).toBe('');
+    expect(() => org.setPersona('agent-missing', 'x')).toThrow('员工不存在');
+  });
+
+  it('persists the model picked during hiring', () => {
+    const { department } = team();
+
+    const hired = org.hire({
+      name: '新同事',
+      role: '工程师',
+      departmentId: department.id,
+      model: 'Claude Sonnet 4.5',
+      modelRef: { providerId: 'anthropic', modelId: 'claude-sonnet-4-5' },
+    });
+
+    expect(hired.modelRef).toEqual({ providerId: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    expect(hired.model).toBe('Claude Sonnet 4.5');
+    expect(org.modelRefOf(hired.id)).toEqual({
+      providerId: 'anthropic',
+      modelId: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('defaults to inheriting the company model when hiring without a ref', () => {
+    const { department } = team();
+
+    const hired = org.hire({ name: '乙', role: '工程师', departmentId: department.id });
+
+    expect(hired.modelRef).toBeUndefined();
+    expect(org.modelRefOf(hired.id)).toBeUndefined();
+  });
+
+  it('stores a structured model ref and keeps the display label in step', () => {
+    const { worker } = team();
+
+    org.setStack(worker.id, {
+      model: { providerId: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      modelLabel: 'Claude Sonnet 4.5',
+    });
+
+    const member = org.everyone().find((entry) => entry.id === worker.id)!;
+    expect(member.modelRef).toEqual({ providerId: 'anthropic', modelId: 'claude-sonnet-4-5' });
+    expect(member.model).toBe('Claude Sonnet 4.5');
+    expect(org.modelRefOf(worker.id)).toEqual({
+      providerId: 'anthropic',
+      modelId: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('clears the override back to "inherit the company default"', () => {
+    const { worker } = team();
+    org.setStack(worker.id, {
+      model: { providerId: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      modelLabel: 'Claude Sonnet 4.5',
+    });
+
+    org.setStack(worker.id, { model: null });
+
+    expect(org.modelRefOf(worker.id)).toBeUndefined();
+    expect(org.everyone().find((entry) => entry.id === worker.id)?.model).toBe('');
+  });
+
+  it('normalizes a tool policy on write and degrades bad JSON on read', () => {
+    const { worker } = team();
+    org.setStack(worker.id, {
+      policy: {
+        disabledExtensions: ['opc.image', 'opc.image'],
+        disabledTools: ['bash', ''],
+      },
+    });
+
+    expect(org.toolPolicyOf(worker.id)).toEqual({
+      disabledExtensions: ['opc.image'],
+      disabledTools: ['bash'],
+    });
+
+    db.prepare('UPDATE employee SET tool_policy = ? WHERE id = ?').run('{broken', worker.id);
+    expect(org.toolPolicyOf(worker.id)).toEqual({ disabledExtensions: [], disabledTools: [] });
+  });
+});

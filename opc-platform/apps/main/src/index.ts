@@ -17,6 +17,7 @@ import { AuthService } from './models/authService';
 import { FileCredentialStore } from './models/credentialStore';
 import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
+import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
 import type { Agent, SubtaskDraft } from '@opc/shared/domain';
 import { MarketService } from './market/marketService';
@@ -25,6 +26,7 @@ import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
 import { RuntimeService } from './runtime/service';
 import { inspectOcrRuntime, resolveOcrAssetsDir } from './ocr/assets';
+import { OcrSettingsStore } from './ocr/settings';
 import { registerOcrScheme } from './ocr/protocol';
 import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
@@ -205,12 +207,13 @@ function ocrAssetsDir(): string {
  * The OCR engine is a hidden renderer, created on first use. Constructing the
  * service only wires IPC; the window itself is lazy.
  */
-function ensureOcr(): OcrService {
+function ensureOcr(settings?: OcrSettingsStore): OcrService {
   if (ocrService) return ocrService;
   ocrService = new OcrService({
     preload: path.join(mainDir, '../preload/ocr.cjs'),
     rendererDir: path.join(mainDir, '../renderer'),
     assetsDir: ocrAssetsDir(),
+    ...(settings ? { settings } : {}),
     ...(process.env.ELECTRON_RENDERER_URL ? { devUrl: process.env.ELECTRON_RENDERER_URL } : {}),
   });
   return ocrService;
@@ -301,11 +304,11 @@ async function bootstrap(): Promise<void> {
 
   // An agent answers with its own model. No provider → no answer, never a canned one.
   chat.replyWithModel = async ({ agent, text }) => {
-    const defaults = modelConfig.getDefaults().llm;
-    if (!defaults) throw new Error('未配置默认 LLM 模型');
+    const ref = resolveEmployeeModelRef(modelConfig, org, agent.id);
+    if (!ref) throw new Error('未配置默认 LLM 模型');
     const models = await modelConfig.runtime.createModels();
-    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
-    if (!model) throw new Error(`找不到模型 ${defaults.providerId}/${defaults.modelId}`);
+    const model = await modelConfig.runtime.resolveModel(ref.providerId, ref.modelId);
+    if (!model) throw new Error(`找不到模型 ${ref.providerId}/${ref.modelId}`);
 
     const answer = await models.complete(model, {
       systemPrompt: [
@@ -410,7 +413,8 @@ async function bootstrap(): Promise<void> {
       console.warn(`群消息没有 @，已交给负责人 ${result.targets[0].name}`);
     }
   };
-  const ocr = ensureOcr();
+  const ocrSettings = new OcrSettingsStore(db);
+  const ocr = ensureOcr(ocrSettings);
   work = new WorkService({
     db,
     paths: appPaths,
@@ -456,11 +460,8 @@ async function bootstrap(): Promise<void> {
     runtime: runtimeService,
     // 设置 → 运行时: engines we ship are read-only, so the page reads the disk
     // rather than a stored preference.
-    bundled: {
-      inspect: async (verify: boolean) => [
-        await inspectOcrRuntime({ root: ocrAssetsDir(), warm: ocr.warm(), verify }),
-      ],
-    },
+    bundled: { inspect: async () => [await inspectOcrRuntime(ocrAssetsDir())] },
+    ocrSettings,
     wakeEmployee: async (employeeId) =>
       heartbeat
         ? heartbeat.wakeNow(employeeId)

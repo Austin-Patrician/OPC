@@ -83,6 +83,8 @@ interface TaskRow {
   updated_at: number;
   child_count: number;
   persona: string | null;
+  /** The seat's responsibilities, read live from `position → job`. */
+  job_description: string | null;
 }
 
 /**
@@ -294,7 +296,10 @@ export class TaskRepository {
     const row = this.statement(
       `SELECT t.*,
               (SELECT COUNT(*) FROM task c WHERE c.parent_task_id = t.id) AS child_count,
-              (SELECT e.persona FROM employee e WHERE e.id = t.employee_id) AS persona
+              (SELECT e.persona FROM employee e WHERE e.id = t.employee_id) AS persona,
+              (SELECT j.description FROM position p JOIN job j ON j.id = p.job_id
+                WHERE p.employee_id = t.employee_id AND p.deleted_at IS NULL
+                LIMIT 1) AS job_description
          FROM task t WHERE t.id = ?`,
     ).get(taskId) as TaskRow | undefined;
     if (!row) return undefined;
@@ -336,6 +341,7 @@ export class TaskRepository {
       acceptanceCommand: parseJson<string[]>(row.acceptance_command, []),
       acceptanceTemplate: row.acceptance_template as AcceptanceTemplate,
       ...(row.persona ? { persona: row.persona } : {}),
+      ...(row.job_description ? { jobDescription: row.job_description } : {}),
       status: row.status as TaskStatus,
       workspaceRelPath: row.workspace_rel_path,
       createdAt: row.created_at,

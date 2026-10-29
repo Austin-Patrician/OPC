@@ -65,6 +65,9 @@ describe('company.db', () => {
   it('upgrades an existing database in place instead of wiping it', () => {
     // Simulate a v1 install: the v2 tables do not exist yet and user_version says 1.
     db.exec('DROP TABLE inbox_item; DROP TABLE wake_quota; DROP TABLE guard_event; DROP TABLE relationship;');
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 1');
     db.exec("INSERT INTO department (id, name, code, description, color, created_at, updated_at) VALUES ('dept-keep', '老部门', 'OLD', '', '#000', 1, 1)");
     db.close();
@@ -102,6 +105,9 @@ describe('company.db', () => {
     ).run(person.id);
     db.pragma('foreign_keys = ON');
 
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 10');
     db.close();
     db = openCompanyDatabase(path.join(dir, 'company.db'));
@@ -135,6 +141,9 @@ describe('company.db', () => {
     db.exec('DROP INDEX IF EXISTS idx_pos_head');
     db.exec('UPDATE position SET is_head = 0');
     db.prepare('UPDATE department SET head_employee_id = ? WHERE id = ?').run(person.id, department.id);
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 10');
     db.close();
 
@@ -161,6 +170,9 @@ describe('company.db', () => {
     // And "terminated" was a status with no timestamp at all.
     db.prepare("UPDATE employee SET status = 'terminated' WHERE id = ?").run(person.id);
 
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 11');
     db.close();
     db = openCompanyDatabase(path.join(dir, 'company.db'));
@@ -226,6 +238,9 @@ describe('company.db', () => {
     insert.run(child.id, '前端组', child.id, now, now);
     insert.run(other.id, '市场部', other.id, now, now);
     db.pragma('foreign_keys = ON');
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 12');
     db.close();
 
@@ -257,6 +272,9 @@ describe('company.db', () => {
     db.exec('DROP INDEX IF EXISTS idx_pos_job;');
     db.exec('DROP TABLE IF EXISTS job; DROP TABLE IF EXISTS employment_event;');
     db.exec('ALTER TABLE position DROP COLUMN job_id;');
+    // A database from before v14 had no job table at all; the current one is global-
+    // shaped, so dropping it is what "wind back" actually means here.
+    db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
     db.pragma('user_version = 13');
     db.close();
 
@@ -266,13 +284,60 @@ describe('company.db', () => {
     const upgraded = new OrgService(db);
     expect(upgraded.everyone().find((member) => member.id === person.id)?.name).toBe('李雷');
 
-    const job = upgraded.createJob({ departmentId: department.id, title: '前端工程师', headcount: 1 });
+    const job = upgraded.createJob({ title: '前端工程师' });
+    upgraded.setJobSeat({ jobId: job.id, departmentId: department.id, headcount: 1 });
     const hired = upgraded.hire({ name: '甲', role: '工程师', departmentId: department.id, jobId: job.id });
     expect(hired.jobId).toBe(job.id);
     expect(upgraded.events(hired.id)[0]?.kind).toBe('hired');
     expect(() =>
       upgraded.hire({ name: '乙', role: '工程师', departmentId: department.id, jobId: job.id }),
     ).toThrow(/编制已满/);
+  });
+
+  it('turns per-department jobs into one company-wide job with per-department caps', () => {
+    const org = new OrgService(db);
+    const engineering = org.createDepartment({ name: '工程部' });
+    const quality = org.createDepartment({ name: '质量部' });
+    const job = org.createJob({ title: '测试工程师', description: '写能失败的检查。' });
+    org.setJobSeat({ jobId: job.id, departmentId: engineering.id, headcount: 2 });
+    const hired = org.hire({ name: '甲', role: '工程师', departmentId: engineering.id, jobId: job.id });
+
+    // Rebuild the v20 shape: `job` was a per-department row with its own headcount, and
+    // two departments could each have their own "测试工程师".
+    db.exec('DROP TABLE department_job;');
+    db.exec('DROP INDEX IF EXISTS idx_job_title; DROP INDEX IF EXISTS idx_job_live;');
+    db.exec('ALTER TABLE job ADD COLUMN department_id TEXT;');
+    db.exec('ALTER TABLE job ADD COLUMN headcount INTEGER NOT NULL DEFAULT 1;');
+    db.prepare('UPDATE job SET department_id = ?, headcount = 2 WHERE id = ?').run(
+      engineering.id,
+      job.id,
+    );
+    db.prepare(
+      `INSERT INTO job (id, title, level, description, skills, model, model_ref, deleted_at,
+                        created_at, updated_at, department_id, headcount)
+       VALUES ('job-qa-legacy', ' 测试工程师 ', 'P5', '', '[]', '', '', NULL, ?, ?, ?, 3)`,
+    ).run(job.id, Date.now(), quality.id);
+    db.pragma('user_version = 20');
+    db.close();
+
+    db = openCompanyDatabase(path.join(dir, 'company.db'));
+
+    const upgraded = new OrgService(db);
+    const jobs = upgraded.jobs();
+    // Same title in two departments is one job now; the duplicate row is gone and the
+    // surviving one is the older (the seat already points at it).
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ id: job.id, title: '测试工程师', description: '写能失败的检查。' });
+    expect(jobs[0]?.headcount).toBe(5);
+    expect(
+      jobs[0]?.seats.map((seat) => [seat.departmentName, seat.headcount]).sort(),
+    ).toEqual([
+      ['工程部', 2],
+      ['质量部', 3],
+    ]);
+
+    // The live seat survived the merge and still explains itself.
+    expect(upgraded.everyone().find((member) => member.id === hired.id)?.jobId).toBe(job.id);
   });
 
   it('adds evaluations, probation and the confirmed event to an existing database', () => {
@@ -309,6 +374,7 @@ describe('company.db', () => {
         FOREIGN KEY (employee_id) REFERENCES employee(id)
       );
     `);
+    db.exec('DROP TABLE IF EXISTS department_job;');
     db.pragma('user_version = 14');
     db.close();
 
@@ -351,6 +417,7 @@ describe('company.db', () => {
 
     // Wind back to v15: the two recruitment tables do not exist yet.
     db.exec('DROP TABLE IF EXISTS interview; DROP TABLE IF EXISTS employee_package;');
+    db.exec('DROP TABLE IF EXISTS department_job;');
     db.pragma('user_version = 15');
     db.close();
 
@@ -573,6 +640,33 @@ describe('TaskRepository', () => {
     expect(stored?.attempts).toBe(1);
     expect(stored?.steps.map((step) => step.text)).toEqual(['第 1 次尝试']);
     expect(stored?.persona).toBe('用最小依赖实现');
+  });
+
+  it('reads the seat responsibilities live, next to the personal charter', () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部' });
+    const job = org.createJob({
+      title: '测试工程师',
+      description: '每个交付都要有一条能失败的检查。',
+    });
+    const worker = org.hire({
+      name: '甲',
+      role: '工程师',
+      departmentId: department.id,
+      jobId: job.id,
+      persona: '先给结论，再给证据。',
+    });
+    const repository = new TaskRepository(db);
+    const task = createTask(repository, worker.id);
+
+    // The prompt needs both: the job says what this seat owes, the persona says how
+    // this particular person works. Neither is copied at hire time.
+    expect(task.jobDescription).toBe('每个交付都要有一条能失败的检查。');
+    expect(task.persona).toBe('先给结论，再给证据。');
+
+    // Live join: editing the template reaches the very next task load.
+    org.updateJob({ id: job.id, description: '只交付可复现的结果。' });
+    expect(repository.getTask(task.id)?.jobDescription).toBe('只交付可复现的结果。');
   });
 
   it('links a manager sign-off and counts it as a review', () => {

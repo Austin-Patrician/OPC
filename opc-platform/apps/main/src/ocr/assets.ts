@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { BundledAsset, BundledRuntime } from '@opc/shared/domain';
+import type { BundledRuntime } from '@opc/shared/domain';
 
 export const OCR_MODEL_FILES = {
   detection: 'PP-OCRv5_mobile_det_infer.onnx',
@@ -21,10 +21,17 @@ interface OcrManifest {
 
 /** One file the engine needs, with whatever the manifest promises about it. */
 interface Expectation {
-  id: string;
   file: string;
   expectedBytes?: number;
   sha256?: string;
+}
+
+/** What a cheap (no hashing) look at the asset directory found. */
+export interface OcrAssetReport {
+  state: 'ok' | 'incomplete';
+  /** Relative paths, split by what would fix them. */
+  missing: string[];
+  wrongSize: string[];
 }
 
 /**
@@ -46,59 +53,55 @@ export function resolveOcrAssetsDir(input: {
  * Fail before spawning the OCR window, with a message that says what to run.
  *
  * Deliberately the cheap check (existence + size): this runs on every
- * `ocr_image` call. Hashing the models belongs to the settings page, which is where
- * a boss can actually see which file is wrong.
+ * `ocr_image` call. Hashing the models belongs to the settings page, which is
+ * where a boss can actually see that something is wrong.
  */
 export function assertOcrAssets(root: string): void {
-  const broken = inspectOcrAssets(root).assets.filter(
-    (asset) => asset.state === 'missing' || asset.state === 'size',
-  );
-  if (broken.length === 0) return;
+  const report = inspectOcrAssets(root);
+  const parts: string[] = [];
+  if (report.missing.length > 0) parts.push(`缺失 ${report.missing.join('、')}`);
+  if (report.wrongSize.length > 0) parts.push(`大小不符 ${report.wrongSize.join('、')}`);
+  if (parts.length === 0) return;
 
-  const detail = broken
-    .map((asset) => (asset.state === 'size' ? `${asset.file}（大小不符）` : asset.file))
-    .join('、');
   throw new Error(
-    `OCR 资源缺失：${detail}。运行 \`pnpm ocr:assets\` 后重试（打包时由 prebuild 自动校验）；已安装的应用请在「设置 → 运行时 → 内置引擎」查看详情。`,
+    `OCR 资源不完整：${parts.join('；')}。运行 \`pnpm ocr:assets\` 后重试（打包时由 prebuild 自动校验）；已安装的应用请重新安装以恢复资源。`,
   );
 }
 
-/** The asset list as the disk reports it: no hashing, no window. */
-export function inspectOcrAssets(root: string): {
-  assets: BundledAsset[];
-  bytes: number;
-  state: BundledRuntime['state'];
-} {
-  const assets = expectationsOf(root).map((expectation) => statAsset(root, expectation));
-  return {
-    assets,
-    bytes: assets.reduce((sum, asset) => sum + (asset.bytes ?? 0), 0),
-    state: stateOf(assets),
-  };
+/** The cheap check the tool uses on every call: no hashing, no window. */
+export function inspectOcrAssets(root: string): OcrAssetReport {
+  const missing: string[] = [];
+  const wrongSize: string[] = [];
+  for (const expectation of expectationsOf(root)) {
+    const problem = checkAsset(root, expectation);
+    if (problem === 'missing') missing.push(expectation.file);
+    if (problem === 'size') wrongSize.push(expectation.file);
+  }
+  return { state: missing.length + wrongSize.length > 0 ? 'incomplete' : 'ok', missing, wrongSize };
 }
 
 /**
- * The runtime page's view of the OCR engine.
+ * The runtime page's view: the same check, plus one hash pass.
  *
- * `verify` hashes every file against the manifest, which is the only way to
- * catch a model that was replaced or corrupted without changing size — the
- * failure a plain size check cannot see.
+ * The hash is the only way to catch a model that was replaced without changing
+ * size — the failure a plain size check cannot see. It is not a per-call cost:
+ * this runs when 设置 → 运行时 opens.
  */
-export async function inspectOcrRuntime(input: {
-  root: string;
-  warm: boolean;
-  verify?: boolean;
-}): Promise<BundledRuntime> {
-  const manifest = readManifest(input.root);
-  const assets: BundledAsset[] = [];
+export async function inspectOcrRuntime(root: string): Promise<BundledRuntime> {
+  const manifest = readManifest(root);
+  let broken = 0;
+  let missing = false;
 
-  for (const expectation of expectationsOf(input.root)) {
-    const asset = statAsset(input.root, expectation);
-    if (input.verify && asset.state === 'ok' && expectation.sha256) {
-      const digest = await sha256Of(path.join(input.root, expectation.file));
-      if (digest !== expectation.sha256) asset.state = 'corrupt';
+  for (const expectation of expectationsOf(root)) {
+    if (checkAsset(root, expectation)) {
+      broken += 1;
+      missing = true;
+      continue;
     }
-    assets.push(asset);
+    if (expectation.sha256) {
+      const digest = await sha256Of(path.join(root, expectation.file));
+      if (digest !== expectation.sha256) broken += 1;
+    }
   }
 
   return {
@@ -106,15 +109,10 @@ export async function inspectOcrRuntime(input: {
     name: 'PP-OCRv5',
     engine: 'onnxruntime-web · WASM/WebGPU',
     version: manifest?.version ?? 'ppocrv5-mobile',
-    root: input.root,
-    bytes: assets.reduce((sum, asset) => sum + (asset.bytes ?? 0), 0),
-    state: stateOf(assets),
-    verified: input.verify === true,
-    checkedAt: Date.now(),
-    extension: 'opc.ocr',
-    tool: 'ocr_image',
-    warm: input.warm,
-    assets,
+    // A wrong size means "fetch it again"; wrong bytes of the right size is a
+    // different repair, and the page says so.
+    state: broken === 0 ? 'ok' : missing ? 'incomplete' : 'corrupt',
+    broken,
   };
 }
 
@@ -126,7 +124,6 @@ function expectationsOf(root: string): Expectation[] {
   for (const [id, fallback] of Object.entries(OCR_MODEL_FILES)) {
     const entry = manifest?.models?.[id];
     list.push({
-      id: `model:${id}`,
       file: path.posix.join('models', entry?.file ?? fallback),
       ...(entry?.bytes !== undefined ? { expectedBytes: entry.bytes } : {}),
       ...(entry?.sha256 ? { sha256: entry.sha256 } : {}),
@@ -137,7 +134,6 @@ function expectationsOf(root: string): Expectation[] {
   for (const file of ort ? Object.keys(ort) : ORT_FILES) {
     const sha256 = ort?.[file];
     list.push({
-      id: `ort:${file}`,
       file: path.posix.join('ort', file),
       ...(sha256 ? { sha256 } : {}),
     });
@@ -146,30 +142,15 @@ function expectationsOf(root: string): Expectation[] {
   return list;
 }
 
-function statAsset(root: string, expectation: Expectation): BundledAsset {
+/** `null` when the file is there at the promised size. */
+function checkAsset(root: string, expectation: Expectation): 'missing' | 'size' | null {
   const target = path.join(root, expectation.file);
-  if (!existsSync(target)) return { id: expectation.id, file: expectation.file, state: 'missing' };
-
+  if (!existsSync(target)) return 'missing';
   const bytes = statSync(target).size;
-  const mismatch =
-    expectation.expectedBytes !== undefined && bytes !== expectation.expectedBytes;
-  return {
-    id: expectation.id,
-    file: expectation.file,
-    bytes,
-    ...(expectation.expectedBytes !== undefined ? { expectedBytes: expectation.expectedBytes } : {}),
-    state: mismatch ? 'size' : 'ok',
-  };
-}
-
-function stateOf(assets: readonly BundledAsset[]): BundledRuntime['state'] {
-  // Truncated downloads (missing / wrong size) are fixed by fetching again;
-  // a file of the right size with the wrong bytes is a different problem.
-  if (assets.some((asset) => asset.state === 'missing' || asset.state === 'size')) {
-    return 'incomplete';
+  if (expectation.expectedBytes !== undefined && bytes !== expectation.expectedBytes) {
+    return 'size';
   }
-  if (assets.some((asset) => asset.state === 'corrupt')) return 'corrupt';
-  return 'ok';
+  return null;
 }
 
 async function sha256Of(file: string): Promise<string> {
@@ -178,7 +159,7 @@ async function sha256Of(file: string): Promise<string> {
       .update(await readFile(file))
       .digest('hex');
   } catch {
-    // Unreadable is indistinguishable from wrong, and the row already says missing.
+    // Unreadable is indistinguishable from wrong; it has already failed the size check.
     return '';
   }
 }

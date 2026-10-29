@@ -1,5 +1,6 @@
 import type {
   Agent,
+  EmployeeToolPolicy,
   LinkType,
   Budget,
   BudgetError,
@@ -9,10 +10,15 @@ import type {
   TaskError,
   WorkTask,
 } from '@opc/shared/domain';
-import type { AgentCapability, CapabilityCatalog } from '@opc/shared/ipc';
+import type {
+  AgentCapability,
+  CapabilityCatalog,
+  EmployeeStackInput,
+  EmployeeStackView,
+} from '@opc/shared/ipc';
 import type { Context } from '@earendil-works/chord/context';
 import { createRegistry, defineExtension } from '@earendil-works/pi-durable';
-import type { Conversation, Harness, Registry } from '@earendil-works/pi-durable';
+import type { Conversation, Extension, Harness, Registry } from '@earendil-works/pi-durable';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -43,6 +49,14 @@ import { createRememberToolExtension } from '../memory/rememberTool';
 import { createCommToolExtension } from '../comm/commTools';
 import type { CommService } from '../comm/commService';
 import { setWorkTaskServices, WorkTaskDefinition } from './workTaskDefinition';
+import {
+  EMPTY_TOOL_POLICY,
+  filterExtensionTools,
+  isExtensionEnabled,
+  isToolActive,
+  normalizeToolPolicy,
+} from './toolPolicy';
+import { resolveEmployeeModelRef } from '../models/employeeModel';
 import type { NetworkClient } from '../network/networkClient';
 import type { OcrEngine } from '../ocr/service';
 import { RuntimeService } from '../runtime/service';
@@ -60,6 +74,23 @@ function currentTaskIdFor(employeeId: string): string | undefined {
 interface EmployeeHarness {
   harness: Harness;
   root: Conversation;
+}
+
+/**
+ * One installable capability group.
+ *
+ * `extension` is present only when the runtime can actually support it. A slot
+ * with `available: false` is what the stack page renders greyed out with a
+ * reason code, so "why can't this employee draw?" has one answer for both the UI
+ * and the registry.
+ */
+interface ToolSlot {
+  name: string;
+  /** Core groups cannot be switched off wholesale (their tools still can). */
+  essential: boolean;
+  available: boolean;
+  reason?: string;
+  extension?: Extension;
 }
 
 export interface WorkServiceDeps {
@@ -102,6 +133,8 @@ export class WorkService {
   private readonly listeners = new Set<(task: WorkTask) => void>();
   private readonly budgetListeners = new Set<(budgets: Budget[]) => void>();
   private readonly harnesses = new Map<string, EmployeeHarness>();
+  /** Employees whose stack changed while a task was running; evicted when it ends. */
+  private readonly dirtyHarnesses = new Set<string>();
   private readonly runtime: RuntimeService;
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -127,7 +160,8 @@ export class WorkService {
       ? new HarnessBrain({
           harnessFor: (employeeId) => this.harnessFor(employeeId),
           context: () => getBackgroundContext(),
-          model: () => deps.modelConfig?.getDefaults().llm ?? null,
+          model: (employeeId) =>
+            resolveEmployeeModelRef(deps.modelConfig, deps.org, employeeId),
           thinking: () => deps.modelConfig?.getThinking() ?? 'medium',
           price: (ref) => {
             const provider = deps.modelConfig?.listProviders().find((entry) => entry.id === ref.providerId);
@@ -153,8 +187,17 @@ export class WorkService {
       },
       onResumed: () => undefined,
       onFinished: (taskId, outcome, result) => {
+        const finishedEmployees: string[] = [];
         for (const [employeeId, running] of runningTaskByEmployee) {
-          if (running === taskId) runningTaskByEmployee.delete(employeeId);
+          if (running === taskId) {
+            runningTaskByEmployee.delete(employeeId);
+            finishedEmployees.push(employeeId);
+          }
+        }
+        // A stack change made while this task was running is applied now: the next
+        // task must open a harness with the new registry, not keep the old one.
+        for (const employeeId of finishedEmployees) {
+          if (this.dirtyHarnesses.delete(employeeId)) void this.evictHarness(employeeId);
         }
         const task = this.repository.getTask(taskId);
         // A session that failed at the storage layer is closed for good; keeping it
@@ -810,64 +853,81 @@ export class WorkService {
   // ── internals ──────────────────────────────────────────────────────────
 
   /**
-   * Builds the extension registry for one employee.
+   * Every capability group this employee could be given, with availability.
    *
-   * This is the single source of truth for "what can this agent do": the harness
-   * opens with this registry, and the capability page reads it. Conditions live
-   * here on purpose, so the page can never describe a tool the model does not get.
+   * This is the one catalogue: `buildRegistry` installs from it and the stack
+   * page renders it. Reasons are codes, not sentences, so both locales can
+   * explain the same missing provider without the main process translating.
    */
-  private async buildRegistry(employeeId: string): Promise<Registry> {
+  private async toolSlots(employeeId: string): Promise<ToolSlot[]> {
     const { createCodingTools } = await import('@earendil-works/pi-durable/tools');
-
-    // The registry carries our durable task definition and pi's coding tools:
-    // without the former a resumed task is "blocked: missing_task"; without the
-    // latter the model has nothing to act with.
-    const registry = createRegistry();
-    registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
-    registry.install(createCodingTools());
-    // Installed after the tools so it sees every call; `beforeTool` is the single
-    // choke point for path policy and command wrapping.
-    registry.install(
-      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
-    );
-    registry.install(createToolLimitExtension());
+    const slots: ToolSlot[] = [
+      {
+        name: 'coding-tools',
+        essential: true,
+        available: true,
+        extension: createCodingTools(),
+      },
+    ];
 
     // The agent can draw, but only when a usable image provider exists.
-    if (this.deps.images?.isAvailable()) {
-      registry.install(createImageToolExtension({ generate: this.deps.images.generateBytes }));
-    }
+    const images = this.deps.images;
+    slots.push(
+      images?.isAvailable()
+        ? {
+            name: 'opc.image',
+            essential: false,
+            available: true,
+            extension: createImageToolExtension({ generate: images.generateBytes }),
+          }
+        : { name: 'opc.image', essential: false, available: false, reason: 'no-image-provider' },
+    );
 
     // Speech: each half is installed only when a model is enabled, so the model
     // never sees a tool that can only fail.
     const speech = this.deps.speech;
-    if (speech) {
-      const transcribe = speech.isAsrAvailable() ? speech.transcribe : undefined;
-      const synthesize = speech.isTtsAvailable() ? speech.synthesize : undefined;
-      if (transcribe || synthesize) {
-        registry.install(
-          createSpeechToolExtension({
-            transcribe,
-            synthesize,
-            defaultRoot: this.deps.paths.workspaceDir,
-          }),
-        );
-      }
+    const transcribe = speech?.isAsrAvailable() ? speech.transcribe : undefined;
+    const synthesize = speech?.isTtsAvailable() ? speech.synthesize : undefined;
+    if (transcribe || synthesize) {
+      slots.push({
+        name: 'opc.speech',
+        essential: false,
+        available: true,
+        extension: createSpeechToolExtension({
+          transcribe,
+          synthesize,
+          defaultRoot: this.deps.paths.workspaceDir,
+        }),
+      });
+    } else {
+      slots.push({ name: 'opc.speech', essential: false, available: false, reason: 'no-speech-model' });
     }
 
-    // Text out of pictures for models without vision. Installed whenever the
-    // models are actually on disk: an installed tool that fails on its first
-    // call is worse than an absent one, and 设置 → 运行时 shows the detail.
-    if (this.deps.ocr && (this.deps.ocr.assetsReady?.() ?? true)) {
-      registry.install(
-        createOcrToolExtension({ ocr: this.deps.ocr, defaultRoot: this.deps.paths.workspaceDir }),
-      );
+    // Text out of pictures for models without vision. Two independent gates: the
+    // boss's switch (设置 → 运行时) and the models actually being on disk. An
+    // installed tool that can only fail is worse than an absent one.
+    const ocr = this.deps.ocr;
+    if (ocr && (ocr.settings?.().enabled ?? true) && (ocr.assetsReady?.() ?? true)) {
+      slots.push({
+        name: 'opc.ocr',
+        essential: false,
+        available: true,
+        extension: createOcrToolExtension({ ocr, defaultRoot: this.deps.paths.workspaceDir }),
+      });
+    } else {
+      const reason =
+        ocr && (ocr.settings?.().enabled ?? true) ? 'ocr-models-missing' : 'ocr-disabled';
+      slots.push({ name: 'opc.ocr', essential: false, available: false, reason });
     }
 
     // Every employee can keep a lesson for its future self.
-    if (this.deps.memory) {
-      const memory = this.deps.memory;
-      registry.install(
-        createRememberToolExtension({
+    const memory = this.deps.memory;
+    if (memory) {
+      slots.push({
+        name: 'opc.memory',
+        essential: false,
+        available: true,
+        extension: createRememberToolExtension({
           employeeId,
           taskId: () => currentTaskIdFor(employeeId),
           remember: async ({ content, kind }) =>
@@ -880,15 +940,20 @@ export class WorkService {
               sourceId: currentTaskIdFor(employeeId),
             }),
         }),
-      );
+      });
+    } else {
+      slots.push({ name: 'opc.memory', essential: false, available: false, reason: 'memory-disabled' });
     }
 
     // Everyone can talk to a colleague (F5); the tool spends the *other* person's
     // wake quota, which is what stops a chatty agent from waking the whole company.
-    if (this.deps.comm) {
-      const comm = this.deps.comm;
-      registry.install(
-        createCommToolExtension({
+    const comm = this.deps.comm;
+    if (comm) {
+      slots.push({
+        name: 'opc.comm',
+        essential: false,
+        available: true,
+        extension: createCommToolExtension({
           employeeId,
           colleagues: () =>
             (this.deps.org?.list().flatMap((department) => department.members) ?? [])
@@ -904,23 +969,176 @@ export class WorkService {
           ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
           currentConversationId: () => comm.latestConversationId(employeeId),
         }),
-      );
+      });
+    } else {
+      slots.push({ name: 'opc.comm', essential: false, available: false, reason: 'comm-disabled' });
     }
 
     // Managers can decompose; individual contributors cannot (the org chart decides).
     if ((this.deps.org?.subordinatesOf(employeeId) ?? []).length > 0) {
-      registry.install(
-        createDecomposeToolExtension({
+      slots.push({
+        name: 'opc.decompose',
+        essential: false,
+        available: true,
+        extension: createDecomposeToolExtension({
           requesterId: employeeId,
           parentTaskId: () => currentTaskIdFor(employeeId),
           decompose: (parentId, requesterId, subtasks) =>
             this.decompose(parentId, requesterId, subtasks),
         }),
-      );
+      });
+    } else {
+      slots.push({ name: 'opc.decompose', essential: false, available: false, reason: 'no-subordinates' });
     }
+
+    return slots;
+  }
+
+  /**
+   * Builds the extension registry for one employee.
+   *
+   * This is the single source of truth for "what can this agent do": the harness
+   * opens with this registry, and the capability/stack pages read the same slots.
+   * Conditions and the employee's deny-list live here on purpose, so no page can
+   * describe a tool the model does not get.
+   */
+  private async buildRegistry(employeeId: string): Promise<Registry> {
+    const slots = await this.toolSlots(employeeId);
+    const policy = this.deps.org?.toolPolicyOf(employeeId) ?? EMPTY_TOOL_POLICY;
+
+    // The registry carries our durable task definition: without it a resumed
+    // task is "blocked: missing_task".
+    const registry = createRegistry();
+    registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
+
+    const install = (slot: ToolSlot) => {
+      if (!slot.available || !slot.extension) return;
+      if (!slot.essential && !isExtensionEnabled(policy, slot.name)) return;
+      registry.install(filterExtensionTools(slot.extension, policy));
+    };
+
+    // Coding tools first; the sandbox is installed after them so it sees every
+    // call, and `beforeTool` is the single choke point for path policy.
+    for (const slot of slots) if (slot.essential) install(slot);
+    registry.install(
+      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
+    );
+    registry.install(createToolLimitExtension());
+    for (const slot of slots) if (!slot.essential) install(slot);
 
     return registry;
   }
+
+  /**
+   * One employee's model and tool policy, plus what the runtime can install now.
+   *
+   * Shared by the dossier editor and any future entry point (hire wizard, bulk
+   * provisioning): both read this instead of re-deriving conditions.
+   */
+  stack = async (employeeId: string): Promise<EmployeeStackView> => {
+    if (!this.deps.org) throw new Error('组织服务未就绪');
+    const member = this.deps.org.everyone().find((entry) => entry.id === employeeId);
+    if (!member) throw new Error('员工不存在');
+
+    const policy = this.deps.org.toolPolicyOf(employeeId);
+    const slots = await this.toolSlots(employeeId);
+    return {
+      employeeId,
+      model: this.deps.org.modelRefOf(employeeId) ?? null,
+      modelLabel: member.model,
+      defaultModel: this.deps.modelConfig?.getDefaults().llm ?? null,
+      policy,
+      extensions: slots.map((slot) => {
+        const enabled =
+          slot.available && (slot.essential || isExtensionEnabled(policy, slot.name));
+        return {
+          name: slot.name,
+          essential: slot.essential,
+          available: slot.available,
+          ...(slot.reason ? { reason: slot.reason } : {}),
+          enabled,
+          tools: (slot.extension?.tools ?? []).map((tool) => ({
+            name: tool.name,
+            label: tool.name,
+            available: slot.available,
+            enabled: enabled && isToolActive(policy, slot.name, tool.name),
+          })),
+        };
+      }),
+    };
+  };
+
+  /**
+   * Saves a model override and/or tool policy and drops the cached harness, so
+   * the next task (or the next message, for the model) uses it immediately.
+   */
+  setStack = async (employeeId: string, input: EmployeeStackInput): Promise<EmployeeStackView> => {
+    if (!this.deps.org) throw new Error('组织服务未就绪');
+    if (!this.deps.org.everyone().some((entry) => entry.id === employeeId)) {
+      throw new Error('员工不存在');
+    }
+
+    const slots = await this.toolSlots(employeeId);
+    const knownExtensions = new Map(slots.map((slot) => [slot.name, slot]));
+
+    let policy: EmployeeToolPolicy | undefined;
+    if (input.policy) {
+      policy = normalizeToolPolicy(input.policy);
+      const unknown = policy.disabledExtensions.filter((name) => !knownExtensions.has(name));
+      if (unknown.length > 0) throw new Error(`未知的扩展：${unknown.join('、')}`);
+      const essential = policy.disabledExtensions.filter(
+        (name) => knownExtensions.get(name)?.essential,
+      );
+      if (essential.length > 0) throw new Error(`核心扩展不能关闭：${essential.join('、')}`);
+      // Tool names are deliberately not validated: a deny-list entry for a tool
+      // whose provider is temporarily unavailable must survive, not make the
+      // whole save fail when the boss changes something else.
+    }
+
+    let modelLabel: string | undefined;
+    if (input.model) {
+      const provider = this.deps.modelConfig
+        ?.listProviders()
+        .find((entry) => entry.id === input.model?.providerId);
+      const model = provider?.models.find((entry) => entry.id === input.model?.modelId);
+      if (!provider || !model) throw new Error('模型不存在或未配置');
+      if (model.capability !== 'chat') throw new Error('员工只能配置对话模型');
+      if (model.chatEnabled === false) throw new Error('该模型未启用对话能力');
+      modelLabel = model.name || model.id;
+    }
+
+    this.deps.org.setStack(employeeId, {
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(modelLabel ? { modelLabel } : {}),
+      ...(policy ? { policy } : {}),
+    });
+
+    // Tools live in the harness's registry, which is fixed at open time. Model
+    // resolution happens per task, so only the registry needs a rebuild.
+    await this.invalidateHarness(employeeId);
+    return this.stack(employeeId);
+  };
+
+  /** Defers eviction while the employee is mid-task instead of closing its harness. */
+  private async invalidateHarness(employeeId: string): Promise<void> {
+    if (runningTaskByEmployee.has(employeeId)) {
+      this.dirtyHarnesses.add(employeeId);
+      return;
+    }
+    await this.evictHarness(employeeId);
+  }
+
+  private async evictHarness(employeeId: string): Promise<void> {
+    const entry = this.harnesses.get(employeeId);
+    if (!entry) return;
+    this.harnesses.delete(employeeId);
+    try {
+      await entry.harness.close(await getBackgroundContext());
+    } catch (error) {
+      console.warn('关闭员工 harness 失败（栈已变更）', error);
+    }
+  }
+
 
   /**
    * F8: 预算硬停的落地动作（§5.6）。

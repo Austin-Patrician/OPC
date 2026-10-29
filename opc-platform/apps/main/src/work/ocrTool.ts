@@ -29,17 +29,20 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
       defineTool({
         name: 'ocr_image',
         description:
-          'Extract the text from an image file in the workspace (OCR). Use it when you cannot see images or when the exact wording of a screenshot, scan or photo matters. Returns text in reading order; set detail="lines" to also get each line bounding box. Supports png, jpg, webp, bmp, tiff and gif up to 15MB.',
+          'Extract the text from an image file in the workspace (OCR). Use it when you cannot see images or when the exact wording of a screenshot, scan or photo matters. The answer follows the company setting (plain reading order, or one line at a time); set detail only to override it for this call. Supports png, jpg, webp, bmp, tiff and gif up to 15MB.',
         parameters: Type.Object({
           path: Type.String({
             description: 'Image path relative to the workspace, e.g. screenshots/login.png.',
           }),
           detail: Type.Optional(
-            Type.String({ description: 'text (default) for plain reading order, lines to prefix each line with x,y,w,h and confidence.' }),
+            Type.String({
+              description:
+                'Override the company default: text for plain reading order, lines to prefix each line with x,y,w,h and confidence.',
+            }),
           ),
         }),
         execute: async (args, api, context): Promise<ToolExecutionResult> => {
-          const detail: OcrDetail = args.detail?.trim().toLowerCase() === 'lines' ? 'lines' : 'text';
+          const detail = resolveDetail(args.detail, deps.ocr.settings?.().detail);
           const agent = await api.agent(context);
           const root = path.resolve(agent.cwd ?? deps.defaultRoot);
           const target = path.resolve(root, args.path);
@@ -88,6 +91,16 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
       }),
     ],
   });
+}
+
+/**
+ * The boss's setting is the default; the model may still ask for the other shape
+ * for one call (a table needs coordinates even when the company reads prose).
+ */
+function resolveDetail(asked: string | undefined, preferred: OcrDetail | undefined): OcrDetail {
+  const explicit = asked?.trim().toLowerCase();
+  if (explicit === 'lines' || explicit === 'text') return explicit;
+  return preferred === 'lines' ? 'lines' : 'text';
 }
 
 function succeed(file: string, detail: OcrDetail, result: OcrResult): ToolExecutionResult {

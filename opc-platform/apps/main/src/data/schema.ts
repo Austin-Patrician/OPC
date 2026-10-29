@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 21;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1080,7 +1080,69 @@ VALUES (
 );
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18];
+/**
+ * V19: 每个员工的模型与工具，从"档案上的一个字符串"变成真实配置。
+ *
+ * 之前 `employee.model` 只是展示字段，执行时永远走全局默认模型；`skills` 是档案标签，
+ * 不影响 agent 能装什么工具。这一版把两者拆开：
+ *
+ * - `model_ref` 存结构化的 `{ providerId, modelId }`（JSON；空串 = 继承公司默认）。
+ *   `model` 继续保留为人类可读快照，列表页不用为了显示模型名去连 models 服务。
+ * - `tool_policy` 存 `EmployeeToolPolicy`（JSON，禁用名单）。默认空对象 = 当前运行环境
+ *   能装什么就装什么，所以新扩展不会被老员工静默漏掉。
+ *
+ * 两张列都只追加、不改写历史：老员工升级后 `model_ref=''`，继续用全局默认，行为不变。
+ */
+const V19 = `
+ALTER TABLE employee ADD COLUMN model_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE employee ADD COLUMN tool_policy TEXT NOT NULL DEFAULT '{}';
+`;
+
+/**
+ * V20: 岗位从"编制坑位"变成"可复用的岗位模板"。
+ *
+ * V14 建的 `job` 只能回答"这个部门有几个坑"，`description`（职责）写了也没人读：
+ * 招聘向导不填，`hire` 不复制，提示词里那段"岗位职责"其实来自 `employee.persona`。
+ * 于是同一个岗位的五个人，职责/技能/模型要各写五遍，改一次要改五处。
+ *
+ * 这一版把岗位补成模板，员工仍是它的实例：
+ *
+ * - `skills` 存 JSON 数组，和 `employee.skills` 同格式；招聘时**复制**过去，不是引用，
+ *   所以改岗位不会悄悄改掉在岗员工（需要时由老板显式同步）。
+ * - `model` / `model_ref` 与员工两列同义：`model` 是人类可读快照，`model_ref` 是执行时
+ *   真正读的结构化选择；空串 = 不指定，继续继承公司默认。
+ * - 职责仍用 V14 的 `description`，但从此是活数据：招聘带出、任务提示词里 `position`
+ *   join `job` 现读（live join），所以改职责对下一个任务生效。
+ */
+const V20 = `
+ALTER TABLE job ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE job ADD COLUMN model TEXT NOT NULL DEFAULT '';
+ALTER TABLE job ADD COLUMN model_ref TEXT NOT NULL DEFAULT '';
+`;
+
+/**
+ * V21: 岗位从"部门里的一个坑"变成**公司级职务**。
+ *
+ * V14 把 `job` 建成了"某部门的 N 个坑"（`department_id` + `headcount` 都在这一行）。
+ * 但真实语义里，岗位是**职务**：测试工程师、产品经理、CFO —— 它属于公司，不属于某个
+ * 部门。同一个"测试工程师"在工程部和质量部都是同一个职务，只是编制分别算。
+ *
+ * 这一版把两件事拆开：
+ *
+ * - `job` 变成全局目录：id / title / level / 职责 / 默认技能 / 默认模型。公司内同名职务
+ *   只能有一行（`LOWER(TRIM(title))` 唯一），否则"测试工程师"又会分裂成几种写法。
+ * - `department_job` 承接编制：`(department_id, job_id) → headcount`。部门说"我要 2 个
+ *   测试工程师"，岗位定义仍然是全公司那一份。
+ *
+ * 表结构本身由 `repairJobCatalogue` 写入（`companyDatabase.ts`）：SQLite 没有条件 DDL，
+ * 而这次迁移必须按"旧 job 表是否还有 department_id"分两种走法，且要能在重复打开时
+ * 变成无操作。这里只留一个占位步骤，保证版本号推进。
+ */
+const V21 = `
+SELECT 1;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

@@ -1,4 +1,4 @@
-import { IPC, type SendMessageInput } from '@opc/shared/ipc';
+import { IPC, type EmployeeStackInput, type SendMessageInput } from '@opc/shared/ipc';
 import type {
   BundledRuntime,
   CompactionSettings,
@@ -21,6 +21,7 @@ import type { ManualWakeResult } from '../comm/scheduler';
 import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
+import type { OcrSettings } from '@opc/shared/ocr';
 import type { MarketService } from '../market/marketService';
 import type { OrgFactService } from '../memory/orgFactService';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
@@ -49,8 +50,10 @@ interface RegisterOptions {
   network: NetworkProxyService;
   /** 全局基础运行环境（Node / Python），所有员工共用。 */
   runtime: RuntimeService;
-  /** 随应用分发的引擎（OCR）：只读，读的是磁盘而不是偏好。 */
-  bundled: { inspect: (verify: boolean) => Promise<BundledRuntime[]> };
+  /** 随应用分发的引擎（OCR）：读的是磁盘，不是偏好。 */
+  bundled: { inspect: () => Promise<BundledRuntime[]> };
+  /** OCR 开关与输出粒度，和 Node/Python 一样是公司级选择。 */
+  ocrSettings: { get: () => OcrSettings; set: (next: OcrSettings) => OcrSettings };
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
@@ -86,6 +89,7 @@ export function registerIpc({
   network,
   runtime,
   bundled,
+  ocrSettings,
   wakeEmployee,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
@@ -264,8 +268,16 @@ export function registerIpc({
     return runtime.removeProfile(profileId);
   });
 
-  // Hashing the models is only worth it when the page opens (or the boss asks).
-  ipcMain.handle(IPC.runtime.bundled, (_event, verify: unknown) => bundled.inspect(verify === true));
+  ipcMain.handle(IPC.runtime.bundled, () => bundled.inspect());
+  ipcMain.handle(IPC.runtime.ocr, () => ocrSettings.get());
+  ipcMain.handle(IPC.runtime.setOcr, (_event, next: unknown) => {
+    if (!next || typeof next !== 'object') throw new Error('runtime:setOcr 参数非法');
+    const raw = next as { enabled?: unknown; detail?: unknown };
+    return ocrSettings.set({
+      enabled: raw.enabled !== false,
+      detail: raw.detail === 'lines' ? 'lines' : 'text',
+    });
+  });
 
   ipcMain.handle(IPC.company.get, () => company.get());
 
@@ -467,6 +479,24 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.org.list, () => org.list());
+  ipcMain.handle(IPC.org.stack, (_event, employeeId: unknown) => {
+    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:stack 参数非法');
+    return work.stack(employeeId);
+  });
+  ipcMain.handle(IPC.org.setStack, async (_event, employeeId: unknown, input: unknown) => {
+    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:setStack 参数非法');
+    if (typeof input !== 'object' || input === null) throw new Error('org:setStack 参数非法');
+    const view = await work.setStack(employeeId, input as EmployeeStackInput);
+    refreshOrg();
+    return view;
+  });
+  ipcMain.handle(IPC.org.setPersona, (_event, employeeId: unknown, persona: unknown) => {
+    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:setPersona 参数非法');
+    if (typeof persona !== 'string') throw new Error('org:setPersona 参数非法');
+    if (persona.length > 8000) throw new Error('岗位职责过长（最多 8000 字）');
+    org.setPersona(employeeId, persona);
+    return refreshOrg();
+  });
   ipcMain.handle(IPC.capabilities.list, () => work.capabilities());
   ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
     consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
@@ -787,15 +817,14 @@ export function registerIpc({
   ipcMain.handle(IPC.org.createJob, (_event, input: unknown) => {
     if (typeof input !== 'object' || input === null) throw new Error('org:createJob 参数非法');
     const draft = input as Record<string, unknown>;
-    if (typeof draft.departmentId !== 'string' || typeof draft.title !== 'string') {
-      throw new Error('org:createJob 需要 departmentId / title');
-    }
+    if (typeof draft.title !== 'string') throw new Error('org:createJob 需要 title');
     org.createJob({
-      departmentId: draft.departmentId,
       title: draft.title,
       level: typeof draft.level === 'string' ? draft.level : undefined,
-      headcount: typeof draft.headcount === 'number' ? draft.headcount : undefined,
       description: typeof draft.description === 'string' ? draft.description : undefined,
+      skills: readSkills(draft.skills),
+      model: typeof draft.model === 'string' ? draft.model : undefined,
+      modelRef: readModelRef(draft.modelRef) ?? null,
     });
     return org.jobs();
   });
@@ -807,8 +836,11 @@ export function registerIpc({
       id: draft.id,
       title: typeof draft.title === 'string' ? draft.title : undefined,
       level: typeof draft.level === 'string' ? draft.level : undefined,
-      headcount: typeof draft.headcount === 'number' ? draft.headcount : undefined,
       description: typeof draft.description === 'string' ? draft.description : undefined,
+      skills: readSkills(draft.skills),
+      model: typeof draft.model === 'string' ? draft.model : undefined,
+      // Tri-state: absent keeps the current default, `null` clears it.
+      modelRef: draft.modelRef === undefined ? undefined : (readModelRef(draft.modelRef) ?? null),
     });
     return org.jobs();
   });
@@ -817,18 +849,41 @@ export function registerIpc({
     org.archiveJob(jobId);
     return org.jobs();
   });
+  ipcMain.handle(IPC.org.setJobSeat, (_event, input: unknown) => {
+    if (typeof input !== 'object' || input === null) throw new Error('org:setJobSeat 参数非法');
+    const draft = input as Record<string, unknown>;
+    if (
+      typeof draft.jobId !== 'string' ||
+      typeof draft.departmentId !== 'string' ||
+      typeof draft.headcount !== 'number'
+    ) {
+      throw new Error('org:setJobSeat 需要 jobId / departmentId / headcount');
+    }
+    org.setJobSeat({
+      jobId: draft.jobId,
+      departmentId: draft.departmentId,
+      headcount: draft.headcount,
+    });
+    return org.jobs();
+  });
+  ipcMain.handle(IPC.org.syncJob, (_event, jobId: unknown) => {
+    if (typeof jobId !== 'string') throw new Error('org:syncJob 参数非法');
+    return org.syncJob(jobId);
+  });
   ipcMain.handle(IPC.org.events, (_event, employeeId: unknown, limit: unknown) => {
     if (typeof employeeId !== 'string') throw new Error('org:events 参数非法');
     return org.events(employeeId, typeof limit === 'number' ? limit : undefined);
   });
   ipcMain.handle(IPC.org.hire, (_event, input: unknown) => {
     const draft = (input ?? {}) as Record<string, unknown>;
-    if (typeof draft.name !== 'string' || typeof draft.role !== 'string' || typeof draft.departmentId !== 'string') {
+    if (typeof draft.name !== 'string' || typeof draft.departmentId !== 'string') {
       throw new Error('org:hire 参数非法');
     }
     org.hire({
       name: draft.name,
-      role: draft.role,
+      // A job's title is the role now; the renderer only sends one when it hired
+      // into a department with no job catalogue.
+      role: typeof draft.role === 'string' ? draft.role : '',
       level: typeof draft.level === 'string' ? draft.level : undefined,
       departmentId: draft.departmentId,
       title: typeof draft.title === 'string' ? draft.title : undefined,
@@ -836,6 +891,7 @@ export function registerIpc({
         typeof draft.reportsToEmployeeId === 'string' ? draft.reportsToEmployeeId : undefined,
       isHead: draft.isHead === true,
       model: typeof draft.model === 'string' ? draft.model : undefined,
+      modelRef: readModelRef(draft.modelRef),
       skills: Array.isArray(draft.skills) ? draft.skills.filter((s): s is string => typeof s === 'string') : undefined,
       persona: typeof draft.persona === 'string' ? draft.persona : undefined,
       jobId: typeof draft.jobId === 'string' && draft.jobId ? draft.jobId : undefined,
@@ -1059,6 +1115,20 @@ function isModelRef(value: unknown): value is ModelRef {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.providerId === 'string' && typeof candidate.modelId === 'string';
+}
+
+/** Optional ref from the renderer: absent/invalid means "inherit the default". */
+function readModelRef(value: unknown): ModelRef | undefined {
+  return isModelRef(value) && value.providerId && value.modelId ? value : undefined;
+}
+
+/** Skill tags from the renderer: strings only, trimmed, empties dropped. */
+function readSkills(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function isCreateTaskInput(value: unknown): value is CreateTaskInput {

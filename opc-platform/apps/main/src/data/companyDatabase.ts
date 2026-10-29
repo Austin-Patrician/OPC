@@ -31,6 +31,9 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   repairDepartmentParentConstraint(db);
   repairEmploymentEventKindConstraint(db);
   migrate(db);
+  // After the steps: a fresh database only gets its `job` table inside V14, and the
+  // reshape below has to see whatever shape that left behind.
+  repairJobCatalogue(db);
   return db;
 }
 
@@ -449,6 +452,111 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
     }
   }
   return [...repaired, ...rebuilt.map((table) => `rebuilt:${table}`)];
+}
+
+/**
+ * 岗位从"部门里的一个坑"变成公司级职务（V21）。
+ *
+ * Written as a repair rather than a migration step because SQLite has no conditional
+ * DDL: this has to run on a database whose `job` table still has `department_id` (old
+ * shape) and be a no-op on one that already does not (new shape, or a re-open). The
+ * shape is the condition, and TypeScript can look at it.
+ *
+ * Merge rule when the same title existed in several departments: the oldest row wins,
+ * every live seat is pointed at it, and each department keeps its own headcount in
+ * `department_job`. Nothing is deleted from `position`, so history still explains
+ * itself.
+ */
+export function repairJobCatalogue(db: CompanyDatabase): string[] {
+  const hasJob = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'job'").get();
+  if (!hasJob) return [];
+
+  const columns = (db.prepare('PRAGMA table_info(job)').all() as { name: string }[]).map(
+    (column) => column.name,
+  );
+  db.exec(`CREATE TABLE IF NOT EXISTS department_job (
+    department_id TEXT NOT NULL,
+    job_id        TEXT NOT NULL,
+    headcount     INTEGER NOT NULL DEFAULT 0 CHECK (headcount >= 0),
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (department_id, job_id),
+    FOREIGN KEY (department_id) REFERENCES department(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_dept_job_job ON department_job(job_id);`);
+
+  if (!columns.includes('department_id')) {
+    // Already a company-wide catalogue; only the indexes may be missing (an older
+    // build created the table before they existed).
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_job_title
+               ON job(LOWER(TRIM(title))) WHERE deleted_at IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_job_live ON job(deleted_at);`);
+    return [];
+  }
+
+  db.transaction(() => {
+    db.exec('DROP TABLE IF EXISTS job_global');
+    db.exec(`CREATE TABLE job_global (
+      id          TEXT PRIMARY KEY,
+      title       TEXT NOT NULL,
+      level       TEXT NOT NULL DEFAULT 'P5',
+      description TEXT NOT NULL DEFAULT '',
+      skills      TEXT NOT NULL DEFAULT '[]',
+      model       TEXT NOT NULL DEFAULT '',
+      model_ref   TEXT NOT NULL DEFAULT '',
+      deleted_at  INTEGER,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );`);
+
+    // Every department's plan, keyed by title, before the duplicate rows go away.
+    db.exec(`INSERT OR REPLACE INTO department_job
+               (department_id, job_id, headcount, created_at, updated_at)
+             SELECT j.department_id,
+                    (SELECT j2.id FROM job j2
+                      WHERE j2.deleted_at IS NULL
+                        AND LOWER(TRIM(j2.title)) = LOWER(TRIM(j.title))
+                      ORDER BY j2.created_at, j2.id LIMIT 1),
+                    SUM(j.headcount), MIN(j.created_at), MAX(j.updated_at)
+               FROM job j
+              WHERE j.deleted_at IS NULL
+              GROUP BY j.department_id, LOWER(TRIM(j.title));`);
+
+    db.exec(`INSERT INTO job_global
+               (id, title, level, description, skills, model, model_ref, deleted_at, created_at, updated_at)
+             SELECT id, title, level, description, skills, model, model_ref, deleted_at, created_at, updated_at
+               FROM job;`);
+
+    // Live seats follow their title to the surviving row; seats on an archived job keep
+    // pointing at it, because that row stays as history.
+    db.exec(`UPDATE position SET job_id = (
+               SELECT j2.id FROM job j2
+                WHERE j2.deleted_at IS NULL
+                  AND LOWER(TRIM(j2.title)) = (SELECT LOWER(TRIM(j3.title)) FROM job j3
+                                                WHERE j3.id = position.job_id AND j3.deleted_at IS NULL)
+                ORDER BY j2.created_at, j2.id LIMIT 1)
+              WHERE job_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM job j3 WHERE j3.id = position.job_id AND j3.deleted_at IS NULL);`);
+
+    db.exec(`DELETE FROM job_global
+              WHERE deleted_at IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM job j2
+                   WHERE j2.deleted_at IS NULL
+                     AND LOWER(TRIM(j2.title)) = LOWER(TRIM(job_global.title))
+                     AND (j2.created_at < job_global.created_at
+                          OR (j2.created_at = job_global.created_at AND j2.id < job_global.id))
+                );`);
+
+    db.exec('DROP INDEX IF EXISTS idx_job_dept_title;');
+    db.exec('DROP INDEX IF EXISTS idx_job_dept;');
+    db.exec('DROP TABLE job;');
+    db.exec('ALTER TABLE job_global RENAME TO job;');
+    db.exec(`CREATE UNIQUE INDEX idx_job_title ON job(LOWER(TRIM(title))) WHERE deleted_at IS NULL;
+             CREATE INDEX idx_job_live ON job(deleted_at);`);
+  })();
+
+  return ['job:global'];
 }
 
 /**

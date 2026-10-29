@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, session, type IpcMainEvent, type Session } from 'electron';
-import type { OcrResponse, OcrResult } from '@opc/shared/ocr';
+import type { OcrResponse, OcrResult, OcrSettings } from '@opc/shared/ocr';
 import { assertOcrAssets } from './assets';
+import { DEFAULT_OCR_SETTINGS, type OcrSettingsStore } from './settings';
 import { handleOcrProtocol, OCR_ORIGIN, OCR_SCHEME } from './protocol';
 
 const READY_TIMEOUT_MS = 30_000;
@@ -17,14 +18,19 @@ export interface OcrEngine {
    * Absent on fakes, which are always usable.
    */
   assetsReady?(): boolean;
-  /** The hidden window is alive (kept warm between calls), for the runtime page. */
-  warm?(): boolean;
+  /** 设置 → 运行时: on/off plus the default output shape. */
+  settings?(): OcrSettings;
 }
 
 export interface OcrServiceOptions {
   preload: string;
   rendererDir: string;
   assetsDir: string;
+  /**
+   * The company-wide policy the tool reads at call time. Absent in the OCR probe
+   * (`OPC_OCR_PROBE`), which runs without a company database.
+   */
+  settings?: OcrSettingsStore;
   /** Vite dev server (e.g. http://localhost:5173/), so the OCR page gets HMR-free dev assets. */
   devUrl?: string;
   logger?: (message: string) => void;
@@ -94,9 +100,13 @@ export class OcrService implements OcrEngine {
     }
   }
 
-  /** The hidden window is alive; it is destroyed after three idle minutes. */
-  warm(): boolean {
-    return this.window !== null && !this.window.isDestroyed();
+  /** Policy, re-read every call so a switch takes effect on the next picture. */
+  settings(): OcrSettings {
+    return this.options.settings?.get() ?? DEFAULT_OCR_SETTINGS;
+  }
+
+  setSettings(next: OcrSettings): OcrSettings {
+    return this.options.settings ? this.options.settings.set(next) : next;
   }
 
   async dispose(): Promise<void> {

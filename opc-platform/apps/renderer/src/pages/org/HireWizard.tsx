@@ -4,6 +4,13 @@ import { useTranslation } from 'react-i18next';
 import type { DepartmentNode, HireInput, JobNode, OrgMember } from '@opc/shared/domain';
 import { cn } from '@/shared/lib/cn';
 import { buttonClass } from '@/features/settings/ui/kit';
+import { ModelSelect } from '@/features/employee-stack/ui/ModelSelect';
+import {
+  modelChoiceValue,
+  modelRefLabel,
+  parseModelChoice,
+  useModelChoices,
+} from '@/features/employee-stack/model/useEmployeeStack';
 
 const LEVELS = ['P3', 'P4', 'P5', 'P6', 'P7', 'P8'];
 const STEPS = ['identity', 'reporting', 'capability', 'confirm'] as const;
@@ -34,6 +41,8 @@ export function HireWizard({
   onSubmit: (input: HireDraft) => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const { choices, defaultModel, loading: modelsLoading } = useModelChoices();
+  const defaultModelLabel = modelRefLabel(choices, defaultModel);
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +63,20 @@ export function HireWizard({
 
   const patch = (next: Partial<HireDraft>) => setDraft((current) => ({ ...current, ...next }));
 
-  const members: OrgMember[] = departments.find((node) => node.id === draft.departmentId)?.members ?? [];
-  // Only open slots are offerable: picking a full one would just fail on submit, and a
-  // wizard that lets you fill in four steps before refusing is a bad wizard.
-  const openJobs = jobs.filter(
-    (job) => job.departmentId === draft.departmentId && job.filled < job.headcount,
-  );
-  const selectedJob = openJobs.find((job) => job.id === draft.jobId);
+  const members: OrgMember[] =
+    departments.find((node) => node.id === draft.departmentId)?.members ?? [];
+  /** This department's plan for a job; `undefined` = nobody planned a seat here. */
+  const seatOf = (job: JobNode) =>
+    job.seats.find((seat) => seat.departmentId === draft.departmentId);
+  // Jobs are company-wide, so every job is offerable. A department that planned a seat
+  // for it can only fill that cap; a department with no plan can still hire (计划外),
+  // which the dossier reports rather than hiding.
+  const openJobs = jobs.filter((job) => {
+    const seat = seatOf(job);
+    return !seat || seat.filled < seat.headcount;
+  });
+  const selectedJob = jobs.find((job) => job.id === draft.jobId);
+  const selectedSeat = selectedJob ? seatOf(selectedJob) : undefined;
   const canAdvance =
     step === 0
       ? draft.name.trim().length > 0 &&
@@ -92,12 +108,17 @@ export function HireWizard({
     }
   };
 
-  const label = (text: string) => <span className="mb-1 block text-xs font-medium text-ink-secondary">{text}</span>;
+  const label = (text: string) => (
+    <span className="mb-1 block text-xs font-medium text-ink-secondary">{text}</span>
+  );
   const input =
     'h-8 w-full rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-6" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-6"
+      onClick={onClose}
+    >
       <div
         role="dialog"
         aria-label={t('wizard.title')}
@@ -107,7 +128,12 @@ export function HireWizard({
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <span className="text-base-plus font-semibold text-ink">{t('wizard.title')}</span>
-          <button type="button" aria-label={t('common.close')} onClick={onClose} className="text-ink-tertiary hover:text-ink">
+          <button
+            type="button"
+            aria-label={t('common.close')}
+            onClick={onClose}
+            className="text-ink-tertiary hover:text-ink"
+          >
             <X className="size-4" />
           </button>
         </div>
@@ -136,14 +162,20 @@ export function HireWizard({
                   <span
                     className={cn(
                       'flex size-4 items-center justify-center rounded-full text-3xs',
-                      active ? 'bg-accent text-white' : done ? 'bg-success text-white' : 'bg-surface-muted text-ink-tertiary',
+                      active
+                        ? 'bg-accent text-white'
+                        : done
+                          ? 'bg-success text-white'
+                          : 'bg-surface-muted text-ink-tertiary',
                     )}
                   >
                     {done ? <Check className="size-2.5" /> : index + 1}
                   </span>
                   {t(`wizard.step.${id}`)}
                 </button>
-                {index < STEPS.length - 1 ? <span className="text-3xs text-ink-quaternary">›</span> : null}
+                {index < STEPS.length - 1 ? (
+                  <span className="text-3xs text-ink-quaternary">›</span>
+                ) : null}
               </li>
             );
           })}
@@ -163,14 +195,23 @@ export function HireWizard({
                 />
               </label>
               <label className="block">
-                {label(t('wizard.role'))}
-                <input
-                  data-testid="wizard-role"
-                  value={draft.title ?? ''}
-                  onChange={(event) => patch({ title: event.target.value, role: event.target.value })}
-                  placeholder={t('wizard.roleHint')}
+                {label(t('wizard.department'))}
+                <select
+                  data-testid="wizard-department"
+                  value={draft.departmentId}
+                  onChange={(event) =>
+                    // Jobs are company-wide, so the chosen job survives a department
+                    // change; only the reporting line is department-specific.
+                    patch({ departmentId: event.target.value, reportsToEmployeeId: undefined })
+                  }
                   className={input}
-                />
+                >
+                  {departments.map((node) => (
+                    <option key={node.id} value={node.id}>
+                      {node.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="block">
                 {label(t('wizard.job'))}
@@ -179,26 +220,46 @@ export function HireWizard({
                   value={draft.jobId ?? ''}
                   onChange={(event) => {
                     const job = openJobs.find((entry) => entry.id === event.target.value);
-                    // Picking a slot fills in the seat's own title and level: they are
-                    // properties of the job, not something the boss should retype.
+                    // The job *is* the template: title, level, skills and model come from
+                    // it, so the boss never retypes them for the fifth person in the seat.
                     patch({
                       jobId: job?.id,
-                      ...(job ? { title: job.title, role: job.title, level: job.level } : {}),
+                      ...(job
+                        ? {
+                            title: job.title,
+                            role: job.title,
+                            level: job.level,
+                            skills: job.skills,
+                            model: job.model,
+                            modelRef: job.modelRef,
+                          }
+                        : {}),
                     });
                   }}
                   className={input}
                 >
                   <option value="">{t('wizard.jobNone')}</option>
-                  {openJobs.map((job) => (
-                    <option key={job.id} value={job.id}>
-                      {job.title} · {job.level} ({job.filled}/{job.headcount})
-                    </option>
-                  ))}
+                  {openJobs.map((job) => {
+                    const seat = seatOf(job);
+                    return (
+                      <option key={job.id} value={job.id}>
+                        {job.title} · {job.level} ·{' '}
+                        {seat ? `${seat.filled}/${seat.headcount}` : t('wizard.jobSeatUnplanned')}
+                      </option>
+                    );
+                  })}
                 </select>
                 <span className="mt-1 block text-2xs text-ink-quaternary">
-                  {openJobs.length === 0 ? t('wizard.jobNoneOpen') : t('wizard.jobHint')}
+                  {jobs.length === 0
+                    ? t('wizard.jobNoneOpen')
+                    : selectedSeat && selectedSeat.headcount > selectedSeat.filled
+                      ? t('wizard.jobSeatLeft', {
+                          count: selectedSeat.headcount - selectedSeat.filled,
+                        })
+                      : t('wizard.jobHint')}
                 </span>
               </label>
+
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
                   {label(t('org.level'))}
@@ -214,25 +275,48 @@ export function HireWizard({
                     ))}
                   </select>
                 </label>
-                <label className="block">
-                  {label(t('wizard.department'))}
-                  <select
-                    data-testid="wizard-department"
-                    value={draft.departmentId}
-                    onChange={(event) =>
-                      // A job belongs to one department, so changing department drops it.
-                      patch({ departmentId: event.target.value, reportsToEmployeeId: undefined, jobId: undefined })
-                    }
-                    className={input}
-                  >
-                    {departments.map((node) => (
-                      <option key={node.id} value={node.id}>
-                        {node.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {selectedJob ? (
+                  <div className="min-w-0">
+                    {label(t('wizard.role'))}
+                    <p
+                      data-testid="wizard-role-inherited"
+                      className="flex h-8 items-center truncate rounded-md border border-line bg-surface-muted px-2 text-sm text-ink-secondary"
+                    >
+                      {selectedJob.title}
+                    </p>
+                  </div>
+                ) : (
+                  <label className="block">
+                    {label(t('wizard.role'))}
+                    <input
+                      data-testid="wizard-role"
+                      value={draft.title ?? ''}
+                      onChange={(event) =>
+                        patch({ title: event.target.value, role: event.target.value })
+                      }
+                      placeholder={t('wizard.roleHint')}
+                      className={input}
+                    />
+                  </label>
+                )}
               </div>
+
+              {selectedJob ? (
+                <div className="rounded-md border border-line bg-surface-muted px-2.5 py-2">
+                  <p className="text-2xs leading-relaxed text-ink-secondary">
+                    {selectedJob.description || t('org.jobDutyEmpty')}
+                  </p>
+                  {selectedJob.skills.length > 0 || selectedJob.modelRef || selectedJob.model ? (
+                    <p className="mt-1 text-2xs text-ink-quaternary">
+                      {selectedJob.skills.join(' · ')}
+                      {selectedJob.skills.length > 0 && (selectedJob.modelRef || selectedJob.model)
+                        ? ' | '
+                        : ''}
+                      {modelRefLabel(choices, selectedJob.modelRef) ?? selectedJob.model}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -242,7 +326,9 @@ export function HireWizard({
                 {label(t('wizard.reportsTo'))}
                 <select
                   value={draft.reportsToEmployeeId ?? ''}
-                  onChange={(event) => patch({ reportsToEmployeeId: event.target.value || undefined })}
+                  onChange={(event) =>
+                    patch({ reportsToEmployeeId: event.target.value || undefined })
+                  }
                   className={input}
                 >
                   <option value="">{t('wizard.noManager')}</option>
@@ -263,20 +349,47 @@ export function HireWizard({
                 />
                 {t('org.asHead')}
               </label>
-              <p className="text-2xs leading-relaxed text-ink-quaternary">{t('wizard.reportingHint')}</p>
+              <p className="text-2xs leading-relaxed text-ink-quaternary">
+                {t('wizard.reportingHint')}
+              </p>
             </>
           ) : null}
 
           {step === 2 ? (
             <>
+              {selectedJob ? (
+                <p className="rounded-md border border-line bg-surface-muted px-2.5 py-1.5 text-2xs leading-relaxed text-ink-quaternary">
+                  {t('wizard.inheritedFromJob', { title: selectedJob.title })}
+                </p>
+              ) : null}
               <label className="block">
-                {label(t('org.model'))}
-                <input
-                  value={draft.model ?? ''}
-                  onChange={(event) => patch({ model: event.target.value })}
-                  placeholder={t('org.modelHint')}
-                  className={input}
+                {label(t('org.stackModel'))}
+                <ModelSelect
+                  choices={choices}
+                  value={
+                    draft.modelRef
+                      ? modelChoiceValue(draft.modelRef.providerId, draft.modelRef.modelId)
+                      : ''
+                  }
+                  defaultLabel={
+                    defaultModelLabel
+                      ? t('org.stackInherit', { model: defaultModelLabel })
+                      : t('wizard.inheritModel')
+                  }
+                  disabled={modelsLoading}
+                  onChange={(value) => {
+                    const ref = parseModelChoice(value);
+                    // Keep the legacy label in sync so the org chart has something to show;
+                    // execution reads `modelRef`, never this string.
+                    patch({
+                      modelRef: ref ?? undefined,
+                      model: ref ? (modelRefLabel(choices, ref) ?? '') : '',
+                    });
+                  }}
                 />
+                <span className="mt-1 block text-2xs text-ink-quaternary">
+                  {choices.length === 0 ? t('org.stackNoModels') : t('wizard.modelHint')}
+                </span>
               </label>
               <div>
                 {label(t('wizard.skills'))}
@@ -313,7 +426,9 @@ export function HireWizard({
                         <button
                           type="button"
                           aria-label={`${t('common.close')} ${skill}`}
-                          onClick={() => patch({ skills: draft.skills.filter((item) => item !== skill) })}
+                          onClick={() =>
+                            patch({ skills: draft.skills.filter((item) => item !== skill) })
+                          }
                           className="text-ink-quaternary hover:text-danger"
                         >
                           <X className="size-2.5" />
@@ -322,6 +437,9 @@ export function HireWizard({
                     ))}
                   </div>
                 ) : null}
+                <span className="mt-1 block text-2xs leading-relaxed text-ink-quaternary">
+                  {t('wizard.skillsTagsHint')}
+                </span>
               </div>
               <label className="block">
                 {label(t('wizard.probation'))}
@@ -357,19 +475,45 @@ export function HireWizard({
                 [t('wizard.name'), draft.name],
                 [t('wizard.role'), draft.title ?? ''],
                 [t('org.level'), draft.level ?? ''],
-                [t('wizard.department'), departments.find((node) => node.id === draft.departmentId)?.name ?? ''],
-                [t('wizard.job'), selectedJob ? `${selectedJob.title} (${selectedJob.filled}/${selectedJob.headcount})` : t('wizard.jobNone')],
+                [
+                  t('wizard.department'),
+                  departments.find((node) => node.id === draft.departmentId)?.name ?? '',
+                ],
+                [
+                  t('wizard.job'),
+                  selectedJob
+                    ? `${selectedJob.title} (${
+                        selectedSeat
+                          ? `${selectedSeat.filled}/${selectedSeat.headcount}`
+                          : t('wizard.jobSeatUnplanned')
+                      })`
+                    : t('wizard.jobNone'),
+                ],
+                [t('org.jobDuty'), selectedJob?.description || t('org.jobDutyEmpty')],
                 [
                   t('wizard.probation'),
-                  draft.probationDays ? t('wizard.probationDays', { count: draft.probationDays }) : t('wizard.probationNone'),
+                  draft.probationDays
+                    ? t('wizard.probationDays', { count: draft.probationDays })
+                    : t('wizard.probationNone'),
                 ],
                 [
                   t('wizard.reportsTo'),
-                  members.find((member) => member.id === draft.reportsToEmployeeId)?.name ?? t('wizard.noManager'),
+                  members.find((member) => member.id === draft.reportsToEmployeeId)?.name ??
+                    t('wizard.noManager'),
                 ],
-                [t('org.model'), draft.model || t('wizard.inheritModel')],
+                [
+                  t('org.stackModel'),
+                  (draft.modelRef ? modelRefLabel(choices, draft.modelRef) : '') ||
+                    draft.model ||
+                    t('wizard.inheritModel'),
+                ],
                 [t('wizard.skills'), draft.skills.join(' · ') || '—'],
-                [t('wizard.persona'), draft.persona ? `${draft.persona.slice(0, 60)}${draft.persona.length > 60 ? '…' : ''}` : '—'],
+                [
+                  t('wizard.persona'),
+                  draft.persona
+                    ? `${draft.persona.slice(0, 60)}${draft.persona.length > 60 ? '…' : ''}`
+                    : '—',
+                ],
               ].map(([key, value]) => (
                 <div key={key} className="flex gap-3">
                   <dt className="w-24 shrink-0 text-xs text-ink-tertiary">{key}</dt>

@@ -168,6 +168,8 @@ export interface WorkTask {
   acceptanceCommand: string[];
   /** The assignee's charter, when it has one. */
   persona?: string;
+  /** The job's responsibilities, read live from `position → job` at task load. */
+  jobDescription?: string;
   /** Memories recalled for this run (L2 personal experience, L5 episodic). */
   memories?: { kind: string; content: string; scopeType: string }[];
   /** Current company/department facts (org_fact), most specific last. */
@@ -238,6 +240,8 @@ export interface OrgMember {
   /** `active` | `terminated` (employees are never hard-deleted). */
   status: string;
   model: string;
+  /** Structured model selection; absent means "inherit the company default". */
+  modelRef?: ModelRef;
   title: string;
   departmentId: string;
   reportsToEmployeeId?: string;
@@ -279,6 +283,20 @@ export interface PersonnelInput {
   title?: string;
   /** Why: recorded on the employment event, so the timeline can explain itself. */
   reason?: string;
+}
+
+/**
+ * Which tools one employee may call.
+ *
+ * Deny lists on purpose: an empty policy means "every tool the current runtime can
+ * install", so a new extension appears for existing employees instead of being
+ * silently disabled for anyone who ever touched a toggle.
+ */
+export interface EmployeeToolPolicy {
+  /** Extension names (e.g. `opc.image`) this employee must not get. */
+  disabledExtensions: string[];
+  /** Tool names (e.g. `bash`) this employee must not get, even when installed. */
+  disabledTools: string[];
 }
 
 /** An agent package that has been imported but not hired yet. */
@@ -323,37 +341,70 @@ export interface DepartmentEditInput {
 }
 
 /**
- * A headcount slot: "this department has N seats called 高级前端工程师".
+ * A job: a **company-wide** title ("测试工程师", "CFO"), not a seat in one department.
  *
- * `headcount` is a cap, not a count — `filled` is derived from live positions, so the
- * two can never disagree. A job with `headcount: 0` is a seat that exists on paper but
- * is not open for hiring yet.
+ * The job is the definition — responsibilities, default skills, default model. How many
+ * people a department wants to hire into it is *headcount*, and that lives in
+ * `department_job` (see `JobSeat`). Splitting the two is what lets the same title be
+ * shared by engineering and QA without duplicating its responsibilities.
+ *
+ * Editing a job never rewrites someone already in it: skills and model are copied at
+ * hire time. Responsibilities are read live and reach the next task.
  */
 export interface JobNode {
   id: string;
-  departmentId: string;
   title: string;
   level: string;
-  headcount: number;
-  /** Live positions sitting in this job. */
-  filled: number;
+  /** What this job is responsible for; reaches the agent prompt as the charter. */
   description: string;
+  /** Default skills a hire starts with. */
+  skills: string[];
+  /** Human-readable model snapshot; `''` means "inherit the company default". */
+  model: string;
+  /** Structured model choice; absent means "inherit the company default". */
+  modelRef?: ModelRef;
+  /** Live seats across the whole company. */
+  filled: number;
+  /** Planned seats across departments; 0 means no department claimed one yet. */
+  headcount: number;
+  /** Which departments plan to hire into this job, with their own cap. */
+  seats: JobSeat[];
+}
+
+/** One department's plan for one job: "we want N 测试工程师". */
+export interface JobSeat {
+  departmentId: string;
+  departmentName: string;
+  headcount: number;
+  /** Live seats in this department. */
+  filled: number;
 }
 
 export interface JobInput {
-  departmentId: string;
   title: string;
   level?: string;
-  headcount?: number;
   description?: string;
+  skills?: string[];
+  model?: string;
+  modelRef?: ModelRef | null;
 }
 
 export interface JobEditInput {
   id: string;
   title?: string;
   level?: string;
-  headcount?: number;
   description?: string;
+  skills?: string[];
+  model?: string;
+  /** Omit to keep, `null` to clear (inherit the company default). */
+  modelRef?: ModelRef | null;
+}
+
+/** Sets one department's headcount for one job; `0` keeps the row as "占住但不招". */
+export interface JobSeatInput {
+  jobId: string;
+  departmentId: string;
+  headcount: number;
 }
 
 /**
@@ -399,6 +450,8 @@ export interface HireInput {
   reportsToEmployeeId?: string;
   isHead?: boolean;
   model?: string;
+  /** Structured model choice; wins over the legacy free-text `model` label. */
+  modelRef?: ModelRef;
   skills?: string[];
   /** Free-form charter injected into the agent's system prompt. */
   persona?: string;
@@ -564,45 +617,26 @@ export interface RuntimeInspection {
 }
 
 /**
- * Your own models ship *with* the app — the boss cannot pick another one, so
- * these are never profiles. They still belong on the runtime page: "is this
- * machine able to run OCR" is machine state, exactly like a missing interpreter.
+ * An engine whose models ship *with* the app — the boss cannot pick another one,
+ * so it is never a profile. It still belongs on the runtime page: "can this
+ * machine read a picture" is machine state, exactly like a missing interpreter.
+ *
+ * Deliberately thin: the page answers "on or off", and the file inventory is a
+ * build-time concern that belongs in the error message, not in the UI.
  */
-export interface BundledAsset {
-  id: string;
-  /** Path relative to the runtime root, e.g. `models/....onnx`. */
-  file: string;
-  /** Bytes on disk; undefined when the file is missing. */
-  bytes?: number;
-  /** Size the manifest promises, when it declares one. */
-  expectedBytes?: number;
-  /**
-   * `size` and `corrupt` are different failures: a truncated download and a
-   * file that changed under us need different fixes.
-   */
-  state: 'ok' | 'missing' | 'size' | 'corrupt';
-}
-
 export interface BundledRuntime {
   id: string;
   name: string;
   /** What actually runs it, e.g. `onnxruntime-web · WASM/WebGPU`. */
   engine: string;
   version: string;
-  /** Absolute directory the assets are read from. */
-  root: string;
-  /** Bytes on disk across every asset. */
-  bytes: number;
+  /**
+   * `incomplete` = a file is missing or truncated (reinstall fixes it);
+   * `corrupt` = right size, wrong bytes (only a hash can see that).
+   */
   state: 'ok' | 'incomplete' | 'corrupt';
-  /** Files were hashed against the manifest, not just sized. */
-  verified: boolean;
-  checkedAt: number;
-  /** The extension and tool this runtime powers, so the page can point at them. */
-  extension: string;
-  tool: string;
-  /** The engine's window is alive (OCR keeps it warm between calls). */
-  warm: boolean;
-  assets: BundledAsset[];
+  /** How many of the expected files failed; nothing when `state` is `ok`. */
+  broken: number;
 }
 
 /** ── Model providers (slice A) ─────────────────────────────────────────── */

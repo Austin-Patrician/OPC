@@ -6,6 +6,7 @@ import type {
   RuntimeProfileDraft,
   RuntimeSnapshot,
 } from '@opc/shared/domain';
+import type { OcrSettings } from '@opc/shared/ocr';
 
 interface RuntimeViewState {
   snapshot: RuntimeSnapshot | null;
@@ -14,8 +15,10 @@ interface RuntimeViewState {
   probing: boolean;
   /** Engines that ship with the app; `null` until the first read. */
   bundled: BundledRuntime[] | null;
-  /** Files are being hashed against the manifest right now. */
-  verifying: boolean;
+  /** On/off and output shape of `ocr_image`; `null` until the first read. */
+  ocr: OcrSettings | null;
+  /** A switch or segmented control is being written back. */
+  savingOcr: boolean;
   error: string | null;
 }
 
@@ -38,7 +41,8 @@ export function useRuntime() {
     loading: true,
     probing: false,
     bundled: null,
-    verifying: false,
+    ocr: null,
+    savingOcr: false,
     error: null,
   });
 
@@ -84,32 +88,23 @@ export function useRuntime() {
   );
 
   /**
-   * Sizes first (instant), then one hash pass in the background: the page should
-   * not need a click to be able to say "these models are the right bytes".
+   * One read is enough: the main process sizes the files and hashes them against
+   * the manifest in the same pass, so the badge never says "fine" too early.
    */
-  const readBundled = useCallback(
-    async (verify: boolean) => {
-      if (!bridge?.bundled) return;
-      if (verify) setState((previous) => ({ ...previous, verifying: true }));
-      try {
-        const bundled = await bridge.bundled(verify);
-        setState((previous) => ({ ...previous, bundled }));
-      } catch (error) {
-        setState((previous) => ({ ...previous, error: reasonOf(error) }));
-      } finally {
-        if (verify) setState((previous) => ({ ...previous, verifying: false }));
-      }
-    },
-    [bridge],
-  );
+  const readOcr = useCallback(async () => {
+    if (!bridge?.bundled) return;
+    try {
+      const [bundled, ocr] = await Promise.all([bridge.bundled(), bridge.ocr()]);
+      setState((previous) => ({ ...previous, bundled, ocr }));
+    } catch (error) {
+      setState((previous) => ({ ...previous, error: reasonOf(error) }));
+    }
+  }, [bridge]);
 
   useEffect(() => {
     void load(false);
-    void (async () => {
-      await readBundled(false);
-      await readBundled(true);
-    })();
-  }, [load, readBundled]);
+    void readOcr();
+  }, [load, readOcr]);
 
   const run = useCallback(
     async <T,>(action: () => Promise<T> | undefined): Promise<T | undefined> => {
@@ -127,7 +122,22 @@ export function useRuntime() {
 
   const actions = {
     reload: (probe = false) => load(probe),
-    verifyBundled: () => readBundled(true),
+    /**
+     * Apply immediately and keep the server's answer: the tool reads the same row
+     * on its next call, so optimistic state would only hide a failed write.
+     */
+    setOcr: (next: OcrSettings) =>
+      run(async () => {
+        if (!bridge) return undefined;
+        setState((previous) => ({ ...previous, savingOcr: true }));
+        try {
+          const saved = await bridge.setOcr(next);
+          setState((previous) => ({ ...previous, ocr: saved }));
+          return saved;
+        } finally {
+          setState((previous) => ({ ...previous, savingOcr: false }));
+        }
+      }),
     setActive: (kind: RuntimeKind, profileId: string | null) =>
       run(async () => {
         if (!bridge) return undefined;

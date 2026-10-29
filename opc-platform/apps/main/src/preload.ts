@@ -5,9 +5,11 @@ import {
   type CommOverview,
   type CommWakeResult,
   type ChatSnapshot,
+  type EmployeeStackInput,
   type OpcBridge,
   type SendMessageInput,
 } from '@opc/shared/ipc';
+import type { OcrSettings } from '@opc/shared/ocr';
 import type {
   BundledRuntime,
   Budget,
@@ -80,8 +82,10 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.runtime.saveProfile, draft) as Promise<RuntimeState>,
     removeProfile: (profileId: string) =>
       ipcRenderer.invoke(IPC.runtime.removeProfile, profileId) as Promise<RuntimeState>,
-    bundled: (verify?: boolean) =>
-      ipcRenderer.invoke(IPC.runtime.bundled, verify === true) as Promise<BundledRuntime[]>,
+    bundled: () => ipcRenderer.invoke(IPC.runtime.bundled) as Promise<BundledRuntime[]>,
+    ocr: () => ipcRenderer.invoke(IPC.runtime.ocr) as Promise<OcrSettings>,
+    setOcr: (next: OcrSettings) =>
+      ipcRenderer.invoke(IPC.runtime.setOcr, next) as Promise<OcrSettings>,
   },
   company: {
     get: () => ipcRenderer.invoke(IPC.company.get) as Promise<CompanyProfile>,
@@ -184,6 +188,8 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.org.place, employeeId, departmentId),
     setAvatar: (employeeId: string, dataUrl: string) =>
       ipcRenderer.invoke(IPC.org.setAvatar, employeeId, dataUrl),
+    setPersona: (employeeId: string, persona: string) =>
+      ipcRenderer.invoke(IPC.org.setPersona, employeeId, persona),
     personnel: (input: unknown) => ipcRenderer.invoke(IPC.org.personnel, input),
     createDepartment: (input: { name: string; code?: string; description?: string; parentId?: string }) =>
       ipcRenderer.invoke(IPC.org.createDepartment, input),
@@ -202,12 +208,17 @@ const bridge: OpcBridge = {
     createJob: (input: JobInput) => ipcRenderer.invoke(IPC.org.createJob, input),
     updateJob: (input: JobEditInput) => ipcRenderer.invoke(IPC.org.updateJob, input),
     archiveJob: (jobId: string) => ipcRenderer.invoke(IPC.org.archiveJob, jobId),
+    setJobSeat: (input) => ipcRenderer.invoke(IPC.org.setJobSeat, input),
+    syncJob: (jobId: string) => ipcRenderer.invoke(IPC.org.syncJob, jobId) as Promise<number>,
     events: (employeeId: string, limit?: number) =>
       ipcRenderer.invoke(IPC.org.events, employeeId, limit),
     hire: (input: HireInput) => ipcRenderer.invoke(IPC.org.hire, input),
     transfer: (employeeId: string, departmentId: string, reportsToEmployeeId?: string, jobId?: string) =>
       ipcRenderer.invoke(IPC.org.transfer, employeeId, departmentId, reportsToEmployeeId, jobId),
     fire: (employeeId: string) => ipcRenderer.invoke(IPC.org.fire, employeeId),
+    stack: (employeeId: string) => ipcRenderer.invoke(IPC.org.stack, employeeId),
+    setStack: (employeeId: string, input: EmployeeStackInput) =>
+      ipcRenderer.invoke(IPC.org.setStack, employeeId, input),
   },
   artifacts: {
     read: (taskId: string, relPath: string) => ipcRenderer.invoke(IPC.artifacts.read, taskId, relPath),

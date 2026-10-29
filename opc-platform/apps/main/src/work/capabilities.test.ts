@@ -118,30 +118,89 @@ describe('WorkService.capabilities', () => {
     expect(names).not.toContain('text_to_speech');
   });
 
-  it('installs ocr_image only when the shipped models are actually on disk', async () => {
+  it('installs ocr_image only when it is switched on and the models are on disk', async () => {
     const org = new OrgService(db);
     const department = org.createDepartment({ name: '设计部', code: 'DE-01' });
     org.hire({ name: '苏晚', role: '视觉设计师', departmentId: department.id });
 
-    // The tool needs a window, a WASM heap and 21 MB of models; `assetsReady`
-    // is the one honest answer to "would the first call work?".
-    const fake = (assetsReady: boolean) =>
+    // Two independent gates from 设置 → 运行时: the boss's switch and the models
+    // actually being there. Both must be true or the tool cannot work once.
+    const fake = (enabled: boolean, assetsReady: boolean) =>
       ({
         recognize: async () => ({ text: '', lines: [], confidence: 0 }),
         dispose: async () => undefined,
         assetsReady: () => assetsReady,
+        settings: () => ({ enabled, detail: 'text' }),
       }) as unknown as OcrEngine;
 
-    const ready = await workWith(org, fake(true)).capabilities();
-    expect(ready.agents[0]?.tools.map((tool) => tool.name)).toContain('ocr_image');
-    expect(ready.agents[0]?.extensions.map((extension) => extension.name)).toContain('opc.ocr');
+    const on = await workWith(org, fake(true, true)).capabilities();
+    expect(on.agents[0]?.tools.map((tool) => tool.name)).toContain('ocr_image');
+    expect(on.agents[0]?.extensions.map((extension) => extension.name)).toContain('opc.ocr');
 
-    // Missing models mean an installed tool that fails on its first call, so the
-    // catalog must say "not installed" — 设置 → 运行时 explains why.
-    const missing = await workWith(org, fake(false)).capabilities();
-    expect(missing.agents[0]?.tools.map((tool) => tool.name)).not.toContain('ocr_image');
-    expect(missing.agents[0]?.extensions.map((extension) => extension.name)).not.toContain(
-      'opc.ocr',
-    );
+    // Switched off, or models missing: the catalog must say "not installed"
+    // rather than claim a tool whose first call would fail.
+    for (const catalog of [
+      await workWith(org, fake(false, true)).capabilities(),
+      await workWith(org, fake(true, false)).capabilities(),
+    ]) {
+      expect(catalog.agents[0]?.tools.map((tool) => tool.name)).not.toContain('ocr_image');
+      expect(catalog.agents[0]?.extensions.map((extension) => extension.name)).not.toContain(
+        'opc.ocr',
+      );
+    }
+  });
+});
+
+describe('WorkService.stack', () => {
+  it('describes every tool group with an availability reason, not just the installed ones', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
+    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
+
+    const stack = await workWith(org).stack(employee.id);
+    const byName = new Map(stack.extensions.map((extension) => [extension.name, extension]));
+
+    expect(stack.model).toBeNull();
+    expect(byName.get('coding-tools')).toMatchObject({ essential: true, available: true, enabled: true });
+    expect(byName.get('coding-tools')?.tools.map((tool) => tool.name).sort()).toEqual([
+      'bash',
+      'edit',
+      'read',
+      'write',
+    ]);
+    // No image/speech provider and no reports in this company.
+    expect(byName.get('opc.image')).toMatchObject({ available: false, reason: 'no-image-provider' });
+    expect(byName.get('opc.speech')).toMatchObject({ available: false, reason: 'no-speech-model' });
+    expect(byName.get('opc.decompose')).toMatchObject({
+      available: false,
+      reason: 'no-subordinates',
+    });
+  });
+
+  it('removes a disabled tool from the registry the next task would get', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
+    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
+    const work = workWith(org);
+
+    await work.setStack(employee.id, {
+      policy: { disabledExtensions: [], disabledTools: ['bash'] },
+    });
+
+    const catalog = await work.capabilities();
+    const agent = catalog.agents.find((entry) => entry.employeeId === employee.id)!;
+    expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['edit', 'read', 'write']);
+  });
+
+  it('refuses to switch off a core extension', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
+    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
+
+    await expect(
+      workWith(org).setStack(employee.id, {
+        policy: { disabledExtensions: ['coding-tools'], disabledTools: [] },
+      }),
+    ).rejects.toThrow(/核心扩展/);
   });
 });

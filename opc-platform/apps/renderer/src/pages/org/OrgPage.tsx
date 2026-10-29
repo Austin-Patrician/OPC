@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRightLeft,
   BadgeCheck,
+  BriefcaseBusiness,
   Building2,
   ChevronRight,
   Cpu,
@@ -34,12 +35,15 @@ import type {
 } from '@opc/shared/domain';
 import type { OrgFactView } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
+import { EmployeeStackSection } from '@/features/employee-stack/ui/EmployeeStackSection';
 import { HireWizard } from './HireWizard';
+import { DepartmentJobs, JobCharter, JobDirectory } from './JobTemplates';
+import { PersonaEditor } from './PersonaEditor';
 import { cn } from '@/shared/lib/cn';
 import { CapacityBar } from '@/shared/ui/charts';
 import { buttonClass, TextField } from '@/features/settings/ui/kit';
 
-type OrgView = 'tree' | 'board' | 'roster' | 'badge';
+type OrgView = 'tree' | 'board' | 'roster' | 'badge' | 'jobs';
 type StatusFilter = 'all' | 'active' | 'terminated';
 
 const VIEW_KEY = 'opc.org.view';
@@ -50,6 +54,7 @@ const VIEWS: { id: OrgView; icon: typeof Network; labelKey: string }[] = [
   { id: 'board', icon: LayoutGrid, labelKey: 'org.view.board' },
   { id: 'roster', icon: List, labelKey: 'org.view.roster' },
   { id: 'badge', icon: BadgeCheck, labelKey: 'org.view.badge' },
+  { id: 'jobs', icon: BriefcaseBusiness, labelKey: 'org.view.jobs' },
 ];
 
 /** Children of `parentId` (undefined = top level), already in chart order. */
@@ -333,7 +338,7 @@ export function OrgPage() {
             setQuery={setQuery}
           />
 
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-1 overflow-hidden">
             {view === 'tree' ? (
               <TreeView
                 departments={visible}
@@ -406,6 +411,7 @@ export function OrgPage() {
                 activeMemberId={memberId}
               />
             ) : null}
+            {view === 'jobs' ? <JobDirectory departments={departments} /> : null}
           </div>
         </div>
 
@@ -441,6 +447,7 @@ export function OrgPage() {
             <div className="flex-1 overflow-y-auto p-4">
               {selectedMember ? (
                 <MemberDetail
+                  key={selectedMember.id}
                   member={selectedMember}
                   boss={boss}
                   manager={
@@ -453,8 +460,14 @@ export function OrgPage() {
                       member.reportsToEmployeeId === selectedMember.id && member.status === 'active',
                   )}
                   departments={departments}
+                  jobs={jobs}
                   onAvatar={(dataUrl) => void act(() => window.opc!.org.setAvatar(selectedMember.id, dataUrl))}
                   onPersonnel={(input) => void act(() => window.opc!.org.personnel(input))}
+                  onStackSaved={() => void load()}
+                  onSavePersona={async (persona) => {
+                    await window.opc!.org.setPersona(selectedMember.id, persona);
+                    await load();
+                  }}
                   onStartDm={startDirect}
                   onOpenDeptGroup={openDepartmentGroup}
                 />
@@ -642,7 +655,7 @@ function Directory({
           {seatCap > 0 ? (
             <div className="mt-3 border-t border-line pt-2.5">
               <div className="flex items-baseline justify-between text-2xs text-ink-tertiary">
-                <span>{t('org.jobs')}</span>
+                <span>{t('org.jobsCap')}</span>
                 <span className="font-mono">
                   {seatFilled}/{seatCap}
                 </span>
@@ -838,29 +851,83 @@ function TreeView({
 }) {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
-  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const pan = useRef<{ pointerId: number; x: number; y: number; ox: number; oy: number } | null>(null);
   const [panning, setPanning] = useState(false);
-  // The scaled chart must reserve scaled space, otherwise zoom only shrinks pixels
-  // and the scroll area stays the size of the unscaled layout.
+  // Pan is a translate, not `scrollLeft`: a chart smaller than the viewport has
+  // no scroll range, which made dragging look broken on small orgs.
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
   const content = useRef<HTMLDivElement>(null);
   const [natural, setNatural] = useState({ w: 0, h: 0 });
+  // Once the boss pans, stop re-centering on every resize; before that, a chart
+  // that grows while data loads should stay centered.
+  const moved = useRef(false);
   // Roots of what is being shown: with no scope that is every top-level department;
   // when a department is focused, its subtree is rendered from that department down.
   const roots = departments.filter(
     (node) => !node.parentId || !departments.some((parent) => parent.id === node.parentId),
   );
 
+  const recenter = useCallback(
+    (level: number) => {
+      const canvas = ref.current;
+      if (!canvas) return;
+      const scaledWidth = natural.w * level;
+      setOffset({
+        x:
+          scaledWidth + 32 <= canvas.clientWidth
+            ? Math.round((canvas.clientWidth - scaledWidth) / 2)
+            : 16,
+        y: 8,
+      });
+    },
+    [natural.w],
+  );
+
+  /**
+   * Keeps at least a strip of the chart inside the canvas.
+   *
+   * Without this the chart could be dragged completely out of sight, which reads
+   * as "the org disappeared" rather than "I panned too far".
+   */
+  const clampOffset = useCallback(
+    (next: { x: number; y: number }, level: number) => {
+      const canvas = ref.current;
+      if (!canvas) return next;
+      const width = natural.w * level;
+      const height = natural.h * level;
+      // At least this much of the chart must stay reachable in each axis.
+      const keepX = Math.min(width, 160);
+      const keepY = Math.min(height, 120);
+      return {
+        x: Math.min(canvas.clientWidth - keepX, Math.max(keepX - width, next.x)),
+        y: Math.min(canvas.clientHeight - keepY, Math.max(keepY - height, next.y)),
+      };
+    },
+    [natural.w, natural.h],
+  );
+
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      onZoom.step(event.deltaY > 0 ? -0.1 : 0.1);
+      if (event.ctrlKey || event.metaKey) {
+        onZoom.step(event.deltaY > 0 ? -0.1 : 0.1);
+        return;
+      }
+      // Trackpad two-finger scrolling pans the canvas; the old scroll container
+      // did this for free, but a translate needs it spelled out.
+      setOffset((current) =>
+        clampOffset(
+          { x: current.x - event.deltaX, y: current.y - event.deltaY },
+          onZoom.zoom,
+        ),
+      );
+      moved.current = true;
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [onZoom]);
+  }, [onZoom, clampOffset]);
 
   useEffect(() => {
     const element = content.current;
@@ -872,87 +939,119 @@ function TreeView({
     return () => observer.disconnect();
   }, []);
 
+  // Keep the chart centered while data loads or until the user pans it.
+  useEffect(() => {
+    if (moved.current || !natural.w || !ref.current) return;
+    recenter(zoom);
+  }, [natural.w, zoom, recenter]);
+
+  // Zooming out can leave the chart outside the canvas; pull it back in bounds.
+  useEffect(() => {
+    if (!natural.w) return;
+    setOffset((current) => clampOffset(current, zoom));
+  }, [zoom, natural.w, natural.h, clampOffset]);
+
   return (
-    <div className="relative h-full min-h-0">
-    <div
-      ref={ref}
-      data-testid="org-canvas"
-      onPointerDown={(event) => {
-        const canvas = ref.current;
-        if (!canvas || (event.target as HTMLElement).closest('[data-org-card]')) return;
-        pan.current = { x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
-        canvas.setPointerCapture(event.pointerId);
-        setPanning(true);
-      }}
-      onPointerMove={(event) => {
-        const canvas = ref.current;
-        const start = pan.current;
-        if (!canvas || !start) return;
-        canvas.scrollLeft = start.left - (event.clientX - start.x);
-        canvas.scrollTop = start.top - (event.clientY - start.y);
-      }}
-      onPointerUp={() => {
-        pan.current = null;
-        setPanning(false);
-      }}
-      className={cn('h-full overflow-auto', panning ? 'cursor-grabbing' : 'cursor-grab')}
-      style={{
-        backgroundImage: 'radial-gradient(circle, var(--border-strong) 1px, transparent 1px)',
-        backgroundSize: '18px 18px',
-        backgroundAttachment: 'local',
-      }}
-    >
+    <div className="relative h-full min-h-0 overflow-hidden">
       <div
-        className="flex items-start justify-center p-10 pb-24"
-        style={{ width: natural.w * zoom || undefined, height: natural.h * zoom || undefined }}
+        ref={ref}
+        data-testid="org-canvas"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          if ((event.target as HTMLElement).closest('[data-org-card]')) return;
+          // Stop the browser from starting a text selection while we pan.
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          pan.current = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            ox: offset.x,
+            oy: offset.y,
+          };
+          setPanning(true);
+        }}
+        onPointerMove={(event) => {
+          const start = pan.current;
+          if (!start || start.pointerId !== event.pointerId) return;
+          moved.current = true;
+          setOffset(
+            clampOffset(
+              { x: start.ox + event.clientX - start.x, y: start.oy + event.clientY - start.y },
+              zoom,
+            ),
+          );
+        }}
+        onPointerUp={(event) => {
+          if (pan.current?.pointerId !== event.pointerId) return;
+          pan.current = null;
+          setPanning(false);
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          pan.current = null;
+          setPanning(false);
+        }}
+        onLostPointerCapture={() => {
+          pan.current = null;
+          setPanning(false);
+        }}
+        className={cn(
+          'relative isolate h-full touch-none overflow-hidden select-none',
+          panning ? 'cursor-grabbing' : 'cursor-grab',
+        )}
+        style={{
+          backgroundImage: 'radial-gradient(circle, var(--border-strong) 1px, transparent 1px)',
+          backgroundSize: '18px 18px',
+        }}
       >
         <div
-          ref={content}
-          style={{ transform: `scale(${zoom})`, transformOrigin: '0 0' }}
-          className="flex w-max flex-col items-center"
+          className="absolute top-0 left-0 origin-top-left will-change-transform"
+          style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
         >
-          {/* Root: the boss */}
-          <div
-            data-org-card
-            className="w-[20rem] overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-[0_8px_24px_-10px_rgba(0,153,255,0.4)]"
-          >
-            <div className="flex items-center gap-3 px-4 pt-3.5 pb-3">
-              <Avatar name={boss.name} src={boss.avatar} size="lg" status="online" />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-lg font-bold text-ink">{boss.name}</span>
-                  <span className="rounded bg-accent px-1.5 text-2xs font-semibold text-white">CEO</span>
+          <div ref={content} className="flex w-max flex-col items-center p-10 pb-24">
+            {/* Root: the boss */}
+            <div
+              data-org-card
+              className="w-[20rem] overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-[0_8px_24px_-10px_rgba(0,153,255,0.4)]"
+            >
+              <div className="flex items-center gap-3 px-4 pt-3.5 pb-3">
+                <Avatar name={boss.name} src={boss.avatar} size="lg" status="online" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-lg font-bold text-ink">{boss.name}</span>
+                    <span className="rounded bg-accent px-1.5 text-2xs font-semibold text-white">CEO</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-ink-tertiary">{t('org.founderRole')}</div>
                 </div>
-                <div className="mt-0.5 text-xs text-ink-tertiary">{t('org.founderRole')}</div>
+                <Crown className="size-4 shrink-0 text-warning" />
               </div>
-              <Crown className="size-4 shrink-0 text-warning" />
+              <div className="grid grid-cols-3 border-t border-line bg-accent-soft/40 py-2 text-center">
+                <Metric value={String(roots.length)} label={t('org.directDepartments')} />
+                <Metric value={String(totalMembers)} label={t('org.people')} className="border-x border-line" />
+                <Metric value={String(departments.filter((node) => node.headEmployeeId).length)} label={t('org.heads')} />
+              </div>
             </div>
-            <div className="grid grid-cols-3 border-t border-line bg-accent-soft/40 py-2 text-center">
-              <Metric value={String(roots.length)} label={t('org.directDepartments')} />
-              <Metric value={String(totalMembers)} label={t('org.people')} className="border-x border-line" />
-              <Metric value={String(departments.filter((node) => node.headEmployeeId).length)} label={t('org.heads')} />
-            </div>
-          </div>
 
-          {departments.length > 0 ? (
-            <DeptRow
-              nodes={roots}
-              all={departments}
-              jobs={jobs}
-              collapsed={collapsed}
-              onToggle={onToggle}
-              onOpen={onOpen}
-              onOpenDept={onOpenDept}
-              onHire={onHire}
-              activeMemberId={activeMemberId}
-              activeDeptId={activeDeptId}
-              collapsedMembers={collapsedMembers}
-              onToggleMember={onToggleMember}
-            />
-          ) : null}
+            {departments.length > 0 ? (
+              <DeptRow
+                nodes={roots}
+                all={departments}
+                jobs={jobs}
+                collapsed={collapsed}
+                onToggle={onToggle}
+                onOpen={onOpen}
+                onOpenDept={onOpenDept}
+                onHire={onHire}
+                activeMemberId={activeMemberId}
+                activeDeptId={activeDeptId}
+                collapsedMembers={collapsedMembers}
+                onToggleMember={onToggleMember}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
-    </div>
 
       {/* Canvas controls, bottom-right like the design */}
       <div className="pointer-events-auto absolute right-4 bottom-4 flex items-center gap-0.5 rounded-lg border border-line bg-surface p-1 shadow-card">
@@ -967,7 +1066,11 @@ function TreeView({
         </button>
         <button
           type="button"
-          onClick={onZoom.reset}
+          onClick={() => {
+            onZoom.reset();
+            moved.current = false;
+            recenter(1);
+          }}
           title={t('org.zoomReset')}
           className="h-7 w-11 rounded-md font-mono text-2xs text-ink hover:bg-surface-hover"
         >
@@ -1067,9 +1170,10 @@ function DeptCard({ node, all, ...props }: DeptTreeProps & { node: DepartmentNod
   const isCollapsed = props.collapsed.has(node.id);
   const kids = childrenOf(all, node.id);
   const total = node.members.length + kids.reduce((sum, child) => sum + child.members.length, 0);
-  const seats = props.jobs.filter((job) => job.departmentId === node.id);
-  const seatCap = seats.reduce((sum, job) => sum + job.headcount, 0);
-  const seatFilled = seats.reduce((sum, job) => sum + job.filled, 0);
+  // A job is company-wide; this card only shows the seats *this* department planned.
+  const seats = props.jobs.flatMap((job) => job.seats.filter((seat) => seat.departmentId === node.id));
+  const seatCap = seats.reduce((sum, seat) => sum + seat.headcount, 0);
+  const seatFilled = seats.reduce((sum, seat) => sum + seat.filled, 0);
 
   return (
     <div
@@ -1671,7 +1775,12 @@ function DepartmentSummary({
 
       <DepartmentFacts departmentId={department.id} />
 
-      <DepartmentJobs departmentId={department.id} members={department.members} onHire={onHire} />
+      <DepartmentJobs
+        departmentId={department.id}
+        departmentName={department.name}
+        members={department.members}
+        onHire={onHire}
+      />
 
       <DepartmentSettings
         department={department}
@@ -1742,182 +1851,6 @@ function DepartmentSummary({
         )}
       </DossierSection>
     </>
-  );
-}
-
-/**
- * Headcount slots for one department.
- *
- * `filled / headcount` is the only number here that the boss actually acts on: it is
- * what refuses the next hire. `filled` is derived from live seats by the service, so
- * the two can never drift apart the way a stored counter would.
- */
-function DepartmentJobs({
-  departmentId,
-  members,
-  onHire,
-}: {
-  departmentId: string;
-  members: OrgMember[];
-  onHire: () => void;
-}) {
-  const { t } = useTranslation();
-  const [jobs, setJobs] = useState<JobNode[]>([]);
-  const [title, setTitle] = useState('');
-  const [headcount, setHeadcount] = useState('1');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const load = async () => {
-    try {
-      setJobs(await window.opc!.org.jobs(departmentId));
-    } catch {
-      setJobs([]);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [departmentId]);
-
-  const act = async (run: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await run();
-      await load();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const total = jobs.reduce((sum, job) => sum + job.headcount, 0);
-  const filled = jobs.reduce((sum, job) => sum + job.filled, 0);
-  // People without a slot are not hidden: a department whose jobs say 2/2 but has four
-  // people is over establishment, and that is exactly what the boss needs to see.
-  const unplanned = members.filter((member) => member.status === 'active' && !member.jobId).length;
-
-  return (
-    <DossierSection title={`${t('org.jobs')} · ${filled}/${total}`}>
-      {unplanned > 0 ? (
-        <p className="mb-1.5 text-2xs text-ink-quaternary">
-          {t('org.jobsUnplanned', { count: unplanned })}
-        </p>
-      ) : null}
-      {jobs.length === 0 ? (
-        <p className="text-xs text-ink-quaternary">{t('org.jobsEmpty')}</p>
-      ) : (
-        <ul data-testid="dept-jobs" className="space-y-1.5">
-          {jobs.map((job) => {
-            const full = job.filled >= job.headcount;
-            return (
-              <li
-                key={job.id}
-                data-testid="dept-job-row"
-                className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate text-2xs font-medium text-ink">{job.title}</span>
-                  <span className="shrink-0 rounded bg-surface px-1 font-mono text-3xs text-ink-tertiary">
-                    {job.level}
-                  </span>
-                  <span
-                    className={cn(
-                      'shrink-0 font-mono text-3xs',
-                      full ? 'text-danger' : 'text-success',
-                    )}
-                  >
-                    {job.filled}/{job.headcount}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center gap-1.5">
-                  <div className="min-w-0 flex-1">
-                    <CapacityBar
-                      filled={job.filled}
-                      total={job.headcount}
-                      ariaLabel={`${job.title}: ${job.filled}/${job.headcount}`}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    aria-label={t('org.jobHeadcount')}
-                    title={t('org.jobHeadcount')}
-                    onClick={() =>
-                      void act(() =>
-                        window.opc!.org.updateJob({ id: job.id, headcount: job.headcount + 1 }),
-                      )
-                    }
-                    className="flex size-5 shrink-0 items-center justify-center rounded text-ink-quaternary hover:bg-ink/5 hover:text-ink"
-                  >
-                    +
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={t('org.jobRemove')}
-                    title={t('org.jobRemove')}
-                    onClick={() => void act(() => window.opc!.org.archiveJob(job.id))}
-                    className="flex size-5 shrink-0 items-center justify-center rounded text-ink-quaternary hover:bg-ink/5 hover:text-danger"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      <div className="mt-2 flex gap-1.5">
-        <input
-          data-testid="dept-job-title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder={t('org.jobTitleHint')}
-          className="h-7 min-w-0 flex-1 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus:border-accent"
-        />
-        <input
-          data-testid="dept-job-headcount"
-          value={headcount}
-          inputMode="numeric"
-          onChange={(event) => setHeadcount(event.target.value.replace(/[^\d]/g, ''))}
-          aria-label={t('org.jobHeadcount')}
-          className="h-7 w-12 shrink-0 rounded-md border border-line bg-surface px-2 text-center font-mono text-xs text-ink outline-none focus:border-accent"
-        />
-        <button
-          type="button"
-          data-testid="dept-job-add"
-          disabled={busy || !title.trim()}
-          onClick={() =>
-            void act(async () => {
-              await window.opc!.org.createJob({
-                departmentId,
-                title: title.trim(),
-                headcount: Number(headcount || '1'),
-              });
-              setTitle('');
-              setHeadcount('1');
-            })
-          }
-          className={cn(buttonClass.secondary, 'h-7 shrink-0 px-2 text-2xs disabled:opacity-40')}
-        >
-          <Plus className="size-3" />
-        </button>
-      </div>
-      {jobs.some((job) => job.filled < job.headcount) ? (
-        <button
-          type="button"
-          onClick={onHire}
-          className="mt-1.5 flex h-7 w-full items-center justify-center gap-1 rounded-md text-2xs text-ink-tertiary hover:bg-surface-hover hover:text-accent"
-        >
-          <UserPlus className="size-3" />
-          {t('org.hireInto')}
-        </button>
-      ) : null}
-      {error ? <p className="mt-1 text-2xs text-danger">{error}</p> : null}
-    </DossierSection>
   );
 }
 
@@ -2359,8 +2292,11 @@ function MemberDetail({
   manager,
   reports,
   departments,
+  jobs,
   onAvatar,
   onPersonnel,
+  onStackSaved,
+  onSavePersona,
   onStartDm,
   onOpenDeptGroup,
 }: {
@@ -2370,8 +2306,14 @@ function MemberDetail({
   manager?: OrgMember;
   reports: OrgMember[];
   departments: DepartmentNode[];
+  /** The job catalogue, so the dossier can show where this seat's duties come from. */
+  jobs: JobNode[];
   onAvatar: (dataUrl: string) => void;
   onPersonnel: (input: PersonnelInput) => void;
+  /** Fired after the model/tool stack is saved so the parent can refresh the row. */
+  onStackSaved: () => void;
+  /** Saves the charter and refreshes the org snapshot chat reads from. */
+  onSavePersona: (persona: string) => Promise<void>;
   onStartDm: (employeeId: string) => void;
   onOpenDeptGroup: (departmentId: string) => void;
 }) {
@@ -2546,31 +2488,11 @@ function MemberDetail({
 
       <PerformanceReviews employeeId={member.id} />
 
-      <DossierSection title={t('org.stack')}>
-        <div className="flex items-center gap-2 rounded-lg bg-surface-muted px-3 py-2 text-xs text-ink">
-          <Cpu className="size-3.5 shrink-0 text-accent" />
-          <span className="truncate">{member.model || t('wizard.inheritModel')}</span>
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {member.skills.length > 0 ? (
-            member.skills.map((skill) => (
-              <span key={skill} className="rounded-md bg-surface-muted px-2 py-0.5 text-2xs text-ink-secondary">
-                {skill}
-              </span>
-            ))
-          ) : (
-            <span className="text-2xs text-ink-quaternary">—</span>
-          )}
-        </div>
-      </DossierSection>
+      <EmployeeStackSection employeeId={member.id} skills={member.skills} onSaved={onStackSaved} />
 
-      {member.persona ? (
-        <DossierSection title={t('wizard.persona')}>
-          <pre className="max-h-48 overflow-y-auto rounded-lg border border-line bg-surface-muted p-3 font-mono text-2xs leading-relaxed whitespace-pre-wrap text-ink-secondary select-text">
-            {member.persona}
-          </pre>
-        </DossierSection>
-      ) : null}
+      <JobCharter job={member.jobId ? jobs.find((entry) => entry.id === member.jobId) : undefined} />
+
+      <PersonaEditor persona={member.persona} onSave={onSavePersona} />
 
       <DossierSection title={t('org.personnel')}>
         <label className="flex items-center gap-3 text-xs">

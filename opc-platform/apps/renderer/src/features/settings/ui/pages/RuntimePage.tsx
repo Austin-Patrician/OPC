@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, TriangleAlert } from 'lucide-react';
+import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type {
-  BundledAsset,
   BundledRuntime,
   RuntimeInspection,
   RuntimeKind,
   RuntimeProfile,
   RuntimeStatus,
 } from '@opc/shared/domain';
+import type { OcrSettings } from '@opc/shared/ocr';
 import { cn } from '@/shared/lib/cn';
 import { useRuntime } from '../../model/useRuntime';
 import {
@@ -22,6 +22,7 @@ import {
   SelectField,
   StatusBadge,
   TextField,
+  Toggle,
 } from '../kit';
 
 const KINDS: readonly RuntimeKind[] = ['node', 'python'];
@@ -37,106 +38,74 @@ function binaryHint(profile: RuntimeProfile, status: RuntimeStatus | undefined):
   return '';
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 /**
- * One engine the app ships. Read-only on purpose: there is nothing to choose, so
- * the only useful things to show are which files are on disk, whether they are
- * the bytes the manifest promised, and whether the engine is currently warm.
+ * 文字识别 is not a profile: the models ship with the app, so there is nothing to
+ * install and nothing to swap. The only two decisions are whether it is on and
+ * what shape its answers take — everything else is a build-time detail.
  */
-function BundledEngine({ engine }: { engine: BundledRuntime }) {
+function OcrEngineControls({
+  engine,
+  settings,
+  saving,
+  onChange,
+}: {
+  engine: BundledRuntime;
+  settings: OcrSettings;
+  saving: boolean;
+  onChange: (patch: Partial<OcrSettings>) => void;
+}) {
   const { t } = useTranslation();
-  const tone = engine.state === 'ok' ? 'green' : engine.state === 'incomplete' ? 'red' : 'amber';
-  const broken = engine.assets.filter((asset) => asset.state !== 'ok');
+  const ready = engine.state === 'ok';
+  const on = ready && settings.enabled;
 
   return (
-    <div className="border-t border-line first:border-t-0">
-      <div className="px-4 pt-3.5 pb-2.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-base font-medium text-ink">{engine.name}</span>
-          <code className="font-mono text-2xs text-ink-quaternary">{engine.version}</code>
-          <StatusBadge tone={tone} label={t(`settings.runtime.bundledState.${engine.state}`)} />
-          <StatusBadge
-            tone={engine.verified ? 'blue' : 'gray'}
-            label={
-              engine.verified ? t('settings.runtime.verified') : t('settings.runtime.unverified')
-            }
-          />
-          {engine.verified ? (
-            <span className="text-2xs text-ink-quaternary">
-              {new Date(engine.checkedAt).toLocaleTimeString()}
-            </span>
-          ) : null}
-        </div>
-        <p className="mt-1 text-2xs text-ink-tertiary">
-          {engine.engine} · {formatBytes(engine.bytes)} ·{' '}
-          {t('settings.runtime.powers', { tool: engine.tool, extension: engine.extension })}
-        </p>
-      </div>
-
-      <ul className="mx-4 mb-3 overflow-hidden rounded-lg border border-line/70 bg-surface-muted/40">
-        {engine.assets.map((asset, index) => (
-          <li
-            key={asset.id}
-            className={cn(
-              'flex items-center gap-2 px-2.5 py-1',
-              index > 0 && 'border-t border-line/50',
-            )}
-          >
-            <AssetMark state={asset.state} />
-            <code
-              className="min-w-0 flex-1 truncate font-mono text-2xs text-ink-secondary"
-              title={asset.file}
-            >
-              {asset.file}
+    <>
+      <Row
+        label={
+          <span className="flex flex-wrap items-center gap-2">
+            {engine.name}
+            <code className="font-mono text-2xs font-normal text-ink-quaternary">
+              {engine.version}
             </code>
-            {asset.state === 'ok' ? (
-              <span className="shrink-0 font-mono text-2xs text-ink-tertiary">
-                {formatBytes(asset.bytes ?? 0)}
-              </span>
-            ) : (
-              <span className="shrink-0 font-mono text-2xs text-danger">
-                {asset.state === 'size'
-                  ? t('settings.runtime.sizeMismatch', {
-                      actual: formatBytes(asset.bytes ?? 0),
-                      expected: formatBytes(asset.expectedBytes ?? 0),
-                    })
-                  : t(`settings.runtime.assetState.${asset.state}`)}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
+            <StatusBadge
+              tone={ready ? (on ? 'green' : 'gray') : 'red'}
+              label={
+                ready
+                  ? on
+                    ? t('settings.runtime.ocrOn')
+                    : t('settings.runtime.ocrOff')
+                  : t('settings.runtime.ocrUnavailable')
+              }
+            />
+          </span>
+        }
+        hint={
+          ready
+            ? t('settings.runtime.ocrEnableHint')
+            : t('settings.runtime.ocrBroken', { count: engine.broken })
+        }
+      >
+        <Toggle
+          checked={settings.enabled}
+          onChange={(next) => onChange({ enabled: next })}
+          label={t('settings.runtime.ocrEnable')}
+          disabled={!ready || saving}
+        />
+      </Row>
 
-      {broken.length > 0 ? (
-        <div className="px-4 pb-3">
-          <Note tone="warn">{t('settings.runtime.bundledBroken', { count: broken.length })}</Note>
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-line px-4 py-2">
-        <span className="min-w-0 flex-1 truncate text-2xs text-ink-quaternary">
-          <span className="mr-1">{t('settings.runtime.root')}</span>
-          <code className="font-mono text-ink-tertiary select-text">{engine.root}</code>
-        </span>
-        <span className="shrink-0 text-2xs text-ink-quaternary">
-          {engine.warm ? t('settings.runtime.warm') : t('settings.runtime.cold')}
-        </span>
-      </div>
-    </div>
+      <Row label={t('settings.runtime.ocrDetail')} hint={t('settings.runtime.ocrDetailHint')}>
+        <Segmented
+          label={t('settings.runtime.ocrDetail')}
+          value={settings.detail}
+          onChange={(detail) => onChange({ detail })}
+          options={[
+            { value: 'text', label: t('settings.runtime.ocrDetailText') },
+            { value: 'lines', label: t('settings.runtime.ocrDetailLines') },
+          ]}
+        />
+      </Row>
+    </>
   );
-}
-
-/** A file's state as a glyph: silence means fine, so only failures are loud. */
-function AssetMark({ state }: { state: BundledAsset['state'] }) {
-  if (state === 'ok') {
-    return <Check className="size-3 shrink-0 text-success/70" aria-hidden />;
-  }
-  return <TriangleAlert className="size-3 shrink-0 text-danger" aria-hidden />;
 }
 
 /**
@@ -151,6 +120,9 @@ export function RuntimePage() {
   const { t } = useTranslation();
   const runtime = useRuntime();
   const snapshot = runtime.snapshot;
+  /** The OCR engine is the only shipped one today; the section reads it by name. */
+  const ocr = runtime.ocr;
+  const engine = runtime.bundled?.[0];
 
   const [customKind, setCustomKind] = useState<RuntimeKind>('node');
   const [customBinary, setCustomBinary] = useState('');
@@ -428,34 +400,22 @@ export function RuntimePage() {
         </Section>
 
         <Section
-          title={t('settings.runtime.bundledTitle')}
-          description={t('settings.runtime.bundledDesc')}
-          action={
-            <button
-              type="button"
-              className={buttonClass.secondary}
-              onClick={() => void runtime.verifyBundled()}
-              disabled={runtime.verifying || runtime.bundled === null}
-            >
-              {runtime.verifying ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <ShieldCheck className="size-3.5" />
-              )}
-              {runtime.verifying
-                ? t('settings.runtime.verifying')
-                : t('settings.runtime.verify')}
-            </button>
-          }
+          title={t('settings.runtime.ocrTitle')}
+          description={t('settings.runtime.ocrDesc')}
         >
-          {runtime.bundled === null ? (
+          {ocr === null ? (
             <Row label={t('settings.runtime.loading')}>
               <Loader2 className="size-4 animate-spin text-ink-tertiary" />
             </Row>
-          ) : runtime.bundled.length === 0 ? (
+          ) : engine === undefined ? (
             <Row label={t('settings.runtime.bundledEmpty')} />
           ) : (
-            runtime.bundled.map((engine) => <BundledEngine key={engine.id} engine={engine} />)
+            <OcrEngineControls
+              engine={engine}
+              settings={ocr}
+              saving={runtime.savingOcr}
+              onChange={(patch) => void runtime.setOcr({ ...ocr, ...patch })}
+            />
           )}
         </Section>
       </div>

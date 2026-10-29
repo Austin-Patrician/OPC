@@ -96,6 +96,27 @@ describe('ocr_image tool', () => {
     expect(output.output?.[0]?.text).toContain('[10,20 100×30 0.97] 订单确认单');
   });
 
+  it('follows the company setting when the model does not ask', async () => {
+    const { pending } = runTool({
+      args: { path: 'shot.png' },
+      ocr: { settings: () => ({ enabled: true, detail: 'lines' }) },
+    });
+    const output = await pending;
+
+    expect(output.output?.[0]?.text).toContain('[10,20 100×30 0.97] 订单确认单');
+  });
+
+  it('lets the model override the company setting for one call', async () => {
+    const { pending } = runTool({
+      args: { path: 'shot.png', detail: 'text' },
+      ocr: { settings: () => ({ enabled: true, detail: 'lines' }) },
+    });
+    const output = await pending;
+
+    expect(output.output?.[0]?.text).not.toContain('[10,20');
+    expect(output.output?.[0]?.text).toContain('订单确认单');
+  });
+
   it('refuses paths outside the workspace', async () => {
     const { pending, calls } = runTool({ args: { path: '../../outside/secret.png' } });
     const output = await pending;

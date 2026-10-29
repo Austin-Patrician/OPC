@@ -80,25 +80,41 @@ export function ensureFirstCompany(org: OrgService): {
     };
   }
 
+  // 岗位是公司级职务：同名的只建一次，部门只负责给自己设编制。
+  const jobIds = new Map<string, string>();
+  const jobFor = (role: string, level: string, skills: string[], persona: string): string => {
+    const existing = jobIds.get(role);
+    if (existing) return existing;
+    const job = org.createJob({ title: role, level, skills, description: persona });
+    jobIds.set(role, job.id);
+    return job.id;
+  };
+
   for (const unit of STAFF) {
     const department = org.createDepartment(unit.department);
+    const headJob = jobFor(unit.head.role, unit.head.level, unit.head.skills, unit.head.persona);
+    org.setJobSeat({ jobId: headJob, departmentId: department.id, headcount: 1 });
     const head = org.hire({
       name: unit.head.name,
       role: unit.head.role,
       level: unit.head.level,
       departmentId: department.id,
+      jobId: headJob,
       isHead: true,
       skills: unit.head.skills,
       persona: unit.head.persona,
     } satisfies HireInput);
 
     for (const member of unit.members) {
+      const jobId = jobFor(member.role, member.level, member.skills, member.persona);
+      org.setJobSeat({ jobId, departmentId: department.id, headcount: 1 });
       org.hire({
         name: member.name,
         role: member.role,
         level: member.level,
         departmentId: department.id,
         reportsToEmployeeId: head.id,
+        jobId,
         skills: member.skills,
         persona: member.persona,
       } satisfies HireInput);

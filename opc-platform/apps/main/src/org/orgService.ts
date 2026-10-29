@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type {
   DepartmentEditInput,
   DepartmentNode,
+  EmployeeToolPolicy,
   EmploymentEvent,
   EmploymentEventKind,
   Evaluation,
@@ -10,6 +11,8 @@ import type {
   JobEditInput,
   JobInput,
   JobNode,
+  JobSeatInput,
+  ModelRef,
   OrgMember,
   PersonnelInput,
 } from '@opc/shared/domain';
@@ -17,6 +20,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import { BOSS_USER_ID } from '../data/schema';
 import { BudgetRepository } from '../data/budgetRepository';
 import { BudgetService } from '../work/budgetService';
+import { normalizeToolPolicy, parseToolPolicy } from '../work/toolPolicy';
 
 /**
  * Organisation as data, not demo fixtures.
@@ -37,6 +41,47 @@ export const DEPARTMENT_COLORS = [
   '#FF2D55',
 ] as const;
 
+/** `employee.model_ref` is JSON; a malformed or empty value means "inherit". */
+function parseModelRef(value: string | null | undefined): ModelRef | undefined {
+  if (!value) return undefined;
+  try {
+    const raw = JSON.parse(value) as { providerId?: unknown; modelId?: unknown };
+    return typeof raw.providerId === 'string' &&
+      raw.providerId &&
+      typeof raw.modelId === 'string' &&
+      raw.modelId
+      ? { providerId: raw.providerId, modelId: raw.modelId }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Skills are tags: trim, drop empties, and keep the first spelling of a duplicate. */
+function cleanSkills(value: readonly string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const skills: string[] = [];
+  for (const raw of value ?? []) {
+    const skill = raw.trim();
+    if (!skill) continue;
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    skills.push(skill);
+  }
+  return skills;
+}
+
+function parseSkills(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export class OrgService {
   constructor(private readonly db: CompanyDatabase) {}
 
@@ -44,8 +89,8 @@ export class OrgService {
   private readMembers = (): OrgMember[] => {
     const rows = this.db
       .prepare(
-        `SELECT e.id, e.name, e.role, e.level, e.status, e.model, e.skills, e.persona, e.avatar,
-                e.hired_at, e.terminated_at, e.probation_ends_at,
+        `SELECT e.id, e.name, e.role, e.level, e.status, e.model, e.model_ref, e.skills, e.persona, e.avatar,
+                e.tool_policy, e.hired_at, e.terminated_at, e.probation_ends_at,
                 (SELECT COALESCE(SUM(t.tokens_used), 0) FROM task t WHERE t.employee_id = e.id) AS tokens_used,
                 p.title, p.department_id, p.reports_to_employee_id, p.is_head, p.is_acting_head, p.job_id,
                 (SELECT COUNT(*) FROM task t WHERE t.employee_id = e.id AND t.status IN ('open','running')) AS active_tasks,
@@ -63,9 +108,11 @@ export class OrgService {
       level: string;
       status: string;
       model: string;
+      model_ref: string;
       skills: string;
       persona: string;
       avatar: string;
+      tool_policy: string;
       hired_at: number;
       terminated_at: number | null;
       probation_ends_at: number | null;
@@ -81,30 +128,34 @@ export class OrgService {
       active_tasks: number;
     }[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      role: row.role,
-      level: row.level,
-      status: row.status,
-      model: row.model,
-      title: row.title ?? row.role,
-      departmentId: row.department_id ?? '',
-      reportsToEmployeeId: row.reports_to_employee_id ?? undefined,
-      ...(row.job_id ? { jobId: row.job_id } : {}),
-      isHead: row.is_head === 1,
-      isActingHead: row.is_acting_head === 1,
-      activeTasks: row.active_tasks,
-      tokensUsed: row.tokens_used,
-      skills: JSON.parse(row.skills || '[]') as string[],
-      persona: row.persona ?? '',
-      avatar: row.avatar ?? '',
-      hiredAt: row.hired_at || 0,
-      ...(row.terminated_at ? { terminatedAt: row.terminated_at } : {}),
-      ...(row.probation_ends_at ? { probationEndsAt: row.probation_ends_at } : {}),
-      costTodayUsd: row.cost_today,
-      tasksDone: row.tasks_done,
-    }));
+    return rows.map((row) => {
+      const modelRef = parseModelRef(row.model_ref);
+      return {
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        level: row.level,
+        status: row.status,
+        model: row.model,
+        ...(modelRef ? { modelRef } : {}),
+        title: row.title ?? row.role,
+        departmentId: row.department_id ?? '',
+        reportsToEmployeeId: row.reports_to_employee_id ?? undefined,
+        ...(row.job_id ? { jobId: row.job_id } : {}),
+        isHead: row.is_head === 1,
+        isActingHead: row.is_acting_head === 1,
+        activeTasks: row.active_tasks,
+        tokensUsed: row.tokens_used,
+        skills: JSON.parse(row.skills || '[]') as string[],
+        persona: row.persona ?? '',
+        avatar: row.avatar ?? '',
+        hiredAt: row.hired_at || 0,
+        ...(row.terminated_at ? { terminatedAt: row.terminated_at } : {}),
+        ...(row.probation_ends_at ? { probationEndsAt: row.probation_ends_at } : {}),
+        costTodayUsd: row.cost_today,
+        tasksDone: row.tasks_done,
+      };
+    });
   };
 
   list = (): DepartmentNode[] => {
@@ -420,118 +471,173 @@ export class OrgService {
     }));
   };
 
-  // ── 职位与编制 ──────────────────────────────────────────────────────────
+  // ── 职务（全局）与部门编制 ────────────────────────────────────────────────
 
+  /**
+   * The company-wide job catalogue.
+   *
+   * `filled` / `headcount` are totals; the per-department plan is in `seats`. Passing a
+   * department filters to the jobs that department either planned or already uses, which
+   * is what its dossier needs.
+   */
   private readJobs = (departmentId?: string): JobNode[] => {
     const rows = this.db
       .prepare(
-        `SELECT j.id, j.department_id, j.title, j.level, j.headcount, j.description,
+        `SELECT j.id, j.title, j.level, j.description, j.skills, j.model, j.model_ref,
                 (SELECT COUNT(*) FROM position p
                   WHERE p.job_id = j.id AND p.deleted_at IS NULL) AS filled
            FROM job j
-          WHERE j.deleted_at IS NULL ${departmentId ? 'AND j.department_id = ?' : ''}
+          WHERE j.deleted_at IS NULL ${
+            departmentId
+              ? `AND (EXISTS (SELECT 1 FROM department_job dj
+                               WHERE dj.job_id = j.id AND dj.department_id = ?)
+                    OR EXISTS (SELECT 1 FROM position p
+                                WHERE p.job_id = j.id AND p.department_id = ? AND p.deleted_at IS NULL))`
+              : ''
+          }
           ORDER BY j.created_at, j.id`,
       )
-      .all(...(departmentId ? [departmentId] : [])) as {
+      .all(...(departmentId ? [departmentId, departmentId] : [])) as {
       id: string;
-      department_id: string;
       title: string;
       level: string;
-      headcount: number;
       description: string;
+      skills: string;
+      model: string;
+      model_ref: string;
       filled: number;
     }[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      departmentId: row.department_id,
-      title: row.title,
-      level: row.level,
-      headcount: row.headcount,
-      filled: row.filled,
-      description: row.description,
-    }));
+    const seats = this.db
+      .prepare(
+        `SELECT dj.department_id, d.name AS department_name, dj.job_id, dj.headcount,
+                (SELECT COUNT(*) FROM position p
+                  WHERE p.job_id = dj.job_id AND p.department_id = dj.department_id
+                    AND p.deleted_at IS NULL) AS filled
+           FROM department_job dj
+           JOIN department d ON d.id = dj.department_id AND d.deleted_at IS NULL
+          ORDER BY d.sort_order, d.created_at, d.id`,
+      )
+      .all() as {
+      department_id: string;
+      department_name: string;
+      job_id: string;
+      headcount: number;
+      filled: number;
+    }[];
+
+    return rows.map((row) => {
+      const modelRef = parseModelRef(row.model_ref);
+      const own = seats.filter((seat) => seat.job_id === row.id);
+      return {
+        id: row.id,
+        title: row.title,
+        level: row.level,
+        description: row.description,
+        skills: parseSkills(row.skills),
+        model: row.model,
+        ...(modelRef ? { modelRef } : {}),
+        filled: row.filled,
+        headcount: own.reduce((sum, seat) => sum + seat.headcount, 0),
+        seats: own.map((seat) => ({
+          departmentId: seat.department_id,
+          departmentName: seat.department_name,
+          headcount: seat.headcount,
+          filled: seat.filled,
+        })),
+      };
+    });
   };
 
-  /** Every job, or the ones in one department. `filled` is derived, never stored. */
+  /** Every job, or the ones one department plans / uses. */
   jobs = (departmentId?: string): JobNode[] => this.readJobs(departmentId);
 
   createJob = (input: JobInput): JobNode => {
-    const department = this.liveDepartment(input.departmentId);
     const title = input.title.trim();
-    if (!title) throw new Error('职位名称不能为空');
+    if (!title) throw new Error('岗位名称不能为空');
 
     const clash = this.db
       .prepare(
-        'SELECT id FROM job WHERE department_id = ? AND deleted_at IS NULL AND LOWER(TRIM(title)) = LOWER(?)',
+        'SELECT id FROM job WHERE deleted_at IS NULL AND LOWER(TRIM(title)) = LOWER(?)',
       )
-      .get(input.departmentId, title);
-    if (clash) throw new Error(`「${department.name}」已有职位：${title}`);
-
-    const headcount = input.headcount ?? 1;
-    if (!Number.isInteger(headcount) || headcount < 0) throw new Error('编制必须是非负整数');
+      .get(title);
+    if (clash) throw new Error(`公司里已有岗位：${title}`);
 
     const now = Date.now();
     const id = `job-${crypto.randomUUID()}`;
     this.db
       .prepare(
-        `INSERT INTO job (id, department_id, title, level, headcount, description, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO job (id, title, level, description, skills, model, model_ref, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.departmentId, title, input.level ?? 'P5', headcount, (input.description ?? '').trim(), now, now);
+      .run(
+        id,
+        title,
+        input.level ?? 'P5',
+        (input.description ?? '').trim(),
+        JSON.stringify(cleanSkills(input.skills)),
+        (input.model ?? '').trim(),
+        input.modelRef ? JSON.stringify(input.modelRef) : '',
+        now,
+        now,
+      );
 
-    return this.readJobs(input.departmentId).find((job) => job.id === id) as JobNode;
+    return this.readJobs().find((job) => job.id === id) as JobNode;
   };
 
   /**
-   * Changes a job's title / level / cap.
+   * Changes a job definition: title / level / responsibilities / defaults.
    *
-   * Lowering the cap below the number of people already seated is refused: it would
-   * make `filled > headcount` true, and every "还剩几个坑" answer would be nonsense.
-   * Move someone out first — that is a decision, not a rounding error.
+   * Editing it does **not** rewrite people already in the seat: skills and model are
+   * copies taken at hire time, because someone may have spent time tuning their own
+   * stack. Responsibilities are the exception and are read live (see `taskRepository`).
+   *
+   * Headcount is not here — it belongs to a department, see `setJobSeat`.
    */
   updateJob = (input: JobEditInput): JobNode => {
     const current = this.db
-      .prepare('SELECT id, department_id, title, headcount FROM job WHERE id = ? AND deleted_at IS NULL')
-      .get(input.id) as { id: string; department_id: string; title: string; headcount: number } | undefined;
-    if (!current) throw new Error('职位不存在');
+      .prepare('SELECT id, title, skills, model, model_ref FROM job WHERE id = ? AND deleted_at IS NULL')
+      .get(input.id) as
+      | { id: string; title: string; skills: string; model: string; model_ref: string }
+      | undefined;
+    if (!current) throw new Error('岗位不存在');
 
     const title = input.title === undefined ? current.title : input.title.trim();
-    if (!title) throw new Error('职位名称不能为空');
+    if (!title) throw new Error('岗位名称不能为空');
     if (title !== current.title) {
       const clash = this.db
         .prepare(
-          `SELECT id FROM job WHERE department_id = ? AND deleted_at IS NULL
-             AND LOWER(TRIM(title)) = LOWER(?) AND id <> ?`,
+          `SELECT id FROM job WHERE deleted_at IS NULL AND LOWER(TRIM(title)) = LOWER(?) AND id <> ?`,
         )
-        .get(current.department_id, title, input.id);
-      if (clash) throw new Error(`该部门已有职位：${title}`);
-    }
-
-    const filled = this.readJobs(current.department_id).find((job) => job.id === input.id)?.filled ?? 0;
-    if (input.headcount !== undefined) {
-      if (!Number.isInteger(input.headcount) || input.headcount < 0) throw new Error('编制必须是非负整数');
-      if (input.headcount < filled) {
-        throw new Error(`编制不能小于在岗人数（当前 ${filled} 人），请先调岗`);
-      }
+        .get(title, input.id);
+      if (clash) throw new Error(`公司里已有岗位：${title}`);
     }
 
     this.db
       .prepare(
-        `UPDATE job SET title = ?, level = COALESCE(?, level), headcount = COALESCE(?, headcount),
-                        description = COALESCE(?, description), updated_at = ?
+        `UPDATE job SET title = ?, level = COALESCE(?, level),
+                        description = COALESCE(?, description),
+                        skills = COALESCE(?, skills), model = COALESCE(?, model),
+                        model_ref = COALESCE(?, model_ref), updated_at = ?
           WHERE id = ?`,
       )
       .run(
         title,
         input.level ?? null,
-        input.headcount ?? null,
         input.description === undefined ? null : input.description.trim(),
+        input.skills === undefined ? null : JSON.stringify(cleanSkills(input.skills)),
+        input.model === undefined ? null : input.model.trim(),
+        // tri-state: undefined keeps, null clears to "inherit the company default".
+        input.modelRef === undefined
+          ? null
+          : input.modelRef
+            ? JSON.stringify(input.modelRef)
+            : '',
         Date.now(),
         input.id,
       );
 
-    return this.readJobs(current.department_id).find((job) => job.id === input.id) as JobNode;
+    return this.readJobs().find((job) => job.id === input.id) as JobNode;
   };
 
   /** Soft-deletes a job; refused while someone still sits in it. */
@@ -539,21 +645,105 @@ export class OrgService {
     const job = this.db
       .prepare('SELECT id, title FROM job WHERE id = ? AND deleted_at IS NULL')
       .get(jobId) as { id: string; title: string } | undefined;
-    if (!job) throw new Error('职位不存在');
+    if (!job) throw new Error('岗位不存在');
 
-    const filled = this.readJobs().find((entry) => entry.id === jobId)?.filled ?? 0;
+    const filled = (
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM position WHERE job_id = ? AND deleted_at IS NULL')
+        .get(jobId) as { n: number }
+    ).n;
     if (filled > 0) throw new Error(`「${job.title}」还有 ${filled} 人在岗，请先调岗`);
 
-    this.db
-      .prepare('UPDATE job SET deleted_at = ?, updated_at = ? WHERE id = ?')
-      .run(Date.now(), Date.now(), jobId);
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM department_job WHERE job_id = ?').run(jobId);
+      this.db
+        .prepare('UPDATE job SET deleted_at = ?, updated_at = ? WHERE id = ?')
+        .run(now, now, jobId);
+    })();
   };
 
   /**
-   * Resolves the job a seat fills, and enforces the cap.
+   * Sets one department's headcount for one job.
    *
-   * Returns `null` when the caller did not name one: a department without a job
-   * catalogue still works, it just has no headcount to check against.
+   * This is the only place "how many do we want" is written; the job itself stays a
+   * company-wide definition. Lowering it below the people already sitting there is
+   * refused — move someone first, that is a decision, not a rounding error.
+   */
+  setJobSeat = (input: JobSeatInput): JobNode => {
+    const job = this.db
+      .prepare('SELECT id, title FROM job WHERE id = ? AND deleted_at IS NULL')
+      .get(input.jobId) as { id: string; title: string } | undefined;
+    if (!job) throw new Error('岗位不存在');
+    this.liveDepartment(input.departmentId);
+
+    if (!Number.isInteger(input.headcount) || input.headcount < 0) {
+      throw new Error('编制必须是非负整数');
+    }
+
+    const filled = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM position
+            WHERE job_id = ? AND department_id = ? AND deleted_at IS NULL`,
+        )
+        .get(input.jobId, input.departmentId) as { n: number }
+    ).n;
+    if (input.headcount < filled) {
+      throw new Error(`编制不能小于在岗人数（当前 ${filled} 人），请先调岗`);
+    }
+
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO department_job (department_id, job_id, headcount, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(department_id, job_id)
+         DO UPDATE SET headcount = excluded.headcount, updated_at = excluded.updated_at`,
+      )
+      .run(input.departmentId, input.jobId, input.headcount, now, now);
+
+    return this.readJobs().find((entry) => entry.id === input.jobId) as JobNode;
+  };
+
+  /**
+   * Explicitly push a job's skills / model onto the people already in it.
+   *
+   * `updateJob` never rewrites live employees, so applying a change to the current
+   * occupants is a separate, deliberate call. Responsibilities are not copied; they
+   * are read live from the job at task time.
+   */
+  syncJob = (jobId: string): number => {
+    const job = this.db
+      .prepare('SELECT id, skills, model, model_ref FROM job WHERE id = ? AND deleted_at IS NULL')
+      .get(jobId) as
+      | { id: string; skills: string; model: string; model_ref: string }
+      | undefined;
+    if (!job) throw new Error('岗位不存在');
+
+    const occupants = this.db
+      .prepare('SELECT employee_id FROM position WHERE job_id = ? AND deleted_at IS NULL')
+      .all(jobId) as { employee_id: string }[];
+    if (occupants.length === 0) return 0;
+
+    const now = Date.now();
+    const update = this.db.prepare(
+      'UPDATE employee SET skills = ?, model = ?, model_ref = ?, updated_at = ? WHERE id = ?',
+    );
+    this.db.transaction(() => {
+      for (const row of occupants) {
+        update.run(job.skills, job.model, job.model_ref, now, row.employee_id);
+      }
+    })();
+    return occupants.length;
+  };
+
+  /**
+   * Resolves the job a seat fills, and enforces that department's cap.
+   *
+   * Returns `null` when the caller did not name one. A job with no `department_job`
+   * row in this department has no cap: the department simply has not planned for it,
+   * and the dossier reports the hire as 计划外.
    *
    * `occupantId` is the person being seated. Their own current seat is excluded from
    * the count, otherwise re-seating someone inside the same department ("keep the flag"
@@ -563,28 +753,59 @@ export class OrgService {
     jobId: string | undefined,
     departmentId: string,
     occupantId?: string,
-  ): { id: string; title: string; level: string } | null => {
+  ): {
+    id: string;
+    title: string;
+    level: string;
+    skills: string[];
+    model: string;
+    modelRef?: ModelRef;
+  } | null => {
     if (!jobId) return null;
     const job = this.db
       .prepare(
-        `SELECT id, department_id, title, level, headcount FROM job WHERE id = ? AND deleted_at IS NULL`,
+        `SELECT id, title, level, skills, model, model_ref FROM job WHERE id = ? AND deleted_at IS NULL`,
       )
       .get(jobId) as
-      | { id: string; department_id: string; title: string; level: string; headcount: number }
+      | {
+          id: string;
+          title: string;
+          level: string;
+          skills: string;
+          model: string;
+          model_ref: string;
+        }
       | undefined;
-    if (!job) throw new Error('职位不存在或已撤销');
-    if (job.department_id !== departmentId) throw new Error('该职位不属于目标部门');
+    if (!job) throw new Error('岗位不存在或已撤销');
 
-    const filled = (
-      this.db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM position
-            WHERE job_id = ? AND deleted_at IS NULL AND (? IS NULL OR employee_id <> ?)`,
-        )
-        .get(job.id, occupantId ?? null, occupantId ?? null) as { n: number }
-    ).n;
-    if (filled >= job.headcount) throw new Error(`「${job.title}」编制已满（${filled}/${job.headcount}）`);
-    return { id: job.id, title: job.title, level: job.level };
+    const seat = this.db
+      .prepare('SELECT headcount FROM department_job WHERE department_id = ? AND job_id = ?')
+      .get(departmentId, job.id) as { headcount: number } | undefined;
+
+    if (seat) {
+      const filled = (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM position
+              WHERE job_id = ? AND department_id = ? AND deleted_at IS NULL
+                AND (? IS NULL OR employee_id <> ?)`,
+          )
+          .get(job.id, departmentId, occupantId ?? null, occupantId ?? null) as { n: number }
+      ).n;
+      if (filled >= seat.headcount) {
+        throw new Error(`「${job.title}」编制已满（${filled}/${seat.headcount}）`);
+      }
+    }
+
+    const modelRef = parseModelRef(job.model_ref);
+    return {
+      id: job.id,
+      title: job.title,
+      level: job.level,
+      skills: parseSkills(job.skills),
+      model: job.model,
+      ...(modelRef ? { modelRef } : {}),
+    };
   };
 
   private isActive = (employeeId: string): boolean =>
@@ -898,7 +1119,16 @@ export class OrgService {
     // half-created employee behind, and "编制已满" is a decision the boss has to make.
     const job = this.resolveJob(input.jobId, input.departmentId);
     const level = input.level ?? job?.level ?? 'P5';
+    // With a job, its title *is* the role: the boss should not be able to type a
+    // different one in the wizard and split "测试工程师" into three spellings.
+    const role = job?.title ?? input.role;
     const title = input.title ?? job?.title ?? input.role;
+    // A job is a template, so its skills / model seed the hire. An empty answer means
+    // "use the job's", not "none" — clearing later is the stack editor's job.
+    const askedSkills = cleanSkills(input.skills);
+    const skills = askedSkills.length > 0 ? askedSkills : (job?.skills ?? []);
+    const modelRef = input.modelRef ?? job?.modelRef;
+    const model = input.model?.trim() || job?.model || '';
     // Probation is a date, not a flag: "试用期到哪天" is what a review is scheduled
     // against, and a boolean would have to be recomputed from `hired_at` every time.
     const probationDays = input.probationDays ?? 0;
@@ -908,18 +1138,20 @@ export class OrgService {
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO employee (id, name, role, level, department_id, model, skills, persona, status,
+          `INSERT INTO employee (id, name, role, level, department_id, model, model_ref, skills, persona, status,
                                  hired_at, probation_ends_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
         )
         .run(
           employeeId,
           input.name,
-          input.role,
+          role,
           level,
           input.departmentId,
-          input.model ?? '',
-          JSON.stringify(input.skills ?? []),
+          model,
+          // `model` stays the human label; `model_ref` is what the agent actually runs.
+          modelRef ? JSON.stringify(modelRef) : '',
+          JSON.stringify(skills),
           input.persona ?? '',
           now,
           probationEndsAt,
@@ -980,6 +1212,79 @@ export class OrgService {
     this.db
       .prepare('UPDATE employee SET avatar = ?, updated_at = ? WHERE id = ?')
       .run(dataUrl, Date.now(), employeeId);
+  };
+
+  /**
+   * The charter that reaches the system prompt.
+   *
+   * Stored on the employee row, so the next task and the next 1v1 reply pick it
+   * up without a restart; `''` is a valid value and simply removes the charter.
+   */
+  setPersona = (employeeId: string, persona: string): void => {
+    const { changes } = this.db
+      .prepare('UPDATE employee SET persona = ?, updated_at = ? WHERE id = ?')
+      .run(persona, Date.now(), employeeId);
+    if (changes === 0) throw new Error('员工不存在');
+  };
+
+  /**
+   * The model this employee actually runs with.
+   *
+   * Absent means "inherit the company default"; the legacy free-text `model`
+   * column is not used here, because a label cannot identify a provider.
+   */
+  modelRefOf = (employeeId: string): ModelRef | undefined => {
+    const row = this.db
+      .prepare('SELECT model_ref FROM employee WHERE id = ?')
+      .get(employeeId) as { model_ref: string } | undefined;
+    return row ? parseModelRef(row.model_ref) : undefined;
+  };
+
+  /** Stored deny-list; malformed JSON degrades to "everything available". */
+  toolPolicyOf = (employeeId: string): EmployeeToolPolicy => {
+    const row = this.db
+      .prepare('SELECT tool_policy FROM employee WHERE id = ?')
+      .get(employeeId) as { tool_policy: string } | undefined;
+    return parseToolPolicy(row?.tool_policy);
+  };
+
+  /**
+   * Writes the employee's model override and/or tool policy.
+   *
+   * `model` is tri-state: omitted keeps the current ref, `null` clears it, an object
+   * sets it. `modelLabel` is the human-readable snapshot the org chart shows; it is
+   * passed by the caller because this service does not read the model catalogue.
+   */
+  setStack = (
+    employeeId: string,
+    input: { model?: ModelRef | null; modelLabel?: string; policy?: EmployeeToolPolicy },
+  ): void => {
+    const exists = this.db.prepare('SELECT id FROM employee WHERE id = ?').get(employeeId);
+    if (!exists) throw new Error('员工不存在');
+
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    if (input.model !== undefined) {
+      if (input.model === null) {
+        assignments.push("model_ref = '', model = ''");
+      } else {
+        const { providerId, modelId } = input.model;
+        if (typeof providerId !== 'string' || !providerId || typeof modelId !== 'string' || !modelId) {
+          throw new Error('模型参数不合法');
+        }
+        assignments.push('model_ref = ?, model = ?');
+        values.push(JSON.stringify({ providerId, modelId }), input.modelLabel || `${providerId}/${modelId}`);
+      }
+    }
+    if (input.policy !== undefined) {
+      assignments.push('tool_policy = ?');
+      values.push(JSON.stringify(normalizeToolPolicy(input.policy)));
+    }
+    if (assignments.length === 0) return;
+
+    assignments.push('updated_at = ?');
+    values.push(Date.now(), employeeId);
+    this.db.prepare(`UPDATE employee SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
   };
 
   /** One personnel entry point: transfer, terminate, reinstate, re-assign manager. */
@@ -1358,9 +1663,10 @@ export class OrgService {
         : reportsToEmployeeId || null;
     this.assertManager(employeeId, managerId);
 
-    // A job belongs to exactly one department, so a move either keeps it (same
-    // department) or needs a new one. Passing the same job id back is a no-op.
-    const requestedJob = jobId === undefined ? (sameDepartment ? previous?.job_id ?? '' : '') : jobId;
+    // Jobs are company-wide, so a move keeps the seat's job unless the caller names
+    // another one. The new department may have no headcount planned for it; the
+    // dossier reports that as 计划外 instead of silently dropping the seat.
+    const requestedJob = jobId === undefined ? previous?.job_id ?? '' : jobId;
     const job = this.resolveJob(requestedJob || undefined, departmentId, employeeId);
 
     // A "transfer" to the same department must not silently demote the head: the

@@ -9,6 +9,17 @@
 /** `text` keeps reading order only; `lines` keeps per-line boxes and confidence. */
 export type OcrDetail = 'text' | 'lines';
 
+/**
+ * What the boss decided in 设置 → 运行时. `ocr_image` reads this at call time, so
+ * a change applies to the next picture rather than the next restart.
+ */
+export interface OcrSettings {
+  /** Off means `ocr_image` is not installed for anyone. */
+  enabled: boolean;
+  /** Default shape of the answer; the tool's `detail` argument can override it. */
+  detail: OcrDetail;
+}
+
 export interface OcrLine {
   text: string;
   /** Bounding box in the original image's pixels. */

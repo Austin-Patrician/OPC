@@ -27,3 +27,14 @@ export function primaryModifier(platform: Platform): string {
 export function isMacLike(platform: Platform): boolean {
   return platform === 'macos';
 }
+
+/**
+ * True inside the desktop shell, where the OS draws the window buttons.
+ *
+ * Read from the `<html>` dataset that `bootstrap()` sets: the platform UA string
+ * alone cannot tell whether the traffic lights are ours or the system's, and the
+ * two cases need different title-bar padding.
+ */
+export function isDesktopShell(): boolean {
+  return typeof document !== 'undefined' && document.documentElement.dataset.shell === 'electron';
+}

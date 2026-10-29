@@ -44,7 +44,7 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
       role="dialog"
       data-testid="identity-card"
       aria-label={t('titleBar.profile')}
-      className="no-drag absolute top-0 left-full z-50 ml-2 w-72 cursor-default rounded-xl border border-line bg-surface p-3 shadow-popover"
+      className="no-drag absolute top-0 left-full z-50 ml-10 w-72 cursor-default rounded-xl border border-line bg-surface p-3 shadow-popover"
     >
       <dl className="space-y-2">
         <div className="group/name flex items-center gap-3">

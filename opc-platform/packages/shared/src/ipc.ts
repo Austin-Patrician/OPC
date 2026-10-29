@@ -15,12 +15,14 @@ import type {
   DepartmentEditInput,
   EmploymentEvent,
   EmployeePackageRecord,
+  EmployeeToolPolicy,
   Evaluation,
   EvaluationInput,
   Interview,
   JobEditInput,
   JobInput,
   JobNode,
+  JobSeatInput,
   AgentCandidate,
   HireInput,
   PersonnelInput,
@@ -46,6 +48,7 @@ import type {
   SpeechTranscribeResult,
   WorkTask,
 } from './domain';
+import type { OcrSettings } from './ocr';
 
 /**
  * The typed surface between Electron main and renderer.
@@ -129,6 +132,7 @@ export const IPC = {
     unplaced: 'org:unplaced',
     place: 'org:place',
     setAvatar: 'org:setAvatar',
+    setPersona: 'org:setPersona',
     personnel: 'org:personnel',
     createDepartment: 'org:createDepartment',
     updateDepartment: 'org:updateDepartment',
@@ -141,10 +145,14 @@ export const IPC = {
     createJob: 'org:createJob',
     updateJob: 'org:updateJob',
     archiveJob: 'org:archiveJob',
+    setJobSeat: 'org:setJobSeat',
+    syncJob: 'org:syncJob',
     events: 'org:events',
     hire: 'org:hire',
     transfer: 'org:transfer',
     fire: 'org:fire',
+    stack: 'org:stack',
+    setStack: 'org:setStack',
   },
   artifacts: {
     read: 'artifacts:read',
@@ -200,6 +208,8 @@ export const IPC = {
     saveProfile: 'runtime:saveProfile',
     removeProfile: 'runtime:removeProfile',
     bundled: 'runtime:bundled',
+    ocr: 'runtime:ocr',
+    setOcr: 'runtime:setOcr',
   },
   company: {
     get: 'company:get',
@@ -547,6 +557,52 @@ export interface FactsBridge {
   }): Promise<OrgFactView[]>;
 }
 
+/** One tool as the employee's stack page sees it. */
+export interface EmployeeToolView {
+  name: string;
+  /** Short label key suffix under `capabilities.tools.*`; falls back to `name`. */
+  label: string;
+  /** Whether the runtime can install it for this employee at all. */
+  available: boolean;
+  /** Effective state: available, extension enabled, tool not explicitly disabled. */
+  enabled: boolean;
+}
+
+/** One extension group in the employee's stack. */
+export interface EmployeeToolExtensionView {
+  name: string;
+  /** Core extensions cannot be switched off, only their tools can be trimmed. */
+  essential: boolean;
+  available: boolean;
+  /** When unavailable: `no-image-provider`, `no-speech-model`, `no-subordinates`, ... */
+  reason?: string;
+  enabled: boolean;
+  tools: EmployeeToolView[];
+}
+
+/**
+ * What one employee's agent actually runs with.
+ *
+ * Read from the same catalog the registry installs from, plus the stored policy.
+ * `model: null` means the employee inherits the company default.
+ */
+export interface EmployeeStackView {
+  employeeId: string;
+  model: ModelRef | null;
+  /** Display label stored on the employee row (may be stale for legacy rows). */
+  modelLabel: string;
+  defaultModel: ModelRef | null;
+  policy: EmployeeToolPolicy;
+  extensions: EmployeeToolExtensionView[];
+}
+
+export interface EmployeeStackInput {
+  /** Omit to leave unchanged; `null` clears the override and inherits the default. */
+  model?: ModelRef | null;
+  /** Omit to leave unchanged; the whole policy is replaced when present. */
+  policy?: EmployeeToolPolicy;
+}
+
 export interface OrgBridge {
   list(): Promise<DepartmentNode[]>;
   /** Employees without an active position (terminated / newly unplaced). */
@@ -554,6 +610,8 @@ export interface OrgBridge {
   /** Places (or re-hires) an employee into a department. */
   place(employeeId: string, departmentId: string): Promise<DepartmentNode[]>;
   setAvatar(employeeId: string, dataUrl: string): Promise<DepartmentNode[]>;
+  /** The charter injected into the employee's system prompt; `''` clears it. */
+  setPersona(employeeId: string, persona: string): Promise<DepartmentNode[]>;
   /** Transfer / terminate / reinstate / re-assign manager, in one entry point. */
   personnel(input: PersonnelInput): Promise<DepartmentNode[]>;
   createDepartment(input: {
@@ -574,16 +632,27 @@ export interface OrgBridge {
   /** Performance reviews for one employee, newest first. */
   evaluations(employeeId: string, limit?: number): Promise<Evaluation[]>;
   addEvaluation(input: EvaluationInput): Promise<Evaluation[]>;
-  /** Headcount slots, all or for one department. `filled` is derived from seats. */
+  /**
+   * The company-wide job catalogue, or only the jobs one department plans / uses.
+   * `filled` and `headcount` are totals; per-department caps are in `seats`.
+   */
   jobs(departmentId?: string): Promise<JobNode[]>;
   createJob(input: JobInput): Promise<JobNode[]>;
   updateJob(input: JobEditInput): Promise<JobNode[]>;
   archiveJob(jobId: string): Promise<JobNode[]>;
+  /** Sets one department's headcount for one job; returns the whole catalogue. */
+  setJobSeat(input: JobSeatInput): Promise<JobNode[]>;
+  /** Copies the job's skills/model onto the people already in it; returns how many. */
+  syncJob(jobId: string): Promise<number>;
   /** One employee's HR timeline, newest first. */
   events(employeeId: string, limit?: number): Promise<EmploymentEvent[]>;
   hire(input: HireInput): Promise<DepartmentNode[]>;
   transfer(employeeId: string, departmentId: string, reportsToEmployeeId?: string, jobId?: string): Promise<DepartmentNode[]>;
   fire(employeeId: string): Promise<DepartmentNode[]>;
+  /** One employee's model and tool policy, with the runtime's current availability. */
+  stack(employeeId: string): Promise<EmployeeStackView>;
+  /** Saves a model override and/or tool policy; takes effect for the next task immediately. */
+  setStack(employeeId: string, input: EmployeeStackInput): Promise<EmployeeStackView>;
 }
 
 export interface ArtifactsBridge {
@@ -866,9 +935,12 @@ export interface RuntimeBridge {
   removeProfile(profileId: string): Promise<RuntimeState>;
   /**
    * Engines that ship with the app (no choice to make, nothing to install).
-   * Sizes only by default; `verify` hashes every file against the manifest.
+   * Sizes first, then a hash pass, so a same-size corrupted model is caught.
    */
-  bundled(verify?: boolean): Promise<BundledRuntime[]>;
+  bundled(): Promise<BundledRuntime[]>;
+  /** On/off and output shape for `ocr_image`; applies to the next call. */
+  ocr(): Promise<OcrSettings>;
+  setOcr(next: OcrSettings): Promise<OcrSettings>;
 }
 
 /**
