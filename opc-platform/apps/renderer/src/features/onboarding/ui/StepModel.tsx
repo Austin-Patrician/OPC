@@ -32,7 +32,7 @@ interface DisplayProvider {
 const toModelOption = (model: CatalogModel): ModelOption => ({
   id: model.id,
   name: model.name,
-  capability: model.type === 'classifier' ? 'chat' : model.type,
+  capability: model.type,
   api: model.api,
   contextWindow: model.contextWindow,
   vision: model.vision,
@@ -176,7 +176,15 @@ export function StepModel() {
       api: provider.api,
       isCustom: provider.group === 'other',
     });
-    if (provider.models.length > 0) await models.setModels(provider.id, provider.models.map(toModelOption));
+    if (provider.models.length > 0) {
+      await models.setModels(
+        provider.id,
+        // Classifier ids (Jev) are not chat models: they belong to Settings →
+        // Decision and would otherwise be registered as chat with an API that
+        // has no stream implementation.
+        provider.models.filter((model) => model.type !== 'classifier').map(toModelOption),
+      );
+    }
   };
 
   const saveKey = async () => {

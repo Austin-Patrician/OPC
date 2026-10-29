@@ -26,7 +26,7 @@ interface ModelsState {
 export function useModels() {
   const [state, setState] = useState<ModelsState>({
     providers: [],
-    defaults: { llm: null, image: null, asr: null, tts: null },
+    defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
     compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 32_768 },
     thinking: 'medium',
     loading: true,
@@ -116,7 +116,7 @@ export function useModels() {
       },
     ) => run(() => bridge?.addModel(providerId, input)),
     supportsOauth: (providerId: string) => bridge?.supportsOauth(providerId) ?? Promise.resolve(false),
-    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null) =>
+    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null) =>
       run(() => bridge?.setDefault(role, ref)),
     importFromPi: () => run(() => bridge?.importFromPi()),
     setModelContext: (providerId: string, modelId: string, contextWindow: number) =>

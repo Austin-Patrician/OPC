@@ -86,6 +86,22 @@ export class ModelRuntime {
   }
 
   /**
+   * Runs one structured-decision request. Classifier models are registered by
+   * `toProvider` under `classifiers`, never under `api`, so they are resolved by
+   * type instead of by id alone.
+   */
+  async classify(
+    providerId: string,
+    modelId: string,
+    context: { state: Record<string, unknown>; questions: Record<string, unknown> },
+  ): Promise<Awaited<ReturnType<Models['classify']>>> {
+    const models = await this.createModels();
+    const model = models.getModelOfType('classifier', providerId, modelId);
+    if (!model) throw new Error(`决策模型未启用：${providerId}/${modelId}`);
+    return models.classify(model, context as never);
+  }
+
+  /**
    * Connection test. For OpenAI-compatible endpoints we ask `/models` (cheap,
    * read-only) and import the ids; for other APIs we only confirm the key exists.
    */
@@ -172,11 +188,14 @@ export class ModelRuntime {
     // Mix all API kinds the provider's models use; pi resolves per model.
     const kinds = Array.from(new Set(config.models.map((model) => model.api ?? config.api)));
     const api: Record<string, ProviderStreams> = {};
+    const classifiers: Record<string, unknown> = {};
     for (const kind of kinds) {
       const streams = await apiFor(kind);
       if (streams) api[kind] = streams as ProviderStreams;
+      const classifier = await classifierFor(kind);
+      if (classifier) classifiers[kind] = classifier;
     }
-    if (Object.keys(api).length === 0) return undefined;
+    if (Object.keys(api).length === 0 && Object.keys(classifiers).length === 0) return undefined;
 
     const baseUrl = config.baseUrl.replace(/\/$/, '');
     // Built-in definitions carry `input`/`reasoning` even for models the user
@@ -227,7 +246,35 @@ export class ModelRuntime {
         };
       });
 
-    if (chatModels.length === 0) return undefined;
+    /**
+     * Decision models are a separate operation, not a chat variant: they take a
+     * structured `state` plus typed questions and return answers with
+     * probabilities. Only the explicit `decisionEnabled` flag registers one, so a
+     * provider's leftover catalog row cannot be called by accident.
+     */
+    const decisionModels = config.models
+      .filter((model) => model.capability === 'classifier' && model.decisionEnabled === true)
+      .map((model) => {
+        const rate = {
+          input: model.inputUsdPerM ?? 0,
+          output: model.outputUsdPerM ?? 0,
+          cacheRead: model.cacheReadUsdPerM ?? model.inputUsdPerM ?? 0,
+          cacheWrite: model.cacheWriteUsdPerM ?? model.inputUsdPerM ?? 0,
+        };
+        return {
+          type: 'classifier' as const,
+          id: model.id,
+          name: model.name,
+          api: model.api ?? config.api,
+          provider: config.id,
+          baseUrl,
+          input: (model.vision ? ['text', 'image'] : ['text']) as ('text' | 'image')[],
+          cost: rate,
+          contextWindow: model.contextWindow ?? 64_000,
+        };
+      });
+
+    if (chatModels.length === 0 && decisionModels.length === 0) return undefined;
 
     // Built-in providers bring their own OAuth implementation; attaching it is what
     // makes `models.login(id, 'oauth')` work for Claude/Copilot/etc.
@@ -245,9 +292,15 @@ export class ModelRuntime {
         },
         ...(builtin?.auth.oauth ? { oauth: builtin.auth.oauth } : {}),
       },
-      models: chatModels,
+      models: [...chatModels, ...decisionModels] as never,
       // A per-API map: pi resolves the stream implementation per model.api.
-      api: api as Parameters<typeof createProvider>[0]['api'],
+      ...(Object.keys(api).length > 0
+        ? { api: api as Parameters<typeof createProvider>[0]['api'] }
+        : {}),
+      // One-shot operations dispatch on `model.api` the same way.
+      ...(Object.keys(classifiers).length > 0
+        ? { classifiers: classifiers as Parameters<typeof createProvider>[0]['classifiers'] }
+        : {}),
     });
   }
 }
@@ -281,6 +334,27 @@ async function apiFor(kind: string): Promise<unknown> {
       return (await import('@earendil-works/pi-ai/api/pi-messages.lazy')).piMessagesApi();
     default:
       // Image/classifier-only APIs are not chat streams.
+      return undefined;
+  }
+}
+
+
+/**
+ * Maps a classifier API kind to its lazy implementation. Chat `apiFor` must not
+ * see these kinds: they are one-shot operations, not streams.
+ */
+async function classifierFor(kind: string): Promise<unknown> {
+  switch (kind) {
+    case 'typesafe-system-one':
+      return (await import('@earendil-works/pi-ai/api/typesafe-system-one.lazy')).typesafeSystemOneApi();
+    case 'openai-decisions':
+      return (await import('@earendil-works/pi-ai/api/openai-decisions.lazy')).openAIDecisionsApi();
+    case 'cloudflare-workers-ai-system-one':
+      return (await import('@earendil-works/pi-ai/api/cloudflare-workers-ai-system-one.lazy'))
+        .cloudflareWorkersAISystemOneApi();
+    case 'llama-cpp-classify':
+      return (await import('@earendil-works/pi-ai/api/llama-cpp-classify.lazy')).llamaCppClassifyApi();
+    default:
       return undefined;
   }
 }

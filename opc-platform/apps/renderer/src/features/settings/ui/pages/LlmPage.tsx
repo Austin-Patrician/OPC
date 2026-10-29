@@ -54,16 +54,15 @@ const EMPTY_MODEL_DRAFT = {
 };
 
 /**
- * A catalog row in the stored shape. Classifiers and speech models are imported
- * as chat rows: configuring a provider on the LLM page must not switch them on
- * for their own feature — the Image/Voice pages upgrade those ids explicitly.
+ * A catalog row in the stored shape. Speech and classifier ids never reach this
+ * helper — the LLM page filters them out, because Image/Voice/Decision own those
+ * capabilities and upgrade them explicitly.
  */
 function toStoredModel(model: CatalogModel): ModelOption {
   return {
     id: model.id,
     name: model.name,
-    capability:
-      model.type === 'classifier' || model.type === 'asr' || model.type === 'tts' ? 'chat' : model.type,
+    capability: model.type,
     api: model.api,
     contextWindow: model.contextWindow,
     vision: model.vision,
@@ -296,10 +295,16 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     await models.setModels(
       provider.id,
       provider.models
-        // Speech models belong to the Voice page. Materialising them as chat rows
-        // would register an ASR id as a chat model in the runtime, and it would
-        // then show up in the default-model dropdown.
-        .filter((model) => model.type !== 'asr' && model.type !== 'tts')
+        // Speech models belong to the Voice page; classifiers belong to the
+        // Decision page. Materialising either as chat rows would register an ASR
+        // or Jev id as a chat model in the runtime, and it would then show up in
+        // the default-model dropdown.
+        .filter(
+          (model) =>
+            model.type !== 'asr' &&
+            model.type !== 'tts' &&
+            model.type !== 'classifier',
+        )
         .map((model) => toStoredModel(model)),
     );
   };

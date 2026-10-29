@@ -29,6 +29,7 @@ const defaults = (over: Partial<ModelDefaults> = {}): ModelDefaults => ({
   image: null,
   asr: null,
   tts: null,
+  decision: null,
   ...over,
 });
 

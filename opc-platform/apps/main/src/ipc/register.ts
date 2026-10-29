@@ -4,6 +4,7 @@ import type {
   CompactionSettings,
   CompanyProfilePatch,
   CreateTaskInput,
+  DecisionClassifyInput,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -32,6 +33,7 @@ import type { OrgService } from '../org/orgService';
 import { agentsFromDepartments, chatDepartmentsFromDepartments } from '../seed/firstCompany';
 import { readImageArtifact } from '../work/artifacts';
 import type { ModelConfigService } from '../models/modelConfigService';
+import type { DecisionService } from '../models/decisionService';
 import type { SpeechService } from '../models/speechService';
 import type { NetworkProxyService } from '../network/proxyService';
 import { probeProxy } from '../network/proxyRuntime';
@@ -44,6 +46,7 @@ interface RegisterOptions {
   work: WorkService;
   models: ModelConfigService;
   speech: SpeechService;
+  decisions: DecisionService;
   auth: AuthService;
   company: CompanyService;
   /** 网络代理：保存即生效，失败会作为 IPC 错误抛回设置页。 */
@@ -75,6 +78,7 @@ export function registerIpc({
   work,
   models,
   speech,
+  decisions,
   auth,
   workspaceRoot,
   org,
@@ -396,7 +400,7 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.models.getDefaults, () => models.getDefaults());
   ipcMain.handle(IPC.models.setDefault, (_event, role: unknown, ref: unknown) => {
-    if (role !== 'llm' && role !== 'image' && role !== 'asr' && role !== 'tts') {
+    if (role !== 'llm' && role !== 'image' && role !== 'asr' && role !== 'tts' && role !== 'decision') {
       throw new Error('models:setDefault role 非法');
     }
     if (ref !== null && !isModelRef(ref)) throw new Error('models:setDefault ref 非法');
@@ -474,6 +478,24 @@ export function registerIpc({
       text: raw.text,
       voice: raw.voice as string | undefined,
       format,
+      modelId: raw.modelId as string | undefined,
+    });
+  });
+
+  ipcMain.handle(IPC.decisions.classify, (_event, input: unknown) => {
+    if (typeof input !== 'object' || input === null) throw new Error('decisions:classify 参数非法');
+    const raw = input as Record<string, unknown>;
+    if (typeof raw.state !== 'string') throw new Error('decisions:classify 需要 state');
+    if (typeof raw.questions !== 'object' || raw.questions === null || Array.isArray(raw.questions)) {
+      throw new Error('decisions:classify 需要 questions');
+    }
+    if (raw.modelId !== undefined && typeof raw.modelId !== 'string') {
+      throw new Error('decisions:classify modelId 非法');
+    }
+
+    return decisions.classify({
+      state: raw.state,
+      questions: raw.questions as DecisionClassifyInput['questions'],
       modelId: raw.modelId as string | undefined,
     });
   });

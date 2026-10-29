@@ -11,6 +11,8 @@ import type {
   CompactionSettings,
   CompanyProfile,
   CompanyProfilePatch,
+  DecisionClassifyInput,
+  DecisionClassifyResult,
   DepartmentNode,
   DepartmentEditInput,
   EmploymentEvent,
@@ -98,6 +100,9 @@ export const IPC = {
   speech: {
     transcribe: 'speech:transcribe',
     synthesize: 'speech:synthesize',
+  },
+  decisions: {
+    classify: 'decisions:classify',
   },
   market: {
     candidates: 'market:candidates',
@@ -343,7 +348,7 @@ export interface ModelsBridge {
   /** True only for providers pi can log into with OAuth; the rest use an API key. */
   supportsOauth(providerId: string): Promise<boolean>;
   getDefaults(): Promise<ModelDefaults>;
-  setDefault(role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null): Promise<ModelDefaults>;
+  setDefault(role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null): Promise<ModelDefaults>;
   /** Imports an existing pi config as providers (explicit user action). */
   importFromPi(): Promise<{ imported: number; providers: ProviderConfig[] }>;
   getCompaction(): Promise<CompactionSettings>;
@@ -952,6 +957,14 @@ export interface SpeechBridge {
   synthesize(input: SpeechSynthesizeInput): Promise<SpeechSynthesizeResult>;
 }
 
+/**
+ * Structured decisions (Jev / System One). Same rule as speech: the provider key
+ * stays in the main process, the renderer only sends state + questions.
+ */
+export interface DecisionsBridge {
+  classify(input: DecisionClassifyInput): Promise<DecisionClassifyResult>;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -965,6 +978,7 @@ export interface OpcBridge {
   work: WorkBridge;
   models: ModelsBridge;
   speech: SpeechBridge;
+  decisions: DecisionsBridge;
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
   org: OrgBridge;

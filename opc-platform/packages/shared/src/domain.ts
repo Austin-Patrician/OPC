@@ -685,6 +685,15 @@ export interface ModelOption {
    * provider with 600 catalog models stays usable.
    */
   chatEnabled?: boolean;
+  /**
+   * Switched on for decisions (Settings → Decision).
+   *
+   * Classifier rows are a different operation, not a chat variant: Jev answers
+   * typed questions about a `state` and never produces text. The LLM page may
+   * have stored such an id as a chat row before this switch existed, so only the
+   * explicit flag makes it resolvable by `decisions.classify`.
+   */
+  decisionEnabled?: boolean;
 }
 
 /** A chat row is usable unless it was explicitly switched off. */
@@ -770,6 +779,70 @@ export interface ModelDefaults {
   asr: ModelRef | null;
   /** Speech synthesis (read aloud). */
   tts: ModelRef | null;
+  /** Structured decisions (Jev / System One classifiers). */
+  decision: ModelRef | null;
+}
+
+/** ── Decision (System One / classifier) ────────────────────────────────── */
+
+/**
+ * One typed question sent to a decision model.
+ *
+ * `bool` is the public name for TypeSafe's `noul` wire type; the pi adapter
+ * translates between them, so the app never has to know the vendor vocabulary.
+ */
+export type DecisionQuestion =
+  | {
+      type: 'choice';
+      /** What the model should decide. Required by every System One service. */
+      instructions: string;
+      /** Choice name → what it means. Jev requires at least one. */
+      criteria: Record<string, string>;
+    }
+  | {
+      type: 'score';
+      instructions: string;
+      /** Ordered rubric; index is the score (0-based). */
+      criteria: string[];
+    }
+  | {
+      type: 'bool';
+      instructions: string;
+      /** What true / false mean. pi's classifier contract requires both. */
+      criteria: { true: string; false: string };
+    };
+
+export type DecisionAnswer =
+  | {
+      type: 'choice';
+      choice: string;
+      confidence: number;
+      probabilities: Record<string, number>;
+    }
+  | {
+      type: 'score';
+      score: number;
+      confidence: number;
+      legend?: Record<string, string>;
+      probabilities?: Record<string, number>;
+    }
+  | { type: 'bool'; probability: number };
+
+export interface DecisionClassifyInput {
+  /** Free text sent as the request's `state`, wrapped as `{ text }`. */
+  state: string;
+  questions: Record<string, DecisionQuestion>;
+  /** Explicit model; omitted means the configured default decision model. */
+  modelId?: string;
+}
+
+export interface DecisionClassifyResult {
+  ok: boolean;
+  /** The configured model id that answered (`jev-latest`); aliases resolve upstream. */
+  model?: string;
+  answers?: Record<string, DecisionAnswer>;
+  usage?: { inputTokens: number; outputTokens: number };
+  error?: string;
 }
 
 /** ── Speech (ASR / TTS) ────────────────────────────────────────────────── */

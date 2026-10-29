@@ -30,7 +30,7 @@ const EMPTY: OnboardingData = {
   departments: [],
   candidates: [],
   providers: [],
-  defaults: { llm: null, image: null, asr: null, tts: null },
+  defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
   thinking: 'medium',
   companyBudget: null,
   info: null,

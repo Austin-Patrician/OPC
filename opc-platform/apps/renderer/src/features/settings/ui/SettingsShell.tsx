@@ -5,6 +5,7 @@ import { AppearancePage } from './pages/AppearancePage';
 import { CompanyPage } from './pages/CompanyPage';
 import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
+import { DecisionPage } from './pages/DecisionPage';
 import { LlmPage } from './pages/LlmPage';
 import { NetworkPage } from './pages/NetworkPage';
 import { VoicePage } from './pages/VoicePage';
@@ -22,6 +23,7 @@ const PAGE_IDS = [
   'llm',
   'image',
   'voice',
+  'decision',
   'network',
   'selfcheck',
   'about',
@@ -78,6 +80,7 @@ export function SettingsShell() {
         { id: 'llm', label: 'LLM' },
         { id: 'image', label: 'Image' },
         { id: 'voice', label: 'Voice' },
+        { id: 'decision', label: 'Decision' },
       ],
     },
     {
@@ -125,6 +128,8 @@ export function SettingsShell() {
         return <ImagePage />;
       case 'voice':
         return <VoicePage />;
+      case 'decision':
+        return <DecisionPage />;
       case 'selfcheck':
         return <SelfCheckPage />;
       case 'network':

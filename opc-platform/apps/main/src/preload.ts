@@ -41,6 +41,8 @@ import type {
   SpeechSynthesizeResult,
   SpeechTranscribeInput,
   SpeechTranscribeResult,
+  DecisionClassifyInput,
+  DecisionClassifyResult,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -262,7 +264,7 @@ const bridge: OpcBridge = {
     supportsOauth: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.supportsOauth, providerId) as Promise<boolean>,
     getDefaults: () => ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
-    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null) =>
+    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null) =>
       ipcRenderer.invoke(IPC.models.setDefault, role, ref),
     importFromPi: () => ipcRenderer.invoke(IPC.models.importFromPi),
     getCompaction: () => ipcRenderer.invoke(IPC.models.getCompaction) as Promise<CompactionSettings>,
@@ -286,6 +288,10 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.speech.transcribe, input) as Promise<SpeechTranscribeResult>,
     synthesize: (input: SpeechSynthesizeInput) =>
       ipcRenderer.invoke(IPC.speech.synthesize, input) as Promise<SpeechSynthesizeResult>,
+  },
+  decisions: {
+    classify: (input: DecisionClassifyInput) =>
+      ipcRenderer.invoke(IPC.decisions.classify, input) as Promise<DecisionClassifyResult>,
   },
   work: {
     listTasks: (limit?: number) => ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,

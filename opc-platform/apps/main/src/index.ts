@@ -17,6 +17,7 @@ import { AuthService } from './models/authService';
 import { FileCredentialStore } from './models/credentialStore';
 import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
+import { DecisionService } from './models/decisionService';
 import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
 import type { Agent, SubtaskDraft } from '@opc/shared/domain';
@@ -335,6 +336,7 @@ async function bootstrap(): Promise<void> {
   const projects = new ProjectService(db);
   const imageService = new ImageService(modelConfig, networkClient);
   const speechService = new SpeechService(modelConfig, networkClient);
+  const decisionService = new DecisionService(modelConfig);
 
   /**
    * A trial run for the hiring market: the candidate's own charter, one real task,
@@ -447,6 +449,7 @@ async function bootstrap(): Promise<void> {
     work,
     models: modelConfig,
     speech: speechService,
+    decisions: decisionService,
     org,
     market,
     facts,

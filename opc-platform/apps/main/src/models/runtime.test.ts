@@ -126,4 +126,38 @@ describe('ModelRuntime.createModels', () => {
       await new ModelRuntime(repository, () => 'test-key').resolveModel('custom-relay', 'legacy'),
     ).toBeTruthy();
   });
+
+  it('registers a classifier only when the Decision switch is on', async () => {
+    const config: ProviderConfig = {
+      id: 'typesafe',
+      name: 'TypeSafe',
+      baseUrl: 'https://api.typesafe.ai/v1',
+      api: 'typesafe-system-one',
+      isCustom: false,
+      hasKey: true,
+      models: [
+        {
+          id: 'jev-latest',
+          name: 'Jev',
+          capability: 'classifier',
+          api: 'typesafe-system-one',
+          decisionEnabled: true,
+        },
+        {
+          id: 'not-enabled',
+          name: 'Not enabled',
+          capability: 'classifier',
+          api: 'typesafe-system-one',
+        },
+      ],
+      updatedAt: 0,
+    };
+    const repository = {
+      listProviders: () => [config],
+    } as unknown as ModelConfigRepository;
+    const models = await new ModelRuntime(repository, () => 'test-key').createModels();
+
+    expect(models.getModelOfType('classifier', 'typesafe', 'jev-latest')).toBeTruthy();
+    expect(models.getModelOfType('classifier', 'typesafe', 'not-enabled')).toBeUndefined();
+  });
 });

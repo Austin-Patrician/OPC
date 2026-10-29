@@ -40,6 +40,7 @@ const DEFAULT_LLM_KEY = 'default.llm';
 const DEFAULT_IMAGE_KEY = 'default.image';
 const DEFAULT_ASR_KEY = 'default.asr';
 const DEFAULT_TTS_KEY = 'default.tts';
+const DEFAULT_DECISION_KEY = 'default.decision';
 const COMPACTION_KEY = 'compaction';
 const THINKING_KEY = 'default.thinking';
 
@@ -153,6 +154,7 @@ export class ModelConfigService {
         // the LLM page's default `chat` leaves both switches off.
         imageEnabled: input.capability === 'image' ? true : undefined,
         voiceEnabled: input.capability === 'asr' || input.capability === 'tts' ? true : undefined,
+        decisionEnabled: input.capability === 'classifier' ? true : undefined,
         contextWindow: input.contextWindow ?? 0,
         inputUsdPerM: input.inputUsdPerM ?? 0,
         outputUsdPerM: input.outputUsdPerM ?? 0,
@@ -388,6 +390,7 @@ export class ModelConfigService {
           imageEnabled: model.imageEnabled ?? previous?.imageEnabled,
           voiceEnabled: model.voiceEnabled ?? previous?.voiceEnabled,
           chatEnabled: model.chatEnabled ?? previous?.chatEnabled,
+          decisionEnabled: model.decisionEnabled ?? previous?.decisionEnabled,
           inputUsdPerM: previous?.inputUsdPerM ?? model.inputUsdPerM,
           outputUsdPerM: previous?.outputUsdPerM ?? model.outputUsdPerM,
           cacheReadUsdPerM: previous?.cacheReadUsdPerM ?? model.cacheReadUsdPerM,
@@ -441,14 +444,16 @@ export class ModelConfigService {
     image: this.readRef(DEFAULT_IMAGE_KEY),
     asr: this.readRef(DEFAULT_ASR_KEY),
     tts: this.readRef(DEFAULT_TTS_KEY),
+    decision: this.readRef(DEFAULT_DECISION_KEY),
   });
 
-  setDefault = (role: 'llm' | 'image' | 'asr' | 'tts', ref: ModelRef | null): ModelDefaults => {
+  setDefault = (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null): ModelDefaults => {
     const key = {
       llm: DEFAULT_LLM_KEY,
       image: DEFAULT_IMAGE_KEY,
       asr: DEFAULT_ASR_KEY,
       tts: DEFAULT_TTS_KEY,
+      decision: DEFAULT_DECISION_KEY,
     }[role];
     if (ref) this.repository.setSetting(key, `${ref.providerId}::${ref.modelId}`);
     else this.repository.setSetting(key, '');

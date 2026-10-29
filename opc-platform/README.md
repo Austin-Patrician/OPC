@@ -172,6 +172,7 @@ OPC_BUDGET_EMPLOYEE_LIMIT=10000 OPC_BUDGET_PROBE=1 ./node_modules/.bin/electron 
 |---|---|---|
 | LLM | ✅ `ModelType: chat` + `completeSimple/streamSimple` | 默认大脑，写交付物 |
 | Image | ✅ `ImageModel` + `generateImages()` | 设置页可选默认图片模型；生成管线下一片 |
+| Decision | ✅ `ClassifierModel` + `classify()`（Jev / System One） | 设置页可选默认决策模型；`POST /v1/systemone`，不是 chat |
 | Video | ❌ 全库无 video 类型/接口 | 设置页明确写"pi 不支持"，不放假入口 |
 
 **设置 → 模型**（`apps/renderer/src/features/models`）
@@ -314,7 +315,7 @@ OK | sandbox | sandbox-exec · backend=seatbelt · 越界写入 exit=1（已阻�
 `opc.limits` 扩展，把单会话工具调用限制在 12 次（超限时返回一条工具结果让模型收尾），
 token 降到 **18–20k**。
 
-### 设置页（四个页面按设计稿重做）+ 模型图标
+### 设置页（按设计稿重做）+ 模型图标
 
 结构照 `OPC Agent IM平台/src/components/settings` 还原：220px 分组导航（可展开子菜单）、
 880px 内容列、底部「修改后自动保存」。
@@ -326,6 +327,7 @@ token 降到 **18–20k**。
 | 模型 · LLM | 「默认模型」卡（分组下拉 + 思考强度）+「模型服务商」双栏：236px 分组列表（搜索、图标、状态点）＋ 详情（凭据 / Base URL / **模型表：名称 + ID + 推理与视觉徽标 + 上下文 + 输入/输出单价 + 启用开关**，缓存价格列可折叠） |
 | 模型 · Image | OpenRouter 图像 Provider 卡 + 厂商筛选 chips + 图像模型列表（与设计同构） |
 | 模型 · Voice | ASR / TTS 分段切换 + Provider 双栏 + 模型开关（`voiceEnabled`）+ 默认语音模型选择 |
+| 模型 · Decision | TypeSafe 直连 / OpenRouter 中继 / 自定义 Provider + classifier 模型开关（`decisionEnabled`）+ 默认决策模型 + 「试一下」结构化控制台 |
 | 自检 | 7 项现场探针 |
 | 关于 | 应用卡（渐变图标 + 版本）/ 版本信息表 / pi 项目三链接 |
 
@@ -340,6 +342,12 @@ token 降到 **18–20k**。
 （`ModelRuntime` 只挑 `chatEnabled !== false` 的行），所以一个 Provider 带 600 个模型也不会把
 harness 撑爆。字段是 **opt-out**：没有这个字段的老数据一律视为启用，升级不会让已有配置失效。
 停用当前默认模型时会清空 `default.llm` 并给出提示，避免 Agent 回复在解析阶段失败。
+
+**决策模型开关（`decisionEnabled`）**：Jev 这类 classifier 不是 chat 的变体，协议也不同
+（`POST /v1/systemone`，请求是 `state + questions`，响应是带概率的答案，没有流式文本）。
+只有 `capability: 'classifier'` 且 `decisionEnabled === true` 的行才会注册进运行时；
+`default.decision` 同样由 Decision 页维护。OpenRouter 中继和自定义网关走同一套 pi adapter，
+只是模型 id 和 Base URL 不同。
 
 **模型表的列折叠**：默认只显示 名称 / 能力 / 上下文 / 输入 / 输出 / 启用；缓存读、缓存写属于
 「更多列」，由表头右侧的按钮展开（偏好写进 `localStorage`）。表格整体横向可滚动，列宽固定、
