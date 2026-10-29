@@ -58,8 +58,8 @@ OPC_SMOKE=1 ./node_modules/.bin/electron .        # 真开窗口跑一遍 preloa
 | 关闭 | `before-quit` 先释放 IPC 与业务服务 |
 
 窗口 chrome：macOS 用 `hiddenInset` 保留原生红绿灯，Windows 用 `titleBarOverlay`，
-Linux 暂用系统边框；应用内 24px 标题栏在 Electron 下自动隐藏装饰性红绿灯，并通过
-`env(titlebar-area-*)` 让出原生窗口按钮占位（标题栏自身的按钮不再被压在关闭键下面）。
+Linux 暂用系统边框；应用内 24px 标题栏在 Electron 下自动隐藏装饰性红绿灯，且只在
+左侧放身份区（头像 + 新建），避开原生窗口按钮所在的条带。
 
 ## 分层与全局抽象
 
@@ -314,6 +314,50 @@ OK | sandbox | sandbox-exec · backend=seatbelt · 越界写入 exit=1（已阻�
 "write → read → edit → `node --check`"里反复打转，每轮都重发整段上下文。加了一个
 `opc.limits` 扩展，把单会话工具调用限制在 12 次（超限时返回一条工具结果让模型收尾），
 token 降到 **18–20k**。
+
+### 本机 Pi 扩展：自动发现 + 显式信任（技能与工具页）
+
+页面分四个 tab：**扩展**（Pi 扩展 + 内置扩展）、**工具**（可调用工具 + 按 Agent 查看）、
+**技能**、**MCP**（占位）。tab 记在 URL 的 `?tab=` 上，刷新不会跳回第一个。
+
+详细设计见 `docs/pi-extensions.md`，这里只记要点。
+
+别人用 Pi 写的扩展（`~/.pi/agent/extensions` 里的 .ts）在 OPC 里能直接用，但**扫描和加载是两件事**：
+扫描只读目录和 `package.json`，import 才执行第三方代码——而那意味着作者的代码拿到主进程权限。
+
+| 阶段 | 行为 |
+|---|---|
+| 发现 | `~/.pi/agent/extensions`（全局）+ `.pi/extensions`（项目）+ `settings.json#extensions`，一层深，支持 `name.ts` / `name/index.ts` / `package.json#pi.extensions` |
+| 列出 | 名字、版本、作用域、入口路径；未启用的行**不显示工具列表**（那需要先跑一遍代码） |
+| 启用 | 首次弹信任框（明说"权限等同 OPC"）→ 记 id → import |
+| 装载 | `registerTool` → pi-durable 工具；`tool_call` → `beforeTool` hook（可拦截/改参）；其余 API 记进 `unsupported`，UI 标"部分支持" |
+
+两个实现取舍：
+
+- **不引入 `@earendil-works/pi-coding-agent`**（23.4 MB / 1279 文件的 CLI）。扩展只从里面拿几个
+  类型和 `isToolCallEventType` 这类判断，用 jiti 的 `virtualModules` 顶掉即可；`typebox` /
+  `pi-ai` / `pi-durable` 用 `alias` 指向 OPC 自己那份（共用两份 typebox 会认不出 schema 身份）。
+- **外部扩展最后安装**，排在 `opc.sandbox` 和 `opc.limits` 之后——它们自己的工具调用同样要过沙箱
+  和调用上限，先装就能绕过去。开关变化后清掉缓存的 harness，不用重启。
+
+未做：进程隔离（`utilityProcess`）、`ctx.ui.*` 交互式 UI（当前 fail closed，`confirm` 一律返回
+`false`）、`pi install` 的 npm 目录解析。
+
+### 本机技能：一行广告 + 按需读全文（技能与工具页）
+
+详细设计见 `docs/skills.md`。
+
+`~/.agents/skills` 里已经装好的技能（docx、pdf、xlsx…）是纯 Markdown，**不需要信任**，
+但也不该把 16 份说明书塞进每次请求。所以技能在注册表里只是一个扩展 `opc.skills`：
+
+| 部分 | 作用 | 成本 |
+|---|---|---|
+| `section('skills')` | 每个技能一行「name — 描述」 | 每请求约 1.4k tokens（15 个全开） |
+| `read_skill` 工具 | 模型判断相关时读全文 + 自带文件清单 | 只在用到时付 |
+
+正文超 24k 字符截断并指回文件路径；技能自带的脚本仍然走 `bash`，照样过沙箱和调用上限。
+开关存的是**关掉**的技能（`pi-skills.json`），所以新装的技能默认可用；卸载后记录自动清掉，
+重装回来不会还是关着的。
 
 ### 设置页（按设计稿重做）+ 模型图标
 

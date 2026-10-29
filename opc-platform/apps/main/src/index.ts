@@ -34,6 +34,8 @@ import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { OrgService } from './org/orgService';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
+import { PiExtensionHost } from './extensions/host';
+import { PiSkillHost } from './skills/host';
 import { CommService, commSettingsFrom } from './comm/commService';
 import { CommRepository } from './data/commRepository';
 import { CommScheduler } from './comm/scheduler';
@@ -417,6 +419,12 @@ async function bootstrap(): Promise<void> {
   };
   const ocrSettings = new OcrSettingsStore(db);
   const ocr = ensureOcr(ocrSettings);
+  // Pi extensions on this machine (`~/.pi/agent/extensions`). Scanning is free;
+  // only the ones the boss turned on are imported.
+  const piExtensions = new PiExtensionHost({ userDataDir: appPaths.userData });
+  // Skills are Markdown, so there is nothing to trust: they are discovered and
+  // available unless the boss switches them off.
+  const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
   work = new WorkService({
     db,
     paths: appPaths,
@@ -425,6 +433,7 @@ async function bootstrap(): Promise<void> {
     modelConfig,
     images: imageService,
     speech: speechService,
+    decisions: decisionService,
     org,
     memory,
     facts,
@@ -433,6 +442,8 @@ async function bootstrap(): Promise<void> {
     network: networkClient,
     runtime: runtimeService,
     ocr,
+    piExtensions,
+    piSkills,
   });
 
   // Rows created before issue keys existed get one now; new tasks allocate at insert.
@@ -471,6 +482,8 @@ async function bootstrap(): Promise<void> {
         : { ok: false, message: '心跳未启动（无头模式），无法手动唤醒', items: 0 },
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
+    piExtensions,
+    piSkills,
   });
 
   // Auto lifecycle (§7.5): an idle thread cools first — it stops auto-replying but

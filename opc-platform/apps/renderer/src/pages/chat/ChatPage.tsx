@@ -70,9 +70,6 @@ export function ChatPage() {
           conversations={conversations}
           activeId={active.id}
           onSelect={(id) => navigate(`/chat/${id}`)}
-          onOpenOrg={() => navigate('/org')}
-          onOpenMarket={() => navigate('/market')}
-          onCreateGroup={() => navigate('/org')}
           onArchive={(conversationId) => void window.opc!.chat.archive(conversationId)}
           onRestore={(conversationId) => void window.opc!.chat.restore(conversationId)}
         />

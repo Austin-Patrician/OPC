@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyRound, Link2, Loader2, Play, Plus, Search, X } from 'lucide-react';
+import { KeyRound, Link2, Loader2, Play, Plus, Search, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DecisionAnswer, DecisionQuestion } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
@@ -28,6 +28,7 @@ import {
   type DecisionModelView,
   type DecisionProviderView,
 } from './decisionProviders';
+import { describeAnswer, formatPercent } from './decisionAnswerView';
 
 const EMPTY_MODEL_DRAFT = {
   id: '',
@@ -77,6 +78,10 @@ export function DecisionPage() {
     model?: string;
     answers: Record<string, DecisionAnswer>;
     usage?: { inputTokens: number; outputTokens: number };
+    /** The question that produced these answers, for labels and score rubrics. */
+    question?: DecisionQuestion;
+    /** What the user asked, shown as the result's heading. */
+    instructions: string;
   } | null>(null);
 
   const providers = useMemo(
@@ -315,6 +320,27 @@ export function DecisionPage() {
     }
   };
 
+  /**
+   * Deletes a provider this page created, together with its key and models.
+   * Built-in providers are refused by the main process, so the button is only
+   * rendered for custom rows; a `default.decision` pointing here is cleared in
+   * the same call, otherwise the next classify would resolve to a missing model.
+   */
+  const removeSelectedProvider = async () => {
+    if (!selected?.config?.isCustom) return;
+    if (!window.confirm(t('settings.llm.removeConfirm', { name: selected.name }))) return;
+    setSaveError(null);
+    setSaving(true);
+    try {
+      await models.removeProvider(selected.id);
+      setSelectedId('');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   /** Builds one typed question from the console's form. */
   const buildQuestion = (): DecisionQuestion | { error: string } => {
     const text = instructions.trim();
@@ -387,6 +413,8 @@ export function DecisionPage() {
         model: result.model,
         answers: result.answers ?? {},
         usage: result.usage,
+        question,
+        instructions: question.instructions,
       });
     } catch (error) {
       setTryError(error instanceof Error ? error.message : String(error));
@@ -555,6 +583,19 @@ export function DecisionPage() {
                       >
                         {dirty ? t('settings.llm.unsaved') : savedNotice ? t('settings.llm.saved') : null}
                       </span>
+                      {selected.config?.isCustom ? (
+                        <button
+                          type="button"
+                          data-testid="remove-decision-provider"
+                          disabled={saving}
+                          onClick={() => void removeSelectedProvider()}
+                          aria-label={t('settings.llm.removeProvider')}
+                          title={t('settings.llm.removeProvider')}
+                          className="flex size-7 items-center justify-center rounded-md text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      ) : null}
                       <button type="button" disabled={!dirty || saving} onClick={discardChanges} className={buttonClass.secondary}>
                         {t('settings.llm.discard')}
                       </button>
@@ -889,7 +930,7 @@ export function DecisionPage() {
 
             {tryResult ? (
               <div data-testid="decision-result" className="rounded-lg border border-line bg-surface-muted px-3 py-2.5">
-                <div className="mb-1 flex flex-wrap items-center gap-x-3 text-2xs text-ink-tertiary">
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 text-2xs text-ink-tertiary">
                   <span className="font-mono">{tryResult.model ?? '—'}</span>
                   {tryResult.usage ? (
                     <span>
@@ -900,29 +941,76 @@ export function DecisionPage() {
                     </span>
                   ) : null}
                 </div>
-                {Object.entries(tryResult.answers).map(([name, answer]) => (
-                  <div key={name} className="flex items-start gap-2 py-0.5 text-sm">
-                    <span className="font-mono text-2xs text-ink-tertiary">{name}</span>
-                    <span className="min-w-0 flex-1 text-ink">
-                      {answer.type === 'bool'
-                        ? `${t('settings.decision.bool')} · ${answer.probability.toFixed(3)}`
-                        : answer.type === 'choice'
-                          ? `${answer.choice} · ${t('settings.decision.confidence')} ${answer.confidence.toFixed(3)}`
-                          : `${answer.score.toFixed(2)} · ${t('settings.decision.confidence')} ${answer.confidence.toFixed(3)}`}
-                    </span>
-                  </div>
-                ))}
                 {Object.entries(tryResult.answers).map(([name, answer]) => {
-                  const probabilities =
-                    answer.type === 'choice' || answer.type === 'score' ? answer.probabilities : undefined;
-                  if (!probabilities || Object.keys(probabilities).length === 0) return null;
+                  const view = describeAnswer(answer, tryResult.question);
                   return (
-                    <div key={`${name}-p`} className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-ink-tertiary">
-                      {Object.entries(probabilities).map(([label, value]) => (
-                        <span key={label} className="font-mono">
-                          {label} {value.toFixed(3)}
+                    <div key={name} className="border-t border-line/60 py-2 first:border-t-0 first:pt-0">
+                      <div className="text-xs text-ink-tertiary">
+                        {tryResult.instructions || name}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2">
+                        {view.kind === 'bool' ? (
+                          <span
+                            data-testid="decision-answer-bool"
+                            className={cn(
+                              'text-base-plus font-semibold',
+                              view.yes ? 'text-success' : 'text-ink',
+                            )}
+                          >
+                            {view.yes
+                              ? t('settings.decision.answerYes')
+                              : t('settings.decision.answerNo')}
+                          </span>
+                        ) : (
+                          <span
+                            data-testid="decision-answer-value"
+                            className="text-base-plus font-semibold text-ink"
+                          >
+                            {view.value}
+                          </span>
+                        )}
+                        {view.meaning ? (
+                          <span className="text-xs text-ink-tertiary">{view.meaning}</span>
+                        ) : null}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-2xs text-ink-tertiary">
+                        <span className="tabular-nums">
+                          {view.probabilistic
+                            ? t('settings.decision.probabilityValue', {
+                                value: formatPercent(view.confidence),
+                              })
+                            : t('settings.decision.confidenceValue', {
+                                value: formatPercent(view.confidence),
+                              })}
                         </span>
-                      ))}
+                        {view.threshold !== undefined ? (
+                          <span className="tabular-nums">
+                            {t('settings.decision.thresholdHint', {
+                              value: formatPercent(view.threshold),
+                            })}
+                          </span>
+                        ) : null}
+                      </div>
+                      {view.distribution.length > 0 ? (
+                        <ul className="mt-1.5 space-y-1">
+                          {view.distribution.map((entry) => (
+                            <li key={entry.label} className="flex items-center gap-2 text-2xs">
+                              <span className="w-28 truncate font-mono text-ink-tertiary">
+                                {entry.label}
+                              </span>
+                              <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-line">
+                                <span
+                                  className="block h-full rounded-full bg-accent"
+                                  style={{ width: `${Math.round(entry.probability * 100)}%` }}
+                                />
+                              </span>
+                              <span className="w-11 text-right tabular-nums text-ink-tertiary">
+                                {formatPercent(entry.probability)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -934,10 +1022,12 @@ export function DecisionPage() {
 
       {addOpen ? (
         <AddProviderDialog
-          apiKinds={['openai-completions', 'anthropic-messages']}
+          apiKinds={DECISION_PROTOCOLS}
           onClose={() => setAddOpen(false)}
           onCreate={(draft) => {
-            void models.saveProvider(draft);
+            // `scope: 'decision'` keeps this relay out of the LLM page: its models
+            // are classifiers, and a chat row for them could only fail.
+            void models.saveProvider({ ...draft, scope: 'decision' });
             setPendingProviderId(draft.id);
             setSelectedId(draft.id);
           }}

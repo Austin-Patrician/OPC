@@ -3,15 +3,17 @@ import { useTranslation } from 'react-i18next';
 import { Plus, X } from 'lucide-react';
 import type { EmployeeStackView, EmployeeToolExtensionView } from '@opc/shared/ipc';
 import { cn } from '@/shared/lib/cn';
-import { extensionDescriptionKey, extensionTitleKey } from '../model/extensionCopy';
+import { extensionDescriptionKey, extensionFallbackTitle, extensionTitleKey, isExternalExtension } from '../model/extensionCopy';
 
 const REASON_KEY: Record<string, string> = {
   'no-image-provider': 'org.stackReasonNoImage',
   'no-speech-model': 'org.stackReasonNoSpeech',
+  'no-decision-model': 'org.stackReasonNoDecision',
   'ocr-models-missing': 'org.stackReasonOcr',
   'memory-disabled': 'org.stackReasonMemory',
   'comm-disabled': 'org.stackReasonComm',
   'no-subordinates': 'org.stackReasonNoSubordinates',
+  'no-skills': 'org.stackReasonNoSkills',
 };
 
 function Switch({
@@ -65,8 +67,12 @@ function ExtensionRow({
   const { t } = useTranslation();
   const titleKey = extensionTitleKey(extension.name);
   const descriptionKey = extensionDescriptionKey(extension.name);
-  const title = titleKey ? t(titleKey) : extension.name;
-  const description = descriptionKey ? t(descriptionKey) : '';
+  const title = titleKey ? t(titleKey) : extensionFallbackTitle(extension.name);
+  const description = descriptionKey
+    ? t(descriptionKey)
+    : isExternalExtension(extension.name)
+      ? t('capabilities.external.groupDescription')
+      : '';
   const reason = extension.reason ? REASON_KEY[extension.reason] : undefined;
 
   return (
@@ -152,7 +158,7 @@ export function ToolPolicyEditor({
   const activeExtensions = view.extensions.filter((extension) => extension.available && extension.enabled);
   const extensionTitle = (name: string) => {
     const key = extensionTitleKey(name);
-    return key ? t(key) : name;
+    return key ? t(key) : extensionFallbackTitle(name);
   };
   const activeTools = activeExtensions.flatMap((extension) =>
     extension.tools.filter((tool) => tool.available).map((tool) => ({ name: tool.name, enabled: tool.enabled })),

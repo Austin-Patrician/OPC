@@ -145,6 +145,42 @@
     -webkit-app-region: no-drag;
   }
 
+  /*
+   * Scrollbar for a routed page body.
+   *
+   * The global rule above sets `scrollbar-width: thin` + `scrollbar-color`, and
+   * Chromium then ignores `::-webkit-scrollbar` entirely: the page got the
+   * platform bar (~10px, thumb inset 2px), not the 5px one the webkit rules ask
+   * for. Resetting both standard properties on this element hands control back
+   * to the pseudo-elements, so the bar is 5px and sits flush against the card
+   * edge instead of floating inside it.
+   *
+   * Scoped on purpose: chat, the session list and menus keep the platform bar,
+   * which stays an overlay on macOS.
+   */
+  .page-scroll {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+
+  .page-scroll::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  .page-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .page-scroll::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  .page-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
   /* ── Wallpapers (pure CSS, GPU-friendly, reduced-motion aware) ───────── */
   .wallpaper-mesh {
     background:
@@ -194,12 +230,16 @@
     background-size:
       55% 55%,
       48% 48%;
-    animation: aurora-drift 26s ease-in-out infinite alternate;
+    /*
+     * Deliberately static. While the aurora moved, the wrapper's 48px blur and
+     * the panels' 22px backdrop-filter had to be recomputed for every frame:
+     * that pegged an Intel UHD 730 at ~250% of one core (even at 30 steps per
+     * cycle it was ~20%) and made the whole app stutter, while the drift itself
+     * was a ~1% shift nobody could see. Still costs ~0%.
+     */
   }
 
   .wallpaper-aurora::after {
-    animation-duration: 34s;
-    animation-direction: alternate-reverse;
     opacity: 0.7;
   }
 
@@ -231,32 +271,12 @@
 }
 
 [data-shell='electron'][data-platform='macos'] .nav-rail {
-  padding-top: 2.75rem;
-}
-
-/* Windows caption buttons are painted above the page. Keep the title bar's own
- * controls (the dossier toggle) on the web side of that strip instead of under
- * the close button. The env() values come from Window Controls Overlay; without
- * them the calc falls back to zero. */
-[data-shell='electron'][data-platform='windows'] .titlebar-trailing {
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  padding-top: 3rem;
 }
 
 /* Uniform scrim keeps text contrast predictable on bright wallpapers. */
 .wallpaper-scrim {
   background: color-mix(in srgb, var(--app-bg) 44%, transparent);
-}
-
-@keyframes aurora-drift {
-  0% {
-    transform: translate3d(-3%, -2%, 0) scale(1);
-  }
-  50% {
-    transform: translate3d(2%, 3%, 0) scale(1.06);
-  }
-  100% {
-    transform: translate3d(4%, -3%, 0) scale(0.98);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

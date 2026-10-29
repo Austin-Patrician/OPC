@@ -223,7 +223,7 @@ export function SettingsShell() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      <main className="page-scroll min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[55rem] px-8 pt-6 pb-10">{content}</div>
       </main>
     </div>

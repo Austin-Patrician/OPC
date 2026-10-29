@@ -17,6 +17,9 @@ importers:
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
+      jiti:
+        specifier: ^2.7.0
+        version: 2.7.0
       sqlite-vec:
         specifier: ^0.1.6
         version: 0.1.9

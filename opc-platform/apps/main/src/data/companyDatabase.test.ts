@@ -76,4 +76,38 @@ describe('opening an upgraded database', () => {
     expect(indexes.map((index) => index.name)).toContain('idx_budget_scope');
     db.close();
   });
+
+  it('moves pre-existing classifier-only custom providers to the Decision page', () => {
+    const file = `/tmp/opc-legacy-scope-${Date.now()}.db`;
+    const db = openCompanyDatabase(file);
+    const insert = db.prepare(
+      `INSERT INTO model_provider (id, name, base_url, api, is_custom, models, created_at, updated_at)
+       VALUES (?, ?, 'https://relay.test/v1', 'openai-completions', ?, ?, 0, 0)`,
+    );
+    // Written by the build before `scope` existed: everything defaulted to 'llm'.
+    insert.run('custom-classifier', 'Jev relay', 1, JSON.stringify([{ id: 'jev', capability: 'classifier' }]));
+    insert.run('custom-chat', 'Chat relay', 1, JSON.stringify([{ id: 'gpt', capability: 'chat' }]));
+    insert.run('custom-empty', 'Empty relay', 1, '[]');
+    insert.run('typesafe', 'TypeSafe', 0, JSON.stringify([{ id: 'jev-latest', capability: 'classifier' }]));
+    db.pragma('user_version = 21');
+    db.close();
+
+    const upgraded = openCompanyDatabase(file);
+    const scopes = Object.fromEntries(
+      (
+        upgraded.prepare('SELECT id, scope FROM model_provider').all() as {
+          id: string;
+          scope: string;
+        }[]
+      ).map((row) => [row.id, row.scope]),
+    );
+    expect(scopes).toEqual({
+      'custom-classifier': 'decision',
+      'custom-chat': 'llm',
+      'custom-empty': 'llm',
+      // Built-ins serve both pages; they must never be hidden from the LLM table.
+      typesafe: 'llm',
+    });
+    upgraded.close();
+  });
 });

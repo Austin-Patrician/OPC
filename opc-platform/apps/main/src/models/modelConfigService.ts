@@ -44,6 +44,15 @@ const DEFAULT_DECISION_KEY = 'default.decision';
 const COMPACTION_KEY = 'compaction';
 const THINKING_KEY = 'default.thinking';
 
+/** Every role key; deleting a provider must not leave a dangling default. */
+const DEFAULT_KEYS = [
+  DEFAULT_LLM_KEY,
+  DEFAULT_IMAGE_KEY,
+  DEFAULT_ASR_KEY,
+  DEFAULT_TTS_KEY,
+  DEFAULT_DECISION_KEY,
+] as const;
+
 /** Defaults mirror pi's own policy (16k reserve / 20k keep). */
 const DEFAULT_COMPACTION: CompactionSettings = {
   enabled: true,
@@ -91,12 +100,19 @@ export class ModelConfigService {
    * Only providers this app created can be deleted. pi's built-in providers are
    * part of the product (and carry OAuth/builtin pricing), so deleting one would
    * leave a hole the UI cannot explain — they are refused, not hidden.
+   *
+   * Defaults pointing at the removed row are cleared in the same step: a
+   * `default.decision` (or `default.llm`) left behind would make every call fail
+   * with "model not found" instead of falling back to the remaining models.
    */
   removeProvider = (providerId: string): ProviderConfig[] => {
     const provider = this.repository.getProvider(providerId);
     if (!provider) throw new Error('未知 provider');
     if (!provider.isCustom) throw new Error('pi 内置提供商不可删除（只能清空 API Key）');
     this.repository.removeProvider(providerId);
+    for (const key of DEFAULT_KEYS) {
+      if (this.readRef(key)?.providerId === providerId) this.repository.setSetting(key, '');
+    }
     return this.listProviders();
   };
 

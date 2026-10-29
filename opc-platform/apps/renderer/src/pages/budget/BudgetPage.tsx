@@ -310,7 +310,7 @@ export function BudgetPage() {
     value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}k` : `${value}`;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
+    <div className="page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
       <div className="mx-auto w-full max-w-[62rem] px-6 py-6">
         <PageHeader
           crumbs={[t('nav.budget')]}

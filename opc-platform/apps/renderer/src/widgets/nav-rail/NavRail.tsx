@@ -63,7 +63,7 @@ export function NavRail({
   const { t } = useTranslation();
 
   return (
-    <nav className="nav-rail flex w-rail shrink-0 flex-col pt-[1.375rem] select-none">
+    <nav className="nav-rail flex w-rail shrink-0 flex-col pt-[1.75rem] select-none">
       <RailSearch conversations={conversations} />
 
       <div className="mt-1.5 min-h-0 flex-1 space-y-0.5 overflow-y-auto">

@@ -393,6 +393,11 @@
       "run": "Run",
       "running": "Running…",
       "confidence": "confidence",
+      "answerYes": "Yes",
+      "answerNo": "No",
+      "probabilityValue": "probability {{value}}",
+      "confidenceValue": "confidence {{value}}",
+      "thresholdHint": "≥ {{value}} counts as yes",
       "usage": "input {{input}} / output {{output}} tokens",
       "needState": "Fill in the state first",
       "needInstructions": "Fill in the question instructions first",
@@ -676,10 +681,12 @@
     "stackToggleExtension": "Turn {{name}} on or off",
     "stackReasonNoImage": "No usable image model (Settings → Image)",
     "stackReasonNoSpeech": "No speech model configured (Settings → Voice)",
+    "stackReasonNoDecision": "No decision model configured (Settings → Models → Decision)",
     "stackReasonOcr": "OCR model files are not ready (Settings → Runtime)",
     "stackReasonMemory": "Memory service is not enabled",
     "stackReasonComm": "Colleague messaging is not enabled",
     "stackReasonNoSubordinates": "No direct reports, so task splitting is not installed",
+    "stackReasonNoSkills": "No local skills are enabled yet",
     "stackSkillTags": "Archive skill tags (display only)",
     "stackSkillTagsHint": "Used for the marketplace, search and the profile; never injected into the prompt. The tools above decide what this employee can actually do.",
     "personaEmpty": "No personal charter yet",
@@ -1258,18 +1265,66 @@
     "title": "Skills & tools",
     "subtitle": "What each agent installs at runtime under the current configuration when it opens a work session — read straight from the registry, not a hand-written document. Change a model, an image/voice provider, or a reporting line and this list follows on refresh.",
     "refresh": "Refresh",
+    "readAt": "Read at {{time}}",
     "unknownExtension": "Unregistered extension; trust the tool list below.",
-    "overviewTitle": "Capability overview",
-    "overviewHint": "Everything the company's active agents can do, combined.",
-    "honesty": "\"Profile skills\" are tags on the employee record for the talent market, search, and display — they are never injected into the prompt. What an agent can really do is the extensions and tools below. Conditional capabilities follow the environment: without an image/voice model, or without reports, those tools simply do not appear.",
-    "stats": {
-      "agents": "Active agents",
+    "tabs": {
       "extensions": "Extensions",
       "tools": "Tools",
-      "skills": "Profile skill tags"
+      "skills": "Skills",
+      "mcp": "MCP"
     },
-    "extensionsTitle": "Extensions & tools",
-    "extensionsHint": "Grouped by extension, listed once; the badge counts how many agents install it.",
+    "toolsTab": {
+      "title": "Callable tools",
+      "description": "{{count}} tools, grouped by the extension that provides them; the number on the right is how many agents can call it.",
+      "agents": "{{count}} agents"
+    },
+    "mcp": {
+      "title": "MCP servers",
+      "description": "Model Context Protocol: bring in outside tools (databases, internal APIs, someone else's service) so they show up in an agent's tool list like the built-in ones.",
+      "empty": "No MCP server is connected.",
+      "emptyHint": "This tab is a placeholder: OPC has no MCP client yet, so there is nothing real to list. Once it exists, each server appears here the way extensions do — with its connection state and the tools it exposes.",
+      "needsTitle": "Getting there needs at least",
+      "needClient": "A stdio / SSE client that starts the process or connects to the endpoint, with reconnect and exit handling",
+      "needTools": "A translation from MCP tools to pi-durable tools, prefixed so names cannot collide with built-ins",
+      "needPolicy": "The existing trust gate and per-employee switches — an MCP server can read local data too"
+    },
+    "external": {
+      "title": "Pi extensions on this machine",
+      "description": "Discovered from ~/.pi/agent/extensions and .pi/extensions, the same places Pi itself auto-loads. Scanning only reads files; turning one on imports its code into the main process.",
+      "empty": "No Pi extensions found.",
+      "emptyHint": "Drop a .ts file or a folder with index.ts into one of the directories above, then refresh. Extensions installed with `pi install` are not listed until they also appear in one of these folders.",
+      "scope": {
+        "global": "Global",
+        "project": "This project"
+      },
+      "loaded": "Loaded",
+      "disabled": "Off",
+      "failed": "Load failed",
+      "partial": "Partial support",
+      "lazyHint": "Turn it on to import it and see which tools it registers.",
+      "events": "Events: {{list}}",
+      "working": "Working…",
+      "groupDescription": "A Pi extension on this machine. Its switch lives in \"Pi extensions on this machine\" above; turning it off removes it from every agent.",
+      "trustTitle": "Enable {{name}}?",
+      "trustBody": "This extension is ordinary JavaScript, not a sandboxed plugin. Once enabled it runs inside the main process with the same rights as OPC itself.",
+      "trustRisk": {
+        "code": "Runs any code, including on startup",
+        "data": "Can read the company database, workspaces, API keys and session history",
+        "network": "Can call the network on its own"
+      },
+      "trustConfirm": "Trust and enable"
+    },
+    "skills": {
+      "title": "Local skills",
+      "description": "Discovered under ~/.agents/skills and .agents/skills. A skill is plain Markdown, so there is nothing to trust; enabling one adds a line to every agent's system prompt, and the agent calls read_skill when it needs the full text.",
+      "summary": "{{enabled}} of {{total}} enabled — about {{tokens}} extra prompt tokens per request",
+      "empty": "No skills found.",
+      "emptyHint": "Drop a folder with a SKILL.md into one of the locations above, then refresh. Scripts a skill ships with still run through the bash tool, so the sandbox and the call limit apply.",
+      "promptTokens": "≈{{tokens}} tokens",
+      "files": "{{count}} files"
+    },
+    "extensionsTitle": "Built-in extensions",
+    "extensionsHint": "Grouped by extension, listed once; the badge counts how many agents install it. The tools themselves live in the Tools tab. Conditional capabilities follow the environment: without an image/voice model, or without reports, those tools simply do not appear.",
     "extensionAgents": "{{count}} agents",
     "extensionToolCount": "{{count}} tools",
     "extensionNoTools": "No tools",
@@ -1280,7 +1335,7 @@
     },
     "deferred": "On demand",
     "agentTitle": "By agent",
-    "agentHint": "Expand a person to see what is installed in their own registry.",
+    "agentHint": "Expand a person to see what is installed in their own registry. Profile skill tags are for display only and never enter the prompt.",
     "agentExtensions": "{{count}} extensions",
     "agentTools": "{{count}} tools",
     "agentExtensionsLabel": "Extensions",
@@ -1298,7 +1353,8 @@
       "remember": "Save one durable lesson for future tasks.",
       "send_direct_message": "Send a message to a colleague.",
       "ack_message": "Mark a colleague's message as read.",
-      "decompose_task": "Split a task into subtasks for direct reports."
+      "decompose_task": "Split a task into subtasks for direct reports.",
+      "decide": "Judge a piece of evidence and return a label, a score or a probability."
     },
     "head": "Head",
     "noSkills": "No tags",
@@ -1344,6 +1400,14 @@
       "decompose": {
         "title": "Task decomposition",
         "description": "Splits a large task into subtasks for reports; installed only for managers with a reporting line."
+      },
+      "decision": {
+        "title": "Structured decisions",
+        "description": "Calls the configured decision model (Jev / System One) to turn evidence into labels, scores or probabilities; installed only when a model is usable."
+      },
+      "skills": {
+        "title": "Local skills",
+        "description": "Lists the skills in ~/.agents/skills in the system prompt and gives the agent a read_skill tool to load one in full on demand."
       }
     }
   },

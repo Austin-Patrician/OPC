@@ -701,6 +701,29 @@ export function isChatModelEnabled(model: { chatEnabled?: boolean }): boolean {
   return model.chatEnabled !== false;
 }
 
+/**
+ * Whether the LLM page should list this provider.
+ *
+ * The LLM page is the chat page. Two kinds of rows do not belong there:
+ *
+ * - relays created on the Decision page (`scope: 'decision'`), whose models are
+ *   classifiers;
+ * - rows written before `scope` existed that only own classifier models.
+ *
+ * A provider that mixes chat and classifier models (OpenRouter) stays visible:
+ * one row legitimately serves both pages.
+ */
+export function isLlmProvider(provider: {
+  scope?: ProviderScope;
+  models?: readonly { capability?: string }[];
+}): boolean {
+  if (provider.scope === 'decision') return false;
+  const models = provider.models ?? [];
+  // Empty means "just created, no models yet" — that row is still being set up,
+  // so it stays where it was created instead of vanishing from both pages.
+  return !(models.length > 0 && models.every((model) => model.capability === 'classifier'));
+}
+
 export interface CatalogModel {
   id: string;
   name: string;
@@ -751,6 +774,16 @@ export interface CompactionSettings {
   backgroundTokens: number;
 }
 
+/**
+ * Which settings page owns a provider row.
+ *
+ * A custom relay created on the Decision page serves classifiers only, so the
+ * LLM page must not offer it as a chat provider. Built-in providers are always
+ * `llm`: they ship with the app and one row may serve chat and decisions at once
+ * (OpenRouter is both). The field only decides *visibility*, never capability.
+ */
+export type ProviderScope = 'llm' | 'decision';
+
 export interface ProviderConfig {
   id: string;
   name: string;
@@ -759,6 +792,8 @@ export interface ProviderConfig {
   /** pi api kind, e.g. `openai-completions` / `anthropic-messages`. */
   api: string;
   isCustom: boolean;
+  /** Owner page; `undefined` means `llm`. */
+  scope?: ProviderScope;
   /**
    * Provider id whose icon this one reuses (custom providers only). Empty or
    * undefined falls back to initials.
@@ -895,6 +930,8 @@ export interface ProviderDraft {
   baseUrl: string;
   api: string;
   isCustom: boolean;
+  /** `undefined` leaves the stored owner page untouched. */
+  scope?: ProviderScope;
   /** Provider id whose icon to reuse; `''` clears it, `undefined` leaves it unchanged. */
   icon?: string;
   /** Optional plaintext key; encrypted in the main process and never echoed back. */

@@ -323,6 +323,16 @@ const bridge: OpcBridge = {
   capabilities: {
     list: () => ipcRenderer.invoke(IPC.capabilities.list),
   },
+  extensions: {
+    list: () => ipcRenderer.invoke(IPC.extensions.list),
+    setEnabled: (id: string, enabled: boolean, trusted?: boolean) =>
+      ipcRenderer.invoke(IPC.extensions.setEnabled, id, enabled, trusted),
+  },
+  skills: {
+    list: () => ipcRenderer.invoke(IPC.skills.list),
+    setEnabled: (id: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.skills.setEnabled, id, enabled),
+  },
   diagnostics: {
     report: () => ipcRenderer.invoke(IPC.diagnostics.report),
   },

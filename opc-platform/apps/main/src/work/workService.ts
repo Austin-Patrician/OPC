@@ -29,6 +29,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import { BOSS_USER_ID } from '../data/schema';
 import { TaskRepository, taskWorkspaceRelPath } from '../data/taskRepository';
 import type { AppPaths } from '../env';
+import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
 import type { OrgService } from '../org/orgService';
@@ -42,6 +43,7 @@ import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
 import { createDecomposeToolExtension } from './decomposeTool';
+import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
 import { createOcrToolExtension } from './ocrTool';
 import { createSpeechToolExtension } from './speechTool';
@@ -54,12 +56,16 @@ import {
   filterExtensionTools,
   isExtensionEnabled,
   isToolActive,
+  isToolEnabled,
   normalizeToolPolicy,
 } from './toolPolicy';
 import { resolveEmployeeModelRef } from '../models/employeeModel';
 import type { NetworkClient } from '../network/networkClient';
 import type { OcrEngine } from '../ocr/service';
 import { RuntimeService } from '../runtime/service';
+import type { PiExtensionHost } from '../extensions/host';
+import type { PiSkillHost } from '../skills/host';
+import { createSkillsExtension } from '../skills/extension';
 
 /** How many manager rework rounds a task may take before it is parked for the boss. */
 const MAX_REVIEW_ROUNDS = 2;
@@ -103,6 +109,8 @@ export interface WorkServiceDeps {
   images?: ImageService;
   /** Speech recognition / synthesis; each tool is installed only when usable. */
   speech?: SpeechService;
+  /** Structured decisions (Jev / System One); absent = no `decide` tool. */
+  decisions?: DecisionService;
   org?: OrgService;
   memory?: MemoryService;
   facts?: OrgFactService;
@@ -115,6 +123,13 @@ export interface WorkServiceDeps {
   runtime?: RuntimeService;
   /** Image → text (OCR) for employees whose model has no vision. */
   ocr?: OcrEngine;
+  /**
+   * Pi coding-agent extensions found on disk. Absent in probes and tests, which
+   * is why every use below is optional.
+   */
+  piExtensions?: PiExtensionHost;
+  /** `SKILL.md` folders found on disk; same optionality as above. */
+  piSkills?: PiSkillHost;
 }
 
 const REAPER_INTERVAL_MS = 10 * 60 * 1000;
@@ -903,6 +918,26 @@ export class WorkService {
       slots.push({ name: 'opc.speech', essential: false, available: false, reason: 'no-speech-model' });
     }
 
+    // Structured decisions replace a chat model with a bounded classifier. Like
+    // speech, the tool exists only when a decision model is enabled and keyed, so
+    // the agent never sees a tool whose first call can only fail.
+    const decisions = this.deps.decisions;
+    if (decisions?.isAvailable()) {
+      slots.push({
+        name: 'opc.decision',
+        essential: false,
+        available: true,
+        extension: createDecisionToolExtension({ classify: decisions.classify }),
+      });
+    } else {
+      slots.push({
+        name: 'opc.decision',
+        essential: false,
+        available: false,
+        reason: 'no-decision-model',
+      });
+    }
+
     // Text out of pictures for models without vision. Two independent gates: the
     // boss's switch (设置 → 运行时) and the models actually being on disk. An
     // installed tool that can only fail is worse than an absent one.
@@ -989,6 +1024,43 @@ export class WorkService {
       });
     } else {
       slots.push({ name: 'opc.decompose', essential: false, available: false, reason: 'no-subordinates' });
+    }
+
+    // Skills (`~/.agents/skills`). One extension that contributes a prompt
+    // section plus `read_skill`, so the whole set is one switch in the dossier
+    // and one line per skill in the system prompt.
+    const skills = this.deps.piSkills;
+    if (skills) {
+      const enabled = skills.enabled();
+      // Advertising a skill the model cannot open would be a trap: the section
+      // and the tool have to be on or off together.
+      const canRead = isToolEnabled(this.deps.org?.toolPolicyOf(employeeId) ?? EMPTY_TOOL_POLICY, 'read_skill');
+      slots.push(
+        enabled.length > 0 && canRead
+          ? {
+              name: 'opc.skills',
+              essential: false,
+              available: true,
+              extension: createSkillsExtension({ skills: () => skills.enabled() }),
+            }
+          : { name: 'opc.skills', essential: false, available: false, reason: 'no-skills' },
+      );
+    }
+
+    // Pi extensions the user turned on in 技能与工具. They install last, so the
+    // sandbox and the tool limit still see every call they make, and a disabled
+    // one simply never appears here (its code was never imported).
+    const external = this.deps.piExtensions;
+    if (external) {
+      await external.ensureLoaded();
+      for (const entry of external.slots()) {
+        slots.push({
+          name: entry.name,
+          essential: false,
+          available: true,
+          extension: entry.extension,
+        });
+      }
     }
 
     return slots;
@@ -1138,6 +1210,17 @@ export class WorkService {
       console.warn('关闭员工 harness 失败（栈已变更）', error);
     }
   }
+
+  /**
+   * Drops every cached harness after a company-wide capability change (an
+   * external Pi extension was enabled or disabled). Registries are fixed at open
+   * time, so without this the change would only apply after a restart.
+   */
+  invalidateAllHarnesses = async (): Promise<void> => {
+    for (const employeeId of [...this.harnesses.keys()]) {
+      await this.invalidateHarness(employeeId);
+    }
+  };
 
 
   /**

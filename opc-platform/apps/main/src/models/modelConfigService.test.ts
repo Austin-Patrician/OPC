@@ -326,3 +326,73 @@ describe('ModelConfigService provider icon', () => {
     expect(service.listProviders().find((entry) => entry.id === 'custom-relay')?.icon).toBeUndefined();
   });
 });
+
+describe('ModelConfigService provider scope', () => {
+  const decisionRelay = {
+    id: 'decision-relay',
+    name: 'Decision relay',
+    baseUrl: 'https://jev.test/v1',
+    api: 'typesafe-system-one',
+    isCustom: true,
+    scope: 'decision' as const,
+  };
+
+  it('stores the owning page and keeps it across ordinary saves', () => {
+    service.saveProvider(decisionRelay);
+    // Saving a Base URL from the page omits `scope`; the row must stay Decision-owned.
+    service.saveProvider({ ...decisionRelay, scope: undefined, baseUrl: 'https://jev.test/v2' });
+
+    const provider = service.listProviders().find((entry) => entry.id === 'decision-relay');
+    expect(provider?.scope).toBe('decision');
+    expect(provider?.baseUrl).toBe('https://jev.test/v2');
+  });
+
+  it('defaults to the LLM page', () => {
+    service.saveProvider({
+      id: 'chat-relay',
+      name: 'Chat relay',
+      baseUrl: 'https://relay.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+
+    expect(service.listProviders().find((entry) => entry.id === 'chat-relay')?.scope).toBe('llm');
+  });
+});
+
+describe('ModelConfigService.removeProvider', () => {
+  const relay = {
+    id: 'decision-relay',
+    name: 'Decision relay',
+    baseUrl: 'https://jev.test/v1',
+    api: 'typesafe-system-one',
+    isCustom: true,
+    scope: 'decision' as const,
+  };
+
+  it('deletes a custom provider and clears a default that pointed at it', () => {
+    service.saveProvider(relay);
+    service.setDefault('decision', { providerId: 'decision-relay', modelId: 'jev-latest' });
+
+    service.removeProvider('decision-relay');
+
+    expect(service.listProviders().some((entry) => entry.id === 'decision-relay')).toBe(false);
+    // A dangling default would make every classify fail instead of falling back.
+    expect(service.getDefaults().decision).toBeNull();
+  });
+
+  it('leaves other roles untouched when they point elsewhere', () => {
+    service.saveProvider(relay);
+    service.setDefault('llm', { providerId: 'openai', modelId: 'gpt-5.5' });
+    service.setDefault('decision', { providerId: 'decision-relay', modelId: 'jev-latest' });
+
+    service.removeProvider('decision-relay');
+
+    expect(service.getDefaults().llm).toEqual({ providerId: 'openai', modelId: 'gpt-5.5' });
+    expect(service.getDefaults().decision).toBeNull();
+  });
+
+  it('still refuses to delete a built-in provider', () => {
+    expect(() => service.removeProvider('openai')).toThrow(/内置/);
+  });
+});

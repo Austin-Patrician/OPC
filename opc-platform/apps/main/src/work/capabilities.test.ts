@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppPaths } from '../env';
 import { OrgService } from '../org/orgService';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
+import type { DecisionService } from '../models/decisionService';
 import type { OcrEngine } from '../ocr/service';
 import { WorkService } from './workService';
 
@@ -40,7 +41,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function workWith(org: OrgService, ocr?: OcrEngine): WorkService {
+function workWith(org: OrgService, ocr?: OcrEngine, decisions?: DecisionService): WorkService {
   return new WorkService({
     db,
     paths,
@@ -48,7 +49,16 @@ function workWith(org: OrgService, ocr?: OcrEngine): WorkService {
     upsertTaskCard: () => undefined,
     org,
     ...(ocr ? { ocr } : {}),
+    ...(decisions ? { decisions } : {}),
   });
+}
+
+/** Only `isAvailable` + `classify` are used by the tool slot. */
+function fakeDecisions(available: boolean): DecisionService {
+  return {
+    isAvailable: () => available,
+    classify: async () => ({ ok: true, answers: {} }),
+  } as unknown as DecisionService;
 }
 
 describe('WorkService.capabilities', () => {
@@ -116,6 +126,37 @@ describe('WorkService.capabilities', () => {
     expect(names).not.toContain('generate_image');
     expect(names).not.toContain('transcribe_audio');
     expect(names).not.toContain('text_to_speech');
+    expect(names).not.toContain('decide');
+  });
+
+  it('installs decide only while a decision model is configured', async () => {
+    const org = new OrgService(db);
+    const department = org.createDepartment({ name: '运营部', code: 'OP-01' });
+    const employee = org.hire({ name: '顾南', role: '内容运营', departmentId: department.id });
+
+    const on = await workWith(org, undefined, fakeDecisions(true)).capabilities();
+    expect(on.agents[0]?.tools.map((tool) => tool.name)).toContain('decide');
+    expect(on.agents[0]?.extensions.map((extension) => extension.name)).toContain('opc.decision');
+
+    // It is a normal optional extension: the boss can switch it off per employee.
+    const managed = workWith(org, undefined, fakeDecisions(true));
+    await managed.setStack(employee.id, {
+      policy: { disabledExtensions: ['opc.decision'], disabledTools: [] },
+    });
+    const hidden = await managed.capabilities();
+    expect(hidden.agents[0]?.tools.map((tool) => tool.name)).not.toContain('decide');
+
+    // Without a keyed, enabled classifier the tool is absent and the stack page
+    // says why, rather than offering a tool whose first call can only fail.
+    const work = workWith(org, undefined, fakeDecisions(false));
+    const off = await work.capabilities();
+    expect(off.agents[0]?.tools.map((tool) => tool.name)).not.toContain('decide');
+
+    const stack = await work.stack(employee.id);
+    expect(stack.extensions.find((extension) => extension.name === 'opc.decision')).toMatchObject({
+      available: false,
+      reason: 'no-decision-model',
+    });
   });
 
   it('installs ocr_image only when it is switched on and the models are on disk', async () => {
@@ -171,6 +212,10 @@ describe('WorkService.stack', () => {
     // No image/speech provider and no reports in this company.
     expect(byName.get('opc.image')).toMatchObject({ available: false, reason: 'no-image-provider' });
     expect(byName.get('opc.speech')).toMatchObject({ available: false, reason: 'no-speech-model' });
+    expect(byName.get('opc.decision')).toMatchObject({
+      available: false,
+      reason: 'no-decision-model',
+    });
     expect(byName.get('opc.decompose')).toMatchObject({
       available: false,
       reason: 'no-subordinates',

@@ -224,6 +224,14 @@ export const IPC = {
   capabilities: {
     list: 'capabilities:list',
   },
+  extensions: {
+    list: 'extensions:list',
+    setEnabled: 'extensions:setEnabled',
+  },
+  skills: {
+    list: 'skills:list',
+    setEnabled: 'skills:setEnabled',
+  },
 } as const;
 
 export interface ChatSnapshot {
@@ -533,6 +541,85 @@ export interface CapabilityCatalog {
 export interface CapabilitiesBridge {
   /** Installed extensions and tools per active employee, read from the live registry. */
   list(): Promise<CapabilityCatalog>;
+}
+
+/** Where a Pi extension was discovered: the user's home or this project. */
+export type PiExtensionScope = 'global' | 'project';
+
+/** One Pi extension found on disk, whether or not it is loaded. */
+export interface PiExtensionView {
+  /** Stable handle: the absolute path of what was discovered (entry file or directory). */
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  scope: PiExtensionScope;
+  /** Absolute path of the module the main process imports. */
+  entry: string;
+  enabled: boolean;
+  /** The user explicitly accepted that this code runs with full main-process rights. */
+  trusted: boolean;
+  /** True once the module was imported successfully. */
+  loaded: boolean;
+  /**
+   * Tools the extension registered. Empty while disabled: importing it would
+   * already run its code, so the list stays empty until the user opts in.
+   */
+  tools: string[];
+  /** Pi lifecycle events it subscribes to. Only `tool_call` is wired today. */
+  events: string[];
+  commands: string[];
+  /** Pi APIs it used that OPC has no equivalent for. */
+  unsupported: string[];
+  /** Import error, shown verbatim so a broken extension is diagnosable. */
+  error?: string;
+}
+
+export interface PiExtensionCatalog {
+  generatedAt: number;
+  /** Directories that were scanned, so the empty state can name them. */
+  roots: string[];
+  entries: PiExtensionView[];
+}
+
+export interface ExtensionsBridge {
+  /** Everything Pi would auto-discover, plus what OPC actually loaded. */
+  list(): Promise<PiExtensionCatalog>;
+  /**
+   * Enables or disables one extension company-wide. Enabling runs the module in
+   * the main process, so the first enable must pass `trusted: true`.
+   */
+  setEnabled(id: string, enabled: boolean, trusted?: boolean): Promise<PiExtensionCatalog>;
+}
+
+/** One `SKILL.md` folder found on disk. */
+export interface PiSkillView {
+  /** Absolute path of the SKILL.md, POSIX-normalized. */
+  id: string;
+  name: string;
+  description: string;
+  scope: PiExtensionScope;
+  /** Folder holding the skill; its scripts and references live here. */
+  dir: string;
+  file: string;
+  /** How many files ship with the skill (scripts, references, schemas). */
+  files: number;
+  enabled: boolean;
+  /** Rough prompt cost of advertising it, so the page can be honest about tokens. */
+  promptTokens: number;
+}
+
+export interface PiSkillCatalog {
+  generatedAt: number;
+  roots: string[];
+  entries: PiSkillView[];
+}
+
+export interface SkillsBridge {
+  /** Every skill found under `~/.agents/skills` and `.agents/skills`. */
+  list(): Promise<PiSkillCatalog>;
+  /** Turns one skill on or off for every agent; no trust gate, a skill is text. */
+  setEnabled(id: string, enabled: boolean): Promise<PiSkillCatalog>;
 }
 
 export interface MemoryBridge {
@@ -983,6 +1070,8 @@ export interface OpcBridge {
   artifacts: ArtifactsBridge;
   org: OrgBridge;
   capabilities: CapabilitiesBridge;
+  extensions: ExtensionsBridge;
+  skills: SkillsBridge;
   facts: FactsBridge;
   projects: ProjectsBridge;
   memory: MemoryBridge;

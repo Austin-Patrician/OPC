@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Brain, ChevronDown, Eye, KeyRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ModelOption } from '@opc/shared/domain';
-import { isChatModelEnabled } from '@opc/shared/domain';
+import { isChatModelEnabled, isLlmProvider } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { AuthLoginPanel } from '@/features/settings/ui/pages/AuthLoginPanel';
@@ -68,24 +68,34 @@ export function StepModel() {
   );
 
   const providers: DisplayProvider[] = useMemo(() => {
-    const fromCatalog = catalog.map<DisplayProvider>((entry) => {
+    // Onboarding picks the company's chat model, so classifier-only (TypeSafe) and
+    // image-only providers stay out — they are configured on their own pages.
+    const fromCatalog = catalog.flatMap<DisplayProvider>((entry) => {
+      if (entry.counts.chat === 0) return [];
       const design = DESIGN.get(entry.id);
-      return {
-        id: entry.id,
-        name: design?.name ?? entry.id,
-        group: design?.group ?? 'other',
-        baseUrl: entry.baseUrl,
-        api: entry.apis[0] ?? 'openai-completions',
-        description: design?.description,
-        auth: design ? design.auth.map((mode) => AUTH_MODE_LABEL[mode]).join(' / ') : (entry.apis[0] ?? ''),
-        models: entry.models,
-        modelCount: entry.counts.chat,
-      };
+      return [
+        {
+          id: entry.id,
+          name: design?.name ?? entry.id,
+          group: design?.group ?? 'other',
+          baseUrl: entry.baseUrl,
+          api: entry.apis[0] ?? 'openai-completions',
+          description: design?.description,
+          auth: design ? design.auth.map((mode) => AUTH_MODE_LABEL[mode]).join(' / ') : (entry.apis[0] ?? ''),
+          models: entry.models,
+          modelCount: entry.counts.chat,
+        },
+      ];
     });
 
     // Custom providers only exist in our database, never in pi's catalog.
     const custom = models.providers
-      .filter((provider) => provider.isCustom && !catalog.some((entry) => entry.id === provider.id))
+      .filter(
+        (provider) =>
+          provider.isCustom &&
+          isLlmProvider(provider) &&
+          !catalog.some((entry) => entry.id === provider.id),
+      )
       .map<DisplayProvider>((provider) => ({
         id: provider.id,
         name: provider.name,

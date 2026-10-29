@@ -8,6 +8,8 @@ interface ProviderRow {
   api: string;
   is_custom: number;
   icon: string | null;
+  /** Which settings page owns the row; see `ProviderScope`. */
+  scope: string | null;
   models: string;
   credential: Buffer | null;
   updated_at: number;
@@ -42,19 +44,34 @@ export class ModelConfigRepository {
     // `undefined` means "the caller did not touch the icon" — keep the stored one,
     // so ad-hoc saves (ensureProvider, refresh) never wipe a chosen icon. `''` clears.
     const icon = draft.icon === undefined ? null : draft.icon.trim();
+    // Same rule for `scope`: an ordinary save (Base URL edit, ensureProvider) must
+    // not move a Decision-owned row back into the LLM page.
+    const scope = draft.scope ?? null;
     this.db
       .prepare(
-        `INSERT INTO model_provider (id, name, base_url, api, is_custom, icon, models, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
+        `INSERT INTO model_provider (id, name, base_url, api, is_custom, icon, scope, models, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'llm'), '[]', ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            base_url = excluded.base_url,
            api = excluded.api,
            is_custom = excluded.is_custom,
            icon = COALESCE(excluded.icon, model_provider.icon),
+           scope = COALESCE(?, model_provider.scope),
            updated_at = excluded.updated_at`,
       )
-      .run(draft.id, draft.name, draft.baseUrl, draft.api, draft.isCustom ? 1 : 0, icon, now, now);
+      .run(
+        draft.id,
+        draft.name,
+        draft.baseUrl,
+        draft.api,
+        draft.isCustom ? 1 : 0,
+        icon,
+        scope,
+        now,
+        now,
+        scope,
+      );
   };
 
   removeProvider = (providerId: string): void => {
@@ -112,6 +129,7 @@ function toProvider(row: ProviderRow): ProviderConfig {
     baseUrl: row.base_url,
     api: row.api,
     isCustom: row.is_custom === 1,
+    scope: row.scope === 'decision' ? 'decision' : 'llm',
     icon: row.icon || undefined,
     hasKey: row.credential !== null,
     models: parseModels(row.models),

@@ -29,9 +29,8 @@ import {
 } from '../kit';
 import { AddProviderDialog } from './AddProviderDialog';
 import { AuthLoginPanel } from './AuthLoginPanel';
+import { buildLlmProviders, OTHER_GROUP, type DisplayProvider } from './llmProviders';
 import { ProviderIconDialog, type ProviderIconChoice } from './ProviderIconDialog';
-
-const OTHER_GROUP = { id: 'other', label: '其他' };
 
 /** Remembers whether the cache price columns are expanded. */
 const COLUMNS_STORAGE_KEY = 'opc.llm.columns.v1';
@@ -72,19 +71,6 @@ function toStoredModel(model: CatalogModel): ModelOption {
     cacheReadUsdPerM: model.price?.cacheRead,
     cacheWriteUsdPerM: model.price?.cacheWrite,
   };
-}
-
-interface DisplayProvider {
-  id: string;
-  name: string;
-  group: string;
-  baseUrl: string;
-  apis: string[];
-  /** Reused icon from the provider catalogue (custom providers only). */
-  icon?: string;
-  counts: { chat: number; image: number; classifier: number };
-  models: CatalogModel[];
-  description?: string;
 }
 
 /**
@@ -168,95 +154,10 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
     [models.providers],
   );
 
-  const providers: DisplayProvider[] = useMemo(() => {
-    const fromCatalog: DisplayProvider[] = catalog.map((entry) => {
-      const meta = providerMeta(entry.id);
-      // Stored models the pi catalogue does not know about (typically ids returned by
-      // "拉取模型") still belong in the table, otherwise a refresh looks like a no-op.
-      const stored = configured.get(entry.id);
-      const catalogIds = new Set(entry.models.map((model) => model.id));
-      const extra = (stored?.models ?? [])
-        .filter((model) => !catalogIds.has(model.id))
-        .map<CatalogModel>((model) => ({
-          id: model.id,
-          name: model.name || model.id,
-          type: model.capability,
-          api: model.api ?? entry.apis[0] ?? 'openai-completions',
-          contextWindow: model.contextWindow,
-          vision: model.vision,
-          reasoning: model.reasoning,
-          price: {
-            input: model.inputUsdPerM ?? 0,
-            output: model.outputUsdPerM ?? 0,
-            cacheRead: model.cacheReadUsdPerM ?? 0,
-            cacheWrite: model.cacheWriteUsdPerM ?? 0,
-            tiers: model.tiers?.map((tier) => ({
-              inputTokensAbove: tier.inputTokensAbove,
-              input: tier.inputUsdPerM,
-              output: tier.outputUsdPerM,
-              cacheRead: tier.cacheReadUsdPerM,
-              cacheWrite: tier.cacheWriteUsdPerM,
-            })),
-          },
-        }));
-      return {
-        id: entry.id,
-        name: meta?.name ?? entry.id,
-        group: meta?.group ?? OTHER_GROUP.id,
-        baseUrl: entry.baseUrl,
-        apis: entry.apis,
-        icon: stored?.icon,
-        counts: {
-          chat: entry.counts.chat + extra.filter((model) => model.type === 'chat').length,
-          image: entry.counts.image + extra.filter((model) => model.type === 'image').length,
-          classifier: entry.counts.classifier + extra.filter((model) => model.type === 'classifier').length,
-        },
-        models: [...entry.models, ...extra],
-        description: meta?.description,
-      };
-    });
-
-    // Custom providers exist only in our DB.
-    const custom = models.providers
-      .filter((provider) => provider.isCustom && !catalog.some((entry) => entry.id === provider.id))
-      .map<DisplayProvider>((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        group: OTHER_GROUP.id,
-        baseUrl: provider.baseUrl,
-        apis: [provider.api],
-        icon: provider.icon,
-        counts: {
-          chat: provider.models.filter((model) => model.capability === 'chat').length,
-          image: provider.models.filter((model) => model.capability === 'image').length,
-          classifier: 0,
-        },
-        models: provider.models.map((model) => ({
-          id: model.id,
-          name: model.name,
-          type: model.capability,
-          api: model.api ?? provider.api,
-          contextWindow: model.contextWindow,
-          vision: model.vision,
-          reasoning: model.reasoning,
-          price: {
-            input: model.inputUsdPerM ?? 0,
-            output: model.outputUsdPerM ?? 0,
-            cacheRead: model.cacheReadUsdPerM ?? 0,
-            cacheWrite: model.cacheWriteUsdPerM ?? 0,
-            tiers: model.tiers?.map((tier) => ({
-              inputTokensAbove: tier.inputTokensAbove,
-              input: tier.inputUsdPerM,
-              output: tier.outputUsdPerM,
-              cacheRead: tier.cacheReadUsdPerM,
-              cacheWrite: tier.cacheWriteUsdPerM,
-            })),
-          },
-        })),
-      }));
-
-    return [...fromCatalog, ...custom];
-  }, [catalog, configured, models.providers]);
+  const providers: DisplayProvider[] = useMemo(
+    () => buildLlmProviders(catalog, models.providers, providerMeta),
+    [catalog, models.providers],
+  );
 
   // The icon picker offers every icon the catalogue actually ships, once each
   // (several provider ids share one brand file), labelled with a provider name.

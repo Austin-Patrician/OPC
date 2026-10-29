@@ -15,7 +15,14 @@ export interface ProviderVisual {
   initials: string;
 }
 
-const VISUALS: Record<string, ProviderVisual> = {
+/**
+ * Every provider mark this app ships, keyed by pi provider id.
+ *
+ * Exported so a test can check each `icon` against the files on disk: a typo
+ * here degrades silently to initials, which reads as "the icon I added does not
+ * show up" rather than as an error.
+ */
+export const PROVIDER_VISUALS: Record<string, ProviderVisual> = {
   openai: { icon: 'openai.svg', color: '#10A37F', initials: 'AI' },
   anthropic: { icon: 'anthropic.svg', color: '#D97757', initials: 'AN' },
   google: { icon: 'gemini-color.svg', color: '#4285F4', initials: 'G' },
@@ -53,6 +60,12 @@ const VISUALS: Record<string, ProviderVisual> = {
   'vercel-ai-gateway': { icon: 'vercel.svg', color: '#111827', initials: 'V' },
   xiaomi: { icon: 'xiaomimimo.svg', color: '#FF6900', initials: 'MI' },
   'ant-ling': { icon: 'ant-ling.svg', color: '#1677FF', initials: 'AL' },
+  // Single-colour marks (`fill="currentColor"`), so the tint only shows on the
+  // initials fallback; `meta-color.svg` carries Meta's own blue.
+  baseten: { icon: 'baseten.svg', color: '#111827', initials: 'BT' },
+  meta: { icon: 'meta-color.svg', color: '#0082FB', initials: 'ME' },
+  // TypeSafe is classifier-only, so this mark shows on Settings → Decision.
+  typesafe: { icon: 'typesafeai.svg', color: '#1F2937', initials: 'TS' },
 };
 
 /** Ids that appear in configs under different names than the icon files. */
@@ -78,6 +91,13 @@ const ALIASES: Record<string, string> = {
   'minimax-cn': 'minimax',
   'moonshotai-cn': 'moonshotai',
   'zai-coding-cn': 'zai',
+  // Same brand, different spelling in provider rows and pi's data.
+  'typesafe-ai': 'typesafe',
+  typesafeai: 'typesafe',
+  'typesafe-ai-system-one': 'typesafe',
+  'baseten-ai': 'baseten',
+  'meta-ai': 'meta',
+  'meta-llama': 'meta',
 };
 
 const normalize = (value: string) => value.toLowerCase().replaceAll('_', '-').trim();
@@ -112,13 +132,16 @@ export function vendorProviderId(vendor: string): string {
 /** Resolves a provider id to visuals, tolerating `-color` suffixes and aliases. */
 export function providerVisual(providerId: string): ProviderVisual {
   const id = normalize(providerId);
-  if (VISUALS[id]) return VISUALS[id] as ProviderVisual;
+  if (PROVIDER_VISUALS[id]) return PROVIDER_VISUALS[id] as ProviderVisual;
 
   const aliased = ALIASES[id];
-  if (aliased && VISUALS[aliased]) return VISUALS[aliased] as ProviderVisual;
+  if (aliased && PROVIDER_VISUALS[aliased]) return PROVIDER_VISUALS[aliased] as ProviderVisual;
 
-  const prefix = Object.keys(VISUALS).find((key) => id.startsWith(key));
-  if (prefix) return VISUALS[prefix] as ProviderVisual;
+  // Longest prefix wins: a future `typesafe-ai` key must not be shadowed by `typesafe`.
+  const prefix = Object.keys(PROVIDER_VISUALS)
+    .filter((key) => id.startsWith(key))
+    .sort((left, right) => right.length - left.length)[0];
+  if (prefix) return PROVIDER_VISUALS[prefix] as ProviderVisual;
 
   const initials = providerId
     .replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '')

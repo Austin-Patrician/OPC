@@ -39,6 +39,8 @@ import type { NetworkProxyService } from '../network/proxyService';
 import { probeProxy } from '../network/proxyRuntime';
 import { isRuntimeKind } from '../runtime/profiles';
 import type { RuntimeService } from '../runtime/service';
+import type { PiExtensionHost } from '../extensions/host';
+import type { PiSkillHost } from '../skills/host';
 import type { WorkService } from '../work/workService';
 
 interface RegisterOptions {
@@ -70,6 +72,10 @@ interface RegisterOptions {
   payroll: PayrollService;
   /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
   wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
+  /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
+  piExtensions: PiExtensionHost;
+  /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
+  piSkills: PiSkillHost;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -95,6 +101,8 @@ export function registerIpc({
   bundled,
   ocrSettings,
   wakeEmployee,
+  piExtensions,
+  piSkills,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -520,6 +528,28 @@ export function registerIpc({
     return refreshOrg();
   });
   ipcMain.handle(IPC.capabilities.list, () => work.capabilities());
+  ipcMain.handle(IPC.extensions.list, () => piExtensions.list());
+  ipcMain.handle(
+    IPC.extensions.setEnabled,
+    async (_event, id: unknown, enabled: unknown, trusted: unknown) => {
+      if (typeof id !== 'string' || !id) throw new Error('extensions:setEnabled 参数非法');
+      if (typeof enabled !== 'boolean') throw new Error('extensions:setEnabled 参数非法');
+      const catalog = await piExtensions.setEnabled(id, enabled, trusted === true);
+      // Registries are fixed at harness open time; drop them so the next task
+      // (or message) sees the new tool set instead of waiting for a restart.
+      await work.invalidateAllHarnesses();
+      return catalog;
+    },
+  );
+  ipcMain.handle(IPC.skills.list, () => piSkills.list());
+  ipcMain.handle(IPC.skills.setEnabled, async (_event, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || !id) throw new Error('skills:setEnabled 参数非法');
+    if (typeof enabled !== 'boolean') throw new Error('skills:setEnabled 参数非法');
+    const catalog = piSkills.setEnabled(id, enabled);
+    // The prompt section is part of the registry, so cached harnesses are stale.
+    await work.invalidateAllHarnesses();
+    return catalog;
+  });
   ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
     consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
   );

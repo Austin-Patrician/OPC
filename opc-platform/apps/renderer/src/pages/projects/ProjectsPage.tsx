@@ -550,7 +550,7 @@ export function ProjectsPage() {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        <div className="page-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {projects.length === 0 ? (
             <p className="px-2 py-6 text-3xs leading-relaxed text-ink-quaternary">
               {t('projects.empty')}
@@ -634,7 +634,7 @@ export function ProjectsPage() {
       </aside>
 
       {/* ── Dossier ───────────────────────────────────────────────────── */}
-      <div ref={scroller} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <div ref={scroller} className="page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
         {error ? (
           <p className="shrink-0 border-b border-danger/20 bg-danger/5 px-6 py-2 text-xs text-danger">
             {error}

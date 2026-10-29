@@ -166,6 +166,29 @@ describe('buildDecisionProviders', () => {
     ]);
   });
 
+  it('lists a decision-owned relay even before its first model exists', () => {
+    // Created from this page: it must stay visible (and deletable) here, and is
+    // hidden from the LLM page by `scope`.
+    const entries = buildDecisionProviders(
+      [],
+      [provider([], { id: 'decision-relay', name: 'Decision relay', isCustom: true, scope: 'decision' })],
+      name,
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual(['decision-relay']);
+    expect(entries[0]!.models).toEqual([]);
+  });
+
+  it('does not adopt a plain custom provider just because it has no models', () => {
+    const entries = buildDecisionProviders(
+      [],
+      [provider([], { id: 'empty-chat-relay', name: 'Empty', isCustom: true })],
+      name,
+    );
+
+    expect(entries).toEqual([]);
+  });
+
   it('sorts by display name', () => {
     const entries = buildDecisionProviders(
       [catalogProvider()],

@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1142,7 +1142,36 @@ const V21 = `
 SELECT 1;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21];
+/**
+ * V22: 记录 provider 归哪个设置页所有。
+ *
+ * Decision 页新建的自定义中转只服务分类器，但 LLM 页会把所有 `is_custom = 1`
+ * 的行都列成 chat provider —— 用户在那里看到一堆只能做结构化判断、发 chat
+ * 请求必然失败的条目。用一列显式记录归属页，比"猜模型类型"稳定：新建时还没
+ * 加模型的行也能正确归类。
+ *
+ * 默认 `llm`：内置 provider 和 LLM 页创建的行都属于 LLM 页。Decision 页只给
+ * 自己创建的自定义行写 `decision`，内置 provider（如 OpenRouter，同时提供 chat
+ * 与 classifier）永远留在 LLM 页。
+ */
+const V22 = `
+ALTER TABLE model_provider ADD COLUMN scope TEXT NOT NULL DEFAULT 'llm';
+
+-- 存量回填：这一版之前从 Decision 页建的自定义中转没有归属信息，但它们只有
+-- classifier 模型 —— 在 LLM 页里是一行发不出 chat 请求的空壳。只回填"非空且
+-- 全是 classifier"的行：空模型列表无从判断，留给用户自己决定。
+UPDATE model_provider
+   SET scope = 'decision'
+ WHERE is_custom = 1
+   AND models <> '[]'
+   AND NOT EXISTS (
+     SELECT 1
+       FROM json_each(model_provider.models) AS model
+      WHERE json_extract(model.value, '$.capability') <> 'classifier'
+   );
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

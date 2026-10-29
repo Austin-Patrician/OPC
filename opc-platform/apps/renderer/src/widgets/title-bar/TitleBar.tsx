@@ -6,7 +6,6 @@ import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompa
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { getPlatform, isDesktopShell, isMacLike } from '@/shared/lib/platform';
-import { useShellStore } from '@/shared/prefs/useShellStore';
 import { IdentityPopover } from './IdentityPopover';
 import { StartMenu } from './StartMenu';
 
@@ -19,14 +18,15 @@ interface TitleBarProps {
  * same bundle looks native on Windows and Linux instead of faking traffic lights.
  *
  * The only identity in the chrome is the boss's avatar: clicking it opens the
- * name/company/role card. It always hangs over the chrome's bottom edge, aligned
- * with the navigation rail below it. On macOS the real traffic lights sit in that
- * same corner, so the avatar drops just under them instead of being pushed right.
+ * name/company/role card. It hangs over the chrome's bottom edge, above the
+ * navigation rail's first row. On macOS the real traffic lights sit in that same
+ * corner, so the avatar drops just under them instead of being pushed right.
+ *
+ * Nothing sits on the trailing edge: the chat header carries the dossier toggle,
+ * so the chrome stays a single, uncluttered identity cluster on the left.
  */
 export function TitleBar({ onOpenSettings }: TitleBarProps) {
   const { t } = useTranslation();
-  const toggleDossier = useShellStore((state) => state.toggleDossier);
-  const dossierOpen = useShellStore((state) => state.dossierOpen);
   const profile = useCompanyProfile();
   const update = useCompany((state) => state.update);
 
@@ -65,7 +65,7 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
   return (
     <header
       className={cn(
-        'app-drag relative z-40 flex h-chrome shrink-0 items-center justify-between pr-3 select-none',
+        'app-drag relative z-40 flex h-chrome shrink-0 items-center select-none',
         nativeMacChrome ? 'pl-0' : 'pl-2.5',
       )}
     >
@@ -94,14 +94,14 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
           )}
         </div>
 
-        {/* 28px avatar in a 24px bar: centring puts its top at -2px. Translate it
-            down so it hangs over the chrome/workspace edge, aligned with the rail
-            below. On macOS it clears the native traffic lights above it. The `+`
-            sits on the same baseline so the two read as one cluster. */}
+        {/* 28px avatar in a 24px bar: centring puts its top at -2px. It is
+            pushed down so it hangs over the chrome/workspace edge and reads as
+            the first row of the rail below, with the same air above it as
+            below. On macOS it also clears the native traffic lights. */}
         <div
           className={cn(
-            'no-drag flex items-center gap-2',
-            nativeMacChrome ? 'translate-y-8' : 'translate-y-3',
+            'no-drag flex items-center',
+            nativeMacChrome ? 'translate-y-10' : 'translate-y-5',
           )}
         >
           <div ref={identityRef} className="relative">
@@ -125,31 +125,21 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
               />
             ) : null}
           </div>
+        </div>
 
+        {/* The `+` closes the rail's top row on its right edge, one gap away from
+            the body card — `rail + body inset - button` keeps it aligned with the
+            search field below without hard-coding the rail's width. It is
+            positioned instead of flexed so the avatar keeps the far-left corner. */}
+        <div
+          className={cn(
+            'no-drag absolute flex',
+            nativeMacChrome ? 'top-[2.375rem]' : 'top-[1.125rem]',
+            'left-[calc(var(--spacing-rail)+0.5rem-1.75rem)]',
+          )}
+        >
           <StartMenu />
         </div>
-      </div>
-
-      <div className="titlebar-trailing flex items-center gap-3">
-        <button
-          type="button"
-          onClick={toggleDossier}
-          aria-pressed={dossierOpen}
-          title={t('chat.dossier')}
-          className={`no-drag rounded p-0.5 transition-colors hover:bg-ink/5 ${dossierOpen ? 'text-accent' : 'text-ink-secondary'}`}
-        >
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden>
-            <rect x="2.2" y="3.5" width="15.6" height="13" rx="2.2" stroke="currentColor" strokeWidth="1.4" />
-            <line x1="7.2" y1="3.5" x2="7.2" y2="16.5" stroke="currentColor" strokeWidth="1.4" />
-            <path
-              d="M13.2 8.2L10.8 10L13.2 11.8"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
       </div>
     </header>
   );

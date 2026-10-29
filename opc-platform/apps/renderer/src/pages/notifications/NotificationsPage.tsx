@@ -88,7 +88,7 @@ export function NotificationsPage() {
   const guarded = overview?.guards.length ?? 0;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
+    <div className="page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
       <div className="mx-auto w-full max-w-[62rem] px-6 py-6">
         <PageHeader
           crumbs={[t('nav.mail')]}

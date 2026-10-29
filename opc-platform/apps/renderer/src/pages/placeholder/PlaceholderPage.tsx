@@ -21,7 +21,7 @@ export function PlaceholderPage({
   const { t } = useTranslation();
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-panel">
+    <div className="page-scroll min-h-0 flex-1 overflow-y-auto bg-panel">
       <div className="mx-auto flex max-w-2xl flex-col items-start gap-4 px-6 py-10">
         <span className="flex size-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
           <Icon className="size-6" />

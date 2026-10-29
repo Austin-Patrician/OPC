@@ -387,7 +387,7 @@ export function MarketPage() {
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
+    <div className="page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
       <header className="flex h-[3.375rem] shrink-0 items-center gap-3 border-b border-line bg-surface px-6">
         <div className="flex items-center gap-0.5 rounded-lg bg-surface-muted p-0.5">
           <button

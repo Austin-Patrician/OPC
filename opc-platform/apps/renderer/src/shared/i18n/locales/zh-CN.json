@@ -393,6 +393,11 @@
       "run": "运行",
       "running": "运行中…",
       "confidence": "置信度",
+      "answerYes": "是",
+      "answerNo": "否",
+      "probabilityValue": "概率 {{value}}",
+      "confidenceValue": "置信度 {{value}}",
+      "thresholdHint": "≥ {{value}} 判为「是」",
       "usage": "输入 {{input}} / 输出 {{output}} tokens",
       "needState": "请先填写 state",
       "needInstructions": "请填写问题描述",
@@ -676,10 +681,12 @@
     "stackToggleExtension": "启用或关闭 {{name}}",
     "stackReasonNoImage": "未配置可用的图像模型（设置 → 图像）",
     "stackReasonNoSpeech": "未配置语音模型（设置 → 语音）",
+    "stackReasonNoDecision": "未配置可用的决策模型（设置 → 模型 → Decision）",
     "stackReasonOcr": "OCR 模型文件未就绪（设置 → 运行时）",
     "stackReasonMemory": "记忆服务未启用",
     "stackReasonComm": "同事通信未启用",
     "stackReasonNoSubordinates": "没有下属，无法安装任务拆分",
+    "stackReasonNoSkills": "还没有启用任何本机技能",
     "stackSkillTags": "档案技能（仅展示）",
     "stackSkillTagsHint": "用于人才市场、搜索与档案展示，不注入提示词；真正决定能做什么的是上面的工具。",
     "personaEmpty": "未填写个人补充要求",
@@ -1258,18 +1265,66 @@
     "title": "技能与工具",
     "subtitle": "这里列出每个 Agent 在当前配置下、新开工作会话时真正装进运行时的扩展与工具——不是一份手写文档，而是直接读取注册表。模型、图像、语音或汇报关系一变，刷新后清单就跟着变。",
     "refresh": "刷新",
+    "readAt": "读取于 {{time}}",
     "unknownExtension": "未登记的扩展，能力以工具清单为准。",
-    "overviewTitle": "能力总览",
-    "overviewHint": "公司当前在岗 Agent 的能力合集。",
-    "honesty": "「档案技能」只是员工档案上的标签，用于人才市场、搜索与展示，不会注入提示词；真正决定 Agent 能做什么的，是下面的扩展与工具。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有下属时，对应工具不会出现。",
-    "stats": {
-      "agents": "在岗 Agent",
+    "tabs": {
       "extensions": "扩展",
       "tools": "工具",
-      "skills": "档案技能标签"
+      "skills": "技能",
+      "mcp": "MCP"
     },
-    "extensionsTitle": "扩展与工具",
-    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的 Agent 人数。",
+    "toolsTab": {
+      "title": "可调用工具",
+      "description": "共 {{count}} 个工具，按提供它的扩展分组；右侧数字是能调用它的 Agent 人数。",
+      "agents": "{{count}} 人"
+    },
+    "mcp": {
+      "title": "MCP 服务器",
+      "description": "Model Context Protocol：把外部工具（数据库、内部 API、别人的服务）接进来，和内置工具一样出现在 Agent 的工具清单里。",
+      "empty": "还没有接入任何 MCP 服务器。",
+      "emptyHint": "这一页现在是占位：OPC 还没有 MCP 客户端，所以这里没有可列出的东西。接上之后，每个服务器会像扩展一样列出来，带连接状态和它暴露的工具清单。",
+      "needsTitle": "要接上它，至少需要",
+      "needClient": "一个 stdio / SSE 客户端，按配置启动进程或连接端点，并处理重连与退出",
+      "needTools": "把 MCP 的 tools 翻译成 pi-durable 的工具，名字加前缀，避免和内置工具撞名",
+      "needPolicy": "沿用现有的信任与员工级开关——MCP 服务器同样能读写本机数据"
+    },
+    "external": {
+      "title": "本机 Pi 扩展",
+      "description": "从 ~/.pi/agent/extensions 与 .pi/extensions 发现，和 Pi 自己的自动加载位置一致。扫描只读文件；启用才把它的代码载入主进程。",
+      "empty": "没有发现 Pi 扩展。",
+      "emptyHint": "把 .ts 文件或带 index.ts 的目录放进上面的任一目录，然后刷新。用 `pi install` 安装的包，只有在这些目录里出现后才会被列出来。",
+      "scope": {
+        "global": "全局",
+        "project": "当前项目"
+      },
+      "loaded": "已加载",
+      "disabled": "未启用",
+      "failed": "加载失败",
+      "partial": "部分支持",
+      "lazyHint": "启用后会载入，并在这里显示它注册的工具。",
+      "events": "事件：{{list}}",
+      "working": "处理中…",
+      "groupDescription": "本机 Pi 扩展。开关在页面上方的「本机 Pi 扩展」里，关掉后所有 Agent 都不再安装它。",
+      "trustTitle": "启用 {{name}}？",
+      "trustBody": "这是一个普通 JavaScript 扩展，不是沙箱插件。启用后它会在主进程里运行，权限和 OPC 本身相同。",
+      "trustRisk": {
+        "code": "可以执行任意代码，包括启动时",
+        "data": "可以读取公司数据库、工作区、API Key 与会话历史",
+        "network": "可以自行发起网络请求"
+      },
+      "trustConfirm": "信任并启用"
+    },
+    "skills": {
+      "title": "本机技能",
+      "description": "从 ~/.agents/skills 与 .agents/skills 发现。技能是纯文本说明书，不需要信任；启用后每个 Agent 的系统提示会多一行，Agent 需要时用 read_skill 读全文。",
+      "summary": "{{enabled}} / {{total}} 个已启用，系统提示约多 {{tokens}} tokens / 次请求",
+      "empty": "没有发现技能。",
+      "emptyHint": "把带 SKILL.md 的目录放进上面的任一位置即可，刷新后出现。技能自带的脚本仍然通过 bash 工具运行，照样过沙箱和调用上限。",
+      "promptTokens": "≈{{tokens}} tokens",
+      "files": "{{count}} 个文件"
+    },
+    "extensionsTitle": "内置扩展",
+    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的 Agent 人数。具体工具在「工具」页。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有下属时，对应工具不会出现。",
     "extensionAgents": "{{count}} 名 Agent",
     "extensionToolCount": "{{count}} 个工具",
     "extensionNoTools": "无工具",
@@ -1280,7 +1335,7 @@
     },
     "deferred": "按需加载",
     "agentTitle": "按 Agent 查看",
-    "agentHint": "展开一个人，看他自己的注册表里装了什么。",
+    "agentHint": "展开一个人，看他自己的注册表里装了什么。档案技能标签只用于展示，不会进入提示词。",
     "agentExtensions": "{{count}} 个扩展",
     "agentTools": "{{count}} 个工具",
     "agentExtensionsLabel": "扩展",
@@ -1298,7 +1353,8 @@
       "remember": "为未来的自己保存一条长期经验。",
       "send_direct_message": "给同事发消息。",
       "ack_message": "把同事的消息标记为已读。",
-      "decompose_task": "把任务拆成子任务交给直接下属。"
+      "decompose_task": "把任务拆成子任务交给直接下属。",
+      "decide": "对一段材料做有边界的判断，返回标签、分数或概率。"
     },
     "head": "负责人",
     "noSkills": "未填写标签",
@@ -1344,6 +1400,14 @@
       "decompose": {
         "title": "任务拆分",
         "description": "把大任务拆成子任务交给下属；只有带汇报线的管理者才会安装。"
+      },
+      "decision": {
+        "title": "结构化决策",
+        "description": "调用已配置的决策模型（Jev / System One），把证据变成标签、分数或概率；只在模型可用时安装。"
+      },
+      "skills": {
+        "title": "本机技能",
+        "description": "把 ~/.agents/skills 里的技能列进系统提示，并给 Agent 一个 read_skill 工具按需读全文。"
       }
     }
   },

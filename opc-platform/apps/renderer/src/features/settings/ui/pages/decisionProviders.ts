@@ -109,12 +109,18 @@ export function buildDecisionProviders(
   }
 
   // Custom providers live only in our DB and are normally created for chat.
-  // List one only when it owns a decision model, or when it is the row just
-  // created here and still waiting for its first model.
+  // List one only when it owns a decision model, was created on this page, or is
+  // the row just created here and still waiting for its first model.
   for (const config of providers) {
     if (seen.has(config.id)) continue;
     const storedModels = config.models.filter(isDecisionStoredModel);
-    if (storedModels.length === 0 && config.id !== options.includeProviderId) continue;
+    if (
+      storedModels.length === 0 &&
+      config.id !== options.includeProviderId &&
+      config.scope !== 'decision'
+    ) {
+      continue;
+    }
     entries.push({
       id: config.id,
       name: config.name,

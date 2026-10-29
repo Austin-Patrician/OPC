@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import { Archive, ArchiveRestore, BellOff, MoreHorizontal, Network, Plus, Search, UserPlus, Users } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Archive, ArchiveRestore, BellOff, MoreHorizontal, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Conversation } from '@/entities/conversation/model/types';
 import { Avatar } from '@/entities/agent/ui/Avatar';
@@ -9,27 +9,26 @@ interface SessionListProps {
   conversations: readonly Conversation[];
   activeId?: string;
   onSelect: (conversationId: string) => void;
-  onOpenOrg: () => void;
-  onOpenMarket: () => void;
-  onCreateGroup: () => void;
   onArchive: (conversationId: string) => void;
   onRestore: (conversationId: string) => void;
 }
 
-/** 276px conversation column. Filtering is local and O(n) over a small list. */
+/**
+ * 276px conversation column. Filtering is local and O(n) over a small list.
+ *
+ * The header is search only: starting a thread lives in the title bar's `+`
+ * (direct or department group) and in the org chart, so this column stays a
+ * plain index of what already exists.
+ */
 export function SessionList({
   conversations,
   activeId,
   onSelect,
-  onOpenOrg,
-  onOpenMarket,
-  onCreateGroup,
   onArchive,
   onRestore,
 }: SessionListProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const [menuOpen, setMenuOpen] = useState(false);
 
   const [archivedOpen, setArchivedOpen] = useState(false);
 
@@ -159,36 +158,6 @@ export function SessionList({
             className="w-full bg-transparent text-base text-ink outline-none placeholder:text-ink-quaternary"
           />
         </div>
-
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setMenuOpen((open) => !open)}
-            aria-label={t('sessions.newHire')}
-            title={t('sessions.newHire')}
-            className="flex size-[1.875rem] items-center justify-center rounded-[6px] bg-surface-muted text-ink-tertiary transition-colors hover:bg-surface-active"
-          >
-            <Plus className="size-4" strokeWidth={1.8} />
-          </button>
-
-          {menuOpen ? (
-            <>
-              <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} aria-hidden />
-              <div className="absolute top-9 right-0 z-30 w-52 rounded-lg border border-line bg-surface py-1.5 text-base shadow-popover">
-                <MenuItem icon={<UserPlus className="size-4 text-accent" />} onClick={onOpenMarket}>
-                  {t('sessions.newHire')}
-                </MenuItem>
-                <MenuItem icon={<Users className="size-4 text-success" />} onClick={onCreateGroup}>
-                  {t('sessions.newGroup')}
-                </MenuItem>
-                <div className="my-1 border-t border-line" />
-                <MenuItem icon={<Network className="size-4 text-accent-ink" />} onClick={onOpenOrg}>
-                  {t('sessions.manageOrg')}
-                </MenuItem>
-              </div>
-            </>
-          ) : null}
-        </div>
       </div>
 
       <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
@@ -221,23 +190,3 @@ export function SessionList({
   );
 }
 
-function MenuItem({
-  children,
-  icon,
-  onClick,
-}: {
-  children: ReactNode;
-  icon: ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-ink hover:bg-surface-hover"
-    >
-      {icon}
-      <span>{children}</span>
-    </button>
-  );
-}

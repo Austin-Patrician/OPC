@@ -71,8 +71,28 @@ describe('getCatalog image entries', () => {
   });
 });
 
-describe('getCatalog speech entries', () => {
-  it('adds Xiaomi ASR/TTS models to the existing xiaomi provider', async () => {
+describe('getCatalog classifier entries', () => {
+  it('lists TypeSafe as a classifier-only provider', async () => {
+    const catalog = await getCatalog();
+    const typesafe = catalog.find((provider) => provider.id === 'typesafe');
+
+    // The LLM page filters providers by chat models, so this is what keeps the
+    // Decision-only provider out of the chat table.
+    expect(typesafe?.counts.chat).toBe(0);
+    expect(typesafe?.counts.classifier).toBeGreaterThan(0);
+    expect(typesafe?.models.every((model) => model.type === 'classifier')).toBe(true);
+  });
+
+  it('keeps OpenRouter, which serves chat and decisions from one row', async () => {
+    const catalog = await getCatalog();
+    const openrouter = catalog.find((provider) => provider.id === 'openrouter');
+
+    expect(openrouter?.counts.chat).toBeGreaterThan(0);
+    expect(openrouter?.counts.classifier).toBeGreaterThan(0);
+  });
+});
+
+describe('getCatalog speech entries', () => {  it('adds Xiaomi ASR/TTS models to the existing xiaomi provider', async () => {
     const catalog = await getCatalog();
     const xiaomi = catalog.find((provider) => provider.id === 'xiaomi');
     const voice = xiaomi?.models.filter((model) => model.type === 'asr' || model.type === 'tts') ?? [];
