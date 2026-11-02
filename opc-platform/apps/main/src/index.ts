@@ -43,6 +43,7 @@ import { BudgetCenter } from './work/budgetCenter';
 import { PayrollService } from './work/payroll';
 import { applyCompanySetup, parseCompanySetup } from './setup/companySetup';
 import { BudgetService } from './work/budgetService';
+import { BillingSettingsService } from './work/billingSettings';
 import { BudgetRepository } from './data/budgetRepository';
 import { createInboxRunner } from './comm/inboxRunner';
 import { DEMO_TASK } from './work/acceptanceTemplate';
@@ -419,6 +420,9 @@ async function bootstrap(): Promise<void> {
   };
   const ocrSettings = new OcrSettingsStore(db);
   const ocr = ensureOcr(ocrSettings);
+  // 计费口径：定价策略 + 展示币种 + 手工汇率。汇率只影响渲染，不写进账本。
+  const billingSettings = new BillingSettingsService(db);
+  billingSettings.ensureDefaults();
   // Pi extensions on this machine (`~/.pi/agent/extensions`). Scanning is free;
   // only the ones the boss turned on are imported.
   const piExtensions = new PiExtensionHost({ userDataDir: appPaths.userData });
@@ -476,6 +480,7 @@ async function bootstrap(): Promise<void> {
     // rather than a stored preference.
     bundled: { inspect: async () => [await inspectOcrRuntime(ocrAssetsDir())] },
     ocrSettings,
+    billingSettings,
     wakeEmployee: async (employeeId) =>
       heartbeat
         ? heartbeat.wakeNow(employeeId)

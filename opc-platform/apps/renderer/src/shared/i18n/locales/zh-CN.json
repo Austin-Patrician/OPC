@@ -188,6 +188,7 @@
       "appearance": "外观与语言",
       "compaction": "工作区与压缩",
       "company": "公司与称呼",
+      "billing": "计费",
       "network": "网络与代理",
       "runtime": "运行时"
     },
@@ -480,6 +481,38 @@
       "budgetHint": "公司层预算，超出即硬停；在预算中心可看到实时用量",
       "openBudget": "前往预算中心",
       "loading": "正在读取公司资料…"
+    },
+    "billing": {
+      "desc": "定价与展示口径。账本永远以美元记录，汇率只影响页面上显示的人民币金额。",
+      "policyTitle": "定价策略",
+      "policyHint": "决定一次调用用哪个数字入账。服务商没有返回金额时，仍会回退到你配置的单价。",
+      "policy": "计价来源",
+      "modeLabel": {
+        "provider_first": "服务商优先（推荐）",
+        "configured_only": "只用我配置的单价",
+        "provider_only": "只认服务商金额"
+      },
+      "mode": {
+        "provider_first": "服务商返回了金额就用它；没有就用设置页的模型单价，再回退内置目录。",
+        "configured_only": "始终按你填写的单价计算；服务商金额只留作对账，不影响入账。",
+        "provider_only": "只使用服务商返回的金额；没有金额的调用记为「未定价」，不会被算成 0。"
+      },
+      "displayTitle": "展示币种与汇率",
+      "displayHint": "只支持美元与人民币两种。汇率是手工填写的规划值，不联网取实时价。",
+      "currency": "展示币种",
+      "currencyHint": "切换只改变显示，不改变账本里已记录的金额。",
+      "rate": "汇率",
+      "rateHint": "1 美元折合多少人民币；默认 7.3，可随时修改。",
+      "rateInvalid": "汇率需为 0.01–100 之间的数字（最多 4 位小数）",
+      "rateBlurHint": "输入后移开焦点或按回车生效。",
+      "rateReset": "恢复默认",
+      "previewTitle": "效果预览",
+      "previewHint": "用本月真实花费试算，确认汇率后再去看报表。",
+      "previewMonth": "本月已花",
+      "previewEmpty": "还没有可结算的花费",
+      "previewSample": "每 1 美元",
+      "previewSampleHint": "报表里所有金额都会按这个比例折算",
+      "footnote": "汇率只用于展示：账本以 USD 存储，历史账单按入账时的汇率冻结，不会被这次修改改写。"
     },
     "network": {
       "description": "配置一次，模型请求、图片生成与工作区里的子进程都会走这条线路；保存后立即生效，下次启动自动沿用。",
@@ -1261,16 +1294,6 @@
     "boardEmpty": "空",
     "boardCancelled": "{{count}} 项已取消",
     "viewAllWork": "全部工作项",
-    "milestonesTitle": "里程碑",
-    "milestonesProgress": "{{done}} / {{total}}",
-    "milestonesEmpty": "还没有里程碑。先写清楚这个项目什么时候算完。",
-    "manageMilestones": "管理里程碑",
-    "milestoneAdd": "添加",
-    "milestonePlaceholder": "如：内测上线",
-    "milestoneDue": "截止日期",
-    "milestoneComplete": "标记完成",
-    "milestoneReopen": "标记未完成",
-    "milestoneRemove": "删除里程碑",
     "artifactsTitle": "最近交付",
     "artifactsHint": "{{count}} 个文件",
     "artifactsEmpty": "还没有交付物。任务通过验收后，文件会出现在这里。",

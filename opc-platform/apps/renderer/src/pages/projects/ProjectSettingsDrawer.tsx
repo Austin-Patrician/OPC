@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Archive, Check, Plus, X } from 'lucide-react';
+import { Archive, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { OrgMember } from '@opc/shared/domain';
 import type { OrgFactView, ProjectView } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { buttonClass } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
-import { milestoneSummaryOf } from './projectBoard';
 
 interface ProjectSettingsDrawerProps {
   project: ProjectView;
@@ -18,12 +17,6 @@ interface ProjectSettingsDrawerProps {
   onAssign: (employeeId: string, role?: string) => Promise<void>;
   onRemoveMember: (employeeId: string) => Promise<void>;
   onSetReportsTo: (employeeId: string, managerId: string | null) => Promise<void>;
-  onAddMilestone: (title: string, dueAt: number | null) => Promise<void>;
-  onUpdateMilestone: (
-    milestoneId: string,
-    patch: { title?: string; dueAt?: number | null; done?: boolean },
-  ) => Promise<void>;
-  onRemoveMilestone: (milestoneId: string) => Promise<void>;
   onArchive: () => Promise<void>;
   onClose: () => void;
 }
@@ -33,8 +26,8 @@ interface ProjectSettingsDrawerProps {
  *
  * Team editing used to be a page-wide mode: "编辑团队" swapped every control on the
  * dossier, so the reader could not tell whether a click would read or write. The
- * dossier is now always read-only, and the write surfaces — membership, milestones,
- * the working agreement, and archiving — live here.
+ * dossier is now always read-only, and the write surfaces — membership, the working
+ * agreement, and archiving — live here.
  */
 export function ProjectSettingsDrawer({
   project,
@@ -43,9 +36,6 @@ export function ProjectSettingsDrawer({
   onAssign,
   onRemoveMember,
   onSetReportsTo,
-  onAddMilestone,
-  onUpdateMilestone,
-  onRemoveMilestone,
   onArchive,
   onClose,
 }: ProjectSettingsDrawerProps) {
@@ -95,12 +85,6 @@ export function ProjectSettingsDrawer({
             onAssign={onAssign}
             onRemoveMember={onRemoveMember}
             onSetReportsTo={onSetReportsTo}
-          />
-          <MilestonesSection
-            project={project}
-            onAdd={onAddMilestone}
-            onUpdate={onUpdateMilestone}
-            onRemove={onRemoveMilestone}
           />
           <RulesSection projectId={project.id} />
           <DangerSection onArchive={onArchive} />
@@ -273,182 +257,6 @@ function TeamSection({
       )}
     </Section>
   );
-}
-
-function MilestonesSection({
-  project,
-  onAdd,
-  onUpdate,
-  onRemove,
-}: {
-  project: ProjectView;
-  onAdd: (title: string, dueAt: number | null) => Promise<void>;
-  onUpdate: (
-    milestoneId: string,
-    patch: { title?: string; dueAt?: number | null; done?: boolean },
-  ) => Promise<void>;
-  onRemove: (milestoneId: string) => Promise<void>;
-}) {
-  const { t } = useTranslation();
-  const [title, setTitle] = useState('');
-  const [due, setDue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const summary = milestoneSummaryOf(project.milestones);
-
-  const run = async (action: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await action();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Section
-      title={t('projects.milestonesTitle')}
-      hint={t('projects.milestonesProgress', { done: summary.done, total: summary.total })}
-    >
-      {project.milestones.length === 0 ? (
-        <p className="text-2xs leading-relaxed text-ink-quaternary">{t('projects.milestonesEmpty')}</p>
-      ) : (
-        <ul className="space-y-1.5">
-          {project.milestones.map((milestone) => {
-            const overdue =
-              !milestone.done && milestone.dueAt !== undefined && milestone.dueAt < Date.now();
-            return (
-              <li key={milestone.id} data-testid="milestone-row" className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  disabled={busy}
-                  aria-label={
-                    milestone.done ? t('projects.milestoneReopen') : t('projects.milestoneComplete')
-                  }
-                  title={
-                    milestone.done ? t('projects.milestoneReopen') : t('projects.milestoneComplete')
-                  }
-                  onClick={() => void run(() => onUpdate(milestone.id, { done: !milestone.done }))}
-                  className={cn(
-                    'grid size-4 shrink-0 place-items-center rounded-full border transition-colors disabled:opacity-40',
-                    milestone.done
-                      ? 'border-success bg-success/15 text-success'
-                      : 'border-line-strong text-transparent hover:border-success',
-                  )}
-                >
-                  <Check className="size-2.5" />
-                </button>
-
-                <input
-                  defaultValue={milestone.title}
-                  aria-label={t('projects.milestonePlaceholder')}
-                  onBlur={(event) => {
-                    const next = event.target.value.trim();
-                    if (next && next !== milestone.title) {
-                      void run(() => onUpdate(milestone.id, { title: next }));
-                    } else if (!next) {
-                      event.target.value = milestone.title;
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') event.currentTarget.blur();
-                  }}
-                  className={cn(
-                    'h-6 min-w-0 flex-1 rounded-md border border-line bg-surface px-1.5 text-2xs outline-none focus:border-accent',
-                    milestone.done ? 'text-ink-quaternary line-through' : 'text-ink',
-                  )}
-                />
-
-                <input
-                  type="date"
-                  aria-label={t('projects.milestoneDue')}
-                  value={dateInputOf(milestone.dueAt)}
-                  disabled={busy}
-                  onChange={(event) =>
-                    void run(() =>
-                      onUpdate(milestone.id, { dueAt: dueAtOf(event.target.value) }),
-                    )
-                  }
-                  className={cn(
-                    'h-6 w-[7.25rem] shrink-0 rounded-md border bg-surface px-1 font-mono text-3xs outline-none focus:border-accent',
-                    overdue ? 'border-danger/50 text-danger' : 'border-line text-ink-tertiary',
-                  )}
-                />
-
-                <button
-                  type="button"
-                  disabled={busy}
-                  aria-label={t('projects.milestoneRemove')}
-                  onClick={() => void run(() => onRemove(milestone.id))}
-                  className="grid size-6 shrink-0 place-items-center rounded-md text-ink-quaternary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
-                >
-                  <X className="size-3" />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      <div className="mt-2.5 flex items-center gap-1.5">
-        <input
-          data-testid="milestone-title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && title.trim()) {
-              void run(async () => {
-                await onAdd(title.trim(), dueAtOf(due));
-                setTitle('');
-                setDue('');
-              });
-            }
-          }}
-          placeholder={t('projects.milestonePlaceholder')}
-          aria-label={t('projects.milestonePlaceholder')}
-          className="h-7 min-w-0 flex-1 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink outline-none placeholder:text-ink-quaternary focus:border-accent"
-        />
-        <input
-          type="date"
-          value={due}
-          onChange={(event) => setDue(event.target.value)}
-          aria-label={t('projects.milestoneDue')}
-          className="h-7 w-[7.25rem] shrink-0 rounded-md border border-line bg-surface px-1 font-mono text-3xs text-ink-tertiary outline-none focus:border-accent"
-        />
-        <button
-          type="button"
-          data-testid="milestone-add"
-          disabled={!title.trim() || busy}
-          onClick={() =>
-            void run(async () => {
-              await onAdd(title.trim(), dueAtOf(due));
-              setTitle('');
-              setDue('');
-            })
-          }
-          className={cn(buttonClass.primary, 'h-7 shrink-0 px-2 text-2xs')}
-        >
-          <Plus className="size-3" />
-          {t('projects.milestoneAdd')}
-        </button>
-      </div>
-    </Section>
-  );
-}
-
-/** `<input type="date">` speaks local `YYYY-MM-DD`; the store keeps ms epoch. */
-function dateInputOf(ms?: number): string {
-  if (ms === undefined) return '';
-  const date = new Date(ms);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
-    date.getDate(),
-  ).padStart(2, '0')}`;
-}
-
-function dueAtOf(value: string): number | null {
-  if (!value) return null;
-  const [year, month, day] = value.split('-').map(Number);
-  if (!year || !month || !day) return null;
-  return new Date(year, month - 1, day).getTime();
 }
 
 function RulesSection({ projectId }: { projectId: string }) {

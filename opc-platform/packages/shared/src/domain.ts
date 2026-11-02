@@ -1027,6 +1027,43 @@ export interface BudgetError {
 /** Task-level refusal (budget, employment, decomposition). */
 export type TaskError = BudgetError;
 
+/**
+ * How a call's money is decided (doc: `docs/ai-billing.md` §4.1).
+ *
+ * `provider_first` is the default: trust a provider-reported amount when there is
+ * one, otherwise fall back to the price list the boss maintains. The two strict
+ * modes exist for audit (`configured_only`) and invoice-parity (`provider_only`)
+ * installs.
+ */
+export type PricingMode = 'provider_first' | 'configured_only' | 'provider_only';
+
+/** Only USD is stored; CNY is a display conversion at a manual rate. */
+export type DisplayCurrency = 'USD' | 'CNY';
+
+/** Settings → 通用 → 计费. One row per install, stored in `app_setting`. */
+export interface BillingSettings {
+  pricingMode: PricingMode;
+  displayCurrency: DisplayCurrency;
+  /** 1 USD = N CNY. Display-only; the ledger never converts. */
+  usdCnyRate: number;
+  /** Last write to any of the three keys, for "最后修改" in the UI. */
+  updatedAt: number;
+}
+
+/** `usdCnyRate` is a manual planning rate, not a live quote. */
+export const DEFAULT_BILLING_SETTINGS: BillingSettings = {
+  pricingMode: 'provider_first',
+  displayCurrency: 'CNY',
+  usdCnyRate: 7.3,
+  updatedAt: 0,
+};
+
+export interface BillingSettingsPatch {
+  pricingMode?: PricingMode;
+  displayCurrency?: DisplayCurrency;
+  usdCnyRate?: number;
+}
+
 export type CreateTaskResult =
   | { ok: true; task: WorkTask }
   | { ok: false; error: BudgetError };

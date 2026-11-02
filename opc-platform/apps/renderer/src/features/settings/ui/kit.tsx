@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import { Eye, EyeOff, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
@@ -264,6 +264,8 @@ export function TextField({
   ariaLabel,
   mono,
   className = '',
+  onBlur,
+  onKeyDown,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -271,12 +273,16 @@ export function TextField({
   ariaLabel: string;
   mono?: boolean;
   className?: string;
+  onBlur?: () => void;
+  onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
 }) {
   return (
     <input
       aria-label={ariaLabel}
       value={value}
       onChange={(event) => onChange(event.target.value)}
+      onBlur={onBlur}
+      onKeyDown={onKeyDown}
       placeholder={placeholder}
       spellCheck={false}
       className={cn(

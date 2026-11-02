@@ -21,6 +21,8 @@ import type {
   CatalogProvider,
   CompanyProfile,
   CompanyProfilePatch,
+  BillingSettings,
+  BillingSettingsPatch,
   ModelOption,
   CompactionSettings,
   CreateTaskInput,
@@ -149,6 +151,18 @@ const bridge: OpcBridge = {
     }) => ipcRenderer.invoke(IPC.budget.setLimit, input) as Promise<BudgetOverview>,
     payroll: () => ipcRenderer.invoke(IPC.budget.payroll),
     costCenters: () => ipcRenderer.invoke(IPC.budget.costCenters),
+  },
+  billing: {
+    get: () => ipcRenderer.invoke(IPC.billing.get) as Promise<BillingSettings>,
+    update: (patch: BillingSettingsPatch) =>
+      ipcRenderer.invoke(IPC.billing.update, patch) as Promise<BillingSettings>,
+    onChanged: (listener: (settings: BillingSettings) => void) => {
+      const handler = (_event: IpcRendererEvent, settings: BillingSettings) => listener(settings);
+      ipcRenderer.on(IPC.billing.changedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.billing.changedEvent, handler);
+      };
+    },
   },
   comm: {
     overview: () => ipcRenderer.invoke(IPC.comm.overview) as Promise<CommOverview>,

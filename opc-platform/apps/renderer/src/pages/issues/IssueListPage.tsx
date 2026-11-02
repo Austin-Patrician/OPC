@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronRight, CircleDashed, Loader2, ShieldAlert, Stamp }
 import { useTranslation } from 'react-i18next';
 import type { TaskStatus, WorkTask } from '@opc/shared/domain';
 import { cn } from '@/shared/lib/cn';
+import { useMoney } from '@/entities/billing/model/useBilling';
 
 /**
  * Issue ledger — every work item in the company, read as a ledger rather than a
@@ -51,6 +52,7 @@ const elapsed = (task: WorkTask): string => {
 
 export function IssueListPage() {
   const { t } = useTranslation();
+  const money = useMoney();
   const [tasks, setTasks] = useState<WorkTask[]>([]);
   const [status, setStatus] = useState<'all' | Group>('all');
   const [assignee, setAssignee] = useState('');
@@ -384,7 +386,7 @@ export function IssueListPage() {
                       ariaLabel={t('issues.spendTitle')}
                       points={spend.map((entry) => ({ label: entry.day.slice(5), value: entry.usd }))}
                       height={80}
-                      valueFormat={(value) => `$${value.toFixed(4)}`}
+                      valueFormat={(value) => money(value, { digits: 4 })}
                     />
                   </div>
                 </>
@@ -428,7 +430,7 @@ export function IssueListPage() {
                         {person.avgLeadHours === null ? '—' : `${person.avgLeadHours.toFixed(1)}h`}
                       </span>
                       <span className="w-14 text-right font-mono text-success">
-                        ${person.usd.toFixed(2)}
+                        {money(person.usd)}
                       </span>
                     </span>
                     {/* 数字精确，条子给形状：一眼看出这个人是"在推进"还是"卡住了"。 */}
@@ -530,7 +532,7 @@ export function IssueListPage() {
                                 <span className="ml-1 text-warning">⛓{task.blockedBy.length}</span>
                               ) : null}
                             </span>
-                            <span className="font-mono text-success">${task.costUsd.toFixed(2)}</span>
+                            <span className="font-mono text-success">{money(task.costUsd)}</span>
                           </div>
                         </article>
                       ))}
@@ -647,7 +649,7 @@ export function IssueListPage() {
                         {elapsed(task)}
                       </span>
                       <span className="w-16 shrink-0 text-right font-mono text-2xs text-success">
-                        ${task.costUsd.toFixed(2)}
+                        {money(task.costUsd)}
                       </span>
                       <span className="w-16 shrink-0 text-right font-mono text-2xs text-ink-quaternary">
                         {t(`task.status.${task.status}`)}

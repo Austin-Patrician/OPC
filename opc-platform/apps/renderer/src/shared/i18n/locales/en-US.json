@@ -188,6 +188,7 @@
       "appearance": "Appearance & language",
       "compaction": "Workspace & compaction",
       "company": "Company & profile",
+      "billing": "Billing",
       "network": "Network & proxy",
       "runtime": "Runtimes"
     },
@@ -480,6 +481,38 @@
       "budgetHint": "Company budget: crossing it hard-stops dispatch. The budget centre shows live usage.",
       "openBudget": "Open budget centre",
       "loading": "Reading the company profile…"
+    },
+    "billing": {
+      "desc": "How money is decided and shown. The ledger is always USD; the rate only changes the CNY figure on screen.",
+      "policyTitle": "Pricing policy",
+      "policyHint": "Which number is charged for a call. When a provider reports no amount, the price list you maintain is still used.",
+      "policy": "Price source",
+      "modeLabel": {
+        "provider_first": "Provider first (recommended)",
+        "configured_only": "Only my prices",
+        "provider_only": "Only provider amounts"
+      },
+      "mode": {
+        "provider_first": "Use the provider's amount when present; otherwise the model price in settings, then the built-in catalogue.",
+        "configured_only": "Always use the prices you entered. Provider amounts are kept for reconciliation only.",
+        "provider_only": "Use provider amounts exclusively. Calls without one are marked unpriced instead of being treated as free."
+      },
+      "displayTitle": "Currency and rate",
+      "displayHint": "USD and CNY only. The rate is a manual planning value — no live quotes.",
+      "currency": "Display currency",
+      "currencyHint": "Switching only changes the display; stored amounts are untouched.",
+      "rate": "Exchange rate",
+      "rateHint": "CNY per 1 USD. Defaults to 7.3 and can be changed at any time.",
+      "rateInvalid": "The rate must be between 0.01 and 100 (up to 4 decimals)",
+      "rateBlurHint": "Leave the field or press Enter to apply.",
+      "rateReset": "Restore default",
+      "previewTitle": "Preview",
+      "previewHint": "Uses this month's real spend so you can confirm the rate before reading the reports.",
+      "previewMonth": "Spent this month",
+      "previewEmpty": "No settleable spend yet",
+      "previewSample": "Per 1 USD",
+      "previewSampleHint": "Every amount in the reports is converted at this rate",
+      "footnote": "The rate is display-only: the ledger stores USD, and historical charges keep the rate frozen at settlement time."
     },
     "network": {
       "description": "Configure it once and model calls, image generation and workspace child processes all take this route. Saving applies immediately and survives restarts.",
@@ -1261,16 +1294,6 @@
     "boardEmpty": "Empty",
     "boardCancelled": "{{count}} cancelled",
     "viewAllWork": "All work items",
-    "milestonesTitle": "Milestones",
-    "milestonesProgress": "{{done}} / {{total}}",
-    "milestonesEmpty": "No milestones yet. Decide what finishing this project actually means.",
-    "manageMilestones": "Manage milestones",
-    "milestoneAdd": "Add",
-    "milestonePlaceholder": "e.g. Private beta live",
-    "milestoneDue": "Due date",
-    "milestoneComplete": "Mark complete",
-    "milestoneReopen": "Mark incomplete",
-    "milestoneRemove": "Remove milestone",
     "artifactsTitle": "Recent deliverables",
     "artifactsHint": "{{count}} files",
     "artifactsEmpty": "No deliverables yet. Accepted tasks put their files here.",

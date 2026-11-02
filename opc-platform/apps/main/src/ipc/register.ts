@@ -10,6 +10,7 @@ import type {
   ModelRef,
   ProviderDraft,
   RuntimeProfileDraft,
+  BillingSettingsPatch,
 } from '@opc/shared/domain';
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs';
@@ -43,6 +44,7 @@ import type { RuntimeService } from '../runtime/service';
 import type { PiExtensionHost } from '../extensions/host';
 import type { PiSkillHost } from '../skills/host';
 import type { WorkService } from '../work/workService';
+import type { BillingSettingsService } from '../work/billingSettings';
 
 interface RegisterOptions {
   chat: ChatService;
@@ -60,6 +62,8 @@ interface RegisterOptions {
   bundled: { inspect: () => Promise<BundledRuntime[]> };
   /** OCR 开关与输出粒度，和 Node/Python 一样是公司级选择。 */
   ocrSettings: { get: () => OcrSettings; set: (next: OcrSettings) => OcrSettings };
+  /** 计费口径：定价策略、展示币种、手工汇率（设置 → 通用 → 计费）。 */
+  billingSettings: BillingSettingsService;
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
@@ -101,6 +105,7 @@ export function registerIpc({
   runtime,
   bundled,
   ocrSettings,
+  billingSettings,
   wakeEmployee,
   piExtensions,
   piSkills,
@@ -202,6 +207,23 @@ export function registerIpc({
       scopeId: draft.scopeId,
       limitTokens: draft.limitTokens,
     });
+  });
+
+  ipcMain.handle(IPC.billing.get, () => billingSettings.get());
+  ipcMain.handle(IPC.billing.update, (_event, input: unknown) => {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('billing:update 参数非法');
+    }
+    const draft = input as Record<string, unknown>;
+    const allowed = new Set(['pricingMode', 'displayCurrency', 'usdCnyRate']);
+    for (const key of Object.keys(draft)) {
+      if (!allowed.has(key)) throw new Error(`billing:update 未知字段 ${key}`);
+    }
+    // The service validates values (mode/currency whitelists, rate range); this
+    // layer only rejects shapes that are not a patch at all.
+    const stored = billingSettings.update(draft as BillingSettingsPatch);
+    broadcast(IPC.billing.changedEvent, stored);
+    return stored;
   });
 
   ipcMain.handle(IPC.comm.overview, () =>
@@ -1126,6 +1148,8 @@ export function registerIpc({
     if (commSignal) clearTimeout(commSignal);
     ipcMain.removeHandler(IPC.budget.overview);
     ipcMain.removeHandler(IPC.budget.setLimit);
+    ipcMain.removeHandler(IPC.billing.get);
+    ipcMain.removeHandler(IPC.billing.update);
     ipcMain.removeHandler(IPC.comm.overview);
     ipcMain.removeHandler(IPC.comm.wake);
     ipcMain.removeHandler(IPC.comm.dismissGuards);

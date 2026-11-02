@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { AgentCandidate, DepartmentNode, EmployeePackageRecord, Interview, JobNode, OrgMember } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
+import { useMoney } from '@/entities/billing/model/useBilling';
 import { Section } from '@/features/settings/ui/kit';
 import { buttonClass } from '@/features/settings/ui/kit';
 import { HireWizard } from '@/pages/org/HireWizard';
@@ -26,6 +27,7 @@ function CandidateInterview({
   onHired: () => void;
 }) {
   const { t } = useTranslation();
+  const money = useMoney();
   const [runs, setRuns] = useState<Interview[]>([]);
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -121,7 +123,7 @@ function CandidateInterview({
                 ) : null}
                 <span className="flex-1" />
                 <span className="font-mono text-ink-quaternary">
-                  {latest.tokensUsed.toLocaleString()} tok · ${latest.costUsd.toFixed(4)}
+                  {latest.tokensUsed.toLocaleString()} tok · {money(latest.costUsd, { digits: 4 })}
                   {latest.durationMs !== undefined ? ` · ${(latest.durationMs / 1000).toFixed(1)}s` : ''}
                 </span>
               </div>

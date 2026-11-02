@@ -6,7 +6,6 @@ import {
   columnOf,
   completionOf,
   isOverdue,
-  milestoneSummaryOf,
   needsAttention,
   statsOf,
 } from './projectBoard';
@@ -126,44 +125,5 @@ describe('artifactTotalsOf', () => {
       }),
     ]);
     expect(totals).toEqual({ count: 3, bytes: 350 });
-  });
-});
-
-describe('milestoneSummaryOf', () => {
-  it('counts finished and overdue checkpoints separately', () => {
-    const summary = milestoneSummaryOf(
-      [
-        { title: '内测', done: true, dueAt: NG - 10_000 },
-        { title: '公测', done: false, dueAt: NG - 1 },
-        { title: '发布', done: false, dueAt: NG + 86_400_000 },
-      ],
-      NG,
-    );
-    expect(summary).toMatchObject({ done: 1, total: 3, overdue: 1 });
-  });
-
-  it('picks the earliest unfinished milestone, not the array order', () => {
-    const summary = milestoneSummaryOf(
-      [
-        { title: '发布', done: false, dueAt: NG + 20_000 },
-        { title: '公测', done: false, dueAt: NG + 1 },
-        { title: '内测', done: true, dueAt: NG },
-      ],
-      NG,
-    );
-    expect(summary.next?.title).toBe('公测');
-  });
-
-  it('prefers a dated milestone over an undated one', () => {
-    const summary = milestoneSummaryOf(
-      [
-        { title: '待定', done: false },
-        { title: '公测', done: false, dueAt: NG + 1 },
-      ],
-      NG,
-    );
-    expect(summary.next?.title).toBe('公测');
-    expect(milestoneSummaryOf([{ title: '待定', done: false }], NG).next?.title).toBe('待定');
-    expect(milestoneSummaryOf([], NG).next).toBeUndefined();
   });
 });

@@ -64,7 +64,6 @@ export function ProjectDossier({
   const percent = Math.round(completionOf(stats) * 100);
   const budgetRatio = budget && budget.limitTokens > 0 ? budget.usedTokens / budget.limitTokens : 0;
   const archived = project.status === 'archived';
-  const owner = project.members.find((member) => member.employeeId === project.ownerEmployeeId);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -180,83 +179,6 @@ export function ProjectDossier({
           ) : null}
         </Vital>
       </div>
-
-      {/* Milestones: the project's own definition of done, between the numbers and the work. */}
-      <section className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-7 py-2.5">
-        <h3 className="shrink-0 text-2xs font-semibold tracking-[0.12em] text-ink-tertiary">
-          {t('projects.milestonesTitle')}
-        </h3>
-        <span className="shrink-0 font-mono text-3xs text-ink-quaternary">
-          {t('projects.milestonesProgress', { done: milestones.done, total: milestones.total })}
-        </span>
-
-        {project.milestones.length === 0 ? (
-          <span className="min-w-0 flex-1 truncate text-3xs text-ink-quaternary">
-            {t('projects.milestonesEmpty')}
-          </span>
-        ) : (
-          <ol
-            data-testid="project-milestones"
-            className="flex min-w-0 flex-1 items-center gap-x-4 overflow-x-auto"
-          >
-            {project.milestones.map((milestone) => {
-              const overdue =
-                !milestone.done && milestone.dueAt !== undefined && milestone.dueAt < Date.now();
-              return (
-                <li
-                  key={milestone.id}
-                  data-testid="project-milestone"
-                  title={milestone.title}
-                  className="flex shrink-0 items-center gap-1.5"
-                >
-                  {milestone.done ? (
-                    <Check className="size-3 shrink-0 text-success" />
-                  ) : (
-                    <span
-                      aria-hidden
-                      className={cn(
-                        'size-1.5 shrink-0 rounded-full',
-                        overdue ? 'bg-danger' : 'bg-line-strong',
-                      )}
-                    />
-                  )}
-                  <span
-                    className={cn(
-                      'max-w-[12rem] truncate text-2xs',
-                      milestone.done
-                        ? 'text-ink-quaternary line-through'
-                        : 'text-ink-secondary',
-                    )}
-                  >
-                    {milestone.title}
-                  </span>
-                  {milestone.dueAt !== undefined ? (
-                    <span
-                      className={cn(
-                        'shrink-0 font-mono text-3xs',
-                        overdue ? 'text-danger' : 'text-ink-quaternary',
-                      )}
-                    >
-                      {new Date(milestone.dueAt).toLocaleDateString()}
-                    </span>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ol>
-        )}
-
-        {archived ? null : (
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="ml-auto flex shrink-0 items-center gap-1 text-3xs text-ink-quaternary transition-colors hover:text-accent"
-          >
-            {t('projects.manageMilestones')}
-            <ArrowRight className="size-3" />
-          </button>
-        )}
-      </section>
 
       {/* Board: the page's body. A list of eight rows hid the shape of the work. */}
       <section className="shrink-0 px-7 py-5">

@@ -3,6 +3,8 @@ import type {
   Budget,
   BudgetScope,
   BudgetState,
+  BillingSettings,
+  BillingSettingsPatch,
   Conversation,
   Department,
   CreateTaskInput,
@@ -192,6 +194,11 @@ export const IPC = {
     setLimit: 'budget:setLimit',
     payroll: 'budget:payroll',
     costCenters: 'budget:costCenters',
+  },
+  billing: {
+    get: 'billing:get',
+    update: 'billing:update',
+    changedEvent: 'billing:changed',
   },
   comm: {
     overview: 'comm:overview',
@@ -1005,6 +1012,18 @@ export interface CompanyBridge {
 }
 
 /**
+ * Settings → 通用 → 计费: pricing policy + how money is shown.
+ *
+ * The ledger is USD-only. `usdCnyRate` is a manual planning rate applied at render
+ * time, so changing it never rewrites history.
+ */
+export interface BillingBridge {
+  get(): Promise<BillingSettings>;
+  update(patch: BillingSettingsPatch): Promise<BillingSettings>;
+  onChanged(listener: (settings: BillingSettings) => void): () => void;
+}
+
+/**
  * Outgoing network configuration. Saving applies immediately: main-process
  * `fetch`, Chromium's network stack and spawned child processes all switch at
  * once, and the stored config is re-applied on the next launch.
@@ -1088,6 +1107,7 @@ export interface OpcBridge {
   memory: MemoryBridge;
   market: MarketBridge;
   budget: BudgetBridge;
+  billing: BillingBridge;
   comm: CommBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { WorkTask as WorkTaskModel } from '@opc/shared/domain';
 import type { TaskStatus, WorkTask } from '../model/types';
 import { getWorkTransport } from '@/shared/api/workTransport';
+import { useMoney } from '@/entities/billing/model/useBilling';
 
 const STATUS_STYLE: Record<TaskStatus, string> = {
   open: 'bg-ink/5 text-ink-tertiary',
@@ -21,6 +22,7 @@ const STATUS_STYLE: Record<TaskStatus, string> = {
  */
 export function TaskCard({ task }: { task: WorkTask }) {
   const { t } = useTranslation();
+  const money = useMoney();
   const [decided, setDecided] = useState<WorkTaskModel | null>(null);
   const current = decided ?? task;
   const decide = async (decision: 'approve' | 'reject') => {
@@ -49,7 +51,7 @@ export function TaskCard({ task }: { task: WorkTask }) {
             {t('task.assignee')}：{task.assigneeName} · {t('task.estTokens', { tokens: task.estTokens })}
             {task.attempts > 1 ? ` · ${t('task.attempts', { count: task.attempts })}` : ''}
             {task.tokensUsed > 0 ? ` · ${t('task.tokensUsed', { tokens: task.tokensUsed.toLocaleString() })}` : ''}
-            {task.costUsd > 0 ? ` · $${task.costUsd.toFixed(4)}` : ''}
+            {task.costUsd > 0 ? ` · ${money(task.costUsd, { digits: 4 })}` : ''}
           </p>
         </div>
       </header>

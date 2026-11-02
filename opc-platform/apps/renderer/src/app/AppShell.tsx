@@ -1,5 +1,6 @@
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useCompanySync } from '@/entities/company/model/useCompany';
+import { useBillingSync } from '@/entities/billing/model/useBilling';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
 import { BackgroundLayer } from '@/shared/ui/BackgroundLayer';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
@@ -18,6 +19,7 @@ import { TitleBar } from '@/widgets/title-bar/TitleBar';
 export function AppShell() {
   const navigate = useNavigate();
   useCompanySync();
+  useBillingSync();
   const { conversations } = useChatRuntime();
   const background = useUiPrefs((state) => state.background);
 

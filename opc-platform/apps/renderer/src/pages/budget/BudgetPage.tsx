@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { BudgetOverview, BudgetView, CostCentersOverview, PayrollOverview } from '@opc/shared/ipc';
 import { Donut, Gauge, RankedBars } from '@/shared/ui/charts';
 import { PageHeader, Section } from '@/features/settings/ui/kit';
+import { useMoney } from '@/entities/billing/model/useBilling';
 import { cn } from '@/shared/lib/cn';
 
 /** 展示顺序：钱最先被决策的维度排在最前（§8.1）。 */
@@ -35,7 +36,7 @@ function PayrollSection({ periodKey }: { periodKey: string }) {
   }, [periodKey]);
 
   const lines = view?.lines ?? [];
-  const money = (value: number) => `$${value.toFixed(2)}`;
+  const money = useMoney();
 
   return (
     <Section
@@ -128,7 +129,7 @@ function CostCentersSection({ periodKey }: { periodKey: string }) {
     };
   }, [periodKey]);
 
-  const money = (value: number) => `$${value.toFixed(2)}`;
+  const money = useMoney();
   const lines = axis === 'department' ? (view?.departments ?? []) : (view?.projects ?? []);
   const unattributed =
     axis === 'department' ? (view?.unattributedDepartmentUsd ?? 0) : (view?.unattributedProjectUsd ?? 0);

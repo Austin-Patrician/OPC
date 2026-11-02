@@ -295,15 +295,6 @@ export function ProjectsPage() {
           onSetReportsTo={(employeeId, managerId) =>
             run(() => window.opc!.projects.setReportsTo(project.id, employeeId, managerId))
           }
-          onAddMilestone={(title, dueAt) =>
-            run(() => window.opc!.projects.addMilestone(project.id, { title, dueAt }))
-          }
-          onUpdateMilestone={(milestoneId, patch) =>
-            run(() => window.opc!.projects.updateMilestone(milestoneId, patch))
-          }
-          onRemoveMilestone={(milestoneId) =>
-            run(() => window.opc!.projects.removeMilestone(milestoneId))
-          }
           onArchive={async () => {
             await run(() => window.opc!.projects.archive(project.id));
             setSettingsOpen(false);

@@ -24,6 +24,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useMoney } from '@/entities/billing/model/useBilling';
 import type {
   DepartmentEditInput,
   DepartmentNode,
@@ -1295,6 +1296,7 @@ function BoardView({
   activeMemberId: string;
 }) {
   const { t } = useTranslation();
+  const money = useMoney();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [overDeptId, setOverDeptId] = useState<string | null>(null);
@@ -1412,7 +1414,7 @@ function BoardView({
                     {lead ? `${t('org.head')} ${lead.name}` : t('org.headVacant')}
                   </span>
                   <span className="shrink-0">·</span>
-                  <span className="shrink-0 font-mono text-success">${spend.toFixed(2)}/d</span>
+                  <span className="shrink-0 font-mono text-success">{money(spend)}/d</span>
                   {outOfScope ? (
                     <span className="shrink-0 rounded bg-surface px-1 text-3xs">{t('org.outOfScope')}</span>
                   ) : null}
@@ -1494,7 +1496,7 @@ function BoardView({
                     <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-line pt-2.5">
                       <MemberStatus member={member} />
                       <span className="truncate text-2xs text-ink-quaternary">
-                        <span className="font-mono text-success">${member.costTodayUsd.toFixed(2)}</span>
+                        <span className="font-mono text-success">{money(member.costTodayUsd)}</span>
                         {' · '}
                         {member.tasksDone} {t('org.ordersShort')}
                       </span>
@@ -1722,6 +1724,7 @@ function DepartmentSummary({
   onAppointActingHead: (employeeId: string | null) => void;
 }) {
   const { t } = useTranslation();
+  const money = useMoney();
   if (!department) return <p className="text-sm text-ink-tertiary">{t('org.pickDepartment')}</p>;
 
   const lead = department.members.find((member) => member.isHead);
@@ -1768,7 +1771,7 @@ function DepartmentSummary({
         <div className="grid grid-cols-2 gap-2">
           <StatTile label={t('org.people')} value={`${department.members.length}`} />
           <StatTile label={t('org.legendWorking')} value={String(working)} accent="text-accent" />
-          <StatTile label={t('org.dailyCost')} value={`$${spend.toFixed(2)}`} accent="text-success" />
+          <StatTile label={t('org.dailyCost')} value={money(spend)} accent="text-success" />
           <StatTile label={t('org.tasksDone')} value={`${done} ${t('org.ordersShort')}`} />
         </div>
       </DossierSection>
@@ -2318,6 +2321,7 @@ function MemberDetail({
   onOpenDeptGroup: (departmentId: string) => void;
 }) {
   const { t } = useTranslation();
+  const money = useMoney();
   const fileInput = useRef<HTMLInputElement>(null);
   const [confirming, setConfirming] = useState(false);
   const department = departments.find((node) => node.id === member.departmentId);
@@ -2459,7 +2463,7 @@ function MemberDetail({
       <DossierSection title={t('org.service')}>
         <div className="grid grid-cols-[1fr_1fr_1.25fr] gap-2">
           <StatTile label={t('org.tasksDone')} value={`${member.tasksDone} ${t('org.ordersShort')}`} />
-          <StatTile label={t('org.dailyCost')} value={`$${member.costTodayUsd.toFixed(2)}`} accent="text-success" />
+          <StatTile label={t('org.dailyCost')} value={money(member.costTodayUsd)} accent="text-success" />
           <StatTile label={t('org.hiredAt')} value={new Date(member.hiredAt || Date.now()).toLocaleDateString()} />
         </div>
         {member.terminatedAt ? (

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { AboutPage } from './pages/AboutPage';
 import { AppearancePage } from './pages/AppearancePage';
 import { CompanyPage } from './pages/CompanyPage';
+import { BillingPage } from './pages/BillingPage';
 import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
 import { DecisionPage } from './pages/DecisionPage';
@@ -18,6 +19,7 @@ import { cn } from '@/shared/lib/cn';
 const PAGE_IDS = [
   'appearance',
   'company',
+  'billing',
   'compaction',
   'runtime',
   'llm',
@@ -67,6 +69,7 @@ export function SettingsShell() {
       pages: [
         { id: 'appearance', label: t('settings.page.appearance') },
         { id: 'company', label: t('settings.page.company') },
+        { id: 'billing', label: t('settings.page.billing') },
         { id: 'compaction', label: t('settings.page.compaction') },
         { id: 'runtime', label: t('settings.page.runtime') },
       ],
@@ -118,6 +121,8 @@ export function SettingsShell() {
         return <AppearancePage />;
       case 'company':
         return <CompanyPage />;
+      case 'billing':
+        return <BillingPage />;
       case 'compaction':
         return <CompactionPage />;
       case 'runtime':
