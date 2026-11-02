@@ -11,7 +11,7 @@ import { SessionList } from '@/widgets/session-list/SessionList';
 export function ChatPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const { conversations, agents, departments, typingByConversation, sendMessage, markRead, updateAgentBrief } =
+  const { conversations, agents, typingByConversation, sendMessage, markRead, updateAgentBrief } =
     useChatRuntime();
   const { createTask, budgetFor } = useWorkRuntime();
   const [dispatchOpen, setDispatchOpen] = useState(false);
@@ -78,7 +78,6 @@ export function ChatPage() {
       <ChatPanel
         conversation={active}
         agents={agents}
-        departments={departments}
         typingNames={typingByConversation[active.id] ?? []}
         onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
         onUpdateBrief={updateAgentBrief}

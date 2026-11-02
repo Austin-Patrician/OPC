@@ -3,26 +3,26 @@ import { Briefcase, FileText, UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
 import type { Budget } from '@opc/shared/domain';
-import type { Conversation, Department } from '@/entities/conversation/model/types';
+import type { Conversation } from '@/entities/conversation/model/types';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 
 interface AgentDossierDrawerProps {
   conversation: Conversation;
   members: readonly Agent[];
-  department?: Department;
   onClose: () => void;
   onUpdateBrief: (agentId: string, briefMd: string) => void;
   budgetFor?: (employeeId: string) => Budget | undefined;
 }
 
 /**
- * 290px right drawer: department context, in-conversation roster, and the
- * per-agent `brief.md` that agents actually read before working.
+ * 右侧 290px 抽屉：这次对话里有哪些执行体、用什么模型、花了多少，以及
+ * 他们各自的工作说明（`brief.md`，执行前真的会读）。
+ *
+ * 这里曾经还有一块「部门」——部门在 B2 就删了，块里永远是空白，所以也拿掉了。
  */
 export function AgentDossierDrawer({
   conversation,
   members,
-  department,
   onClose,
   onUpdateBrief,
   budgetFor,
@@ -48,23 +48,6 @@ export function AgentDossierDrawer({
       </div>
 
       <div className="space-y-4 p-4">
-        {department ? (
-          <div className="rounded-xl border border-line bg-surface p-3 shadow-card">
-            <div className="mb-1 flex items-center justify-between">
-              <span className="font-mono text-xs text-ink-tertiary">{department.code}</span>
-              <span
-                aria-hidden
-                className="size-2 rounded-full"
-                style={{ backgroundColor: department.color }}
-              />
-            </div>
-            <div className="text-base-plus font-semibold text-ink">{department.name}</div>
-            <p className="mt-1 text-xs-plus leading-relaxed text-ink-tertiary">
-              {department.description}
-            </p>
-          </div>
-        ) : null}
-
         <div>
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-semibold text-ink-secondary">
@@ -94,9 +77,6 @@ export function AgentDossierDrawer({
                       <div className="flex items-center gap-1.5">
                         <span className="truncate text-base font-semibold text-ink">
                           {agent.name}
-                        </span>
-                        <span className="rounded bg-accent/10 px-1.5 py-px font-mono text-3xs font-semibold text-accent-ink">
-                          {agent.level}
                         </span>
                       </div>
                       <div className="truncate text-xs text-ink-tertiary">{agent.role}</div>
