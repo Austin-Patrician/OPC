@@ -82,3 +82,39 @@ pending events
 - `Router` 尚未接进 `index.ts` 的启动流程：它现在只有测试在驱动。接入放在 B3 末尾（有真实 dispatch 之后）。
 - `event` 的生产者一个都没有：v1 只打算接 `folder` + `.ics`，见审计 §9。
 - `attention_quota` 只是概念，表还没建。
+
+---
+
+## 6. B3-1 已落地，以及一个必须先拍板的发现
+
+**B3-1（`9b80b24`）**：`task.thread_id`（V26）。任务能属于一条工作线，`decompose`
+的子任务继承父任务的 thread。执行身份**没动**——`employee_id` 仍是执行者。
+
+### 发现：harness 不能按 thread 开库
+
+下一步本该是"运行时身份从 employee 换成 thread"（`agents/thread-<id>.sqlite`）。
+但 `WorkService.harnessFor(key)` 在**开库那一刻**就把工具注册表和模型烤进去了
+（`buildRegistry(employeeId)`）。而 `decompose` 允许一条线程下有多个执行者。
+
+于是：
+
+```
+线程 T 有任务 A（李雷）和任务 B（韩梅梅）
+harness 按 thread 开 → 谁先跑，谁的工具和模型就被缓存下来
+                     → 另一个人拿着别人的工具跑自己的活
+```
+
+这不是可以忽略的边角：它会让"跑错了工具"变成静默错误。
+
+### 两条路，需要选一条
+
+| | 规则 | 代价 |
+|---|---|---|
+| **A**（推荐） | **harness key = worker id**。一条线程有 1..N 个 worker，各开各的库 | 要先把 `worker` 行建出来并让 `employee` 与 worker 一一对应，B3-2 会大一些 |
+| B | 一条线程只允许一个 worker，拆解改由该 worker 内部串行完成 | 组织协作能力回退，层级派活（F4）等于废掉 |
+
+选 A 的理由：它同时是"助手模型"的自然形状——一条工作线由一个执行体负责，
+它有自己的上下文；线程的记忆 = 它的 worker 运行轨迹 + 汇报 + 任务，通过
+`thread_id` 聚合，而不是把不同人的轨迹塞进一个库。
+
+**在选之前不做 B3-2**，因为 B 会让 `decompose`/层级派活的设计作废。
