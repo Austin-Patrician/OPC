@@ -103,8 +103,6 @@ const bridge: OpcBridge = {
     sendMessage: (input: SendMessageInput) => ipcRenderer.invoke(IPC.chat.sendMessage, input),
     markRead: (conversationId: string) => ipcRenderer.invoke(IPC.chat.markRead, conversationId),
     openDirect: (agentId: string) => ipcRenderer.invoke(IPC.chat.openDirect, agentId) as Promise<string>,
-    ensureDepartmentGroup: (departmentId: string) =>
-      ipcRenderer.invoke(IPC.chat.ensureDepartmentGroup, departmentId) as Promise<string>,
     archive: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.archive, conversationId) as Promise<{ archived: boolean; written: number }>,
     restore: (conversationId: string) =>

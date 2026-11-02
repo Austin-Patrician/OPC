@@ -327,11 +327,6 @@ export function registerIpc({
     const member = org.list().flatMap((department) => department.members).find((item) => item.id === agentId);
     return chat.openDirect(agentId, member?.name);
   });
-  ipcMain.handle(IPC.chat.ensureDepartmentGroup, (_event, departmentId: unknown) => {
-    if (typeof departmentId !== 'string') throw new Error('chat:ensureDepartmentGroup 参数非法');
-    const department = org.list().find((item) => item.id === departmentId);
-    return chat.ensureDepartmentGroup(departmentId, department?.name);
-  });
   ipcMain.handle(IPC.chat.archive, (_event, conversationId: unknown) => {
     if (typeof conversationId !== 'string') throw new Error('chat:archive 参数非法');
     return chat.archiveConversation(conversationId);
@@ -856,7 +851,6 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.openDirect);
     ipcMain.removeHandler(IPC.chat.archive);
     ipcMain.removeHandler(IPC.chat.restore);
-    ipcMain.removeHandler(IPC.chat.ensureDepartmentGroup);
     ipcMain.removeHandler(IPC.chat.updateAgentBrief);
   };
 }

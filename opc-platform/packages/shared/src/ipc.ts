@@ -58,7 +58,6 @@ export const IPC = {
     openDirect: 'chat:openDirect',
     archive: 'chat:archive',
     restore: 'chat:restore',
-    ensureDepartmentGroup: 'chat:ensureDepartmentGroup',
     updateAgentBrief: 'chat:updateAgentBrief',
     snapshotEvent: 'chat:snapshot',
   },
@@ -260,8 +259,6 @@ export interface ChatBridge {
   updateAgentBrief(agentId: string, briefMd: string): Promise<void>;
   /** 1v1 with an employee; creates the conversation on first use. */
   openDirect(agentId: string): Promise<string>;
-  /** Department group chat; creates it with the current roster on first use. */
-  ensureDepartmentGroup(departmentId: string): Promise<string>;
   /** Archives a conversation and consolidates it once (idempotent). */
   archive(conversationId: string): Promise<{ archived: boolean; written: number }>;
   /** Moves an archived conversation back into the active list. */

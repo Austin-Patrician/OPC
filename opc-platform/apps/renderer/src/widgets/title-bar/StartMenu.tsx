@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ChevronRight, Loader2, MessageSquare, Plus, Users } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Loader2, MessageSquare, Plus } from 'lucide-react';
 import type { DepartmentNode } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 
-type Step = 'menu' | 'direct' | 'group';
+type Step = 'menu' | 'direct';
 
 /**
  * The `+` next to the boss avatar: the one place that starts new work.
@@ -77,32 +77,10 @@ export function StartMenu() {
     }
   };
 
-  const startGroup = async (departmentId: string) => {
-    if (busyId) return;
-    setBusyId(departmentId);
-    try {
-      const conversationId = await window.opc!.chat.ensureDepartmentGroup(departmentId);
-      setOpen(false);
-      navigate(`/chat/${conversationId}`);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   const members = (departments ?? [])
     .flatMap((department) => department.members)
     .filter((member) => member.status === 'active')
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
-  const groups = (departments ?? [])
-    .map((department) => ({
-      department,
-      active: department.members.filter((member) => member.status === 'active').length,
-    }))
-    .filter((entry) => entry.active > 0)
-    .sort((a, b) => a.department.name.localeCompare(b.department.name, 'zh-Hans-CN'));
-
   const loading = departments === null && !error;
 
   const entryClass =
@@ -156,24 +134,6 @@ export function StartMenu() {
                 <ChevronRight className="size-3.5 shrink-0 text-ink-quaternary" aria-hidden />
               </button>
 
-              <button
-                type="button"
-                role="menuitem"
-                data-testid="start-group"
-                onClick={() => setStep('group')}
-                className={entryClass}
-              >
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-surface-muted text-ink-secondary">
-                  <Users className="size-3.5" aria-hidden />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-xs font-medium text-ink">{t('titleBar.startGroup')}</span>
-                  <span className="block truncate text-3xs text-ink-quaternary">
-                    {t('titleBar.startGroupHint')}
-                  </span>
-                </span>
-                <ChevronRight className="size-3.5 shrink-0 text-ink-quaternary" aria-hidden />
-              </button>
             </div>
           ) : (
             <>
@@ -187,7 +147,7 @@ export function StartMenu() {
                   <ArrowLeft className="size-3.5" aria-hidden />
                 </button>
                 <span className="text-2xs font-medium text-ink-secondary">
-                  {step === 'direct' ? t('titleBar.pickAgent') : t('titleBar.pickDepartment')}
+                  {t('titleBar.pickAgent')}
                 </span>
               </div>
 
@@ -197,8 +157,7 @@ export function StartMenu() {
                     <Loader2 className="size-3 animate-spin" aria-hidden />
                     {t('common.loading')}
                   </p>
-                ) : step === 'direct' ? (
-                  members.length === 0 ? (
+                ) : members.length === 0 ? (
                     <p className="px-2 py-2 text-3xs text-ink-quaternary">{t('titleBar.startNoAgents')}</p>
                   ) : (
                     members.map((member) => (
@@ -222,31 +181,6 @@ export function StartMenu() {
                         ) : null}
                       </button>
                     ))
-                  )
-                ) : groups.length === 0 ? (
-                  <p className="px-2 py-2 text-3xs text-ink-quaternary">{t('titleBar.startNoDepartments')}</p>
-                ) : (
-                  groups.map(({ department, active }) => (
-                    <button
-                      key={department.id}
-                      type="button"
-                      data-testid="start-group-option"
-                      disabled={busyId !== null}
-                      onClick={() => void startGroup(department.id)}
-                      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-hover disabled:opacity-60"
-                    >
-                      <span
-                        aria-hidden
-                        className="size-2 shrink-0 rounded-[3px]"
-                        style={{ background: department.color }}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-xs text-ink">{department.name}</span>
-                      <span className="font-mono text-3xs text-ink-quaternary">{active}</span>
-                      {busyId === department.id ? (
-                        <Loader2 className="size-3 animate-spin text-ink-tertiary" aria-hidden />
-                      ) : null}
-                    </button>
-                  ))
                 )}
               </div>
             </>

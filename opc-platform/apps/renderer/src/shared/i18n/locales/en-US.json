@@ -35,13 +35,9 @@
     "start": "New",
     "startDirect": "Start a chat",
     "startDirectHint": "Talk to one agent 1:1",
-    "startGroup": "Start a group chat",
-    "startGroupHint": "Group a department's current roster",
     "pickAgent": "Pick an agent",
-    "pickDepartment": "Pick a department",
     "startBack": "Back",
     "startNoAgents": "No agents on staff yet",
-    "startNoDepartments": "No department has staff yet",
     "fields": {
       "name": "Name",
       "company": "Company",

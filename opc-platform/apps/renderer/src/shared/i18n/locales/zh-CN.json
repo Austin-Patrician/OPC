@@ -35,13 +35,9 @@
     "start": "新建",
     "startDirect": "开启对话",
     "startDirectHint": "与一位 Agent 1 对 1 沟通",
-    "startGroup": "开启群聊",
-    "startGroupHint": "按部门建群，成员为当前在岗",
     "pickAgent": "选择一位 Agent",
-    "pickDepartment": "选择部门",
     "startBack": "返回",
     "startNoAgents": "还没有在岗的 Agent",
-    "startNoDepartments": "还没有可建群的部门",
     "fields": {
       "name": "名称",
       "company": "所属公司",
