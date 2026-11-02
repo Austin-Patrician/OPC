@@ -17,9 +17,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAppInfo } from '../appInfo';
 import type { ChatService } from '../chat/chatService';
-import type { CommService } from '../comm/commService';
-import type { ManualWakeResult } from '../comm/scheduler';
-import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
 import type { OcrSettings } from '@opc/shared/ocr';
 import type { OrgFactService } from '../memory/orgFactService';
@@ -68,10 +65,6 @@ interface RegisterOptions {
   startGoal: (goal: string) => Promise<WorkThread>;
   facts: OrgFactService;
   consolidationRuns: ConsolidationRunStore;
-  comm: CommService;
-  /** 薪酬视图：预算账本 → 每个人的本月花费。 */
-  /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
-  wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
   /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
@@ -92,14 +85,12 @@ export function registerIpc({
   startGoal,
   facts,
   consolidationRuns,
-  comm,
   company,
   network,
   runtime,
   bundled,
   ocrSettings,
   billingSettings,
-  wakeEmployee,
   piExtensions,
   piSkills,
 }: RegisterOptions): () => void {
@@ -146,20 +137,6 @@ export function registerIpc({
     }
   });
 
-  // The notification view re-reads the overview itself; the event only says "it moved".
-  // Coalesced, because one inbox run completes several items in a row.
-  let commSignal: ReturnType<typeof setTimeout> | null = null;
-  const unsubscribeComm = comm.subscribe(() => {
-    if (commSignal) return;
-    commSignal = setTimeout(() => {
-      commSignal = null;
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send(IPC.comm.overviewEvent, null);
-      }
-    }, 150);
-    commSignal.unref?.();
-  });
-
   ipcMain.handle(IPC.billing.get, () => billingSettings.get());
   ipcMain.handle(IPC.billing.update, (_event, input: unknown) => {
     if (input === null || typeof input !== 'object' || Array.isArray(input)) {
@@ -175,26 +152,6 @@ export function registerIpc({
     const stored = billingSettings.update(draft as BillingSettingsPatch);
     broadcast(IPC.billing.changedEvent, stored);
     return stored;
-  });
-
-  ipcMain.handle(IPC.comm.overview, () =>
-    buildCommOverview({
-      comm,
-      org,
-      readTranscript: (conversationId) => chat.readTranscript(conversationId),
-    }),
-  );
-
-  ipcMain.handle(IPC.comm.wake, (_event, employeeId: unknown) => {
-    if (typeof employeeId !== 'string') throw new Error('comm:wake 参数非法');
-    return wakeEmployee(employeeId);
-  });
-
-  ipcMain.handle(IPC.comm.dismissGuards, (_event, ids: unknown) => {
-    if (ids !== undefined && !(Array.isArray(ids) && ids.every((id) => typeof id === 'string'))) {
-      throw new Error('comm:dismissGuards 参数非法');
-    }
-    return comm.dismissGuards(ids as string[] | undefined);
   });
 
   ipcMain.handle(IPC.app.getInfo, () => getAppInfo());
@@ -708,13 +665,8 @@ export function registerIpc({
     for (const channel of Object.values(IPC.models)) ipcMain.removeHandler(channel);
     for (const channel of Object.values(IPC.runtime)) ipcMain.removeHandler(channel);
     unsubscribeWork();
-    unsubscribeComm();
-    if (commSignal) clearTimeout(commSignal);
     ipcMain.removeHandler(IPC.billing.get);
     ipcMain.removeHandler(IPC.billing.update);
-    ipcMain.removeHandler(IPC.comm.overview);
-    ipcMain.removeHandler(IPC.comm.wake);
-    ipcMain.removeHandler(IPC.comm.dismissGuards);
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);
     ipcMain.removeHandler(IPC.work.setIssueMeta);

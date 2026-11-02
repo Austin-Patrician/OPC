@@ -1,8 +1,6 @@
 import {
   IPC,
   type AuthPromptRequest,
-  type CommOverview,
-  type CommWakeResult,
   type ChatSnapshot,
   type OpcBridge,
   type SendMessageInput,
@@ -129,20 +127,6 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.billing.changedEvent, handler);
       return () => {
         ipcRenderer.off(IPC.billing.changedEvent, handler);
-      };
-    },
-  },
-  comm: {
-    overview: () => ipcRenderer.invoke(IPC.comm.overview) as Promise<CommOverview>,
-    wake: (employeeId: string) =>
-      ipcRenderer.invoke(IPC.comm.wake, employeeId) as Promise<CommWakeResult>,
-    dismissGuards: (ids?: string[]) =>
-      ipcRenderer.invoke(IPC.comm.dismissGuards, ids) as Promise<number>,
-    onOverviewChanged: (listener: () => void) => {
-      const handler = () => listener();
-      ipcRenderer.on(IPC.comm.overviewEvent, handler);
-      return () => {
-        ipcRenderer.off(IPC.comm.overviewEvent, handler);
       };
     },
   },

@@ -1,7 +1,6 @@
 import {
   Inbox,
   Grid3x3,
-  Mail,
   Menu,
   MessageSquare,
   SquareKanban,
@@ -18,7 +17,6 @@ const PRIMARY_NAV = [
 ] as const;
 
 const SECONDARY_NAV = [
-  { to: '/notifications', icon: Mail, labelKey: 'nav.mail', dot: true },
   { to: '/settings', icon: Menu, labelKey: 'nav.menu' },
 ] as const;
 

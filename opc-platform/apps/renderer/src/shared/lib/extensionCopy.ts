@@ -13,7 +13,6 @@ export const EXTENSION_KEY: Record<string, string> = {
   'opc.decision': 'decision',
   'opc.ocr': 'ocr',
   'opc.memory': 'memory',
-  'opc.comm': 'comm',
   'opc.decompose': 'decompose',
   'opc.skills': 'skills',
 };

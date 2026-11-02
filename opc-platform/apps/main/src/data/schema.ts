@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1351,7 +1351,31 @@ CREATE TABLE event (
 CREATE INDEX IF NOT EXISTS idx_event_triage ON event(triage, created_at);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28];
+/**
+ * V29：两个子系统整体删除之后，它们的表也该走了。
+ *
+ * - **通讯层**（`inbox_item` / `wake_quota` / `guard_event`）：员工之间互相发消息、
+ *   唤醒配额、护栏。v2 里没有"同事"，群建不出来，这套东西唯一的作用是在每次启动时
+ *   被打开一遍。
+ * - **预算**（`budget*` 四张）：限额 + 预留 + 硬停整套删掉了，只剩计费口径
+ *   （定价、币种），那部分不落这些表。
+ *
+ * 迁移是只增不改的，所以这里用 DROP 而不是回头改 V2 / V8：新装建出来再删一次，
+ * 老装的表消失。两个方向结果一样。
+ *
+ * `relationship` / `job` / `position` 等员工簇的表还没走：它们跟 employee 一起删。
+ */
+const V29 = `
+DROP TABLE IF EXISTS inbox_item;
+DROP TABLE IF EXISTS wake_quota;
+DROP TABLE IF EXISTS guard_event;
+DROP TABLE IF EXISTS budget_ledger;
+DROP TABLE IF EXISTS budget_reservation;
+DROP TABLE IF EXISTS budget_alert;
+DROP TABLE IF EXISTS budget;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

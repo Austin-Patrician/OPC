@@ -8,7 +8,6 @@ import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { IssueListPage } from '@/pages/issues/IssueListPage';
-import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 
 /**
@@ -31,7 +30,6 @@ export function App() {
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="issues" element={<IssueListPage />} />
           <Route path="skills" element={<CapabilitiesPage />} />
-          <Route path="notifications" element={<NotificationsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

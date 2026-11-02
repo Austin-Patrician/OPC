@@ -77,15 +77,6 @@ export class ChatService {
    * 原来那条"挑一个 agent 用它的岗位人设回答"的路径就是 v1 的残留，删了。
    */
   onBossMessage?: (input: { conversationId: string; text: string }) => void;
-  /**
-   * Injected by bootstrap: §7.4 routing for group/channel messages.
-   * Absent (e.g. in a probe) keeps the inline reply path.
-   */
-  routeGroupMessage?: (input: {
-    conversationId: string;
-    messageId: string;
-    mentionIds?: readonly string[];
-  }) => void;
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private activeConversationId: string | null = null;
@@ -199,35 +190,6 @@ export class ChatService {
       memberIds: [agentId],
       messages: [],
       lastMessage: '还没有对话',
-      timestamp: formatClock(),
-    };
-    this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
-    return conversation.id;
-  };
-
-  /**
-   * The peer thread between two employees (F5). Distinct from `openDirect`, which
-   * is the boss's 1v1: this one carries both participants and no `primaryAgentId`,
-   * so the boss's own thread with either of them is untouched.
-   */
-  openPeerDirect = (fromAgentId: string, toAgentId: string): string => {
-    const pair = [fromAgentId, toAgentId].sort();
-    const existing = this.snapshot.conversations.find(
-      (conversation) =>
-        conversation.kind === 'dm' &&
-        conversation.memberIds.length === 2 &&
-        [...conversation.memberIds].sort().join() === pair.join(),
-    );
-    if (existing) return existing.id;
-
-    const nameOf = (id: string) => this.snapshot.agents.find((agent) => agent.id === id)?.name ?? id;
-    const conversation: Conversation = {
-      id: `dm-${pair.join('--')}`,
-      title: `${nameOf(pair[0] ?? '')} × ${nameOf(pair[1] ?? '')}`,
-      kind: 'dm',
-      memberIds: [...pair],
-      messages: [],
-      lastMessage: '同事之间开始对话',
       timestamp: formatClock(),
     };
     this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
@@ -362,63 +324,6 @@ export class ChatService {
     );
   };
 
-  /** Opens the department group chat, creating it with the current roster. */
-  ensureDepartmentGroup = (departmentId: string, displayName?: string): string => {
-    const existing = this.snapshot.conversations.find(
-      (conversation) => conversation.kind === 'group' && conversation.departmentId === departmentId,
-    );
-    if (existing) return existing.id;
-
-    const department = this.snapshot.departments.find((item) => item.id === departmentId);
-    const members = this.snapshot.agents
-      .filter((agent) => agent.departmentId === departmentId)
-      .map((agent) => agent.id);
-    const name = department?.name ?? displayName ?? departmentId;
-    const conversation: Conversation = {
-      id: `group-${departmentId}`,
-      title: `${name} · 部门群`,
-      kind: 'group',
-      departmentId,
-      memberIds: members,
-      messages: [],
-      lastMessage: `群聊已创建（${members.length} 名成员）`,
-      timestamp: formatClock(),
-    };
-    this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
-    return conversation.id;
-  };
-
-  /**
-   * Re-reads the org and re-derives everything that is a projection of it.
-   *
-   * The snapshot used to be built once at startup, which made the org chart and the
-   * IM side disagree the moment someone was hired or moved: a new employee never
-   * joined their department group until the app restarted. A department group's
-   * roster is a view of `position`, so it is recomputed here rather than stored.
-   */
-  syncOrg = (agents: Agent[], departments: ChatSnapshot['departments']): void => {
-    const roster = new Map<string, string[]>();
-    for (const agent of agents) {
-      const bucket = roster.get(agent.departmentId);
-      if (bucket) bucket.push(agent.id);
-      else roster.set(agent.departmentId, [agent.id]);
-    }
-
-    let changed = false;
-    const conversations = this.snapshot.conversations.map((conversation) => {
-      if (conversation.kind !== 'group' || !conversation.departmentId) return conversation;
-      const members = roster.get(conversation.departmentId) ?? [];
-      const before = conversation.memberIds;
-      if (before.length === members.length && before.every((id, index) => id === members[index])) {
-        return conversation;
-      }
-      changed = true;
-      return { ...conversation, memberIds: members };
-    });
-
-    this.commit({ agents, departments, ...(changed ? { conversations } : {}) });
-  };
-
   /** Runs consolidation for one conversation (no-op without a summariser). */
   consolidateConversation = async (conversationId: string): Promise<{ written: number; skipped?: string }> => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
@@ -535,14 +440,6 @@ export class ChatService {
     // §7.5: 老板介入即解除升级/冷却。The boss answering *is* the resolution.
     if (conversation.status && conversation.status !== 'open') {
       this.reopenConversation(conversation.id);
-    }
-
-    // §7.4: a group/channel message is routed by the comm layer — nobody @-ed means
-    // only the owner is woken, otherwise exactly the mentioned people. That path goes
-    // through the inbox and the heartbeat, so it must not *also* schedule a timer reply.
-    if (conversation.kind !== 'dm' && this.routeGroupMessage) {
-      this.routeGroupMessage({ conversationId, messageId, ...(mentionIds ? { mentionIds } : {}) });
-      return;
     }
 
     // 和 Router 说话：这不是"发给某个人"，是这条信道上的一个 Trigger。

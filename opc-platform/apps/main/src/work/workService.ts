@@ -49,8 +49,6 @@ import { createImageToolExtension } from './imageTool';
 import { createOcrToolExtension } from './ocrTool';
 import { createSpeechToolExtension } from './speechTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
-import { createCommToolExtension } from '../comm/commTools';
-import type { CommService } from '../comm/commService';
 import { setWorkTaskServices, WorkTaskDefinition } from './workTaskDefinition';
 import {
   EMPTY_TOOL_POLICY,
@@ -120,7 +118,6 @@ export interface WorkServiceDeps {
   memory?: MemoryService;
   facts?: OrgFactService;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
-  comm?: CommService;
   /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
   network?: NetworkClient;
   /** Company-wide base environment; absent = build one from `paths` + `network`. */
@@ -992,39 +989,6 @@ export class WorkService {
       slots.push({ name: 'opc.memory', essential: false, available: false, reason: 'memory-disabled' });
     }
 
-    // Everyone can talk to a colleague (F5); the tool spends the *other* person's
-    // wake quota, which is what stops a chatty agent from waking the whole company.
-    const comm = this.deps.comm;
-    if (comm) {
-      slots.push({
-        name: 'opc.comm',
-        essential: false,
-        available: true,
-        extension: createCommToolExtension({
-          employeeId: personId,
-          // 「同事」这个概念随员工一起消失。还在迁移期时按老办法列出来，
-          // 彻底没有员工之后这里就是空的——通讯工具仍然可用，只是没人可聊。
-          colleagues: () =>
-            subject.employeeId
-              ? (this.deps.org?.list().flatMap((department) => department.members) ?? [])
-                  .filter((member) => member.id !== personId && member.status === 'active')
-                  .map((member) => ({
-                    id: member.id,
-                    name: member.name,
-                    role: `${member.role} · ${member.level}`,
-                    reportsToMe: member.reportsToEmployeeId === personId,
-                    manager: member.id === this.reportingLineOf(personId),
-                  }))
-              : [],
-          sendDirectMessage: (input) => comm.sendDirectMessage(input),
-          ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
-          currentConversationId: () => comm.latestConversationId(personId),
-        }),
-      });
-    } else {
-      slots.push({ name: 'opc.comm', essential: false, available: false, reason: 'comm-disabled' });
-    }
-
     // 拆解的前提是"有人可派"。一个人干不了两个人的活，所以只有一个人时工具根本不装；
     // 有两三个人时，谁都可以把活交给别人——这里已经没有汇报线了。
     const assignable = subject.employeeId ? this.assignableTo(subject.employeeId) : [];
@@ -1252,10 +1216,6 @@ export class WorkService {
   };
 
 
-  /** Who this employee reports to inside the department (empty when it is the head). */  private reportingLineOf(employeeId: string): string | undefined {
-    const members = this.deps.org?.list().flatMap((department) => department.members) ?? [];
-    return members.find((member) => member.id === employeeId)?.reportsToEmployeeId;
-  }
 
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);

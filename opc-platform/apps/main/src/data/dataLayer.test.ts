@@ -62,8 +62,8 @@ describe('company.db', () => {
   });
 
   it('upgrades an existing database in place instead of wiping it', () => {
-    // Simulate a v1 install: the v2 tables do not exist yet and user_version says 1.
-    db.exec('DROP TABLE inbox_item; DROP TABLE wake_quota; DROP TABLE guard_event; DROP TABLE relationship;');
+    // Simulate an old install: newer tables do not exist yet and user_version says 1.
+    db.exec('DROP TABLE IF EXISTS subscription; DROP TABLE IF EXISTS relationship;');
     // A database from before v14 had no job table at all; the current one is global-
     // shaped, so dropping it is what "wind back" actually means here.
     db.exec('DROP TABLE IF EXISTS department_job; DROP TABLE IF EXISTS job;');
@@ -76,8 +76,8 @@ describe('company.db', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]
     ).map((row) => row.name);
 
-    expect(tables).toContain('inbox_item');
-    expect(tables).toContain('relationship');
+    expect(tables).toContain('subscription');
+    expect(tables).toContain('report');
     // The point of migrating rather than recreating: existing rows survive.
     expect(db.prepare("SELECT name FROM department WHERE id = 'dept-keep'").get()).toBeDefined();
     expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION);
