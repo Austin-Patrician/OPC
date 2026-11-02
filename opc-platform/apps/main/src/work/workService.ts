@@ -1,5 +1,6 @@
 import type {
   Agent,
+  TaskStatus,
   EmployeeToolPolicy,
   LinkType,
   Budget,
@@ -44,6 +45,7 @@ import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
+import { threadOutcomeFor } from './threadOutcome';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
@@ -154,6 +156,10 @@ export class WorkService {
   private readonly harnesses = new Map<string, EmployeeHarness>();
   /** Employees whose stack changed while a task was running; evicted when it ends. */
   private readonly dirtyHarnesses = new Set<string>();
+  /** Last status each task reported to its thread, so one outcome is not announced twice. */
+  private readonly reportedThreads = new Map<string, TaskStatus>();
+  /** Threads already warned about their ceiling; the warning is not a metronome. */
+  private readonly warnedThreads = new Set<string>();
   private readonly runtime: RuntimeService;
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
@@ -265,6 +271,10 @@ export class WorkService {
           const original = this.repository.getTask(task.reviewOfTaskId);
           if (original) this.emit(original);
         }
+
+        // Last thing, so the status the thread hears about is the settled one.
+        this.reportToThread(taskId);
+        if (task?.reviewOfTaskId) this.reportToThread(task.reviewOfTaskId);
       },
     });
 
@@ -392,6 +402,10 @@ export class WorkService {
     });
     const updated = this.repository.getTask(taskId) as WorkTask;
     this.emit(updated);
+    // The boss just settled it: the line of work hears the final answer, not the
+    // interim "awaiting sign-off" one.
+    this.reportedThreads.delete(taskId);
+    this.reportToThread(taskId);
     return updated;
   };
 
@@ -671,6 +685,7 @@ export class WorkService {
     if (verdict === 'pass') {
       this.repository.setStatus(originalId, 'accepted', { finishedAt: Date.now(), error: null });
       this.emit(this.repository.getTask(originalId) as WorkTask);
+      this.reportToThread(originalId);
       return;
     }
 
@@ -684,6 +699,7 @@ export class WorkService {
         error: `负责人要求返工（已 ${rounds} 轮）：${reason}`,
       });
       this.emit(this.repository.getTask(originalId) as WorkTask);
+      this.reportToThread(originalId);
       return;
     }
 
@@ -1311,6 +1327,40 @@ export class WorkService {
   private emitBudgetChange(): void {
     const budgets = this.budgets.list();
     this.budgetListeners.forEach((listener) => listener(budgets));
+  }
+
+  /**
+   * Tells the task's line of work what happened, and how loudly.
+   *
+   * Called at every point a task can reach an outcome — the run finishing, the
+   * manager's verdict, the boss's own decision — and de-duplicated by status, so
+   * a task that goes accepted → review → accepted reports once, at the end.
+   */
+  private reportToThread(taskId: string): void {
+    const task = this.repository.getTask(taskId);
+    if (!task) return;
+    const outcome = threadOutcomeFor(task);
+    if (!outcome) return;
+    if (this.reportedThreads.get(task.id) === task.status) return;
+    this.reportedThreads.set(task.id, task.status);
+
+    const threadId = task.threadId;
+    if (!threadId) return;
+    this.threads.setState(threadId, outcome.state);
+
+    if (outcome.report) {
+      this.threads.addReport({ threadId, ...outcome.report });
+      // Spend belongs to the line of work, not only to the person (§8 axis flip).
+      if (this.threads.charge(threadId, task.tokensUsed) && !this.warnedThreads.has(threadId)) {
+        this.warnedThreads.add(threadId);
+        this.threads.addReport({
+          threadId,
+          level: 'decide',
+          title: task.title,
+          body: '这条工作线已经超出它自己的额度，继续还是收手？',
+        });
+      }
+    }
   }
 
   /**
