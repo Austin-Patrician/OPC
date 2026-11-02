@@ -112,9 +112,11 @@ chat.sendMessage
 W1  worker 拥有工具策略                  worker.tool_policy（V28）
     ├─ capabilities() / toolStackOf 改读 worker
     └─ setStack 改写 worker
-W2  chat 的对面是 Router，不是执行体        §2.1 + §2.2
+W2  chat 的对面是 Router，不是执行体      ✅ 4bf1f31
     ├─ ensureAssistant 不再依赖 agents[0]
-    └─ replyWithModel 换人设（序点/分派/汇总，不亲自干活）
+    ├─ 新增 replyAsRouter 注入点，与 replyWithModel 分开
+    └─ 连带删掉「选一个同事」的入口：通话按钮 / 加成员 / 档案抽屉 /
+       Composer 的三个死按钮 / 标题栏 `+` 开始菜单
 W3  chat 消息成为 Trigger                  §3.2 未订阅 → Router 判
     └─ source: 'im'；Router 决定「直接答」还是「开线派活」
 W4  删 comm 的部门负责人路由              群已无法创建
@@ -122,7 +124,8 @@ W5  删 org/ + 12 张表
     └─ ensureDefaultExecutor → 「实例化一个 worker 模板」
 ```
 
-W2 必须在 W5 之前，否则删表时 chat 没有身份可用。
+W2 必须在 W5 之前，否则删表时 chat 没有身份可用。**已做**：`ensureAssistant`
+不再读 `agents[0]`，聊天的身份来自 Router 而不是 employee 行。
 W1 必须在 W5 之前，否则 worker 不知道自己的工具集。
 W3 可以晚于 W5（那时 chat 已经只依赖 Router）。
 
