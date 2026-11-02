@@ -128,5 +128,7 @@ Router 这一轮推理到此结束，不需要阻塞等一个跑十分钟的活�
    「持久」只到进程级（`resumeInterrupted`），关机就停。
 4. **多 Router 分片（§2.1 后半）**：不做。单机事件量远没到瓶颈，过早分片会拿
    全局连续性换吞吐。
-5. **`employee` 仍在**：执行体的工具策略与模型还长在 employee 行上
-   （`tool_policy` / `model_ref`）。这是最后一块，W1 未做。
+5. **`employee` 仍在，但已无功能依赖**：工具策略（V30 `worker.tool_policy`）与
+   模型（`resolveWorkerModelRef` 两层）都回到执行体自己身上了。剩下挡路的只有
+   「名单」这一类：`capabilities()` 按人列、记忆的部门作用域、`org_fact` 的作用域、
+   `decompose` 的 assignable、`task.assignee_id` 的外键。它们同批处理，然后删表。
