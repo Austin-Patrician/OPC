@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
@@ -45,6 +45,10 @@ import { BudgetService } from './work/budgetService';
 import { BillingSettingsService } from './work/billingSettings';
 import { BudgetRepository } from './data/budgetRepository';
 import { createInboxRunner } from './comm/inboxRunner';
+import { ThreadRepository } from './data/threadRepository';
+import { FolderWatcher } from './router/folderWatcher';
+import { Router } from './router/router';
+import { createWorkDispatch } from './router/workDispatch';
 import { DEMO_TASK } from './work/acceptanceTemplate';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
@@ -479,6 +483,77 @@ async function bootstrap(): Promise<void> {
       unsubscribeNudge();
       scheduler.stop();
       heartbeat = null;
+    });
+  }
+
+  // The v2 loop: a folder the boss drops files into becomes lines of work.
+  //
+  // This is the whole point of the重构 — nothing is typed into a chat window. A file
+  // lands, the router decides it is worth doing, a thread opens, a task runs, and the
+  // result either closes quietly or asks for a decision. Headless probes drive the
+  // router themselves instead of waiting for a timer.
+  if (!isHeadlessMode && work) {
+    const liveWork = work;
+    const threads = new ThreadRepository(db);
+    const inboxDir = path.join(appPaths.userData, 'inbox');
+    try {
+      mkdirSync(inboxDir, { recursive: true });
+    } catch (error) {
+      console.warn('[OPC] 无法创建收件目录，文件夹触发源本次不启用', error);
+    }
+
+    const router = new Router({
+      threads,
+      // Program layer. The watcher already dropped filesystem noise; this drops
+      // anything that is not work at all.
+      prefilter: (event) => (event.source === 'manual' || event.source === 'folder' ? 'keep' : 'drop'),
+      // No semantic layer yet: everything in the inbox was put there by the boss on
+      // purpose, so "would a model think this matters" has nothing to add. It lands
+      // with the noisy sources (IM / GitHub), where it actually earns its tokens.
+      dispatch: createWorkDispatch({
+        createTask: liveWork.createTask,
+        runTaskAndWait: liveWork.runTaskAndWait,
+        // Interim: the first active employee. Once B4 lands there is no employee
+        // table and this becomes "instantiate a worker from the thread's template".
+        resolveAssignee: () => agentsFromOrg(org)[0]?.id ?? null,
+      }),
+    });
+
+    const watcher = new FolderWatcher({
+      dir: inboxDir,
+      onFile: (file) => {
+        threads.enqueueEvent({
+          source: 'folder',
+          kind: 'folder.added',
+          payload: {
+            file: file.relPath,
+            goal: `处理新到的文件 ${file.relPath}，把结果留在工作区并附一个可运行的验收脚本`,
+          },
+        });
+      },
+    });
+    watcher.start();
+
+    const tick = setInterval(() => {
+      void router
+        .tick()
+        .then((report) => {
+          // Silence is the expected outcome: only what reaches the boss is logged.
+          if (report.opened.length > 0 || report.reported.length > 0) {
+            console.warn('[router]', {
+              dropped: report.dropped,
+              opened: report.opened.map((thread) => thread.title),
+              reported: report.reported.map((row) => `${row.level}:${row.title}`),
+            });
+          }
+        })
+        .catch((error) => console.error('[router] tick 失败', error));
+    }, 20_000);
+    tick.unref?.();
+
+    app.on('before-quit', () => {
+      clearInterval(tick);
+      watcher.stop();
     });
   }
 

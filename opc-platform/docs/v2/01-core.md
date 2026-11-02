@@ -79,9 +79,23 @@ pending events
 
 ## 5. 还没做的
 
-- `Router` 尚未接进 `index.ts` 的启动流程：它现在只有测试在驱动。接入放在 B3 末尾（有真实 dispatch 之后）。
-- `event` 的生产者一个都没有：v1 只打算接 `folder` + `.ics`，见审计 §9。
+- ~~`Router` 尚未接进 `index.ts`~~ → **已接**（`OPC` 非无头模式启动时）。它跑在
+  `<userData>/inbox` 上，每 20 秒一个 tick。
+- `event` 的生产者：**已有一个** —— `FolderWatcher`（`router/folderWatcher.ts`）。
+  轮询而非 `fs.watch`：一次保存就是一条事件，不需要自己去做去重。
+  日历 / GitHub / IM 还没接。
+- **语义层（judge）故意还没有**：收件夹里的东西是老板亲手放进去的，
+  "模型觉得这事重要吗"没有信息增量。它要跟着**嘈杂的源**（IM / GitHub）一起上，
+  那时候才真的省 token。
 - `attention_quota` 只是概念，表还没建。
+- `resolveAssignee` 是临时实现（第一个在职员工）。B4 之后应改为
+  "按线程模板实例化一个 worker"。
+
+### R1 的验收口径
+
+`inbox/` 里放一个文件 → 20 秒内出现一条 thread + 一个 task →
+**可自动验收就静默关单，不可验收就在队列里等你拍板**。
+日志里只会出现真正到达老板的那几条（`[router] {...}`），其余一律安静。
 
 ---
 
