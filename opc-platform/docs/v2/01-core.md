@@ -228,28 +228,32 @@ Router 现在尊重**事件自带的 `threadId`**（`verdict.threadId ?? event.t
 4. `seed/firstCompany` + `setup/companySetup` 退役
 5. 删 `org/` + 12 张表
 
-### ⚠️ 发现：`decompose` 现在根本走不到
+### 更正 + 处理：`decompose` 与汇报线（`1476a11`）
 
-`validateDecomposition` 有两条互相咬死的规则：
+上一版这里写着「模型会反复尝试拆解、反复拿到拒绝，白烧 token」。**那是错的。**
+registry 里有一行 `if (!slot.available || !slot.extension) return;` ——
+工具在没人可派时根本不会装进去，模型看不见它。
+
+真正留下的是 `subordinatesOf`：拆解能不能做，由**汇报线**决定。后果两个：
+平级同事不能互相派活；一个人时永远拆不了。
+
+v2 里没有经理，只有执行体，所以规则简化成一条：
 
 ```
-不能把子任务派给自己        (DECOMPOSE_SELF)
-子任务只能派给直接下属      (DECOMPOSE_NOT_SUBORDINATE，读 org)
+公司里除了自己，还有没有人
 ```
 
-而**全新安装只有一个执行体**（`ensureDefaultExecutor` 建的那一个人）。
-于是：派给自己被拒 → 派给别人没别人 → 层级派活在这套配置下 100% 失败。
+- `decomposition.ts`：`subordinates` → `assignable`；错误码
+  `DECOMPOSE_NOT_SUBORDINATE` → `DECOMPOSE_NOT_ASSIGNABLE`
+- `workService.assignableTo(employeeId)`：拆解校验与工具可用性共用它
+- 一个人时工具仍不装，但理由从含糊的 `no-subordinates` 改成 `sole-executor`，
+  能力页说的是实话：「公司里只有你一个人」
+- 补了 8 条用例（此前 `decomposition.ts` **没有任何测试**），
+  覆盖深度 / 扇出 / 预算 / 派给自己 / 不存在的人 / 平级可派
 
-这不是 bug，是 v1 残留语义和 v2 单执行体现实撞在一起的结果。三个方向：
-
-| | 做法 | 代价 |
-|---|---|---|
-| **A** | 允许派给自己，但每个子任务用**不同的 worker**（模板不同就不同） | 要让 `ensureWorker` 按 (thread, employee, **template**) 去重，否则兄弟任务共用一个 harness 会互相踩 |
-| B | 一时用不到就先关掉：`decompose` 工具在少于 2 个执行体时不暴露 | 一行判断，零风险，但功能暂时没有 |
-| C | 保持现状（能拆但一定失败） | 最差：模型会反复尝试并拿到拒绝 |
-
-我倾向 **B 先行、A 随后**：先让工具在没人可派时**不出现**（和项目里
-"装一个只会失败的工具比没有更糟"的既有原则一致），等 worker 去重按模板做完再开 A。
+**工作线内的并发仍然要小心**：同一 (thread, employee) 派两个子任务会共用同一个
+worker，也就共用同一个 harness。真要并行，`ensureWorker` 得按
+(thread, employee, **template**) 去重。这一步还没做。
 
 ---
 
