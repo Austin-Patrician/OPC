@@ -1,6 +1,5 @@
 import type {
   Agent,
-  Budget,
   BudgetScope,
   BudgetState,
   BillingSettings,
@@ -144,14 +143,6 @@ export const IPC = {
     createTask: 'work:createTask',
     runTask: 'work:runTask',
     taskEvent: 'work:taskChanged',
-    listBudgets: 'work:listBudgets',
-    budgetsEvent: 'work:budgetsChanged',
-  },
-  budget: {
-    overview: 'budget:overview',
-    setLimit: 'budget:setLimit',
-    payroll: 'budget:payroll',
-    costCenters: 'budget:costCenters',
   },
   billing: {
     get: 'billing:get',
@@ -272,7 +263,6 @@ export interface WorkBridge {
   listTasks(limit?: number): Promise<WorkTask[]>;
   /** Direct subtasks of one task (the decomposition tree). */
   subtasks(taskId: string): Promise<WorkTask[]>;
-  listBudgets(): Promise<Budget[]>;
   createTask(input: CreateTaskInput): Promise<CreateTaskResult>;
   /** Fire-and-forget: progress arrives through `onTaskChanged`. */
   runTask(taskId: string): Promise<void>;
@@ -285,7 +275,6 @@ export interface WorkBridge {
   /** `fromId blocks toId`; pass an empty `fromId` to remove the link. */
   linkTasks(fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates'): Promise<WorkTask>;
   onTaskChanged(listener: (task: WorkTask) => void): () => void;
-  onBudgetsChanged(listener: (budgets: Budget[]) => void): () => void;
 }
 
 export interface ModelsBridge {
@@ -845,16 +834,6 @@ export interface CostCentersOverview {
   unattributedProjectUsd: number;
 }
 
-export interface BudgetBridge {
-  overview(): Promise<BudgetOverview>;
-  /** 老板改额度；把额度提回阈值以下会解除硬停并恢复被暂停的任职。 */
-  setLimit(input: { scope: BudgetScope; scopeId: string; limitTokens: number }): Promise<BudgetOverview>;
-  /** 薪酬视图：本月每个人花了多少钱。 */
-  payroll(): Promise<PayrollOverview>;
-  /** 成本中心：本月每个部门、每个项目花了多少钱（含无法归属的差额）。 */
-  costCenters(): Promise<CostCentersOverview>;
-}
-
 export interface CommWakeResult {  ok: boolean;
   message: string;
   /** How many inbox items the run actually handled. */
@@ -981,7 +960,6 @@ export interface OpcBridge {
   facts: FactsBridge;
   projects: ProjectsBridge;
   memory: MemoryBridge;
-  budget: BudgetBridge;
   billing: BillingBridge;
   comm: CommBridge;
   threads: ThreadsBridge;

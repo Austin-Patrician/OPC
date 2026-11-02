@@ -3,13 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import type { Budget, DepartmentNode, EditableProjectStatus, OrgMember, ProjectStatus, WorkTask } from '@opc/shared/domain';
+import type { DepartmentNode, EditableProjectStatus, OrgMember, ProjectStatus, WorkTask } from '@opc/shared/domain';
 import { PROJECT_STATUSES } from '@opc/shared/domain';
 import type { ProjectView } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { buttonClass } from '@/features/settings/ui/kit';
+import { StackedBar } from '@/shared/ui/charts';
 import { cn } from '@/shared/lib/cn';
-import { StackedBar, toneForRatio } from '@/shared/ui/charts';
 import {
   BOARD_COLUMNS,
   type BoardColumn,
@@ -27,7 +27,6 @@ interface ProjectDossierProps {
   board: Record<BoardColumn, WorkTask[]>;
   artifacts: { artifact: WorkTask['artifacts'][number]; task: WorkTask }[];
   artifactTotals: { count: number; bytes: number };
-  budget?: Budget;
   cancelled: number;
   orgById: Map<string, OrgMember>;
   onDispatch: () => void;
@@ -51,7 +50,6 @@ export function ProjectDossier({
   board,
   artifacts,
   artifactTotals,
-  budget,
   cancelled,
   orgById,
   onDispatch,
@@ -62,7 +60,6 @@ export function ProjectDossier({
   const navigate = useNavigate();
   const accent = department?.color ?? 'var(--accent)';
   const percent = Math.round(completionOf(stats) * 100);
-  const budgetRatio = budget && budget.limitTokens > 0 ? budget.usedTokens / budget.limitTokens : 0;
   const archived = project.status === 'archived';
 
   return (
@@ -154,30 +151,6 @@ export function ProjectDossier({
           value={String(project.members.length)}
           hint={t('projects.metrics.teamHint')}
         />
-        <Vital
-          label={t('projects.metrics.budget')}
-          value={budget ? `${Math.round(budgetRatio * 100)}%` : '—'}
-          hint={
-            budget
-              ? t('projects.metrics.budgetHint', {
-                  used: budget.usedTokens.toLocaleString(),
-                  limit: budget.limitTokens.toLocaleString(),
-                })
-              : t('projects.metrics.noBudget')
-          }
-        >
-          {budget ? (
-            <span className="block h-1 overflow-hidden rounded-full bg-line/60">
-              <span
-                className="block h-full rounded-full"
-                style={{
-                  width: `${Math.min(100, Math.round(budgetRatio * 100))}%`,
-                  background: `var(--${toneForRatio(budgetRatio)})`,
-                }}
-              />
-            </span>
-          ) : null}
-        </Vital>
       </div>
 
       {/* Board: the page's body. A list of eight rows hid the shape of the work. */}

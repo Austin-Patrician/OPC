@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FolderPlus, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Budget, DepartmentNode, OrgMember, WorkTask } from '@opc/shared/domain';
+import type { DepartmentNode, OrgMember, WorkTask } from '@opc/shared/domain';
 import type { ProjectView } from '@opc/shared/ipc';
 import { buttonClass, Field } from '@/features/settings/ui/kit';
 import { useWorkRuntime } from '@/features/task/model/useWorkRuntime';
@@ -17,7 +17,6 @@ import { ProjectSettingsDrawer } from './ProjectSettingsDrawer';
 import {
   artifactTotalsOf,
   boardOf,
-  periodKeyOf,
   statsOf,
 } from './projectBoard';
 
@@ -30,11 +29,10 @@ import {
  */
 export function ProjectsPage() {
   const { t } = useTranslation();
-  const { createTask, budgetFor } = useWorkRuntime();
+  const { createTask } = useWorkRuntime();
 
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [tasks, setTasks] = useState<WorkTask[]>([]);
-  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [departments, setDepartments] = useState<DepartmentNode[]>([]);
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -46,12 +44,11 @@ export function ProjectsPage() {
   const scroller = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async () => {
-    const [list, tree, taskRows, budgetRows] = await Promise.all([
+    const [list, tree, taskRows] = await Promise.all([
       // The index keeps archived projects one fold away instead of losing them.
       window.opc!.projects.list({ includeArchived: true }),
       window.opc!.org.list(),
       window.opc!.work.listTasks(500),
-      window.opc!.work.listBudgets(),
     ]);
     setProjects(list);
     setDepartments(tree);
@@ -59,7 +56,6 @@ export function ProjectsPage() {
       tree.flatMap((department) => department.members).filter((member) => member.status === 'active'),
     );
     setTasks(taskRows);
-    setBudgets(budgetRows);
     setSelectedId((current) => {
       if (current && list.some((project) => project.id === current)) return current;
       const firstLive = list.find((project) => project.status !== 'archived');
@@ -82,11 +78,7 @@ export function ProjectsPage() {
         return next;
       });
     });
-    const offBudget = window.opc!.work.onBudgetsChanged(setBudgets);
-    return () => {
-      offTask();
-      offBudget();
-    };
+    return offTask;
   }, []);
 
   // Opening another file starts at its cover, not wherever the last one was left.
@@ -159,18 +151,6 @@ export function ProjectsPage() {
         )
         .slice(0, 8),
     [projectTasks],
-  );
-  const budget = useMemo(
-    () =>
-      project
-        ? budgets.find(
-            (entry) =>
-              entry.scope === 'project' &&
-              entry.scopeId === project.id &&
-              entry.periodKey === periodKeyOf(),
-          )
-        : undefined,
-    [budgets, project],
   );
   const department = departments.find((entry) => entry.id === project?.departmentId);
   const candidates = useMemo(
@@ -269,8 +249,7 @@ export function ProjectsPage() {
             board={board}
             artifacts={artifacts}
             artifactTotals={artifactTotals}
-            budget={budget}
-            cancelled={projectTasks.filter((task) => task.status === 'cancelled').length}
+              cancelled={projectTasks.filter((task) => task.status === 'cancelled').length}
             orgById={orgById}
             onDispatch={() => setDispatchOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -309,7 +288,6 @@ export function ProjectsPage() {
           defaultAssigneeId={dispatchAgents[0]?.id ?? ''}
           projects={[project]}
           defaultProjectId={project.id}
-          budgetFor={budgetFor}
           onSubmit={dispatch}
           onClose={() => setDispatchOpen(false)}
         />

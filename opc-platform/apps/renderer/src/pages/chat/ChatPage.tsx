@@ -17,7 +17,7 @@ export function ChatPage() {
   const navigate = useNavigate();
   const { conversations, agents, typingByConversation, sendMessage, markRead, updateAgentBrief } =
     useChatRuntime();
-  const { createTask, budgetFor } = useWorkRuntime();
+  const { createTask } = useWorkRuntime();
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectView[]>([]);
 
@@ -79,7 +79,6 @@ export function ChatPage() {
         onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
         onUpdateBrief={updateAgentBrief}
         onOpenDispatch={() => setDispatchOpen(true)}
-        budgetFor={budgetFor}
       />
 
       {dispatchOpen ? (
@@ -87,7 +86,6 @@ export function ChatPage() {
           agents={agents}
           defaultAssigneeId={active.primaryAgentId ?? agents[0]?.id ?? ''}
           projects={projects}
-          budgetFor={budgetFor}
           onSubmit={dispatchTask}
           onClose={() => setDispatchOpen(false)}
         />

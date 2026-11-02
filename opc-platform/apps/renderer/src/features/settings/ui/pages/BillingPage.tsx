@@ -28,26 +28,10 @@ export function BillingPage() {
   // states, and writing them to SQLite would be a bug, not a preference.
   const [rateText, setRateText] = useState(String(settings.usdCnyRate));
   const [rateError, setRateError] = useState<string | null>(null);
-  const [monthlyUsd, setMonthlyUsd] = useState<number | null>(null);
 
   useEffect(() => {
     setRateText(String(settings.usdCnyRate));
   }, [settings.usdCnyRate]);
-
-  useEffect(() => {
-    let alive = true;
-    void window.opc?.budget
-      .payroll()
-      .then((view) => {
-        if (alive) setMonthlyUsd(view.totalSpentUsd);
-      })
-      .catch(() => {
-        if (alive) setMonthlyUsd(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // Same range as the main process (`MIN_USD_CNY_RATE`/`MAX_USD_CNY_RATE`), so the
   // UI refuses a typo locally instead of round-tripping an error from SQLite.
@@ -170,15 +154,8 @@ export function BillingPage() {
           description={t('settings.billing.previewHint')}
         >
           <Row label={t('settings.billing.previewMonth')}>
-            {monthlyUsd === null ? (
-              <span className="text-sm text-ink-quaternary">{t('settings.billing.previewEmpty')}</span>
-            ) : (
-              <span className="font-mono text-sm text-ink">
-                {formatMoney(monthlyUsd, { ...previewSettings, displayCurrency: 'USD' })}
-                {' ≈ '}
-                {formatMoney(monthlyUsd, { ...previewSettings, displayCurrency: 'CNY' })}
-              </span>
-            )}
+            {/* 预算删掉之后，这里没有"本月已花"可读；单价预览仍然有意义。 */}
+            <span className="text-sm text-ink-quaternary">{t('settings.billing.previewEmpty')}</span>
           </Row>
           <Row label={t('settings.billing.previewSample')} hint={t('settings.billing.previewSampleHint')}>
             <span className="font-mono text-sm text-ink">

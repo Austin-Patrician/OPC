@@ -1,5 +1,4 @@
 import type { Agent } from '@/entities/agent/model/types';
-import type { Budget } from '@opc/shared/domain';
 import type { Conversation } from '@/entities/conversation/model/types';
 import { useShellStore } from '@/shared/prefs/useShellStore';
 import { AgentDossierDrawer } from '@/features/agent-dossier/ui/AgentDossierDrawer';
@@ -14,7 +13,6 @@ interface ChatPanelProps {
   onSend: (text: string, mentionIds: string[]) => void;
   onUpdateBrief: (agentId: string, briefMd: string) => void;
   onOpenDispatch: () => void;
-  budgetFor?: (employeeId: string) => Budget | undefined;
 }
 
 /** Center column: header, virtualized stream, composer, optional dossier. */
@@ -25,7 +23,6 @@ export function ChatPanel({
   onSend,
   onUpdateBrief,
   onOpenDispatch,
-  budgetFor,
 }: ChatPanelProps) {
   const dossierOpen = useShellStore((state) => state.dossierOpen);
   const toggleDossier = useShellStore((state) => state.toggleDossier);
@@ -61,7 +58,6 @@ export function ChatPanel({
           members={members}
           onClose={closeDossier}
           onUpdateBrief={onUpdateBrief}
-          budgetFor={budgetFor}
         />
       ) : null}
     </main>

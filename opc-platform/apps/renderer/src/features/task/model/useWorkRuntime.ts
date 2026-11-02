@@ -9,17 +9,9 @@ export function useWorkRuntime() {
     transport.getTasks,
     transport.getTasks,
   );
-  const budgets = useSyncExternalStore(
-    transport.subscribe,
-    transport.getBudgets,
-    transport.getBudgets,
-  );
 
   return {
     tasks,
-    budgets,
-    budgetFor: (employeeId: string) =>
-      budgets.find((budget) => budget.scope === 'employee' && budget.scopeId === employeeId),
     getSubtasks: transport.getSubtasks,
     createTask: transport.createTask,
     runTask: transport.runTask,

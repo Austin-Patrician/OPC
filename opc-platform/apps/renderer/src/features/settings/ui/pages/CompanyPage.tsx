@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowUpRight, ImagePlus, Loader2, Upload, Wallet } from 'lucide-react';
+import { ImagePlus, Loader2, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CompanyProfile, CompanyProfilePatch } from '@opc/shared/domain';
-import type { BudgetView } from '@opc/shared/ipc';
 import {
   BRAND_COLORS,
   INDUSTRIES,
@@ -120,7 +119,7 @@ function LogoPicker({
  * re-validates the payload.
  */
 export function CompanyPage() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const profile = useCompanyProfile();
   const update = useCompany((state) => state.update);
   const status = useCompany((state) => state.status);
@@ -136,7 +135,6 @@ export function CompanyPage() {
   const [savedNotice, setSavedNotice] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<{ field: ImageField; message: string } | null>(null);
-  const [budget, setBudget] = useState<BudgetView | null>(null);
 
   useEffect(() => setNameDraft(profile.name), [profile.name]);
   useEffect(() => setBossDraft(profile.bossName), [profile.bossName]);
@@ -145,13 +143,6 @@ export function CompanyPage() {
   useEffect(() => setColorDraft(profile.colorId), [profile.colorId]);
   useEffect(() => setLogoDraft(profile.logo ?? ''), [profile.logo]);
   useEffect(() => setBossAvatarDraft(profile.bossAvatar ?? ''), [profile.bossAvatar]);
-
-  useEffect(() => {
-    void window.opc?.budget
-      .overview()
-      .then((overview) => setBudget(overview.budgets.find((row) => row.scope === 'company') ?? null))
-      .catch(() => setBudget(null));
-  }, []);
 
   const dirty =
     nameDraft !== profile.name ||
@@ -456,29 +447,6 @@ export function CompanyPage() {
           </Row>
         </Section>
 
-        <Section
-          title={t('settings.company.budget')}
-          description={t('settings.company.budgetHint')}
-          action={<Wallet className="size-4 text-warning" />}
-        >
-          <Row label={t('settings.company.budget')}>
-            <span className="font-mono text-sm text-ink">
-              {budget
-                ? t('onboarding.company.budgetUsage', {
-                    used: new Intl.NumberFormat(i18n.language, { notation: 'compact' }).format(budget.usedTokens),
-                    limit: new Intl.NumberFormat(i18n.language, { notation: 'compact' }).format(budget.limitTokens),
-                  })
-                : '—'}
-            </span>
-            <a
-              href="#/budget"
-              className="flex h-[30px] items-center gap-1 rounded-md border border-line bg-surface px-3 text-sm-plus text-ink-secondary transition-colors hover:border-accent hover:text-accent"
-            >
-              {t('settings.company.openBudget')}
-              <ArrowUpRight className="size-3.5" />
-            </a>
-          </Row>
-        </Section>
       </div>
     </>
   );

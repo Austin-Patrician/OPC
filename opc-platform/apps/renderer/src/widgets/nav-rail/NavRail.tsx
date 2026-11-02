@@ -6,7 +6,6 @@ import {
   MessageSquare,
   FolderKanban,
   SquareKanban,
-  Wallet,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { NavLink } from 'react-router-dom';
@@ -17,7 +16,6 @@ const PRIMARY_NAV = [
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
   { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
-  { to: '/budget', icon: Wallet, labelKey: 'nav.budget' },
   { to: '/skills', icon: Grid3x3, labelKey: 'nav.skills' },
 ] as const;
 

@@ -1,8 +1,7 @@
-import type { Budget, CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
+import type { CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
 
 export interface WorkTransport {
   getTasks(): readonly WorkTask[];
-  getBudgets(): readonly Budget[];
   getSubtasks(taskId: string): Promise<readonly WorkTask[]>;
   subscribe(listener: () => void): () => void;
   createTask(input: CreateTaskInput): Promise<CreateTaskResult>;

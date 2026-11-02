@@ -1,22 +1,14 @@
-import type { Budget, CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
+import type { CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
 import type { WorkBridge } from '@opc/shared/ipc';
 import type { WorkTransport } from './workTransport';
 
 /** Mirrors the chat transport: a cached immutable list plus a change event. */
 export class IpcWorkTransport implements WorkTransport {
   private tasks: readonly WorkTask[] = [];
-  private budgets: readonly Budget[] = [];
   private readonly listeners = new Set<() => void>();
   private readonly unsubscribers: (() => void)[] = [];
 
   constructor(private readonly bridge: WorkBridge) {
-    this.unsubscribers.push(
-      bridge.onBudgetsChanged((budgets) => {
-        this.budgets = budgets;
-        this.emit();
-      }),
-    );
-
     this.unsubscribers.push(bridge.onTaskChanged((task) => {
       const index = this.tasks.findIndex((item) => item.id === task.id);
       this.tasks =
@@ -26,16 +18,13 @@ export class IpcWorkTransport implements WorkTransport {
       this.emit();
     }));
 
-    void Promise.all([bridge.listTasks(), bridge.listBudgets()]).then(([tasks, budgets]) => {
+    void bridge.listTasks().then((tasks) => {
       this.tasks = tasks;
-      this.budgets = budgets;
       this.emit();
     });
   }
 
   getTasks = (): readonly WorkTask[] => this.tasks;
-
-  getBudgets = (): readonly Budget[] => this.budgets;
 
   getSubtasks = (taskId: string): Promise<readonly WorkTask[]> => this.bridge.subtasks(taskId);
 

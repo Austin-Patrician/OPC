@@ -39,12 +39,8 @@ import { PiSkillHost } from './skills/host';
 import { CommService, commSettingsFrom } from './comm/commService';
 import { CommRepository } from './data/commRepository';
 import { CommScheduler } from './comm/scheduler';
-import { BudgetCenter } from './work/budgetCenter';
-import { PayrollService } from './work/payroll';
 import { applyCompanySetup, parseCompanySetup } from './setup/companySetup';
-import { BudgetService } from './work/budgetService';
 import { BillingSettingsService } from './work/billingSettings';
-import { BudgetRepository } from './data/budgetRepository';
 import { createInboxRunner } from './comm/inboxRunner';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
@@ -73,8 +69,6 @@ const isOcrProbe = process.env.OPC_OCR_PROBE;
 const isSmoke = process.env.OPC_SMOKE === "1";
 /** `OPC_WORK_PROBE=1`: run the Phase 0 loop headlessly and print evidence. */
 const isWorkProbe = process.env.OPC_WORK_PROBE === "1";
-/** `OPC_BUDGET_PROBE=1`: prove reserve → refuse → settle → stop. */
-const isBudgetProbe = process.env.OPC_BUDGET_PROBE === "1";
 /** `OPC_MODEL_PROBE=1`: import the local pi provider config and run one task with the model brain. */
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
@@ -362,17 +356,6 @@ async function bootstrap(): Promise<void> {
     settings: commSettingsFrom(db),
   });
 
-  // 预算中心 (§8): 自己的 BudgetService 实例，读写同一批行；工作循环仍然通过
-  // WorkService 扣费，老板通过这里改额度并解除硬停。
-  const budgetService = new BudgetService(new BudgetRepository(db));
-  const budgetCenter = new BudgetCenter({
-    budgets: budgetService,
-    org,
-    projects,
-  });
-  // 薪酬视图是同一个账本的另一种读法，所以共用同一个 BudgetService 实例。
-  const payroll = new PayrollService({ db, budgets: budgetService, org });
-
   // §7.4: 群聊 @ 的路由交给通信层。老板在部门群里说话，没人被 @ 就只叫负责人。
   chat.routeGroupMessage = (input) => {
     const result = comm?.routeGroupMessage(input);
@@ -481,8 +464,6 @@ async function bootstrap(): Promise<void> {
     projects,
     consolidationRuns,
     comm,
-    budget: budgetCenter,
-    payroll,
     company: new CompanyService(db),
     network,
     runtime: runtimeService,
@@ -645,7 +626,6 @@ const isHeadlessMode =
   isSmoke ||
   Boolean(isOcrProbe) ||
   isWorkProbe ||
-  isBudgetProbe ||
   isModelProbe ||
   isConsolidationRunProbe ||
   isBlockerProbe ||
@@ -2220,131 +2200,6 @@ if (!hasLock) {
       );
       await work.dispose();
       app.exit(finished.status === 'accepted' ? 0 : 1);
-      return;
-    }
-
-    if (isBudgetProbe) {
-      try {
-      // Deterministic and non-destructive: its own temp company, and no model calls.
-      // It charges through BudgetService directly — the sandbox refuses commands on
-      // Windows, so running a full task here would hang until the durable timeout.
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-budget-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const projects = new ProjectService(db);
-      const budgets = new BudgetService(new BudgetRepository(db));
-      const budgetCenter = new BudgetCenter({ budgets, org, projects });
-
-      const assignee = org.list().flatMap((department) => department.members)[0]!;
-      const departmentId = assignee.departmentId;
-      const project = projects.create({ name: '预算探针项目', code: 'BUD', departmentId });
-      projects.assign(project.id, assignee.id, '开发');
-      const find = (scope: 'project' | 'department' | 'employee' | 'company', id: string) =>
-        budgets.list().find((budget) => budget.scope === scope && budget.scopeId === id);
-
-      // ① 单笔消耗同时扣四个维度
-      budgets.reserve({
-        employeeId: assignee.id,
-        taskId: 'probe-multi-axis',
-        estTokens: 1_000,
-        projectGroupId: project.id,
-        departmentId,
-      });
-      const stoppedOnFirst = budgets.settle('probe-multi-axis', 800, 0);
-
-      const axes = {
-        project: find('project', project.id)?.usedTokens ?? 0,
-        department: find('department', departmentId)?.usedTokens ?? 0,
-        employee: find('employee', assignee.id)?.usedTokens ?? 0,
-        company: find('company', 'company-local')?.usedTokens ?? 0,
-      };
-      const chargedEveryAxis = Object.values(axes).every((used) => used === 800);
-      const noStopYet = stoppedOnFirst.length === 0;
-
-      // ② 任一维度没额度就整笔拒绝（不能只扣有钱的那条轴）
-      budgets.setLimit('project', project.id, 500);
-      let refusedWholeRun = false;
-      try {
-        budgets.reserve({
-          employeeId: assignee.id,
-          taskId: 'probe-refused',
-          estTokens: 1_000,
-          projectGroupId: project.id,
-          departmentId,
-        });
-      } catch {
-        refusedWholeRun = true;
-      }
-      const projectReserved = find('project', project.id)?.reservedTokens ?? 0;
-
-      // ③ 冲过上限 → 硬停 + 告警；F8 停任职；提额度 → 解冻并恢复任职
-      // 预估能过、实际花超 —— 生产里硬停几乎都是这么来的。
-      budgets.setLimit('project', project.id, 2_000);
-      budgets.reserve({
-        employeeId: assignee.id,
-        taskId: 'probe-trip',
-        estTokens: 900,
-        projectGroupId: project.id,
-        departmentId,
-      });
-      const stoppedOnTrip = budgets.settle('probe-trip', 1_200, 0);
-      const projectStopped = stoppedOnTrip.some((axis) => axis.scope === 'project');
-
-      // WorkService 就是这么反应的（§5.6）：停任职，不停员工。
-      const paused = projects.pauseAssignments({ projectId: project.id }, 'project_budget_exceeded');
-      const pausedMembers = projects
-        .list()
-        .find((item) => item.id === project.id)!
-        .members.filter((member) => member.status === 'paused').length;
-
-      budgetCenter.setLimit({ scope: 'project', scopeId: project.id, limitTokens: 50_000 });
-      const resumedMembers = projects
-        .list()
-        .find((item) => item.id === project.id)!
-        .members.filter((member) => member.status === 'active').length;
-      const projectAlert = budgets.alerts().some((alert) => alert.scope === 'project');
-      const employerStillActive =
-        org.everyone().find((member) => member.id === assignee.id)?.status === 'active';
-
-      const checks = {
-        chargedEveryAxis,
-        noStopYet,
-        refusedWholeRun,
-        projectNotHalfReserved: projectReserved === 0,
-        projectStopped,
-        paused: paused === 1 && pausedMembers === 1,
-        resumed: resumedMembers === 1,
-        projectAlert,
-        employerStillActive,
-      };
-
-      process.stdout.write(
-        `${JSON.stringify(
-          {
-            probe: 'budget',
-            ...checks,
-            axes,
-            projectBudget: find('project', project.id) && {
-              used: find('project', project.id)!.usedTokens,
-              limit: find('project', project.id)!.limitTokens,
-              state: find('project', project.id)!.state,
-            },
-            alerts: budgets.alerts().map((alert) => `${alert.scope}:${alert.level}`),
-          },
-          null,
-          2,
-        )}\n`,
-      );
-      db.close();
-      app.exit(Object.values(checks).every(Boolean) ? 0 : 1);
-      } catch (error) {
-        // A probe must fail loudly, never hang: an unhandled rejection keeps the
-        // process alive and CI sees a timeout instead of a reason.
-        console.error('BUDGET_PROBE_FAILED', error);
-        app.exit(1);
-      }
       return;
     }
 

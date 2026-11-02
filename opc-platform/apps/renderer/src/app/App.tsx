@@ -4,7 +4,6 @@ import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
 import { AttentionPage } from '@/pages/attention/AttentionPage';
-import { BudgetPage } from '@/pages/budget/BudgetPage';
 import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
@@ -33,7 +32,6 @@ export function App() {
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="issues" element={<IssueListPage />} />
           <Route path="projects" element={<ProjectsPage />} />
-        <Route path="budget" element={<BudgetPage />} />
           <Route path="skills" element={<CapabilitiesPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="settings" element={<SettingsPage />} />

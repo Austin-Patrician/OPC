@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OrgService } from '../org/orgService';
 import { MemoryService } from '../memory/memoryService';
 import { CompanyService } from '../company/companyService';
-import { BudgetRepository } from './budgetRepository';
 import { openCompanyDatabase, probeSqlite, type CompanyDatabase } from './companyDatabase';
 import { SCHEMA_VERSION } from './schema';
 import { TaskRepository, taskWorkspaceRelPath } from './taskRepository';
@@ -520,14 +519,11 @@ describe('company.db', () => {
   });
 });
 
-describe('org + budget', () => {
-  it('hires an employee together with a position and a budget', () => {
+describe('org', () => {
+  it('hires an employee together with a position', () => {
     const org = new OrgService(db);
     const { manager, worker } = hireTeam(org);
-
     expect(org.subordinatesOf(manager.id).map((member) => member.id)).toEqual([worker.id]);
-    expect(new BudgetRepository(db).find('employee', worker.id)).toBeDefined();
-    expect(new BudgetRepository(db).find('company', 'company-local')).toBeDefined();
   });
 });
 
@@ -666,81 +662,6 @@ describe('TaskRepository', () => {
     org.fire(worker.id);
 
     expect(() => createTask(repository, worker.id)).toThrow(/不在岗/);
-  });
-});
-
-describe('BudgetRepository', () => {
-  function setup() {
-    const org = new OrgService(db);
-    const { worker } = hireTeam(org);
-    const repository = new TaskRepository(db);
-    repository.seedEmployees([
-      {
-        id: worker.id,
-        name: '李雷',
-        role: '全栈工程师',
-        level: 'P5',
-        departmentId: worker.departmentId,
-        model: '',
-        status: 'online',
-        skills: [],
-        briefMd: '',
-      },
-    ]);
-    return { repository, budgets: new BudgetRepository(db), worker };
-  }
-
-  it('reserves, then settles real usage into a ledger', () => {
-    const { repository, budgets, worker } = setup();
-    const task = repository.createTask(
-      {
-        title: 't',
-        brief: 'b',
-        deliverableSpec: 'd',
-        assigneeId: worker.id,
-        estTokens: 1000,
-        acceptanceCommand: [],
-        acceptanceTemplate: 'http-ok',
-      },
-      taskWorkspaceRelPath('task-budget'),
-      'task-budget',
-    );
-
-    budgets.reserve({
-      budgets: [budgets.find('employee', worker.id)!],
-      taskId: task.id,
-      employeeId: worker.id,
-      tokens: 1000,
-      expiresAt: Date.now() + 60_000,
-    });
-    expect(budgets.find('employee', worker.id)?.reservedTokens).toBe(1000);
-
-    budgets.settle(task.id, 400, 0.5);
-    const settled = budgets.find('employee', worker.id);
-    expect(settled?.reservedTokens).toBe(0);
-    expect(settled?.usedTokens).toBe(400);
-
-    const ledger = db
-      .prepare('SELECT kind, tokens FROM budget_ledger WHERE task_id = ? ORDER BY rowid')
-      .all(task.id);
-    expect(ledger).toEqual([
-      { kind: 'reserve', tokens: 1000 },
-      { kind: 'settle', tokens: 400 },
-    ]);
-  });
-
-  it('reclaims reservations whose task no longer exists', () => {
-    const { budgets, worker } = setup();
-    budgets.reserve({
-      budgets: [budgets.find('employee', worker.id)!],
-      taskId: 'task-ghost',
-      employeeId: worker.id,
-      tokens: 77,
-      expiresAt: Date.now() + 60_000,
-    });
-
-    expect(budgets.releaseOrphans(() => false)).toBe(1);
-    expect(budgets.find('employee', worker.id)?.reservedTokens).toBe(0);
   });
 });
 

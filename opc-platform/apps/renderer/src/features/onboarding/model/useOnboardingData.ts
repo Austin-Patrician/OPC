@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppInfo } from '@opc/shared/ipc';
 import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
-import type { BudgetView } from '@opc/shared/ipc';
 
 /**
  * Everything the guide shows that already exists in the product: the seeded
@@ -18,7 +17,6 @@ export interface OnboardingData {
   providers: ProviderConfig[];
   defaults: ModelDefaults;
   thinking: string;
-  companyBudget: BudgetView | null;
   info: AppInfo | null;
 }
 
@@ -27,7 +25,6 @@ const EMPTY: OnboardingData = {
   providers: [],
   defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
   thinking: 'medium',
-  companyBudget: null,
   info: null,
 };
 
@@ -43,12 +40,11 @@ export function useOnboardingData() {
       return;
     }
     try {
-      const [departments, providers, defaults, thinking, budget, info] = await Promise.all([
+      const [departments, providers, defaults, thinking, info] = await Promise.all([
         bridge.org.list(),
         bridge.models.list(),
         bridge.models.getDefaults(),
         bridge.models.getThinking(),
-        bridge.budget.overview(),
         bridge.app.getInfo(),
       ]);
       setData({
@@ -56,7 +52,6 @@ export function useOnboardingData() {
         providers,
         defaults,
         thinking,
-        companyBudget: budget.budgets.find((row) => row.scope === 'company') ?? null,
         info,
       });
       setError(null);

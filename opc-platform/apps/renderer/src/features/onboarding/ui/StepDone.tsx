@@ -1,7 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { ArrowRight, MessagesSquare, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { BudgetView } from '@opc/shared/ipc';
 import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { THINKING_LEVELS, findProvider } from '@/shared/providers/catalog';
@@ -9,7 +8,7 @@ import { companyName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
-import { formatTokens } from './onboardingUi';
+
 
 const CONFETTI_COLORS = ['#38B6FF', '#B49CFF', '#45E3CF', '#FFB86B', '#F0436A', '#34C759', '#FFD60A'];
 
@@ -45,7 +44,6 @@ interface StepDoneProps {
   providers: ProviderConfig[];
   defaults: ModelDefaults;
   thinking: string;
-  budget: BudgetView | null;
   onAction: (target: DoneTarget) => void;
 }
 
@@ -56,10 +54,9 @@ export function StepDone({
   providers,
   defaults,
   thinking,
-  budget,
   onAction,
 }: StepDoneProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const profile = useCompanyProfile();
 
   const providerId = defaults.llm?.providerId;
@@ -134,10 +131,7 @@ export function StepDone({
             <div className="min-w-0">
               <div className="truncate text-base-plus font-semibold text-ink">{displayName}</div>
               <div className="truncate text-xs-plus text-ink-tertiary">
-                {profile.vision.trim() ||
-                  t('onboarding.done.budgetLine', {
-                    limit: budget ? formatTokens(budget.limitTokens, i18n.language) : '—',
-                  })}
+                {profile.vision.trim() || t('company.fallbackName')}
               </div>
             </div>
           </div>

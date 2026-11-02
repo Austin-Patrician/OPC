@@ -1,7 +1,6 @@
 import {
   IPC,
   type AuthPromptRequest,
-  type BudgetOverview,
   type CommOverview,
   type CommWakeResult,
   type ChatSnapshot,
@@ -11,7 +10,6 @@ import {
 import type { OcrSettings } from '@opc/shared/ocr';
 import type {
   BundledRuntime,
-  Budget,
   CatalogProvider,
   CompanyProfile,
   CompanyProfilePatch,
@@ -125,16 +123,6 @@ const bridge: OpcBridge = {
     markRead: (reportId: string) => ipcRenderer.invoke(IPC.threads.markRead, reportId),
     decide: (input: unknown) => ipcRenderer.invoke(IPC.threads.decide, input),
     close: (threadId: string) => ipcRenderer.invoke(IPC.threads.close, threadId),
-  },
-  budget: {
-    overview: () => ipcRenderer.invoke(IPC.budget.overview) as Promise<BudgetOverview>,
-    setLimit: (input: {
-      scope: 'company' | 'employee' | 'department' | 'project';
-      scopeId: string;
-      limitTokens: number;
-    }) => ipcRenderer.invoke(IPC.budget.setLimit, input) as Promise<BudgetOverview>,
-    payroll: () => ipcRenderer.invoke(IPC.budget.payroll),
-    costCenters: () => ipcRenderer.invoke(IPC.budget.costCenters),
   },
   billing: {
     get: () => ipcRenderer.invoke(IPC.billing.get) as Promise<BillingSettings>,
@@ -270,15 +258,7 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.work.setIssueMeta, taskId, patch) as Promise<WorkTask>,
     linkTasks: (fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates') =>
       ipcRenderer.invoke(IPC.work.linkTasks, fromId, toId, type) as Promise<WorkTask>,
-    listBudgets: () => ipcRenderer.invoke(IPC.work.listBudgets) as Promise<Budget[]>,
     subtasks: (taskId: string) => ipcRenderer.invoke(IPC.work.subtasks, taskId) as Promise<WorkTask[]>,
-    onBudgetsChanged: (listener: (budgets: Budget[]) => void) => {
-      const handler = (_event: IpcRendererEvent, budgets: Budget[]) => listener(budgets);
-      ipcRenderer.on(IPC.work.budgetsEvent, handler);
-      return () => {
-        ipcRenderer.off(IPC.work.budgetsEvent, handler);
-      };
-    },
     onTaskChanged: (listener: (task: WorkTask) => void) => {
       const handler = (_event: IpcRendererEvent, task: WorkTask) => listener(task);
       ipcRenderer.on(IPC.work.taskEvent, handler);

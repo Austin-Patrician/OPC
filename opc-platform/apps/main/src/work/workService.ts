@@ -3,8 +3,6 @@ import type {
   TaskStatus,
   EmployeeToolPolicy,
   LinkType,
-  Budget,
-  BudgetError,
   CreateTaskInput,
   CreateTaskResult,
   SubtaskDraft,
@@ -24,7 +22,6 @@ import type { Conversation, Extension, Harness, Registry } from '@earendil-works
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { BudgetRepository } from '../data/budgetRepository';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
@@ -41,7 +38,6 @@ import type { OrgFactService } from '../memory/orgFactService';
 import type { ProjectService } from '../org/projectService';
 import { validateDecomposition } from './decomposition';
 import type { ModelConfigService } from '../models/modelConfigService';
-import { BudgetBlockedError, BudgetService } from './budgetService';
 import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
@@ -142,8 +138,6 @@ export interface WorkServiceDeps {
   piSkills?: PiSkillHost;
 }
 
-const REAPER_INTERVAL_MS = 10 * 60 * 1000;
-
 /**
  * Orchestrates work: business state in SQLite, execution in the employee's
  * durable pi task, and a live event stream for the UI.
@@ -153,10 +147,8 @@ const REAPER_INTERVAL_MS = 10 * 60 * 1000;
  */
 export class WorkService {
   private readonly repository: TaskRepository;
-  private readonly budgets: BudgetService;
   private readonly runner: DurableWorkRunner;
   private readonly listeners = new Set<(task: WorkTask) => void>();
-  private readonly budgetListeners = new Set<(budgets: Budget[]) => void>();
   private readonly harnesses = new Map<string, EmployeeHarness>();
   /** Employees whose stack changed while a task was running; evicted when it ends. */
   private readonly dirtyHarnesses = new Set<string>();
@@ -167,7 +159,6 @@ export class WorkService {
   private readonly runtime: RuntimeService;
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
-  private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
@@ -183,8 +174,6 @@ export class WorkService {
         ...(deps.network ? { network: deps.network } : {}),
       });
 
-    this.budgets = new BudgetService(new BudgetRepository(deps.db));
-    for (const agent of deps.agents) this.budgets.ensureForEmployee(agent.id);
 
     // The real loop: HarnessBrain drives pi's generation/tool tasks. Without a
     // configured model we fall back to the deterministic brain so the app still works.
@@ -243,15 +232,6 @@ export class WorkService {
           this.harnesses.delete(runtimeIdentityFor(task).runtimeKey);
         }
         const passed = outcome === 'completed' && result?.verdict === 'pass';
-        if (passed) {
-          // §5.6: a hard stop pauses the assignment, not the employee. The charge is
-          // what trips it, so the reaction belongs here, right after settling.
-          const stopped = this.budgets.settle(taskId, task?.tokensUsed ?? 0, task?.costUsd ?? 0);
-          for (const axis of stopped) this.applyHardStop(axis.scope, axis.scopeId, taskId);
-        } else {
-          this.budgets.release(taskId);
-        }
-        this.emitBudgetChange();
 
         if (passed && task && this.deps.memory) {
           void this.deps.memory
@@ -470,11 +450,9 @@ export class WorkService {
     return { ok: true, thread };
   };
 
-  listBudgets = (): Budget[] => this.budgets.list();
-
   /**
    * Manager decomposition. Children are ordinary tasks, so they run through the
-   * same pi loop, acceptance and budget as anything the boss dispatches.
+   * same pi loop and acceptance as anything the boss dispatches.
    */
   decompose = (
     parentTaskId: string,
@@ -500,30 +478,6 @@ export class WorkService {
     const created: WorkTask[] = [];
     for (const subtask of subtasks) {
       const childId = `task-${crypto.randomUUID()}`;
-      try {
-        this.budgets.reserve({
-          employeeId: subtask.assigneeId,
-          taskId: childId,
-          estTokens: subtask.estTokens,
-          // A subtask spends the same project budget its parent does.
-          ...(parent.projectGroupId ? { projectGroupId: parent.projectGroupId } : {}),
-          ...(this.departmentOf(subtask.assigneeId)
-            ? { departmentId: this.departmentOf(subtask.assigneeId) }
-            : {}),
-        });
-      } catch (error) {
-        if (error instanceof BudgetBlockedError) {
-          return {
-            ok: false,
-            error: {
-              code: error.code,
-              message: `子任务「${subtask.title}」预算不足：${error.message}`,
-              budget: error.budget,
-            },
-          };
-        }
-        throw error;
-      }
 
       const childWorker = parent.threadId
         ? this.ensureWorker(parent.threadId, subtask.assigneeId)
@@ -599,36 +553,9 @@ export class WorkService {
           : ['node', '{checks}/verify.mjs'],
     };
 
-    try {
-      this.budgets.reserve({
-        employeeId: input.assigneeId,
-        taskId,
-        estTokens: input.estTokens,
-        ...(input.projectGroupId ? { projectGroupId: input.projectGroupId } : {}),
-        ...(this.departmentOf(input.assigneeId)
-          ? { departmentId: this.departmentOf(input.assigneeId) }
-          : {}),
-        allowOverdraft: (input as { allowOverdraft?: boolean }).allowOverdraft === true,
-      });
-    } catch (error) {
-      if (error instanceof BudgetBlockedError) {
-        return {
-          ok: false,
-          error: {
-            code: error.code,
-            message: error.message,
-            budget: error.budget,
-            requestedTokens: error.requestedTokens,
-          } satisfies BudgetError,
-        };
-      }
-      throw error;
-    }
-
     // Every task belongs to a line of work, so a finished task always has somewhere
     // to report to. Today that is one thread per task; a goal that decomposes into
     // several tasks keeps them together because children inherit the parent's id.
-    // Opened after the budget check, so a refused task leaves no empty thread.
     const threadId =
       draft.threadId ??
       this.threads.createThread({ title: draft.title, goal: draft.brief }).id;
@@ -646,9 +573,6 @@ export class WorkService {
     try {
       task = this.repository.createTask(draft, workspaceRelPath, taskId);
     } catch (error) {
-      // The assignee may have been fired between the balance check and the insert:
-      // give the reservation back and answer with a structured refusal.
-      this.budgets.release(taskId);
       return {
         ok: false,
         error: {
@@ -800,8 +724,6 @@ export class WorkService {
       const message = error instanceof Error ? error.message : String(error);
       this.repository.addStep(taskId, message);
       this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: message });
-      this.budgets.release(taskId);
-      this.emitBudgetChange();
       const failed = this.repository.getTask(taskId);
       if (failed) this.emit(failed);
       return true;
@@ -831,8 +753,6 @@ export class WorkService {
     void this.runner.run(taskId).catch((error) => {
       this.repository.addStep(taskId, `启动失败：${error instanceof Error ? error.message : String(error)}`);
       this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
-      this.budgets.release(taskId);
-      this.emitBudgetChange();
       console.error('task run failed', error);
     });
   };
@@ -852,12 +772,11 @@ export class WorkService {
     return () => this.listeners.delete(listener);
   };
 
-  subscribeBudgets = (listener: (budgets: Budget[]) => void): (() => void) => {
-    this.budgetListeners.add(listener);
-    return () => this.budgetListeners.delete(listener);
-  };
-
-  /** Startup: resume interrupted durable tasks, then free anything orphaned. */
+  /**
+   * Startup: resume interrupted durable tasks, then fail anything that is stuck.
+   *
+   * 预算删掉之后这里不再有"回收预留"这一步：没有预留，就没有需要回收的东西。
+   */
   recover = async (): Promise<void> => {
     try {
       await this.runner.resumeInterrupted();
@@ -865,10 +784,6 @@ export class WorkService {
       console.error('resume failed', error);
     }
     this.sweepStaleRunning();
-    this.reapReservations();
-
-    this.reaperTimer = setInterval(() => this.reapReservations(), REAPER_INTERVAL_MS);
-    this.reaperTimer.unref?.();
   };
 
   /**
@@ -883,35 +798,18 @@ export class WorkService {
     for (const task of this.repository.listRunning()) {
       if (task.updatedAt && task.updatedAt > cutoff) continue;
       const durableId = this.repository.getDurableTaskId(task.id);
-      this.repository.addStep(task.id, '启动对账：任务长时间无进展，标记失败并释放预算');
+      this.repository.addStep(task.id, '启动对账：任务长时间无进展，标记失败');
       this.repository.setStatus(task.id, 'failed', {
         finishedAt: Date.now(),
         error: durableId ? '恢复超时' : '缺少 durable 记录',
       });
-      this.budgets.release(task.id);
-      this.emitBudgetChange();
       swept += 1;
     }
 
     return swept;
   };
 
-  /**
-   * Reservations belong to a live task. Anything else (terminal, missing, or past
-   * its expiry) is released, so a crash can never permanently consume quota.
-   */
-  reapReservations = (): number => {
-    const released = this.budgets.releaseOrphans((taskId) => {
-      const task = this.repository.getTask(taskId);
-      return task?.status === 'running' || task?.status === 'open';
-    });
-    if (released > 0) this.emitBudgetChange();
-    return released;
-  };
-
   dispose = async (): Promise<void> => {
-    if (this.reaperTimer) clearInterval(this.reaperTimer);
-    this.reaperTimer = null;
     this.listeners.clear();
     const context = await getBackgroundContext();
     for (const entry of this.harnesses.values()) {
@@ -1357,51 +1255,6 @@ export class WorkService {
   };
 
 
-  /**
-   * F8: 预算硬停的落地动作（§5.6）。
-   *
-   * 项目预算超了 → 暂停该项目所有任职（员工在别的项目照常干活）；
-   * 员工预算超了 → 只暂停他自己的任职；
-   * 公司预算超了 → 不自动全停（那要老板决定），但会留下告警让 /budget 亮红灯。
-   */
-  private applyHardStop(
-    scope: 'company' | 'employee' | 'project' | 'department',
-    scopeId: string,
-    taskId: string,
-  ): void {
-    const projects = this.deps.projects;
-    if (!projects) return;
-
-    const reason =
-      scope === 'project'
-        ? 'project_budget_exceeded'
-        : scope === 'department'
-          ? 'department_budget_exceeded'
-          : 'employee_budget_exceeded';
-
-    const paused =
-      scope === 'project'
-        ? projects.pauseAssignments({ projectId: scopeId }, reason)
-        : scope === 'employee'
-          ? projects.pauseAssignments({ employeeId: scopeId }, reason)
-          : 0;
-
-    if (paused > 0) {
-      this.repository.addStep(
-        taskId,
-        `预算硬停（${scope}）→ 暂停 ${paused} 条任职，等老板在预算中心调整额度`,
-      );
-      this.emitBudgetChange();
-    }
-  }
-
-  /** The assignee's department, for the department budget axis (§8.1). */
-  private departmentOf(employeeId: string): string | undefined {
-    const members = this.deps.org?.everyone() ?? [];
-    const departmentId = members.find((member) => member.id === employeeId)?.departmentId;
-    return departmentId || undefined;
-  }
-
   /** Who this employee reports to inside the department (empty when it is the head). */  private reportingLineOf(employeeId: string): string | undefined {
     const members = this.deps.org?.list().flatMap((department) => department.members) ?? [];
     return members.find((member) => member.id === employeeId)?.reportsToEmployeeId;
@@ -1410,11 +1263,6 @@ export class WorkService {
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
-  }
-
-  private emitBudgetChange(): void {
-    const budgets = this.budgets.list();
-    this.budgetListeners.forEach((listener) => listener(budgets));
   }
 
   /**

@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Briefcase, FileText, UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
-import type { Budget } from '@opc/shared/domain';
 import type { Conversation } from '@/entities/conversation/model/types';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 
@@ -11,7 +10,6 @@ interface AgentDossierDrawerProps {
   members: readonly Agent[];
   onClose: () => void;
   onUpdateBrief: (agentId: string, briefMd: string) => void;
-  budgetFor?: (employeeId: string) => Budget | undefined;
 }
 
 /**
@@ -25,7 +23,6 @@ export function AgentDossierDrawer({
   members,
   onClose,
   onUpdateBrief,
-  budgetFor,
 }: AgentDossierDrawerProps) {
   const { t } = useTranslation();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -89,27 +86,6 @@ export function AgentDossierDrawer({
                     </span>
                   </div>
 
-                  {(() => {
-                    const budget = budgetFor?.(agent.id);
-                    if (!budget) return null;
-                    const tone =
-                      budget.state === 'stopped'
-                        ? 'text-danger'
-                        : budget.state === 'warn'
-                          ? 'text-warning'
-                          : 'text-ink-secondary';
-                    return (
-                      <div className={`flex items-center justify-between rounded bg-surface-muted px-2 py-1 text-xs ${tone}`}>
-                        <span>{t('budget.employee')}</span>
-                        <span className="font-mono">
-                          {budget.usedTokens.toLocaleString()} / {budget.limitTokens.toLocaleString()}
-                          <span className="ml-1 text-ink-quaternary">
-                            · {t('budget.remaining', { tokens: budget.availableTokens.toLocaleString() })}
-                          </span>
-                        </span>
-                      </div>
-                    );
-                  })()}
 
                   <div className="flex flex-wrap gap-1">
                     {agent.skills.map((skill) => (

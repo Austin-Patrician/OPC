@@ -18,8 +18,6 @@ import type {
 } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import { BOSS_USER_ID } from '../data/schema';
-import { BudgetRepository } from '../data/budgetRepository';
-import { BudgetService } from '../work/budgetService';
 import { normalizeToolPolicy, parseToolPolicy } from '../work/toolPolicy';
 
 /**
@@ -1198,8 +1196,6 @@ export class OrgService {
     });
     tx();
 
-    new BudgetService(new BudgetRepository(this.db)).ensureForEmployee(employeeId);
-
     const member = this.list()
       .flatMap((departmentNode) => departmentNode.members)
       .find((entry) => entry.id === employeeId);
@@ -1747,8 +1743,6 @@ export class OrgService {
     const successor =
       managerId && managerId !== employeeId && this.isActive(managerId) ? managerId : null;
 
-    const budgets = new BudgetService(new BudgetRepository(this.db));
-
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
@@ -1795,7 +1789,6 @@ export class OrgService {
     });
     tx();
 
-    for (const task of tasks) budgets.release(task.id);
     return { cancelled: tasks.length };
   };
 }

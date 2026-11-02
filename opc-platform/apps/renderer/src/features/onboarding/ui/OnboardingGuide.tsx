@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import type { BudgetView } from '@opc/shared/ipc';
 import { brandColor, companyName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
@@ -32,10 +31,8 @@ export function OnboardingGuide() {
 /**
  * The first-run guide.
  *
- * Four real steps (preferences → model engine → company identity & budget →
- * hiring) and a summary. Every write goes through the same IPC the settings,
- * market and budget pages use, so nothing here is a staged fake: closing the
- * guide leaves a configured product behind.
+ * 三步：偏好 → 模型引擎 → 公司身份，然后一页总结。所有写入都走设置页用的同一套 IPC，
+ * 所以关掉向导不会留下一个假的配置。
  */
 function OnboardingDialog() {
   const { t } = useTranslation();
@@ -50,12 +47,7 @@ function OnboardingDialog() {
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
   const [direction, setDirection] = useState<'next' | 'prev'>('next');
-  const [companyBudget, setCompanyBudget] = useState<BudgetView | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setCompanyBudget(data.companyBudget);
-  }, [data.companyBudget]);
 
   const currentId = VIEWS[step] as ViewId;
   const accent = brandColor(profile.colorId);
@@ -148,10 +140,8 @@ function OnboardingDialog() {
       case 'company':
         return (
           <StepCompany
-            budget={companyBudget}
             departmentCount={data.departmentCount}
             agentCount={data.agentCount}
-            onBudgetChange={setCompanyBudget}
           />
         );
       case 'done':
@@ -162,7 +152,6 @@ function OnboardingDialog() {
             providers={data.providers}
             defaults={data.defaults}
             thinking={data.thinking}
-            budget={companyBudget}
             onAction={complete}
           />
         );

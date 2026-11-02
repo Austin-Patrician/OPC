@@ -19,8 +19,6 @@ import path from 'node:path';
 import { getAppInfo } from '../appInfo';
 import type { ChatService } from '../chat/chatService';
 import type { CommService } from '../comm/commService';
-import type { BudgetCenter } from '../work/budgetCenter';
-import type { PayrollService } from '../work/payroll';
 import type { ManualWakeResult } from '../comm/scheduler';
 import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
@@ -74,9 +72,7 @@ interface RegisterOptions {
   projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
   comm: CommService;
-  budget: BudgetCenter;
   /** 薪酬视图：预算账本 → 每个人的本月花费。 */
-  payroll: PayrollService;
   /** 老板手动唤醒：由 bootstrap 注入，因为它需要心跳调度器。 */
   wakeEmployee: (employeeId: string) => Promise<ManualWakeResult>;
   /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
@@ -101,8 +97,6 @@ export function registerIpc({
   projects,
   consolidationRuns,
   comm,
-  budget: budgetCenter,
-  payroll,
   company,
   network,
   runtime,
@@ -141,11 +135,6 @@ export function registerIpc({
     notify: (text: string, url?: string) => broadcast(IPC.auth.notifyEvent, { text, url }),
   };
 
-  const unsubscribeBudgets = work.subscribeBudgets((budgets) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send(IPC.work.budgetsEvent, budgets);
-    }
-  });
 
   const unsubscribeWork = work.subscribe((task) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -173,29 +162,6 @@ export function registerIpc({
       }
     }, 150);
     commSignal.unref?.();
-  });
-
-  ipcMain.handle(IPC.budget.overview, () => budgetCenter.overview());
-  ipcMain.handle(IPC.budget.payroll, () => payroll.overview());
-  ipcMain.handle(IPC.budget.costCenters, () => payroll.costCenters());
-
-  ipcMain.handle(IPC.budget.setLimit, (_event, input: unknown) => {
-    const draft = (input ?? {}) as { scope?: unknown; scopeId?: unknown; limitTokens?: unknown };
-    const scopes = ['company', 'employee', 'department', 'project'];
-    if (typeof draft.scope !== 'string' || !scopes.includes(draft.scope)) {
-      throw new Error('budget:setLimit 参数非法（scope）');
-    }
-    if (typeof draft.scopeId !== 'string' || draft.scopeId.length === 0) {
-      throw new Error('budget:setLimit 参数非法（scopeId）');
-    }
-    if (typeof draft.limitTokens !== 'number' || !Number.isFinite(draft.limitTokens) || draft.limitTokens <= 0) {
-      throw new Error('budget:setLimit 参数非法（limitTokens）');
-    }
-    return budgetCenter.setLimit({
-      scope: draft.scope as 'company' | 'employee' | 'department' | 'project',
-      scopeId: draft.scopeId,
-      limitTokens: draft.limitTokens,
-    });
   });
 
   ipcMain.handle(IPC.billing.get, () => billingSettings.get());
@@ -804,7 +770,6 @@ export function registerIpc({
     }
     return work.bossDecision(taskId, decision, typeof reason === 'string' ? reason : undefined);
   });
-  ipcMain.handle(IPC.work.listBudgets, () => work.listBudgets());
   ipcMain.handle(IPC.work.subtasks, (_event, taskId: unknown) => {
     if (typeof taskId !== 'string') throw new Error('work:subtasks 参数非法');
     return work.listSubtasks(taskId);
@@ -823,18 +788,14 @@ export function registerIpc({
   return () => {
     for (const channel of Object.values(IPC.models)) ipcMain.removeHandler(channel);
     for (const channel of Object.values(IPC.runtime)) ipcMain.removeHandler(channel);
-    unsubscribeBudgets();
     unsubscribeWork();
     unsubscribeComm();
     if (commSignal) clearTimeout(commSignal);
-    ipcMain.removeHandler(IPC.budget.overview);
-    ipcMain.removeHandler(IPC.budget.setLimit);
     ipcMain.removeHandler(IPC.billing.get);
     ipcMain.removeHandler(IPC.billing.update);
     ipcMain.removeHandler(IPC.comm.overview);
     ipcMain.removeHandler(IPC.comm.wake);
     ipcMain.removeHandler(IPC.comm.dismissGuards);
-    ipcMain.removeHandler(IPC.work.listBudgets);
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);
     ipcMain.removeHandler(IPC.work.setIssueMeta);

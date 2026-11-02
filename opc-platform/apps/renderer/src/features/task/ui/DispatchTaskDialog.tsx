@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { X, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Budget, CreateTaskResult } from '@opc/shared/domain';
+import type { CreateTaskResult } from '@opc/shared/domain';
 
 export interface DispatchDraft {
   title: string;
@@ -28,7 +28,6 @@ interface DispatchTaskDialogProps {
   /** 可选：派活时选项目，决定这笔钱扣在哪个项目上。 */
   projects?: readonly { id: string; name: string }[];
   defaultProjectId?: string;
-  budgetFor: (employeeId: string) => Budget | undefined;
   onSubmit: (draft: DispatchDraft) => Promise<CreateTaskResult>;
   onClose: () => void;
 }
@@ -45,7 +44,6 @@ export function DispatchTaskDialog({
   defaultAssigneeId,
   projects = [],
   defaultProjectId = '',
-  budgetFor,
   onSubmit,
   onClose,
 }: DispatchTaskDialogProps) {
@@ -60,13 +58,11 @@ export function DispatchTaskDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const budget = budgetFor(assigneeId);
   // Client-side pre-check is UX only; the main process is the authority.
-  const insufficient = budget ? budget.availableTokens < estTokens || budget.isStopped : false;
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (submitting || !title.trim() || !deliverableSpec.trim() || insufficient) return;
+    if (submitting || !title.trim() || !deliverableSpec.trim()) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -202,34 +198,6 @@ export function DispatchTaskDialog({
             </p>
           </div>
 
-          {budget ? (
-            <div
-              className={`rounded-lg px-2.5 py-2 text-2xs ${
-                budget.isStopped
-                  ? 'bg-danger/10 text-danger'
-                  : insufficient
-                    ? 'bg-warning/10 text-warning'
-                    : 'bg-surface-muted text-ink-secondary'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span>{t('budget.employee')}</span>
-                <span className="font-mono">
-                  {budget.usedTokens.toLocaleString()} / {budget.limitTokens.toLocaleString()}
-                </span>
-              </div>
-              <div className="mt-1 flex items-center justify-between">
-                <span>{t('budget.available')}</span>
-                <span className="font-mono">{budget.availableTokens.toLocaleString()}</span>
-              </div>
-              <div className="mt-1 flex items-center justify-between">
-                <span>{t('budget.impact', { tokens: estTokens.toLocaleString() })}</span>
-                <span className="font-mono">
-                  {(budget.availableTokens - estTokens).toLocaleString()}
-                </span>
-              </div>
-            </div>
-          ) : null}
 
           {error ? (
             <p className="rounded-lg border border-danger/40 bg-danger/10 px-2.5 py-2 text-2xs text-danger">
@@ -248,11 +216,10 @@ export function DispatchTaskDialog({
           </button>
           <button
             type="submit"
-            disabled={submitting || insufficient}
-            title={insufficient ? t('budget.blockedHint') : undefined}
+            disabled={submitting}
             className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
           >
-            {submitting ? t('task.running') : insufficient ? t('budget.blocked') : t('task.submit')}
+            {submitting ? t('task.running') : t('task.submit')}
           </button>
         </footer>
       </form>
