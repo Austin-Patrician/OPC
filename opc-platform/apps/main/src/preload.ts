@@ -37,7 +37,6 @@ import type {
   SpeechTranscribeResult,
   DecisionClassifyInput,
   DecisionClassifyResult,
-  EditableProjectStatus,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -153,21 +152,6 @@ const bridge: OpcBridge = {
   memory: {
     consolidationRuns: (employeeId?: string) =>
       ipcRenderer.invoke(IPC.memory.consolidationRuns, employeeId),
-  },
-  projects: {
-    list: (options?: { includeArchived?: boolean }) => ipcRenderer.invoke(IPC.projects.list, options),
-    create: (input: unknown) => ipcRenderer.invoke(IPC.projects.create, input),
-    assign: (projectId: string, employeeId: string, role?: string) =>
-      ipcRenderer.invoke(IPC.projects.assign, projectId, employeeId, role),
-    archive: (projectId: string) => ipcRenderer.invoke(IPC.projects.archive, projectId),
-    setStatus: (projectId: string, status: EditableProjectStatus) =>
-      ipcRenderer.invoke(IPC.projects.setStatus, projectId, status),
-    setOwner: (projectId: string, employeeId: string | null) =>
-      ipcRenderer.invoke(IPC.projects.setOwner, projectId, employeeId),
-    removeMember: (projectId: string, employeeId: string) =>
-      ipcRenderer.invoke(IPC.projects.removeMember, projectId, employeeId),
-    setReportsTo: (projectId: string, employeeId: string, managerId: string | null) =>
-      ipcRenderer.invoke(IPC.projects.setReportsTo, projectId, employeeId, managerId),
   },
   facts: {
     list: (filter?: { employeeId?: string; departmentId?: string; projectId?: string }) =>

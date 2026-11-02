@@ -35,7 +35,6 @@ import type { SpeechService } from '../models/speechService';
 import type { OrgService } from '../org/orgService';
 import type { MemoryService } from '../memory/memoryService';
 import type { OrgFactService } from '../memory/orgFactService';
-import type { ProjectService } from '../org/projectService';
 import { validateDecomposition } from './decomposition';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
@@ -120,7 +119,6 @@ export interface WorkServiceDeps {
   org?: OrgService;
   memory?: MemoryService;
   facts?: OrgFactService;
-  projects?: ProjectService;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
   comm?: CommService;
   /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
@@ -282,11 +280,6 @@ export class WorkService {
               ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
               { type: 'personal' as const },
               ...(departmentId ? [{ type: 'department' as const, id: departmentId }] : []),
-              // Only the projects this employee is on — never every project.
-              ...(this.deps.projects?.activeProjectIdsOf(task.assigneeId) ?? []).map((id) => ({
-                type: 'project' as const,
-                id,
-              })),
             ];
             const snippets = await this.deps.memory!.retrieve({
               employeeId: task.assigneeId,
@@ -310,10 +303,6 @@ export class WorkService {
             const scopes = [
               { type: 'org' as const },
               ...(member?.departmentId ? [{ type: 'department' as const, id: member.departmentId }] : []),
-              ...(this.deps.projects?.activeProjectIdsOf(task.assigneeId) ?? []).map((id) => ({
-                type: 'project' as const,
-                id,
-              })),
             ];
             return this.deps.facts!.current(scopes).map((fact) => ({
               statement: fact.statement,

@@ -5,7 +5,6 @@ import type {
   CompanyProfilePatch,
   CreateTaskInput,
   DecisionClassifyInput,
-  EditableProjectStatus,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -26,7 +25,6 @@ import type { OcrSettings } from '@opc/shared/ocr';
 import type { OrgFactService } from '../memory/orgFactService';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
-import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
 import type { CompanyService } from '../company/companyService';
 import type { OrgService } from '../org/orgService';
@@ -69,7 +67,6 @@ interface RegisterOptions {
   /** 老板丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
   startGoal: (goal: string) => Promise<WorkThread>;
   facts: OrgFactService;
-  projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
   comm: CommService;
   /** 薪酬视图：预算账本 → 每个人的本月花费。 */
@@ -94,7 +91,6 @@ export function registerIpc({
   threads,
   startGoal,
   facts,
-  projects,
   consolidationRuns,
   comm,
   company,
@@ -509,69 +505,6 @@ export function registerIpc({
   ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
     consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
   );
-  ipcMain.handle(IPC.projects.list, (_event, options: unknown) =>
-    projects.list({
-      includeArchived:
-        typeof options === 'object' &&
-        options !== null &&
-        (options as { includeArchived?: unknown }).includeArchived === true,
-    }),
-  );
-  ipcMain.handle(IPC.projects.create, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('projects:create 参数非法');
-    const { name, code, description, departmentId } = input as Record<string, unknown>;
-    if (typeof name !== 'string') throw new Error('projects:create 需要 name');
-    projects.create({
-      name,
-      code: typeof code === 'string' ? code : undefined,
-      description: typeof description === 'string' ? description : undefined,
-      departmentId: typeof departmentId === 'string' ? departmentId : undefined,
-    });
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.assign, (_event, projectId: unknown, employeeId: unknown, role: unknown) => {
-    if (typeof projectId !== 'string' || typeof employeeId !== 'string') {
-      throw new Error('projects:assign 参数非法');
-    }
-    projects.assign(projectId, employeeId, typeof role === 'string' ? role : '');
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.setStatus, (_event, projectId: unknown, status: unknown) => {
-    if (typeof projectId !== 'string' || typeof status !== 'string') {
-      throw new Error('projects:setStatus 参数非法');
-    }
-    projects.setStatus(projectId, status as EditableProjectStatus);
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.setOwner, (_event, projectId: unknown, employeeId: unknown) => {
-    if (typeof projectId !== 'string' || (employeeId !== null && typeof employeeId !== 'string')) {
-      throw new Error('projects:setOwner 参数非法');
-    }
-    projects.setOwner(projectId, employeeId);
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.removeMember, (_event, projectId: unknown, employeeId: unknown) => {
-    if (typeof projectId !== 'string' || typeof employeeId !== 'string') {
-      throw new Error('projects:removeMember 参数非法');
-    }
-    projects.removeMember(projectId, employeeId);
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.setReportsTo, (_event, projectId: unknown, employeeId: unknown, managerId: unknown) => {
-    if (typeof projectId !== 'string' || typeof employeeId !== 'string') {
-      throw new Error('projects:setReportsTo 参数非法');
-    }
-    if (managerId !== null && typeof managerId !== 'string') {
-      throw new Error('projects:setReportsTo 参数非法');
-    }
-    projects.setReportsTo(projectId, employeeId, managerId);
-    return projects.list();
-  });
-  ipcMain.handle(IPC.projects.archive, (_event, projectId: unknown) => {
-    if (typeof projectId !== 'string') throw new Error('projects:archive 参数非法');
-    projects.archive(projectId);
-    return projects.list();
-  });
 
   ipcMain.handle(IPC.facts.list, (_event, filter: unknown) => {
     const parsed = (typeof filter === 'object' && filter !== null ? filter : {}) as {

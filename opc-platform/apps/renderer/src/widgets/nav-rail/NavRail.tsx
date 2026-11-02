@@ -4,7 +4,6 @@ import {
   Mail,
   Menu,
   MessageSquare,
-  FolderKanban,
   SquareKanban,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -15,7 +14,6 @@ const PRIMARY_NAV = [
   { to: '/attention', icon: Inbox, labelKey: 'nav.attention' },
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
-  { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { to: '/skills', icon: Grid3x3, labelKey: 'nav.skills' },
 ] as const;
 

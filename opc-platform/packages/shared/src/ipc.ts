@@ -16,7 +16,6 @@ import type {
   DecisionClassifyResult,
   DepartmentNode,
   WorkThread,
-  EditableProjectStatus,
   EmployeeToolPolicy,
   ModelDefaults,
   ModelOption,
@@ -108,16 +107,6 @@ export const IPC = {
     markRead: 'threads:markRead',
     decide: 'threads:decide',
     close: 'threads:close',
-  },
-  projects: {
-    list: 'projects:list',
-    create: 'projects:create',
-    assign: 'projects:assign',
-    archive: 'projects:archive',
-    setStatus: 'projects:setStatus',
-    removeMember: 'projects:removeMember',
-    setOwner: 'projects:setOwner',
-    setReportsTo: 'projects:setReportsTo',
   },
   org: {
     list: 'org:list',
@@ -548,21 +537,6 @@ export interface MemoryBridge {
   consolidationRuns(employeeId?: string): Promise<ConsolidationRunView[]>;
 }
 
-export interface ProjectsBridge {
-  /** `includeArchived` is opt-in: the index shows live work by default. */
-  list(options?: { includeArchived?: boolean }): Promise<ProjectView[]>;
-  create(input: { name: string; code?: string; description?: string; departmentId?: string }): Promise<ProjectView[]>;
-  assign(projectId: string, employeeId: string, role?: string): Promise<ProjectView[]>;
-  archive(projectId: string): Promise<ProjectView[]>;
-  /** Moves a project between planning / active / paused / done. */
-  setStatus(projectId: string, status: EditableProjectStatus): Promise<ProjectView[]>;
-  /** Sets the accountable person; `null` clears it. Must be an active member. */
-  setOwner(projectId: string, employeeId: string | null): Promise<ProjectView[]>;
-  removeMember(projectId: string, employeeId: string): Promise<ProjectView[]>;
-  /** Project-internal reporting line (matrix); `null` clears it. */
-  setReportsTo(projectId: string, employeeId: string, managerId: string | null): Promise<ProjectView[]>;
-}
-
 export interface FactsBridge {
   /** Current facts: by employee (org + their department) or by department. */
   list(filter?: { employeeId?: string; departmentId?: string; projectId?: string }): Promise<OrgFactView[]>;
@@ -958,7 +932,6 @@ export interface OpcBridge {
   extensions: ExtensionsBridge;
   skills: SkillsBridge;
   facts: FactsBridge;
-  projects: ProjectsBridge;
   memory: MemoryBridge;
   billing: BillingBridge;
   comm: CommBridge;

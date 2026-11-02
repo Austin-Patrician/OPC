@@ -9,7 +9,6 @@ import { consolidateConversation } from './memory/consolidation';
 import { ConsolidationRunStore } from './memory/consolidationRun';
 import { MemoryService } from './memory/memoryService';
 import { OrgFactService } from './memory/orgFactService';
-import { ProjectService } from './org/projectService';
 import { resetCompany } from './seed/resetCompany';
 import { ensureDefaultExecutor } from './seed/defaultExecutor';
 import { openCompanyDatabase } from './data/companyDatabase';
@@ -80,8 +79,6 @@ const isBlockerProbe = process.env.OPC_BLOCKER_PROBE === '1';
 const isIssueMetaProbe = process.env.OPC_ISSUE_META_PROBE === '1';
 /** `OPC_PRICING_PROBE=1`: decorated model ids map onto pi's official prices. */
 const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
-/** `OPC_PROJECT_PROBE=1`: project assignment scopes facts; other projects stay out. */
-const isProjectProbe = process.env.OPC_PROJECT_PROBE === '1';
 /** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
 const isInboxProbe = process.env.OPC_INBOX_PROBE === '1';
 /** `OPC_RUN_TASK=<issue key | task id>`: 用真实模型把一条任务跑到终态，然后退出。 */
@@ -330,7 +327,6 @@ async function bootstrap(): Promise<void> {
   const memory = new MemoryService(db);
   const facts = new OrgFactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
-  const projects = new ProjectService(db);
   const imageService = new ImageService(modelConfig, networkClient);
   const speechService = new SpeechService(modelConfig, networkClient);
   const decisionService = new DecisionService(modelConfig);
@@ -382,7 +378,6 @@ async function bootstrap(): Promise<void> {
     org,
     memory,
     facts,
-    projects,
     comm,
     network: networkClient,
     runtime: runtimeService,
@@ -457,7 +452,6 @@ async function bootstrap(): Promise<void> {
     decisions: decisionService,
     org,
     facts,
-    projects,
     consolidationRuns,
     comm,
     company: new CompanyService(db),
@@ -627,7 +621,6 @@ const isHeadlessMode =
   isBlockerProbe ||
   isIssueMetaProbe ||
   isPricingProbe ||
-  isProjectProbe ||
   isFactProbe ||
   isArchiveProbe ||
   isConsolidateProbe ||
@@ -682,15 +675,13 @@ if (!hasLock) {
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
       const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
       const org = new OrgService(db);
-      const projects = new ProjectService(db);
-      const work = new WorkService({
+          const work = new WorkService({
         db,
         paths: appPaths,
         agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         modelConfig,
         org,
-        projects,
         memory: new MemoryService(db),
         facts: new OrgFactService(db),
       });
@@ -966,84 +957,6 @@ if (!hasLock) {
       return;
     }
 
-    if (isProjectProbe) {
-      process.env.OPC_BRAIN_VARIANT ??= 'ok';
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-project-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const db2 = db;
-      const facts = new OrgFactService(db2);
-      const memory = new MemoryService(db2);
-      const projects = new ProjectService(db2);
-      const everyone = org.list().flatMap((department) => department.members);
-      const alice = everyone[0]!;
-      const bob = everyone[1]!;
-
-      projects.create({ name: '春季留存战役', code: 'PR-01', description: '提升次月留存' });
-      projects.create({ name: '内部工具', code: 'PR-02', description: '自动化脚本' });
-      const [spring, tools] = projects.list();
-      projects.assign(spring!.id, alice.id, '负责人');
-      projects.assign(tools!.id, bob.id, '开发');
-
-      facts.write({
-        scopeType: 'project',
-        scopeId: spring!.id,
-        subject: '战役目标',
-        object: '次月留存 +3pt',
-        statement: '春季留存战役目标：次月留存提升 3pt',
-      });
-      facts.write({
-        scopeType: 'project',
-        scopeId: tools!.id,
-        subject: '工具约束',
-        object: '必须离线可跑',
-        statement: '内部工具必须离线可跑（不该出现在 alice 的上下文）',
-      });
-
-      const work = new WorkService({
-        db: db2,
-        paths: appPaths,
-        agents: agentsFromOrg(org),
-        upsertTaskCard: () => undefined,
-        org,
-        memory,
-        facts,
-        projects,
-      });
-      const created = work.createTask({
-        title: '写留存实验方案',
-        brief: '按项目目标拆实验',
-        deliverableSpec: 'server.js 在 3000 端口返回 200',
-        assigneeId: alice.id,
-        estTokens: 4000,
-        acceptanceCommand: [],
-        acceptanceTemplate: 'http-ok',
-      });
-      if (!created.ok) throw new Error('项目探针创建任务失败');
-      const finished = await work.runTaskAndWait(created.task.id);
-
-      const aliceПроjects = projects.activeProjectIdsOf(alice.id);
-      const visibleFacts = [
-        { type: 'org' as const },
-        ...aliceПроjects.map((id) => ({ type: 'project' as const, id })),
-      ];
-      const aliceFacts = facts.current(visibleFacts).map((fact) => fact.statement);
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'project',
-          aliceProjects: aliceПроjects.length,
-          aliceFacts,
-          leakedOtherProject: aliceFacts.some((statement) => statement.includes('不该出现')),
-          assignmentListed: projects.list()[0]!.members.map((m) => m.name),
-          injected: finished.steps.find((step) => step.text.startsWith('注入'))?.text ?? null,
-          taskStatus: finished.status,
-        }) + '\n',
-      );
-      app.exit(aliceПроjects.length === 1 ? 0 : 1);
-      return;
-    }
 
     if (isInboxProbe) {
       // One wake per person per day: the brake has to trip inside a probe, not after
