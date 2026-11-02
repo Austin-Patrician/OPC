@@ -8,10 +8,11 @@ interface UsageLike {
 }
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
+import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 
 export interface HarnessBrainDeps {
-  /** Employee harness with coding tools + the configured model. */
-  harnessFor: (employeeId: string) => Promise<{ harness: Harness }>;
+  /** The runtime this task runs in (keyed by worker, not by person). */
+  harnessFor: (identity: RuntimeIdentity) => Promise<{ harness: Harness }>;
   context: () => Promise<Context>;
   /** The employee's own model when configured, otherwise the company default. */
   model: (employeeId: string) => ModelRef | null;
@@ -53,7 +54,7 @@ export class HarnessBrain implements TaskBrain {
     const model = this.deps.model(task.assigneeId);
     if (!model) throw new Error('未配置默认 LLM');
 
-    const { harness } = await this.deps.harnessFor(task.assigneeId);
+    const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
     const ctx = await this.deps.context();
 
     const before = await harness.usage(ctx);

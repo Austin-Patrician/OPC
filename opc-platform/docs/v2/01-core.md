@@ -110,11 +110,18 @@ harness 按 thread 开 → 谁先跑，谁的工具和模型就被缓存下来
 
 | | 规则 | 代价 |
 |---|---|---|
-| **A**（推荐） | **harness key = worker id**。一条线程有 1..N 个 worker，各开各的库 | 要先把 `worker` 行建出来并让 `employee` 与 worker 一一对应，B3-2 会大一些 |
+| **A** ✅ 已选 | **harness key = worker id**。一条线程有 1..N 个 worker，各开各的库 | 要先把 `worker` 行建出来并让 `employee` 与 worker 一一对应，B3-2 会大一些 |
 | B | 一条线程只允许一个 worker，拆解改由该 worker 内部串行完成 | 组织协作能力回退，层级派活（F4）等于废掉 |
 
 选 A 的理由：它同时是"助手模型"的自然形状——一条工作线由一个执行体负责，
 它有自己的上下文；线程的记忆 = 它的 worker 运行轨迹 + 汇报 + 任务，通过
 `thread_id` 聚合，而不是把不同人的轨迹塞进一个库。
 
-**在选之前不做 B3-2**，因为 B 会让 `decompose`/层级派活的设计作废。
+### A 已落地（B3-2）
+
+- `worker.employee_id`（谁填充这个执行体）+ `task.worker_id`（谁跑的）
+- `runtimeIdentityFor(task)`：`runtimeKey = workerId ?? assigneeId`，`employeeId = assigneeId`
+- `harnessFor(identity)`：缓存和 `agents/<key>.sqlite` 按 `runtimeKey`，工具注册表和模型按 `employeeId`
+- `evictHarness(employeeId)` 改为**扫一遍**而不是查单个 key —— 一个人可能持有多个 worker，
+  只关一个会让其余的继续用旧工具集
+- 没有 `worker_id` 的旧任务自动退回按 employee 开库：老数据不需要迁移就能继续跑

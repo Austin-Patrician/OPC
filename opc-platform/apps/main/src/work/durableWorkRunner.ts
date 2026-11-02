@@ -3,12 +3,13 @@ import type { Context } from '@earendil-works/chord/context';
 import type { Conversation, Harness, TaskId } from '@earendil-works/pi-durable';
 import path from 'node:path';
 import type { TaskRepository } from '../data/taskRepository';
+import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { WorkTaskDefinition, type WorkTaskInput, type WorkTaskResult } from './workTaskDefinition';
 
 export interface DurableWorkRunnerDeps {
   repository: TaskRepository;
-  /** Opens (and caches) the employee's Harness with our task definition installed. */
-  harnessFor: (employeeId: string) => Promise<{ harness: Harness; root: Conversation }>;
+  /** Opens (and caches) the task's runtime with our task definition installed. */
+  harnessFor: (identity: RuntimeIdentity) => Promise<{ harness: Harness; root: Conversation }>;
   context: () => Promise<Context>;
   workspaceRoot: string;
   checksRoot: string;
@@ -41,7 +42,7 @@ export class DurableWorkRunner {
     this.deps.repository.setStatus(taskId, 'running', { startedAt: Date.now(), error: null });
     this.deps.onTaskChanged(taskId);
 
-    const { harness, root } = await this.deps.harnessFor(task.assigneeId);
+    const { harness, root } = await this.deps.harnessFor(runtimeIdentityFor(task));
     const context = await this.deps.context();
 
     const input: WorkTaskInput = {
@@ -97,7 +98,7 @@ export class DurableWorkRunner {
 
       this.deps.onResumed?.(task.id);
       this.deps.repository.addStep(task.id, '启动恢复：从 durable checkpoint 继续');
-      const { harness } = await this.deps.harnessFor(task.assigneeId);
+      const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
       harness.resume();
       // Recovery must be bounded: a task that never reaches terminal (e.g. its
       // definition changed) would otherwise hold its reservation forever.

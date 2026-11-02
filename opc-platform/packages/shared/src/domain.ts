@@ -152,6 +152,11 @@ export interface WorkTask {
    * threads existed, and for work that never belonged to a goal.
    */
   threadId?: string;
+  /**
+   * The execution body that ran this task. Its id is the harness key, so two
+   * workers on one thread never share a runtime. Absent on legacy tasks.
+   */
+  workerId?: string;
   /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
   issueKey?: string;
   /** P0 (do it now) … P3 (someday). Defaults to P2. */
@@ -1228,6 +1233,12 @@ export interface Worker {
   skills: string[];
   /** Null between threads: a spent worker is retired, not remade. */
   threadId: string | null;
+  /**
+   * Who fills this execution body. During the migration it is an employee id;
+   * after B4 there is no employee table, and this becomes the worker's own name
+   * and charter.
+   */
+  employeeId: string | null;
   modelProvider: string | null;
   modelId: string | null;
   status: WorkerStatus;

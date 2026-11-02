@@ -45,6 +45,8 @@ export interface CreateWorkerInput {
   template?: WorkerTemplate;
   skills?: readonly string[];
   threadId?: string | null;
+  /** Who fills this execution body (an employee id during the migration). */
+  employeeId?: string | null;
   modelProvider?: string | null;
   modelId?: string | null;
 }
@@ -82,6 +84,7 @@ interface WorkerRow {
   template: WorkerTemplate;
   skills: string;
   thread_id: string | null;
+  employee_id: string | null;
   model_provider: string | null;
   model_id: string | null;
   status: WorkerStatus;
@@ -241,6 +244,7 @@ export class ThreadRepository {
       template: input.template ?? ('research' as WorkerTemplate),
       skills: JSON.stringify(input.skills ?? []),
       thread_id: input.threadId ?? null,
+      employee_id: input.employeeId ?? null,
       model_provider: input.modelProvider ?? null,
       model_id: input.modelId ?? null,
       status: 'idle' as WorkerStatus,
@@ -249,10 +253,30 @@ export class ThreadRepository {
       retired_at: null,
     };
     this.statement(
-      `INSERT INTO worker (id, name, template, skills, thread_id, model_provider, model_id, status, spent_tokens, created_at, retired_at)
-       VALUES (@id, @name, @template, @skills, @thread_id, @model_provider, @model_id, @status, @spent_tokens, @created_at, @retired_at)`,
+      `INSERT INTO worker (id, name, template, skills, thread_id, employee_id, model_provider, model_id, status, spent_tokens, created_at, retired_at)
+       VALUES (@id, @name, @template, @skills, @thread_id, @employee_id, @model_provider, @model_id, @status, @spent_tokens, @created_at, @retired_at)`,
     ).run(row);
     return toWorker(row as WorkerRow);
+  }
+
+  /**
+   * The execution body for one (thread, employee) pair — reused if it exists.
+   *
+   * One thread may have several workers (that is why the harness is keyed by
+   * worker, not by thread), but two tasks of the same person on the same line of
+   * work must share one, or the same context gets rebuilt per task.
+   */
+  ensureWorker(input: { threadId: string; employeeId: string; name: string; template?: WorkerTemplate }): Worker {
+    const existing = this.statement(
+      "SELECT * FROM worker WHERE thread_id = ? AND employee_id = ? AND status != 'retired' ORDER BY created_at LIMIT 1",
+    ).get(input.threadId, input.employeeId) as WorkerRow | undefined;
+    if (existing) return toWorker(existing);
+    return this.createWorker({
+      name: input.name,
+      threadId: input.threadId,
+      employeeId: input.employeeId,
+      ...(input.template ? { template: input.template } : {}),
+    });
   }
 
   getWorker(id: string): Worker | null {
@@ -417,6 +441,7 @@ function toWorker(row: WorkerRow): Worker {
     template: row.template,
     skills: parseList(row.skills),
     threadId: row.thread_id,
+    employeeId: row.employee_id,
     modelProvider: row.model_provider,
     modelId: row.model_id,
     status: row.status,

@@ -27,7 +27,8 @@ import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import { BOSS_USER_ID } from '../data/schema';
-import { TaskRepository, taskWorkspaceRelPath } from '../data/taskRepository';
+import { TaskRepository, taskWorkspaceRelPath, type CreateTaskDraft } from '../data/taskRepository';
+import { ThreadRepository } from '../data/threadRepository';
 import type { AppPaths } from '../env';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
@@ -42,6 +43,7 @@ import { BudgetBlockedError, BudgetService } from './budgetService';
 import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
+import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
@@ -80,6 +82,8 @@ function currentTaskIdFor(employeeId: string): string | undefined {
 interface EmployeeHarness {
   harness: Harness;
   root: Conversation;
+  /** Several runtimes can belong to one person once workers exist. */
+  employeeId: string;
 }
 
 /**
@@ -151,10 +155,13 @@ export class WorkService {
   /** Employees whose stack changed while a task was running; evicted when it ends. */
   private readonly dirtyHarnesses = new Set<string>();
   private readonly runtime: RuntimeService;
+  /** Owned here rather than injected: nine construction sites, one dependency. */
+  private readonly threads: ThreadRepository;
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
+    this.threads = new ThreadRepository(deps.db);
     this.repository.seedEmployees(deps.agents);
 
     // One environment for the whole company: every tool call and acceptance
@@ -173,7 +180,7 @@ export class WorkService {
     // configured model we fall back to the deterministic brain so the app still works.
     const modelBrain = deps.modelConfig
       ? new HarnessBrain({
-          harnessFor: (employeeId) => this.harnessFor(employeeId),
+          harnessFor: (identity) => this.harnessFor(identity),
           context: () => getBackgroundContext(),
           model: (employeeId) =>
             resolveEmployeeModelRef(deps.modelConfig, deps.org, employeeId),
@@ -194,7 +201,7 @@ export class WorkService {
       repository: this.repository,
       workspaceRoot: deps.paths.workspaceDir,
       checksRoot: path.join(deps.paths.userData, 'checks'),
-      harnessFor: (employeeId) => this.harnessFor(employeeId),
+      harnessFor: (identity) => this.harnessFor(identity),
       context: () => getBackgroundContext(),
       onTaskChanged: (taskId) => {
         const task = this.repository.getTask(taskId);
@@ -217,7 +224,9 @@ export class WorkService {
         const task = this.repository.getTask(taskId);
         // A session that failed at the storage layer is closed for good; keeping it
         // cached would make every later run of this employee fail with "Harness is closed".
-        if (outcome === 'faulted' && task) this.harnesses.delete(task.assigneeId);
+        if (outcome === 'faulted' && task) {
+          this.harnesses.delete(runtimeIdentityFor(task).runtimeKey);
+        }
         const passed = outcome === 'completed' && result?.verdict === 'pass';
         if (passed) {
           // §5.6: a hard stop pauses the assignment, not the employee. The charge is
@@ -441,6 +450,9 @@ export class WorkService {
         throw error;
       }
 
+      const childWorker = parent.threadId
+        ? this.ensureWorker(parent.threadId, subtask.assigneeId)
+        : null;
       const child = this.repository.createTask(
         {
           title: subtask.title,
@@ -453,6 +465,7 @@ export class WorkService {
           // Same line of work as the parent: a goal decomposed into five tasks is
           // still one thing to the boss, and must be recallable as one thread.
           ...(parent.threadId ? { threadId: parent.threadId } : {}),
+          ...(childWorker ? { workerId: childWorker.id } : {}),
         },
         taskWorkspaceRelPath(childId),
         childId,
@@ -502,13 +515,18 @@ export class WorkService {
   createTask = (input: CreateTaskInput): CreateTaskResult => {
     const taskId = `task-${crypto.randomUUID()}`;
     const workspaceRelPath = taskWorkspaceRelPath(taskId);
-    const draft = {
+    // A task that belongs to a line of work runs in that line's worker runtime, so
+    // two people on one thread never share a harness. Tasks without a thread keep
+    // the assignee's own runtime, which is what they had before.
+    const worker = input.threadId ? this.ensureWorker(input.threadId, input.assigneeId) : null;
+    const draft: CreateTaskDraft = {
       ...input,
       acceptanceTemplate: input.acceptanceTemplate ?? 'http-ok',
       acceptanceCommand:
         input.acceptanceCommand.length > 0
           ? input.acceptanceCommand
           : ['node', '{checks}/verify.mjs'],
+      ...(worker ? { workerId: worker.id } : {}),
     };
 
     try {
@@ -1203,14 +1221,23 @@ export class WorkService {
     await this.evictHarness(employeeId);
   }
 
+  /**
+   * Closes every runtime belonging to one person.
+   *
+   * The cache is keyed by worker, and one employee can hold several workers, so
+   * this must sweep rather than look up a single key — otherwise a stack change
+   * would silently leave the other runtimes on the old tool set.
+   */
   private async evictHarness(employeeId: string): Promise<void> {
-    const entry = this.harnesses.get(employeeId);
-    if (!entry) return;
-    this.harnesses.delete(employeeId);
-    try {
-      await entry.harness.close(await getBackgroundContext());
-    } catch (error) {
-      console.warn('关闭员工 harness 失败（栈已变更）', error);
+    const context = await getBackgroundContext();
+    for (const [runtimeKey, entry] of [...this.harnesses]) {
+      if (entry.employeeId !== employeeId) continue;
+      this.harnesses.delete(runtimeKey);
+      try {
+        await entry.harness.close(context);
+      } catch (error) {
+        console.warn('关闭员工 harness 失败（栈已变更）', error);
+      }
     }
   }
 
@@ -1220,8 +1247,8 @@ export class WorkService {
    * time, so without this the change would only apply after a restart.
    */
   invalidateAllHarnesses = async (): Promise<void> => {
-    for (const employeeId of [...this.harnesses.keys()]) {
-      await this.invalidateHarness(employeeId);
+    for (const entry of [...this.harnesses.values()]) {
+      await this.invalidateHarness(entry.employeeId);
     }
   };
 
@@ -1286,11 +1313,22 @@ export class WorkService {
     this.budgetListeners.forEach((listener) => listener(budgets));
   }
 
+  /**
+   * The execution body for (thread, person), created on first use.
+   *
+   * Idempotent by design: a thread with five tasks from the same person gets one
+   * worker, so its context is built once instead of five times.
+   */
+  private ensureWorker(threadId: string, employeeId: string) {
+    const name = this.deps.org?.everyone().find((entry) => entry.id === employeeId)?.name ?? employeeId;
+    return this.threads.ensureWorker({ threadId, employeeId, name });
+  }
+
   private async recordDurableStep(taskId: string, text: string): Promise<void> {
     try {
       const task = this.repository.getTask(taskId);
       if (!task) return;
-      const entry = await this.harnessFor(task.assigneeId);
+      const entry = await this.harnessFor(runtimeIdentityFor(task));
       await entry.root.submit(
         {
           type: 'write',
@@ -1304,8 +1342,15 @@ export class WorkService {
     }
   }
 
-  private async harnessFor(employeeId: string): Promise<EmployeeHarness> {
-    const cached = this.harnesses.get(employeeId);
+  /**
+   * Opens (or reuses) the runtime for one execution body.
+   *
+   * `runtimeKey` names the sqlite file and the cache slot; `employeeId` decides
+   * the tool registry and model. They are the same value until a task carries a
+   * worker id, which is why old data keeps its existing `agents/<employee>.sqlite`.
+   */
+  private async harnessFor(identity: RuntimeIdentity): Promise<EmployeeHarness> {
+    const cached = this.harnesses.get(identity.runtimeKey);
     if (cached) return cached;
 
     const { Harness } = await import('@earendil-works/pi-durable');
@@ -1313,9 +1358,9 @@ export class WorkService {
     const { NodeExecutionEnv } = await import('@earendil-works/pi-durable/env/node');
 
     const context = await getBackgroundContext();
-    const storagePath = path.join(this.deps.paths.agentsDir, `${employeeId}.sqlite`);
+    const storagePath = path.join(this.deps.paths.agentsDir, `${identity.runtimeKey}.sqlite`);
 
-    const registry = await this.buildRegistry(employeeId);
+    const registry = await this.buildRegistry(identity.employeeId);
 
     const models = this.deps.modelConfig
       ? await this.deps.modelConfig.runtime.createModels()
@@ -1349,8 +1394,8 @@ export class WorkService {
       context,
     );
     const root = await harness.root(context);
-    const entry = { harness, root };
-    this.harnesses.set(employeeId, entry);
+    const entry = { harness, root, employeeId: identity.employeeId };
+    this.harnesses.set(identity.runtimeKey, entry);
     return entry;
   }
 }

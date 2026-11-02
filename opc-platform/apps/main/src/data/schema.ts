@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1282,7 +1282,26 @@ ALTER TABLE task ADD COLUMN thread_id TEXT REFERENCES thread(id) ON DELETE SET N
 CREATE INDEX IF NOT EXISTS idx_task_thread ON task(thread_id);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26];
+/**
+ * V27: worker 知道自己是替谁干活，task 知道自己是哪个 worker 跑的。
+ *
+ * B3-2 的落点。选定「一线多 worker、harness 按 worker 开库」之后，运行时身份
+ * 就不能是 employee id——同一条工作线上两个执行者共用一个 Harness 会互相串台。
+ *
+ * - `worker.employee_id`：这个执行体由谁填充。迁移期与 employee 一一对应，
+ *   B4 删掉 employee 后它就是 worker 自己的一部分。
+ * - `task.worker_id`：这个任务由哪个 worker 执行。没有它的旧任务是空，
+ *   运行时退回按 employee 开库——老数据不需要迁移就能继续跑。
+ */
+const V27 = `
+ALTER TABLE worker ADD COLUMN employee_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_worker_employee ON worker(employee_id);
+
+ALTER TABLE task ADD COLUMN worker_id TEXT REFERENCES worker(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_task_worker ON task(worker_id);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,
