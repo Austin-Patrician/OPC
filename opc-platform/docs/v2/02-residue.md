@@ -12,7 +12,7 @@
 
 | 位置 | 残留内容 | 现在的表现 | 建议 |
 |---|---|---|---|
-| `widgets/title-bar/StartMenu.tsx`（26 处） | 「按部门建群」、按部门列出成员 | 只有一个默认部门时，只有一个人可选 | **改成「选人建群」**：直接列执行体，不分组。这是唯一还在用 department 做交互逻辑的地方 |
+| ~~`widgets/title-bar/StartMenu.tsx`~~ ✅ `385e39a` | 「按部门建群」已**删掉**（不留替代入口） | 现在只剩「和某个人开对话」；`chat:ensureDepartmentGroup` 通道一并删除 | 剩 7 处 department，只用于从 `org.list()` 摊平成员列表——那是「执行体从哪来」的问题 |
 | `features/chat/ui/ChatPanel.tsx` / `ChatHeader.tsx`（12 处） | 会话头上的部门色块与名字 | `conversation.departmentId` 永远对不上，渲染成 undefined | 保留但降级为可选（已经是可选），等 StartMenu 改完一起清 |
 | `pages/projects/ProjectsPage.tsx`（32 处） | 项目按部门、成员按部门筛 | 一个部门时能用，多个时是错觉 | 项目成员改成「参与的工作线」；优先级低 |
 | `features/agent-dossier/ui/AgentDossierDrawer.tsx`（11 处） | 「员工档案」：职级、汇报线、考核 | 打开是空的或只有一个人 | **改成「执行体卡」**：模板、技能、跑过哪些工作线、花了多少 |
