@@ -47,6 +47,7 @@ import { BudgetRepository } from './data/budgetRepository';
 import { createInboxRunner } from './comm/inboxRunner';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
+import { Watchdog } from './watchdog/watchdog';
 import { Router } from './router/router';
 import { createWorkDispatch } from './router/workDispatch';
 import { DEMO_TASK } from './work/acceptanceTemplate';
@@ -574,6 +575,25 @@ async function bootstrap(): Promise<void> {
       clearInterval(tick);
       watcher.stop();
     });
+
+    // 进展监督（三层验收的第 ① 层）：判的是「还在不在往前走」，不是「做得对不对」。
+    // 只做程序层，不花 token：超时、长时间无新步骤、原地重复同一句。
+    // 它只**上报**，不杀任务——杀掉一个马上要成功的运行是本项目 P6 明确禁止的聪明。
+    const liveWork = work;
+    const watchdog = new Watchdog({
+      threads,
+      pending: () => liveWork.listPending(),
+      onDiagnosis: (task, diagnosis) => console.warn('[watchdog]', diagnosis.kind, task.id, diagnosis.reason),
+    });
+    const sweep = setInterval(() => {
+      try {
+        watchdog.sweep();
+      } catch (error) {
+        console.error('[watchdog] sweep 失败', error);
+      }
+    }, 60_000);
+    sweep.unref?.();
+    app.on('before-quit', () => clearInterval(sweep));
   }
 
   // Outgoing traffic must already follow the boss's choice when the first window

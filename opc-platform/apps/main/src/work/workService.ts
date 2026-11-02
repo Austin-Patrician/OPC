@@ -344,6 +344,9 @@ export class WorkService {
 
   listTasks = (limit?: number): WorkTask[] => this.repository.listTasks(limit);
 
+  /** 未结束的活：Watchdog 每分钟体检一次的对象。 */
+  listPending = (): WorkTask[] => this.repository.listPending();
+
   /** Everything, newest first — the issue list needs the whole set, not a page. */
   listAllTasks = (limit = 500): WorkTask[] => this.repository.listTasks(limit);
 
