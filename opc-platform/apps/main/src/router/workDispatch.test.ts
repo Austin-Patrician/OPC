@@ -63,11 +63,16 @@ function dispatch(overrides: {
 
 describe('createWorkDispatch', () => {
   it('closes quietly when the work passed its own acceptance', async () => {
+    const gated = {
+      id: 'ev-0',
+      kind: 'folder.added',
+      payload: { acceptanceCommand: ['node', 'check.js'] },
+    } as never;
     const { fn } = dispatch({
       run: async () =>
         task({ status: 'accepted', artifacts: [{ id: 'a', relPath: 'summary.md' } as never] }),
     });
-    const outcome = await fn(input());
+    const outcome = await fn({ thread, event: gated });
     expect(outcome).toEqual({ status: 'delivered', summary: '产出：summary.md' });
   });
 
@@ -143,12 +148,29 @@ describe('createWorkDispatch', () => {
     });
   });
 
-  it('falls back to a verifiable default when the event says nothing', async () => {
+  it('does not invent an acceptance gate for an open-ended goal', async () => {
     const { fn, calls } = dispatch({});
     await fn(input());
-    expect(calls[0]).toMatchObject({
-      acceptanceCommand: ['node', '{checks}/verify.mjs'],
-      acceptanceTemplate: 'node-test',
-    });
+    // The pipeline's "did anything land" check still runs; that is all it claims.
+    expect(calls[0]).toMatchObject({ acceptanceCommand: ['node', '-e', 'process.exit(0)'] });
+  });
+
+  it('asks the boss instead of claiming a pass it cannot prove', async () => {
+    // No acceptance command in the event → "accepted" only means files landed.
+    const { fn } = dispatch({ run: async () => task({ status: 'accepted' }) });
+    const outcome = await fn(input());
+    expect(outcome.status).toBe('needs-decision');
+    expect(outcome.status === 'needs-decision' && outcome.question).toContain('判定不了对错');
+  });
+
+  it('closes quietly only when the event brought a real gate and it passed', async () => {
+    const gated = {
+      id: 'ev-3',
+      kind: 'folder.added',
+      payload: { acceptanceCommand: ['node', 'check.js'] },
+    } as never;
+    const { fn } = dispatch({ run: async () => task({ status: 'accepted' }) });
+    const outcome = await fn({ thread, event: gated });
+    expect(outcome.status).toBe('delivered');
   });
 });

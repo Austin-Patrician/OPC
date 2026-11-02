@@ -29,6 +29,20 @@ export interface WorkDispatchDeps {
 }
 
 const DEFAULT_EST_TOKENS = 20_000;
+
+/**
+ * The gate used when the event brought none.
+ *
+ * It proves nothing about correctness — the pipeline's own "did anything land in
+ * the workspace" check still runs, and that is all this claims. It exists so an
+ * open-ended goal ("整理这份财报") does not spend three retry rounds pretending a
+ * `node --test` failure means the work was wrong.
+ *
+ * Super-agent never claims acceptance for open-ended work either: it delivers
+ * what it can prove is worth delivering and leaves the verdict to the human.
+ * See docs/v2/01-core.md §9.
+ */
+const NO_GATE = ['node', '-e', 'process.exit(0)'];
 const TEMPLATES: readonly AcceptanceTemplate[] = ['http-ok', 'node-test', 'image-200', 'review-verdict'];
 
 export function createWorkDispatch(deps: WorkDispatchDeps) {
@@ -41,9 +55,12 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
     const payload = event.payload;
     const goal = thread.goal.trim() || thread.title.trim();
     const command = stringList(payload.acceptanceCommand);
+    // No command = no machine-checkable definition of done. We say so instead of
+    // inventing one: the run still happens, the result still reaches the boss.
+    const verified = command.length > 0;
     const template = TEMPLATES.includes(payload.acceptanceTemplate as AcceptanceTemplate)
       ? (payload.acceptanceTemplate as AcceptanceTemplate)
-      : 'node-test';
+      : 'http-ok';
 
     const created = deps.createTask({
       title: thread.title,
@@ -54,7 +71,7 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
           : goal,
       assigneeId,
       estTokens: numberOr(payload.estTokens, deps.estTokens ?? DEFAULT_EST_TOKENS),
-      acceptanceCommand: command.length > 0 ? command : ['node', '{checks}/verify.mjs'],
+      acceptanceCommand: verified ? command : NO_GATE,
       acceptanceTemplate: template,
       threadId: thread.id,
     });
@@ -65,13 +82,21 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
     }
 
     const final = await deps.runTaskAndWait(created.task.id);
-    return toOutcome(final);
+    return toOutcome(final, verified);
   };
 }
 
-function toOutcome(task: WorkTask): DispatchOutcome {
+function toOutcome(task: WorkTask, verified: boolean): DispatchOutcome {
   switch (task.status) {
     case 'accepted':
+      // Two different endings wear the same status. With a real gate, "accepted"
+      // means the work was proven; without one it only means something landed.
+      return verified
+        ? { status: 'delivered', summary: summarise(task) }
+        : {
+            status: 'needs-decision',
+            question: `做完了，但我没有可执行的验收条件，判定不了对错。${summarise(task)}`,
+          };
     case 'delivered':
       // `delivered` means the boss already signed it off; either way it is done.
       return { status: 'delivered', summary: summarise(task) };
