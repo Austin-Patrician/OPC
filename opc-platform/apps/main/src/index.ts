@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
@@ -39,7 +39,6 @@ import { PiSkillHost } from './skills/host';
 import { CommService, commSettingsFrom } from './comm/commService';
 import { CommRepository } from './data/commRepository';
 import { CommScheduler } from './comm/scheduler';
-import { applyCompanySetup, parseCompanySetup } from './setup/companySetup';
 import { BillingSettingsService } from './work/billingSettings';
 import { createInboxRunner } from './comm/inboxRunner';
 import { ThreadRepository } from './data/threadRepository';
@@ -85,12 +84,9 @@ const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
 const isProjectProbe = process.env.OPC_PROJECT_PROBE === '1';
 /** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
 const isInboxProbe = process.env.OPC_INBOX_PROBE === '1';
-/** `OPC_COMPANY_SETUP=<file.json>`: 用公司模板把部门/员工/项目/待办一次建好，然后退出。 */
-const companySetupPath = process.env.OPC_COMPANY_SETUP;
 /** `OPC_RUN_TASK=<issue key | task id>`: 用真实模型把一条任务跑到终态，然后退出。 */
 const runTaskRef = process.env.OPC_RUN_TASK;
 const isRunTask = Boolean(runTaskRef);
-const isCompanySetup = Boolean(companySetupPath);
 /** `OPC_FACT_PROBE=1`: company facts are versioned and reach the employee's prompt. */
 const isFactProbe = process.env.OPC_FACT_PROBE === '1';
 /** `OPC_ARCHIVE_PROBE=1`: idle conversation → archived → consolidated once. */
@@ -642,7 +638,6 @@ const isHeadlessMode =
   isChatProbe ||
   isReviewProbe ||
   isInboxProbe ||
-  isCompanySetup ||
   isRunTask;
 const hasLock = isHeadlessMode ? true : app.requestSingleInstanceLock();
 if (!hasLock) {
@@ -760,33 +755,6 @@ if (!hasLock) {
       return;
     }
 
-    if (isCompanySetup) {
-      // 用真实服务建公司：与 UI 里点出来的是同一批行，只是可以重复执行。
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      const projects = new ProjectService(db);
-      const work = new WorkService({
-        db,
-        paths: appPaths,
-        agents: agentsFromOrg(org),
-        upsertTaskCard: () => undefined,
-        org,
-        projects,
-      });
-      try {
-        const spec = parseCompanySetup(readFileSync(companySetupPath!, 'utf8'));
-        const report = applyCompanySetup({ db, org, projects, work }, spec);
-        process.stdout.write(`${JSON.stringify({ probe: 'company-setup', ...report }, null, 2)}\n`);
-        await work.dispose();
-        app.exit(0);
-      } catch (error) {
-        console.error('COMPANY_SETUP_FAILED', error);
-        await work.dispose().catch(() => undefined);
-        app.exit(1);
-      }
-      return;
-    }
 
     if (isConsolidationRunProbe) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consol-run-')));
