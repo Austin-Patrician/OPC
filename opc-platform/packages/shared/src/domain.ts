@@ -1182,6 +1182,13 @@ export interface Worker {
   employeeId: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  /**
+   * 这个执行体装了哪些工具（原样 JSON）。
+   *
+   * 原始字符串而不是解析后的对象：语义属于 `work/toolPolicy`，数据层只负责存取。
+   * 这样加一条策略不用改表，也不用让仓储认识业务概念。
+   */
+  policyJson: string;
   status: WorkerStatus;
   spentTokens: number;
   createdAt: number;

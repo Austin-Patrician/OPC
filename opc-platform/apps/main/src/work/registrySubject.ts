@@ -1,4 +1,5 @@
-import type { Worker, WorkerTemplate } from '@opc/shared/domain';
+import type { EmployeeToolPolicy, Worker, WorkerTemplate } from '@opc/shared/domain';
+import { parseToolPolicy } from './toolPolicy';
 
 /**
  * 运行时为谁而建。
@@ -14,12 +15,19 @@ import type { Worker, WorkerTemplate } from '@opc/shared/domain';
  * 只是所有 worker 都不再有 `employeeId` 而已。
  */
 export interface RegistrySubject {
-  /** 通讯身份 / 记忆作用域 / 按执行体查当前任务，都用它。 */
+  /** 记忆作用域 / 按执行体查当前任务，都用它。 */
   id: string;
   name: string;
   template: WorkerTemplate;
   skills: readonly string[];
-  /** 迁移期遗留：这个人行还在的时候填上。 */
+  /**
+   * 这个执行体装了哪些工具、开了哪些开关。
+   *
+   * §2.2：Worker 挂载完整的执行工具。所以这是**执行体自己的属性**，不是某个人的。
+   * 空表示全开（缺省即完整工具集）。
+   */
+  policy?: EmployeeToolPolicy;
+  /** 迁移期遗留：`employee` 行还在的时候填上。删表那天它自然为空。 */
   employeeId?: string;
 }
 
@@ -29,6 +37,7 @@ export function subjectOfWorker(worker: Worker): RegistrySubject {
     name: worker.name,
     template: worker.template,
     skills: worker.skills,
+    policy: parseToolPolicy(worker.policyJson),
     ...(worker.employeeId ? { employeeId: worker.employeeId } : {}),
   };
 }

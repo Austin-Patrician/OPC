@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppPaths } from '../env';
 import { OrgService } from '../org/orgService';
+import { ThreadRepository } from '../data/threadRepository';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import type { DecisionService } from '../models/decisionService';
 import type { OcrEngine } from '../ocr/service';
@@ -40,6 +41,17 @@ afterEach(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+
+/**
+ * 一个执行体。工具策略属于它自己（§2.2），所以这些用例按 worker 查，
+ * 不再按"某个员工"查。
+ */
+function executor(name = '执行体'): string {
+  const threads = new ThreadRepository(db);
+  const thread = threads.createThread({ title: '测试', goal: '测试' });
+  return threads.createWorker({ name, threadId: thread.id }).id;
+}
 
 function workWith(org: OrgService, ocr?: OcrEngine, decisions?: DecisionService): WorkService {
   return new WorkService({
@@ -133,19 +145,21 @@ describe('WorkService.capabilities', () => {
   it('installs decide only while a decision model is configured', async () => {
     const org = new OrgService(db);
     const department = org.createDepartment({ name: '运营部', code: 'OP-01' });
-    const employee = org.hire({ name: '顾南', role: '内容运营', departmentId: department.id });
+    org.hire({ name: '顾南', role: '内容运营', departmentId: department.id });
 
     const on = await workWith(org, undefined, fakeDecisions(true)).capabilities();
     expect(on.agents[0]?.tools.map((tool) => tool.name)).toContain('decide');
     expect(on.agents[0]?.extensions.map((extension) => extension.name)).toContain('opc.decision');
 
-    // It is a normal optional extension: the boss can switch it off per employee.
+    // 它是个普通可选扩展：老板可以按**执行体**关掉它（§2.2 工具集是执行体自己的）。
     const managed = workWith(org, undefined, fakeDecisions(true));
-    await managed.setStack(employee.id, {
+    const workerId = executor();
+    await managed.setStack(workerId, {
       policy: { disabledExtensions: ['opc.decision'], disabledTools: [] },
     });
-    const hidden = await managed.capabilities();
-    expect(hidden.agents[0]?.tools.map((tool) => tool.name)).not.toContain('decide');
+    const hidden = await managed.stack(workerId);
+    const decision = hidden.extensions.find((extension) => extension.name === 'opc.decision')!;
+    expect(decision.enabled).toBe(false);
 
     // Without a keyed, enabled classifier the tool is absent and the stack page
     // says why, rather than offering a tool whose first call can only fail.
@@ -153,7 +167,7 @@ describe('WorkService.capabilities', () => {
     const off = await work.capabilities();
     expect(off.agents[0]?.tools.map((tool) => tool.name)).not.toContain('decide');
 
-    const stack = await work.stack(employee.id);
+    const stack = await work.stack(executor());
     expect(stack.extensions.find((extension) => extension.name === 'opc.decision')).toMatchObject({
       available: false,
       reason: 'no-decision-model',
@@ -196,10 +210,7 @@ describe('WorkService.capabilities', () => {
 describe('WorkService.stack', () => {
   it('describes every tool group with an availability reason, not just the installed ones', async () => {
     const org = new OrgService(db);
-    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
-    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
-
-    const stack = await workWith(org).stack(employee.id);
+    const stack = await workWith(org).stack(executor());
     const byName = new Map(stack.extensions.map((extension) => [extension.name, extension]));
 
     expect(stack.model).toBeNull();
@@ -225,26 +236,28 @@ describe('WorkService.stack', () => {
 
   it('removes a disabled tool from the registry the next task would get', async () => {
     const org = new OrgService(db);
-    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
-    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
     const work = workWith(org);
+    const workerId = executor();
 
-    await work.setStack(employee.id, {
+    await work.setStack(workerId, {
       policy: { disabledExtensions: [], disabledTools: ['bash'] },
     });
 
-    const catalog = await work.capabilities();
-    const agent = catalog.agents.find((entry) => entry.employeeId === employee.id)!;
-    expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['edit', 'read', 'write']);
+    const after = await work.stack(workerId);
+    const coding = after.extensions.find((extension) => extension.name === 'coding-tools')!;
+    expect(coding.tools.filter((tool) => tool.enabled).map((tool) => tool.name).sort()).toEqual([
+      'edit',
+      'read',
+      'write',
+    ]);
   });
 
   it('refuses to switch off a core extension', async () => {
     const org = new OrgService(db);
-    const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
-    const employee = org.hire({ name: '林澈', role: '前端工程师', departmentId: department.id });
+    const workerId = executor();
 
     await expect(
-      workWith(org).setStack(employee.id, {
+      workWith(org).setStack(workerId, {
         policy: { disabledExtensions: ['coding-tools'], disabledTools: [] },
       }),
     ).rejects.toThrow(/核心扩展/);

@@ -18,6 +18,7 @@ function worker(overrides: Partial<Worker> = {}): Worker {
     employeeId: 'emp-1',
     modelProvider: null,
     modelId: null,
+  policyJson: '{}',
     status: 'idle',
     spentTokens: 0,
     createdAt: 0,

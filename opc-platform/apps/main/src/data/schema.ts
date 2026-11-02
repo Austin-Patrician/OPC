@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1375,7 +1375,20 @@ DROP TABLE IF EXISTS budget_alert;
 DROP TABLE IF EXISTS budget;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29];
+/**
+ * V30：执行体拥有自己的工具策略。
+ *
+ * §2.2 说 Worker「挂载完整的执行工具」——那么"它装了哪些工具"就必须是它自己的属性，
+ * 而不是某个人的。这一列从 `employee.tool_policy` 挪过来之后，执行体的工具集与模型
+ * 都在 worker 行上，`employee` 就没有功能依赖了。
+ *
+ * 默认 `'{}'` = 全开：新起的执行体先用模板给的完整工具集，谁想收窄谁改它。
+ */
+const V30 = `
+ALTER TABLE worker ADD COLUMN tool_policy TEXT NOT NULL DEFAULT '{}';
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

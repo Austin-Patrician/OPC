@@ -96,6 +96,7 @@ interface WorkerRow {
   employee_id: string | null;
   model_provider: string | null;
   model_id: string | null;
+  tool_policy: string;
   status: WorkerStatus;
   spent_tokens: number;
   created_at: number;
@@ -468,6 +469,32 @@ export class ThreadRepository {
     return row ? toEvent(row) : null;
   }
 
+  /**
+   * 这个执行体的工具策略。
+   *
+   * 解析后原样返回 JSON 字符串——策略的语义属于 `work/toolPolicy`，仓储不认识它，
+   * 只负责存取。这样加一条策略不用改表。
+   */
+  workerPolicy(workerId: string): string {
+    const row = this.statement('SELECT tool_policy FROM worker WHERE id = ?').get(workerId) as
+      | { tool_policy: string }
+      | undefined;
+    return row?.tool_policy ?? '{}';
+  }
+
+  setWorkerPolicy(workerId: string, policy: string): void {
+    this.statement('UPDATE worker SET tool_policy = ? WHERE id = ?').run(policy, workerId);
+  }
+
+  /** 这个执行体自己的模型覆盖；空表示跟随公司默认。 */
+  setWorkerModel(workerId: string, provider: string | null, modelId: string | null): void {
+    this.statement('UPDATE worker SET model_provider = ?, model_id = ? WHERE id = ?').run(
+      provider,
+      modelId,
+      workerId,
+    );
+  }
+
   // ── 并线与订阅（§3.2）────────────────────────────────────────────────────
 
   /**
@@ -609,6 +636,7 @@ function toWorker(row: WorkerRow): Worker {
     employeeId: row.employee_id,
     modelProvider: row.model_provider,
     modelId: row.model_id,
+    policyJson: row.tool_policy ?? '{}',
     status: row.status,
     spentTokens: row.spent_tokens,
     createdAt: row.created_at,

@@ -13,8 +13,8 @@ import type {
 import type {
   AgentCapability,
   CapabilityCatalog,
-  EmployeeStackInput,
-  EmployeeStackView,
+  WorkerStackInput,
+  WorkerStackView,
 } from '@opc/shared/ipc';
 import type { Context } from '@earendil-works/chord/context';
 import { createRegistry, defineExtension } from '@earendil-works/pi-durable';
@@ -180,8 +180,6 @@ export class WorkService {
             resolveWorkerModelRef({
               worker: this.threads.getWorker(identity.runtimeKey),
               modelConfig: deps.modelConfig,
-              org: deps.org,
-              employeeId: identity.employeeId,
             }),
           thinking: () => deps.modelConfig?.getThinking() ?? 'medium',
           price: (ref) => {
@@ -218,7 +216,7 @@ export class WorkService {
         // A stack change made while this task was running is applied now: the next
         // task must open a harness with the new registry, not keep the old one.
         for (const employeeId of finishedEmployees) {
-          if (this.dirtyHarnesses.delete(employeeId)) void this.evictHarness(employeeId);
+          if (this.dirtyHarnesses.delete(employeeId)) void this.evictRuntime(employeeId);
         }
         const task = this.repository.getTask(taskId);
         // A session that failed at the storage layer is closed for good; keeping it
@@ -873,11 +871,9 @@ export class WorkService {
    * explain the same missing provider without the main process translating.
    */
   private async toolSlots(subject: RegistrySubject): Promise<ToolSlot[]> {
-    // 迁移期：能从人身上查的就查，查不到就走"没有员工"的分支。
     const personId = subject.employeeId ?? subject.id;
-    const policy = subject.employeeId
-      ? (this.deps.org?.toolPolicyOf(subject.employeeId) ?? EMPTY_TOOL_POLICY)
-      : EMPTY_TOOL_POLICY;
+    // §2.2：工具集是执行体自己的属性。`employee` 那一路只是迁移期兜底。
+    const policy = subject.policy ?? EMPTY_TOOL_POLICY;
 
     const { createCodingTools } = await import('@earendil-works/pi-durable/tools');
     const slots: ToolSlot[] = [
@@ -1058,9 +1054,7 @@ export class WorkService {
    */
   private async buildRegistry(subject: RegistrySubject): Promise<Registry> {
     const slots = await this.toolSlots(subject);
-    const policy = subject.employeeId
-      ? (this.deps.org?.toolPolicyOf(subject.employeeId) ?? EMPTY_TOOL_POLICY)
-      : EMPTY_TOOL_POLICY;
+    const policy = subject.policy ?? EMPTY_TOOL_POLICY;
 
     // The registry carries our durable task definition: without it a resumed
     // task is "blocked: missing_task".
@@ -1086,22 +1080,27 @@ export class WorkService {
   }
 
   /**
-   * One employee's model and tool policy, plus what the runtime can install now.
+   * 一个**执行体**的模型与工具策略，以及运行时现在能装什么。
    *
-   * Shared by the dossier editor and any future entry point (hire wizard, bulk
-   * provisioning): both read this instead of re-deriving conditions.
+   * 按 worker 而不是按人查：§2.2 说 Worker 挂载完整的执行工具，那么"它装了哪些、
+   * 还差什么"就是它自己的问题。一条线可以有多个执行体，它们本来就可以不一样。
    */
-  stack = async (employeeId: string): Promise<EmployeeStackView> => {
-    if (!this.deps.org) throw new Error('组织服务未就绪');
-    const member = this.deps.org.everyone().find((entry) => entry.id === employeeId);
-    if (!member) throw new Error('员工不存在');
+  stack = async (workerId: string): Promise<WorkerStackView> => {
+    const worker = this.threads.getWorker(workerId);
+    if (!worker) throw new Error(`未知执行体：${workerId}`);
 
-    const policy = this.deps.org.toolPolicyOf(employeeId);
-    const slots = await this.toolSlots(this.subjectOfEmployee(employeeId));
+    const subject = subjectOfWorker(worker);
+    const policy = subject.policy ?? EMPTY_TOOL_POLICY;
+    const slots = await this.toolSlots(subject);
+    const pinned =
+      worker.modelProvider && worker.modelId
+        ? { providerId: worker.modelProvider, modelId: worker.modelId }
+        : null;
     return {
-      employeeId,
-      model: this.deps.org.modelRefOf(employeeId) ?? null,
-      modelLabel: member.model,
+      workerId,
+      name: worker.name,
+      model: pinned,
+      modelLabel: pinned ? labelOf(this.deps.modelConfig, pinned) : '',
       defaultModel: this.deps.modelConfig?.getDefaults().llm ?? null,
       policy,
       extensions: slots.map((slot) => {
@@ -1125,16 +1124,16 @@ export class WorkService {
   };
 
   /**
-   * Saves a model override and/or tool policy and drops the cached harness, so
-   * the next task (or the next message, for the model) uses it immediately.
+   * 改执行体的模型 / 工具策略，并丢掉缓存的 harness，让下一个任务立刻用新的。
+   *
+   * 工具装在 harness 的注册表里、开库时固定；模型是每个任务解析的，所以只有
+   * 注册表需要重建。
    */
-  setStack = async (employeeId: string, input: EmployeeStackInput): Promise<EmployeeStackView> => {
-    if (!this.deps.org) throw new Error('组织服务未就绪');
-    if (!this.deps.org.everyone().some((entry) => entry.id === employeeId)) {
-      throw new Error('员工不存在');
-    }
+  setStack = async (workerId: string, input: WorkerStackInput): Promise<WorkerStackView> => {
+    const worker = this.threads.getWorker(workerId);
+    if (!worker) throw new Error(`未知执行体：${workerId}`);
 
-    const slots = await this.toolSlots(this.subjectOfEmployee(employeeId));
+    const slots = await this.toolSlots(subjectOfWorker(worker));
     const knownExtensions = new Map(slots.map((slot) => [slot.name, slot]));
 
     let policy: EmployeeToolPolicy | undefined;
@@ -1151,56 +1150,39 @@ export class WorkService {
       // whole save fail when the boss changes something else.
     }
 
-    let modelLabel: string | undefined;
     if (input.model) {
       const provider = this.deps.modelConfig
         ?.listProviders()
         .find((entry) => entry.id === input.model?.providerId);
       const model = provider?.models.find((entry) => entry.id === input.model?.modelId);
       if (!provider || !model) throw new Error('模型不存在或未配置');
-      if (model.capability !== 'chat') throw new Error('员工只能配置对话模型');
+      if (model.capability !== 'chat') throw new Error('执行体只能配置对话模型');
       if (model.chatEnabled === false) throw new Error('该模型未启用对话能力');
-      modelLabel = model.name || model.id;
     }
 
-    this.deps.org.setStack(employeeId, {
-      ...(input.model !== undefined ? { model: input.model } : {}),
-      ...(modelLabel ? { modelLabel } : {}),
-      ...(policy ? { policy } : {}),
-    });
+    if (policy) this.threads.setWorkerPolicy(workerId, JSON.stringify(policy));
+    if (input.model !== undefined) {
+      this.threads.setWorkerModel(
+        workerId,
+        input.model?.providerId ?? null,
+        input.model?.modelId ?? null,
+      );
+    }
 
-    // Tools live in the harness's registry, which is fixed at open time. Model
-    // resolution happens per task, so only the registry needs a rebuild.
-    await this.invalidateHarness(employeeId);
-    return this.stack(employeeId);
+    await this.evictRuntime(workerId);
+    return this.stack(workerId);
   };
 
-  /** Defers eviction while the employee is mid-task instead of closing its harness. */
-  private async invalidateHarness(employeeId: string): Promise<void> {
-    if (runningTaskByEmployee.has(employeeId)) {
-      this.dirtyHarnesses.add(employeeId);
-      return;
-    }
-    await this.evictHarness(employeeId);
-  }
-
-  /**
-   * Closes every runtime belonging to one person.
-   *
-   * The cache is keyed by worker, and one employee can hold several workers, so
-   * this must sweep rather than look up a single key — otherwise a stack change
-   * would silently leave the other runtimes on the old tool set.
-   */
-  private async evictHarness(employeeId: string): Promise<void> {
+  /** 关掉一个执行体的运行时。注册表在开库时固定，改工具集必须重开。 */
+  private async evictRuntime(workerId: string): Promise<void> {
+    const entry = this.harnesses.get(workerId);
+    if (!entry) return;
+    this.harnesses.delete(workerId);
     const context = await getBackgroundContext();
-    for (const [runtimeKey, entry] of [...this.harnesses]) {
-      if (entry.employeeId !== employeeId) continue;
-      this.harnesses.delete(runtimeKey);
-      try {
-        await entry.harness.close(context);
-      } catch (error) {
-        console.warn('关闭员工 harness 失败（栈已变更）', error);
-      }
+    try {
+      await entry.harness.close(context);
+    } catch (error) {
+      console.warn('关闭执行体 harness 失败（栈已变更）', error);
     }
   }
 
@@ -1210,8 +1192,8 @@ export class WorkService {
    * time, so without this the change would only apply after a restart.
    */
   invalidateAllHarnesses = async (): Promise<void> => {
-    for (const entry of [...this.harnesses.values()]) {
-      await this.invalidateHarness(entry.employeeId);
+    for (const runtimeKey of [...this.harnesses.keys()]) {
+      await this.evictRuntime(runtimeKey);
     }
   };
 
@@ -1382,6 +1364,23 @@ export class WorkService {
     this.harnesses.set(identity.runtimeKey, entry);
     return entry;
   }
+}
+
+/**
+ * 一个模型引用怎么显示给人看。
+ *
+ * 从目录里现读而不是存一个标签：provider 改过名、模型下过线时，存下来的标签会
+ * 一直骗人。查不到就返回空，让界面显示"—"而不是一个过期名字。
+ */
+function labelOf(
+  config: { listProviders(): { models: { id: string; name?: string }[] }[] } | undefined,
+  ref: { providerId: string; modelId: string },
+): string {
+  const model = config
+    ?.listProviders()
+    .flatMap((provider) => provider.models)
+    .find((entry) => entry.id === ref.modelId);
+  return model?.name || model?.id || ref.modelId;
 }
 
 /** Loaded once: pi-durable is ESM-only, the main bundle is CJS. */

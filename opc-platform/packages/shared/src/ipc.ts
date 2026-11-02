@@ -563,22 +563,22 @@ export interface EmployeeToolExtensionView {
 }
 
 /**
- * What one employee's agent actually runs with.
+ * 一个执行体实际跑在什么上面。
  *
- * Read from the same catalog the registry installs from, plus the stored policy.
- * `model: null` means the employee inherits the company default.
+ * 与注册表装的是同一份目录，所以界面不可能描述一个模型拿不到的工具。
+ * `model: null` 表示这个执行体跟随公司默认。
  */
-export interface EmployeeStackView {
-  employeeId: string;
+export interface WorkerStackView {
+  workerId: string;
+  name: string;
   model: ModelRef | null;
-  /** Display label stored on the employee row (may be stale for legacy rows). */
   modelLabel: string;
   defaultModel: ModelRef | null;
   policy: EmployeeToolPolicy;
   extensions: EmployeeToolExtensionView[];
 }
 
-export interface EmployeeStackInput {
+export interface WorkerStackInput {
   /** Omit to leave unchanged; `null` clears the override and inherits the default. */
   model?: ModelRef | null;
   /** Omit to leave unchanged; the whole policy is replaced when present. */
