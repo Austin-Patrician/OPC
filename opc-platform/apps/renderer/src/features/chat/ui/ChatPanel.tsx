@@ -1,7 +1,5 @@
 import type { Agent } from '@/entities/agent/model/types';
 import type { Conversation } from '@/entities/conversation/model/types';
-import { useShellStore } from '@/shared/prefs/useShellStore';
-import { AgentDossierDrawer } from '@/features/agent-dossier/ui/AgentDossierDrawer';
 import { ChatHeader } from './ChatHeader';
 import { Composer } from './Composer';
 import { MessageStream } from './MessageStream';
@@ -11,23 +9,17 @@ interface ChatPanelProps {
   agents: readonly Agent[];
   typingNames: readonly string[];
   onSend: (text: string, mentionIds: string[]) => void;
-  onUpdateBrief: (agentId: string, briefMd: string) => void;
   onOpenDispatch: () => void;
 }
 
-/** Center column: header, virtualized stream, composer, optional dossier. */
+/** Center column: header, virtualized stream, composer. */
 export function ChatPanel({
   conversation,
   agents,
   typingNames,
   onSend,
-  onUpdateBrief,
   onOpenDispatch,
 }: ChatPanelProps) {
-  const dossierOpen = useShellStore((state) => state.dossierOpen);
-  const toggleDossier = useShellStore((state) => state.toggleDossier);
-  const closeDossier = useShellStore((state) => state.closeDossier);
-
   const members = conversation.memberIds
     .map((id) => agents.find((agent) => agent.id === id))
     .filter((agent): agent is Agent => Boolean(agent));
@@ -37,29 +29,14 @@ export function ChatPanel({
       <div className="flex min-w-0 flex-1 flex-col">
         <ChatHeader
           title={conversation.title}
-          memberCount={conversation.memberIds.length + 1}
-          onOpenDossier={toggleDossier}
-          onOpenAddMember={toggleDossier}
+          // 一对一不显示人数：和 Router 说话时「2 人」只是噪音。
+          memberCount={conversation.kind === 'dm' ? 1 : conversation.memberIds.length + 1}
         />
 
         <MessageStream messages={conversation.messages} agents={agents} typingNames={typingNames} />
 
-        <Composer
-          agents={members}
-          onSend={onSend}
-          onOpenDossier={toggleDossier}
-          onOpenDispatch={onOpenDispatch}
-        />
+        <Composer agents={members} onSend={onSend} onOpenDispatch={onOpenDispatch} />
       </div>
-
-      {dossierOpen ? (
-        <AgentDossierDrawer
-          conversation={conversation}
-          members={members}
-          onClose={closeDossier}
-          onUpdateBrief={onUpdateBrief}
-        />
-      ) : null}
     </main>
   );
 }

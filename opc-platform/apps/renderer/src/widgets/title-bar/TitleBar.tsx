@@ -7,7 +7,6 @@ import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { getPlatform, isDesktopShell, isMacLike } from '@/shared/lib/platform';
 import { IdentityPopover } from './IdentityPopover';
-import { StartMenu } from './StartMenu';
 
 interface TitleBarProps {
   onOpenSettings: () => void;
@@ -138,7 +137,6 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
             'left-[calc(var(--spacing-rail)+0.5rem-1.75rem)]',
           )}
         >
-          <StartMenu />
         </div>
       </div>
     </header>

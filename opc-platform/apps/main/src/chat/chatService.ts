@@ -18,6 +18,29 @@ function formatClock(date: Date = new Date()): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * Router 的脸。
+ *
+ * 聊天窗口里对面那个人是 **Router**，不是某个执行体。这是 Super-agent 双层架构
+ * 的第一条（docs/v2/04-superagent-check.md §1）：Router 承接人类交互与分派，
+ * Worker 在隔离的上下文里干活、不直接对人说话。
+ *
+ * 所以这条会话不需要「挑一个人来当替身」——Router 常驻，本来就有身份。
+ * 执行体是随工作线临时存在的，它们只出现在工作线里。
+ */
+export const ROUTER_ID = 'router';
+
+/** 聊天里说话的一方。`Agent` 结构上满足它；Router 不是 agent，也满足它。 */
+interface Speaker {
+  id: string;
+  name: string;
+  role?: string;
+  level?: string;
+  avatarUrl?: string;
+}
+
+const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
+
 export interface ChatServiceSeed {
   agents: Agent[];
   departments: ChatSnapshot['departments'];
@@ -46,6 +69,13 @@ export class ChatService {
 
   /** Injected by bootstrap; the only way an agent can actually answer. */
   replyWithModel?: (input: { agent: Agent; text: string; history: Message[] }) => Promise<string>;
+  /**
+   * Injected by bootstrap: Router 自己的回答。
+   *
+   * 与 `replyWithModel` 分开是有意的——Router 不是员工，它不该借任何人的名字、
+   * 头衔或模型。它就是它自己：常驻、轻量、只负责接住话并把活派出去。
+   */
+  replyAsRouter?: (input: { text: string; history: Message[] }) => Promise<string>;
   /**
    * Injected by bootstrap: §7.4 routing for group/channel messages.
    * Absent (e.g. in a probe) keeps the inline reply path.
@@ -120,20 +150,32 @@ export class ChatService {
   };
 
   /**
-   * Opens the 1v1 with an employee, creating it on first use. `displayName` lets
-   * the caller resolve someone hired after the chat seed was built.
-   */
-  /**
-   * 老板和助手之间唯一的那条会话。
+   * 老板和 Router 之间唯一的那条会话。
    *
-   * v2 之后没有「会话列表」——用户感觉始终只和一个 Agent 打交道。迁移期这条会话
-   * 就是和默认执行体的 DM；员工彻底消失之后，它会变成 Router 的那张脸。
-   * 没有执行体时返回 null，由界面去说「还没有可用的人」。
+   * v2 之后没有「会话列表」——用户感觉始终只和一个 Agent 打交道，而那个人是
+   * **Router**。这里不再需要挑一个人来当门面：Router 常驻，所以「还没有可用的
+   * 人」这个状态不存在了，返回值也不再可空。
    */
-  ensureAssistant = (): string | null => {
-    const agent = this.snapshot.agents[0];
-    if (!agent) return null;
-    return this.openDirect(agent.id);
+  ensureAssistant = (): string => {
+    const existing = this.snapshot.conversations.find(
+      (conversation) =>
+        conversation.kind === 'dm' &&
+        conversation.memberIds.length === 1 &&
+        conversation.memberIds[0] === ROUTER_ID,
+    );
+    if (existing) return existing.id;
+
+    const conversation: Conversation = {
+      id: `dm-${ROUTER_ID}`,
+      title: ROUTER_FACE.name,
+      kind: 'dm',
+      memberIds: [ROUTER_ID],
+      messages: [],
+      lastMessage: '还没有对话',
+      timestamp: formatClock(),
+    };
+    this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
+    return conversation.id;
   };
 
   openDirect = (agentId: string, displayName?: string): string => {
@@ -470,14 +512,6 @@ export class ChatService {
     });
   };
 
-  updateAgentBrief = (agentId: string, briefMd: string): void => {
-    this.commit({
-      agents: this.snapshot.agents.map((agent) =>
-        agent.id === agentId ? { ...agent, briefMd } : agent,
-      ),
-    });
-  };
-
   sendMessage = ({ conversationId, text, mentionIds }: SendMessageInput): void => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
@@ -510,6 +544,12 @@ export class ChatService {
       return;
     }
 
+    // 和 Router 说话：不需要挑人。它就在这里，总会回。
+    if (conversation.kind === 'dm' && conversation.memberIds[0] === ROUTER_ID) {
+      this.replyAsRouterTurn(conversation, text);
+      return;
+    }
+
     const responders = this.pickResponders(conversation, mentionIds);
     if (responders.length === 0) return;
 
@@ -524,6 +564,21 @@ export class ChatService {
       this.setTyping(conversationId, []);
     });
   };
+
+  /**
+   * Router 回一句。
+   *
+   * 它回答的是「接住话」这部分；真正的活由 Router 的 tick 循环派给工作线上的
+   * 执行体，回来再汇报。所以这里没有工具调用、没有验收，只有一句话。
+   */
+  private replyAsRouterTurn(conversation: Conversation, text: string): void {
+    this.setTyping(conversation.id, [ROUTER_FACE.name]);
+    this.later(760, async () => {
+      const reply = await this.buildReply(ROUTER_FACE, text);
+      this.appendReply(conversation, ROUTER_FACE, reply);
+      this.setTyping(conversation.id, []);
+    });
+  }
 
   /** Routing facts the comm layer needs; no members = not a conversation we route. */
   conversationInfo = (
@@ -614,7 +669,27 @@ export class ChatService {
    * A reply must come from a model. Without one there is no honest answer to give,
    * so say exactly that instead of inventing a plausible-sounding plan.
    */
-  private async buildReply(agent: Agent, text: string): Promise<string> {
+  private async buildReply(speaker: Speaker, text: string): Promise<string> {
+    if (speaker.id === ROUTER_ID && this.replyAsRouter) {
+      try {
+        const answer = await this.replyAsRouter({
+          text,
+          history: this.snapshot.conversations
+            .flatMap((item) => item.messages)
+            .filter((message) => message.kind === 'text'),
+        });
+        if (answer.trim()) return answer.trim();
+      } catch (error) {
+        return `（模型调用失败：${error instanceof Error ? error.message : String(error)}）`;
+      }
+    }
+    if (speaker.id === ROUTER_ID) {
+      return `（还没配置可用模型，我无法回答「${text.slice(0, 30)}」这类问题。到 设置 → 模型 配好 provider 后，我会直接用模型回你。）`;
+    }
+    return this.buildAgentReply(speaker as Agent, text);
+  }
+
+  private async buildAgentReply(agent: Agent, text: string): Promise<string> {
     if (this.replyWithModel) {
       try {
         const answer = await this.replyWithModel({
@@ -630,16 +705,16 @@ export class ChatService {
     return `（还没配置可用模型，我无法回答「${text.slice(0, 30)}」这类问题。到 设置 → 模型 配好 provider 后，我会直接用模型回你。）`;
   }
 
-  private appendReply(conversation: Conversation, agent: Agent, text: string): void {
+  private appendReply(conversation: Conversation, speaker: Speaker, text: string): void {
     this.appendMessage(
       conversation,
       {
         id: createId('msg'),
         kind: 'text',
-        senderId: agent.id,
-        senderName: agent.name,
-        senderRole: `${agent.role} · ${agent.level}`,
-        senderAvatarUrl: agent.avatarUrl,
+        senderId: speaker.id,
+        senderName: speaker.name,
+        senderRole: [speaker.role, speaker.level].filter(Boolean).join(' · '),
+        senderAvatarUrl: speaker.avatarUrl,
         timestamp: formatClock(),
         text,
       },

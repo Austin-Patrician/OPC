@@ -297,22 +297,18 @@ async function bootstrap(): Promise<void> {
       runs: consolidationRuns,
     });
 
-  // An agent answers with its own model. No provider → no answer, never a canned one.
-  chat.replyWithModel = async ({ agent, text }) => {
-    const ref = resolveEmployeeModelRef(modelConfig, org, agent.id);
-    if (!ref) throw new Error('未配置默认 LLM 模型');
+  /** One completion, given a model ref and a system prompt. */
+  const completeAs = async (
+    ref: { providerId: string; modelId: string },
+    systemPrompt: string,
+    text: string,
+  ): Promise<string> => {
     const models = await modelConfig.runtime.createModels();
     const model = await modelConfig.runtime.resolveModel(ref.providerId, ref.modelId);
     if (!model) throw new Error(`找不到模型 ${ref.providerId}/${ref.modelId}`);
 
     const answer = await models.complete(model, {
-      systemPrompt: [
-        `你是「${agent.name}」，岗位是 ${agent.role}。`,
-        agent.briefMd ? `你的工作规范：${agent.briefMd}` : '',
-        '用中文直接回答老板的问题，简短、具体，不要复述他的原话，也不要编造成果。',
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      systemPrompt,
       messages: [{ role: 'user', content: [{ type: 'text', text }] }],
     } as never);
 
@@ -322,6 +318,48 @@ async function bootstrap(): Promise<void> {
       .map((block) => block.text ?? '')
       .join('')
       .trim();
+  };
+
+  /**
+   * Router 的回答。聊天窗口里对面那个人是它，不是某个执行体。
+   *
+   * 用**公司默认模型**而不是谁的模型覆盖：Router 是序点，每步通常是长输入短输出，
+   * 回答要快，不需要最强的那个（Super-agent §2.1）。执行体才是需要强模型的地方。
+   *
+   * 提示词的关键是那条禁令：**不许声称自己干了活**。Worker 的推理与工具调用都
+   * 在隔离的上下文里，Router 看不到它们，也不该把它们讲成自己的。
+   */
+  chat.replyAsRouter = async ({ text }) => {
+    const ref = modelConfig.getDefaults().llm;
+    if (!ref) throw new Error('未配置默认 LLM 模型');
+    return completeAs(
+      ref,
+      [
+        '你是这个工作台的调度者，老板唯一对话的对象。',
+        '你只做两件事：把话接住，把活派出去。活本身由执行体在各自的上下文里干，你不干。',
+        '所以：不要声称自己读过文件、跑过命令、改过代码——你没做。也不要编造成果。',
+        '老板问「怎么样了」，就照实说你手上有哪些工作线、它们各自到哪一步了；不知道就说不知道。',
+        '用中文直接回答，简短、具体，不要复述他的原话。',
+      ].join('\n'),
+      text,
+    );
+  };
+
+  // An agent answers with its own model. No provider → no answer, never a canned one.
+  chat.replyWithModel = async ({ agent, text }) => {
+    const ref = resolveEmployeeModelRef(modelConfig, org, agent.id);
+    if (!ref) throw new Error('未配置默认 LLM 模型');
+    return completeAs(
+      ref,
+      [
+        `你是「${agent.name}」，岗位是 ${agent.role}。`,
+        agent.briefMd ? `你的工作规范：${agent.briefMd}` : '',
+        '用中文直接回答老板的问题，简短、具体，不要复述他的原话，也不要编造成果。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      text,
+    );
   };
 
   const memory = new MemoryService(db);

@@ -1,33 +1,24 @@
-import {
-  ChevronDown,
-  Monitor,
-  MonitorSmartphone,
-  MoreHorizontal,
-  Phone,
-  PlusCircle,
-  Video,
-} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { IconButton } from '@/shared/ui/IconButton';
 
 interface ChatHeaderProps {
   title: string;
   memberCount: number;
-  onOpenDossier: () => void;
-  onOpenAddMember: () => void;
 }
 
-/** 54px conversation header: identity on the left, the six Figma actions right. */
-export function ChatHeader({
-  title,
-  memberCount,
-  onOpenDossier,
-  onOpenAddMember,
-}: ChatHeaderProps) {
+/**
+ * 会话头部：只有身份。
+ *
+ * 这里曾经有一排「语音 / 视频 / 投屏 / 多设备」，四个按钮都没有 `onClick`——
+ * 是照着设计稿摆的，点了什么也不会发生。还有「加成员」和「档案」：v2 里和老板
+ * 对话的只有 Router 一个，没有同事可加，也没有员工档案可开。
+ *
+ * 留着它们的成本不是几行 JSX，是让用户以为这些事做得到。
+ */
+export function ChatHeader({ title, memberCount }: ChatHeaderProps) {
   const { t } = useTranslation();
 
   return (
-    <header className="flex h-header shrink-0 items-center justify-between border-b border-line px-5 select-none">
+    <header className="flex h-header shrink-0 items-center border-b border-line px-5 select-none">
       <div className="flex min-w-0 items-center gap-2.5">
         <h1 className="truncate text-xl font-semibold text-ink">{title}</h1>
         {memberCount > 1 ? (
@@ -35,30 +26,6 @@ export function ChatHeader({
             ({t('chat.members', { count: memberCount })})
           </span>
         ) : null}
-      </div>
-
-      <div className="flex items-center gap-[1.125rem] text-ink-secondary">
-        <IconButton label={t('chat.action.call')} className="hidden sm:inline-flex">
-          <Phone className="size-[1.125rem]" strokeWidth={1.6} />
-        </IconButton>
-        <IconButton label={t('chat.action.video')} className="hidden sm:inline-flex">
-          <Video className="size-[1.1875rem]" strokeWidth={1.6} />
-        </IconButton>
-        <IconButton label={t('chat.action.screen')} className="hidden md:inline-flex">
-          <Monitor className="size-[1.125rem]" strokeWidth={1.6} />
-        </IconButton>
-        <IconButton label={t('chat.action.devices')} className="hidden md:inline-flex">
-          <span className="flex items-center">
-            <MonitorSmartphone className="size-[1.125rem]" strokeWidth={1.6} />
-            <ChevronDown className="size-3 text-ink-quaternary" />
-          </span>
-        </IconButton>
-        <IconButton label={t('chat.action.addMember')} onClick={onOpenAddMember}>
-          <PlusCircle className="size-[1.125rem]" strokeWidth={1.6} />
-        </IconButton>
-        <IconButton label={t('chat.dossier')} onClick={onOpenDossier}>
-          <MoreHorizontal className="size-[1.1875rem]" strokeWidth={1.7} />
-        </IconButton>
       </div>
     </header>
   );

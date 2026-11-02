@@ -53,11 +53,9 @@ export const IPC = {
     getSnapshot: 'chat:getSnapshot',
     sendMessage: 'chat:sendMessage',
     markRead: 'chat:markRead',
-    openDirect: 'chat:openDirect',
     ensureAssistant: 'chat:ensureAssistant',
     archive: 'chat:archive',
     restore: 'chat:restore',
-    updateAgentBrief: 'chat:updateAgentBrief',
     snapshotEvent: 'chat:snapshot',
   },
   diagnostics: {
@@ -237,11 +235,9 @@ export interface ChatBridge {
   onSnapshot(listener: (snapshot: ChatSnapshot) => void): () => void;
   sendMessage(input: SendMessageInput): Promise<void>;
   markRead(conversationId: string): Promise<void>;
-  updateAgentBrief(agentId: string, briefMd: string): Promise<void>;
   /** 1v1 with an employee; creates the conversation on first use. */
   /** 唯一的那条会话：没有就建一条。没有执行体时返回 null。 */
-  ensureAssistant(): Promise<string | null>;
-  openDirect(agentId: string): Promise<string>;
+  ensureAssistant(): Promise<string>;
   /** Archives a conversation and consolidates it once (idempotent). */
   archive(conversationId: string): Promise<{ archived: boolean; written: number }>;
   /** Moves an archived conversation back into the active list. */

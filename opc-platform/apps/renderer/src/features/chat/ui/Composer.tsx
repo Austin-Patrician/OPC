@@ -1,19 +1,5 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import {
-  AtSign,
-  ChevronDown,
-  Clock,
-  Folder,
-  Image as ImageIcon,
-  Loader2,
-  Mic,
-  MonitorSmartphone,
-  Scissors,
-  Send,
-  Smile,
-  Square,
-  Zap,
-} from 'lucide-react';
+import { AtSign, Loader2, Mic, Send, Smile, Square, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
 import { Avatar } from '@/entities/agent/ui/Avatar';
@@ -25,7 +11,6 @@ import { IconButton } from '@/shared/ui/IconButton';
 interface ComposerProps {
   agents: readonly Agent[];
   onSend: (text: string, mentionIds: string[]) => void;
-  onOpenDossier: () => void;
   onOpenDispatch: () => void;
 }
 
@@ -33,7 +18,7 @@ interface ComposerProps {
  * 175px composer: toolbar row, free-growing textarea, contextual actions.
  * Mentions are resolved to agent IDs here so the transport never parses prose.
  */
-export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: ComposerProps) {
+export function Composer({ agents, onSend, onOpenDispatch }: ComposerProps) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [showMention, setShowMention] = useState(false);
@@ -136,24 +121,6 @@ export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: Comp
           <IconButton label={t('chat.quickPromptsHint')} onClick={() => setShowQuickPrompts((v) => !v)}>
             <Smile className="size-[1.1875rem]" strokeWidth={1.6} />
           </IconButton>
-          <IconButton label={t('chat.action.attach')} className="gap-0">
-            <span className="flex items-center">
-              <Scissors className="size-[1.125rem]" strokeWidth={1.6} />
-              <ChevronDown className="size-3 text-ink-quaternary" />
-            </span>
-          </IconButton>
-          <IconButton label={t('chat.brief')} onClick={onOpenDossier}>
-            <span className="flex items-center">
-              <Folder className="size-[1.125rem]" strokeWidth={1.6} />
-              <ChevronDown className="size-3 text-ink-quaternary" />
-            </span>
-          </IconButton>
-          <IconButton label={t('chat.action.image')} className="hidden sm:inline-flex">
-            <ImageIcon className="size-[1.125rem]" strokeWidth={1.6} />
-          </IconButton>
-          <IconButton label={t('chat.action.devices')} className="hidden sm:inline-flex">
-            <MonitorSmartphone className="size-[1.125rem]" strokeWidth={1.6} />
-          </IconButton>
           <IconButton
             label={recorder.state === 'recording' ? t('chat.speech.recording') : t('chat.action.voice')}
             active={recorder.state === 'recording'}
@@ -194,9 +161,6 @@ export function Composer({ agents, onSend, onOpenDossier, onOpenDispatch }: Comp
           </div>
         </div>
 
-        <IconButton label={t('chat.action.history')} onClick={onOpenDossier} className="hidden sm:inline-flex">
-          <Clock className="size-[1.125rem]" strokeWidth={1.6} />
-        </IconButton>
       </div>
 
       <div className="flex flex-1 flex-col px-4 pt-1 pb-2">

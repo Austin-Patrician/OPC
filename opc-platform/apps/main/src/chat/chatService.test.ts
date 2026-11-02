@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@opc/shared/domain';
-import { ChatService } from './chatService';
+import { ChatService, ROUTER_ID } from './chatService';
 
 /**
  * The chat snapshot is a projection of the org, so it has to be refreshed when the
@@ -77,5 +77,57 @@ describe('ChatService.syncOrg', () => {
 
     expect(after.messages.map((message) => message.text)).toEqual(before.messages.map((message) => message.text));
     expect(after.memberIds).toHaveLength(2);
+  });
+});
+
+/**
+ * 聊天窗口里对面那个人是 Router，不是某个执行体。
+ *
+ * 这是 Super-agent 双层架构的第一条（docs/v2/04-superagent-check.md §1）：Router
+ * 承接人类交互与分派，Worker 在隔离的上下文里干活、不直接对人说话。压扁这一层
+ * 就是 v1 那个「单会话阻塞」的问题。
+ */
+describe('ChatService：Router 是聊天的对面', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('没有执行体也能开出一条会话——Router 常驻，不需要谁来当门面', () => {
+    const chat = new ChatService({ agents: [], departments: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+
+    expect(conversation.kind).toBe('dm');
+    expect(conversation.memberIds).toEqual([ROUTER_ID]);
+  });
+
+  it('回复由 Router 自己给，不借任何执行体的名字或模型', async () => {
+    const chat = new ChatService({ agents: [agent('agent-a', 'dept-1', '甲')], departments: [], conversations: [] });
+    const asked: string[] = [];
+    chat.replyAsRouter = async ({ text }) => {
+      asked.push(text);
+      return '我记下了，这就去查。';
+    };
+    // 执行体的回答路径不该被碰到；碰到就说明 Router 还在替员工说话。
+    chat.replyWithModel = async () => {
+      throw new Error('Router 不该走员工的回答路径');
+    };
+
+    const id = chat.ensureAssistant();
+    chat.sendMessage({ conversationId: id, text: '上次那个报表做完了吗' });
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+    const reply = conversation.messages.at(-1)!;
+    expect(asked).toEqual(['上次那个报表做完了吗']);
+    expect(reply.senderId).toBe(ROUTER_ID);
+    expect(reply.senderName).toBe('助手');
+    expect(reply.senderName).not.toBe('甲');
+  });
+
+  it('再点一次不会开出第二条会话', () => {
+    const chat = new ChatService({ agents: [], departments: [], conversations: [] });
+    expect(chat.ensureAssistant()).toBe(chat.ensureAssistant());
+    expect(chat.getSnapshot().conversations).toHaveLength(1);
   });
 });

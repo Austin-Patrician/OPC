@@ -17,6 +17,5 @@ export function useChatRuntime() {
     ...snapshot,
     sendMessage: transport.sendMessage,
     markRead: transport.markRead,
-    updateAgentBrief: transport.updateAgentBrief,
   };
 }

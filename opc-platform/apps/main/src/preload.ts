@@ -99,14 +99,11 @@ const bridge: OpcBridge = {
     getSnapshot: () => ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
     sendMessage: (input: SendMessageInput) => ipcRenderer.invoke(IPC.chat.sendMessage, input),
     markRead: (conversationId: string) => ipcRenderer.invoke(IPC.chat.markRead, conversationId),
-    ensureAssistant: () => ipcRenderer.invoke(IPC.chat.ensureAssistant) as Promise<string | null>,
-    openDirect: (agentId: string) => ipcRenderer.invoke(IPC.chat.openDirect, agentId) as Promise<string>,
+    ensureAssistant: () => ipcRenderer.invoke(IPC.chat.ensureAssistant) as Promise<string>,
     archive: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.archive, conversationId) as Promise<{ archived: boolean; written: number }>,
     restore: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.restore, conversationId) as Promise<void>,
-    updateAgentBrief: (agentId: string, briefMd: string) =>
-      ipcRenderer.invoke(IPC.chat.updateAgentBrief, agentId, briefMd),
     onSnapshot: (listener: (snapshot: ChatSnapshot) => void) => {
       const handler = (_event: IpcRendererEvent, snapshot: ChatSnapshot) => listener(snapshot);
       ipcRenderer.on(IPC.chat.snapshotEvent, handler);

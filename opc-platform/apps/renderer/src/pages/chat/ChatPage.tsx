@@ -14,7 +14,7 @@ import { DispatchTaskDialog, type DispatchDraft } from '@/features/task/ui/Dispa
 export function ChatPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const { conversations, agents, typingByConversation, sendMessage, markRead, updateAgentBrief } =
+  const { conversations, agents, typingByConversation, sendMessage, markRead } =
     useChatRuntime();
   const { createTask } = useWorkRuntime();
   const [dispatchOpen, setDispatchOpen] = useState(false);
@@ -29,9 +29,7 @@ export function ChatPage() {
     setResolving(true);
     void window.opc.chat
       .ensureAssistant()
-      .then((id) => {
-        if (id) navigate(`/chat/${id}`, { replace: true });
-      })
+      .then((id) => navigate(`/chat/${id}`, { replace: true }))
       .finally(() => setResolving(false));
   }, [active, navigate, resolving]);
 
@@ -66,7 +64,6 @@ export function ChatPage() {
         agents={agents}
         typingNames={typingByConversation[active.id] ?? []}
         onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
-        onUpdateBrief={updateAgentBrief}
         onOpenDispatch={() => setDispatchOpen(true)}
       />
 

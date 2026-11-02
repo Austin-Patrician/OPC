@@ -12,7 +12,6 @@ export interface ChatTransport {
   subscribe(listener: () => void): () => void;
   sendMessage(input: SendMessageInput): void;
   markRead(conversationId: string): void;
-  updateAgentBrief(agentId: string, briefMd: string): void;
   dispose(): void;
 }
 

@@ -38,10 +38,6 @@ export class IpcChatTransport implements ChatTransport {
     void this.bridge.chat.markRead(conversationId);
   };
 
-  updateAgentBrief = (agentId: string, briefMd: string): void => {
-    void this.bridge.chat.updateAgentBrief(agentId, briefMd);
-  };
-
   dispose = (): void => {
     this.unsubscribeBridge?.();
     this.unsubscribeBridge = null;

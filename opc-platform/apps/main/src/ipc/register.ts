@@ -285,11 +285,6 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.chat.ensureAssistant, () => chat.ensureAssistant());
-  ipcMain.handle(IPC.chat.openDirect, (_event, agentId: unknown) => {
-    if (typeof agentId !== 'string') throw new Error('chat:openDirect 参数非法');
-    const member = org.list().flatMap((department) => department.members).find((item) => item.id === agentId);
-    return chat.openDirect(agentId, member?.name);
-  });
   ipcMain.handle(IPC.chat.archive, (_event, conversationId: unknown) => {
     if (typeof conversationId !== 'string') throw new Error('chat:archive 参数非法');
     return chat.archiveConversation(conversationId);
@@ -303,15 +298,6 @@ export function registerIpc({
     chat.markRead(conversationId);
   });
 
-  ipcMain.handle(
-    IPC.chat.updateAgentBrief,
-    (_event, agentId: unknown, briefMd: unknown) => {
-      if (typeof agentId !== 'string' || typeof briefMd !== 'string') {
-        throw new Error('chat:updateAgentBrief 参数非法');
-      }
-      chat.updateAgentBrief(agentId, briefMd);
-    },
-  );
 
   ipcMain.handle(IPC.models.list, () => models.listProviders());
   ipcMain.handle(IPC.models.getCatalog, async () => {
@@ -744,10 +730,8 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.sendMessage);
     ipcMain.removeHandler(IPC.chat.markRead);
     ipcMain.removeHandler(IPC.chat.ensureAssistant);
-    ipcMain.removeHandler(IPC.chat.openDirect);
     ipcMain.removeHandler(IPC.chat.archive);
     ipcMain.removeHandler(IPC.chat.restore);
-    ipcMain.removeHandler(IPC.chat.updateAgentBrief);
   };
 }
 
