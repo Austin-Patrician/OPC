@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { ArrowRight, MessagesSquare, Network, Settings2 } from 'lucide-react';
+import { ArrowRight, MessagesSquare, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BudgetView } from '@opc/shared/ipc';
 import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
@@ -27,11 +27,10 @@ const CONFETTI = Array.from({ length: 42 }, (_, index) => ({
   } as CSSProperties,
 }));
 
-export type DoneTarget = 'chat' | 'org' | 'settings';
+export type DoneTarget = 'chat' | 'settings';
 
 const ACTIONS: { target: DoneTarget; icon: typeof MessagesSquare; titleKey: string; subKey: string }[] = [
   { target: 'chat', icon: MessagesSquare, titleKey: 'onboarding.done.actionChat', subKey: 'onboarding.done.actionChatSub' },
-  { target: 'org', icon: Network, titleKey: 'onboarding.done.actionOrg', subKey: 'onboarding.done.actionOrgSub' },
   {
     target: 'settings',
     icon: Settings2,

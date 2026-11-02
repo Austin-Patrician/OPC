@@ -6,7 +6,6 @@ import {
   Menu,
   MessageSquare,
   Smartphone,
-  UsersRound,
   FolderKanban,
   SquareKanban,
   Wallet,
@@ -20,7 +19,6 @@ import { RailSearch } from './RailSearch';
 const PRIMARY_NAV = [
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
-  { to: '/org', icon: UsersRound, labelKey: 'nav.org' },
   { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { to: '/budget', icon: Wallet, labelKey: 'nav.budget' },
   { to: '/channels', icon: Hash, labelKey: 'nav.channels' },

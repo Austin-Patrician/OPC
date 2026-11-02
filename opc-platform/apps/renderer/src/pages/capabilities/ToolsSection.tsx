@@ -9,7 +9,7 @@ import {
   extensionFallbackTitle,
   extensionTitleKey,
   isExternalExtension,
-} from '@/features/employee-stack/model/extensionCopy';
+} from '@/shared/lib/extensionCopy';
 import { cn } from '@/shared/lib/cn';
 import { toolAgentCounts, type ToolGroup } from './model/grouping';
 

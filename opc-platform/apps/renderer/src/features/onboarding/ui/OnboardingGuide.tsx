@@ -18,7 +18,7 @@ import { WelcomeHero } from './WelcomeHero';
 const VIEWS = ['general', 'model', 'company', 'done'] as const;
 type ViewId = (typeof VIEWS)[number];
 
-const ROUTES: Record<DoneTarget, string> = { chat: '/chat', org: '/org', settings: '/settings' };
+const ROUTES: Record<DoneTarget, string> = { chat: '/chat', settings: '/settings' };
 
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 

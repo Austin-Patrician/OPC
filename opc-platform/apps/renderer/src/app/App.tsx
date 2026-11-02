@@ -11,7 +11,6 @@ import { ChannelsPage, DeliverablesPage, DevicePage } from '@/pages/placeholder/
 import { IssueListPage } from '@/pages/issues/IssueListPage';
 import { ProjectsPage } from '@/pages/projects/ProjectsPage';
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
-import { OrgPage } from '@/pages/org/OrgPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 
 /**
@@ -30,7 +29,6 @@ export function App() {
           <Route index element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
-          <Route path="org" element={<OrgPage />} />
           <Route path="issues" element={<IssueListPage />} />
           <Route path="projects" element={<ProjectsPage />} />
         <Route path="budget" element={<BudgetPage />} />
