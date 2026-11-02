@@ -272,7 +272,15 @@ export class ThreadRepository {
    * worker, not by thread), but two tasks of the same person on the same line of
    * work must share one, or the same context gets rebuilt per task.
    */
-  ensureWorker(input: { threadId: string; employeeId: string; name: string; template?: WorkerTemplate }): Worker {
+  ensureWorker(input: {
+    threadId: string;
+    employeeId: string;
+    name: string;
+    template?: WorkerTemplate;
+    /** Pinned when the worker is created: a line of work keeps its runtime. */
+    modelProvider?: string | null;
+    modelId?: string | null;
+  }): Worker {
     const existing = this.statement(
       "SELECT * FROM worker WHERE thread_id = ? AND employee_id = ? AND status != 'retired' ORDER BY created_at LIMIT 1",
     ).get(input.threadId, input.employeeId) as WorkerRow | undefined;
@@ -282,6 +290,8 @@ export class ThreadRepository {
       threadId: input.threadId,
       employeeId: input.employeeId,
       ...(input.template ? { template: input.template } : {}),
+      modelProvider: input.modelProvider ?? null,
+      modelId: input.modelId ?? null,
     });
   }
 

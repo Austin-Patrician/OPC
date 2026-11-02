@@ -65,6 +65,7 @@ import {
   normalizeToolPolicy,
 } from './toolPolicy';
 import { resolveEmployeeModelRef } from '../models/employeeModel';
+import { resolveWorkerModelRef } from '../models/workerModel';
 import type { NetworkClient } from '../network/networkClient';
 import type { OcrEngine } from '../ocr/service';
 import { RuntimeService } from '../runtime/service';
@@ -189,8 +190,13 @@ export class WorkService {
       ? new HarnessBrain({
           harnessFor: (identity) => this.harnessFor(identity),
           context: () => getBackgroundContext(),
-          model: (employeeId) =>
-            resolveEmployeeModelRef(deps.modelConfig, deps.org, employeeId),
+          model: (identity) =>
+            resolveWorkerModelRef({
+              worker: this.threads.getWorker(identity.runtimeKey),
+              modelConfig: deps.modelConfig,
+              org: deps.org,
+              employeeId: identity.employeeId,
+            }),
           thinking: () => deps.modelConfig?.getThinking() ?? 'medium',
           price: (ref) => {
             const provider = deps.modelConfig?.listProviders().find((entry) => entry.id === ref.providerId);
@@ -1435,8 +1441,17 @@ export class WorkService {
    * worker, so its context is built once instead of five times.
    */
   private ensureWorker(threadId: string, employeeId: string) {
-    const name = this.deps.org?.everyone().find((entry) => entry.id === employeeId)?.name ?? employeeId;
-    return this.threads.ensureWorker({ threadId, employeeId, name });
+    const person = this.deps.org?.everyone().find((entry) => entry.id === employeeId);
+    // The model is pinned here, at creation: a line of work keeps the runtime it
+    // started with, so a later change of the company default does not silently
+    // swap the brain under unfinished work.
+    const model = resolveEmployeeModelRef(this.deps.modelConfig, this.deps.org, employeeId);
+    return this.threads.ensureWorker({
+      threadId,
+      employeeId,
+      name: person?.name ?? employeeId,
+      ...(model ? { modelProvider: model.providerId, modelId: model.modelId } : {}),
+    });
   }
 
   private async recordDurableStep(taskId: string, text: string): Promise<void> {

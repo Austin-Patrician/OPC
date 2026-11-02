@@ -14,8 +14,11 @@ export interface HarnessBrainDeps {
   /** The runtime this task runs in (keyed by worker, not by person). */
   harnessFor: (identity: RuntimeIdentity) => Promise<{ harness: Harness }>;
   context: () => Promise<Context>;
-  /** The employee's own model when configured, otherwise the company default. */
-  model: (employeeId: string) => ModelRef | null;
+  /**
+   * The model this runtime runs with: the execution body's own, otherwise the
+   * person's, otherwise the company default.
+   */
+  model: (identity: RuntimeIdentity) => ModelRef | null;
   thinking: () => string;
   /** USD per 1M tokens for the selected model. */
   price: (model: ModelRef) => { inputUsdPerM: number; outputUsdPerM: number };
@@ -51,7 +54,7 @@ export class HarnessBrain implements TaskBrain {
   }): Promise<void> {
     const { task, workspaceDir, durableTaskId, log, feedback, reportUsage } = context;
 
-    const model = this.deps.model(task.assigneeId);
+    const model = this.deps.model(runtimeIdentityFor(task));
     if (!model) throw new Error('未配置默认 LLM');
 
     const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
