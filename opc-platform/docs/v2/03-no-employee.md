@@ -12,7 +12,7 @@
 
 | # | 依赖 | 现在在哪 | 换成什么 | 规模 |
 |---|---|---|---|---|
-| 1 | 工具注册表的主体 | `buildRegistry(employeeId)` | `buildRegistry(worker)` | 中 |
+| 1 | 工具注册表的主体 | `buildRegistry(employeeId)` | `buildRegistry(worker)` ✅ 已做 | 中 |
 | 2 | 工具策略 | `org.toolPolicyOf()` | worker 的模板默认（本来也没有 UI 能改，等同空） | 小 |
 | 3 | 通讯工具（同事） | `comm` 工具的 `colleagues` 来自 `org.list()` | 没有同事 → 工具不装 | 小 |
 | 4 | 记忆分区 | `employeeId` + 部门 / 项目 scope | 挂在 thread 上 | 中 |
@@ -27,7 +27,7 @@
 ## 2. 建议顺序
 
 ```
-① 工具注册表的主体改成 worker     ← 本轮已做
+① 工具注册表的主体改成 worker     ✅ 已做（`work/registrySubject.ts`）
 ② 预算回到两轴（thread / global）
 ③ 记忆改成 thread scope
 ④ IM 收敛成「助手」+「工作线」    ← 需要拍一次产品决定
