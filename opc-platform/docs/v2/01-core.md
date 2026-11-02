@@ -188,6 +188,38 @@ Router 现在尊重**事件自带的 `threadId`**（`verdict.threadId ?? event.t
 
 ---
 
+## 10. B4 的实际形状（`75d9bf9` 是第一刀）
+
+先说清楚：**整块删掉 `orgService` 不是一次提交能做完的事。**
+
+剩余耦合实测（不含 org/ 自身与测试）：
+
+| 文件 | org 相关行 | 为什么难删 |
+|---|---|---|
+| `index.ts` | 127 | 装配点，9 处 `new WorkService` 传 `org` |
+| `ipc/register.ts` | 98 | 组织页/招聘页的通道（页已删，通道还在） |
+| `work/workService.ts` | 28 | `resolveEmployeeModelRef` / `toolPolicyOf` / `subordinatesOf` / 部门预算轴 |
+| `seed/firstCompany.ts` | 16 | `agentsFromOrg` |
+| `comm/commService.ts` | 13 | 群聊路由按负责人 |
+| `work/payroll.ts` + `budgetCenter.ts` | 12 | 部门/员工预算轴 |
+
+**已做（`75d9bf9`）**：把「谁来做」从「第一个在职员工」换成 `pickWorker` 按模板匹配技能，
+并且 `workerId` 变成任务上被记录的事实。这一步本身就除掉了员工体系最坏的症状。
+
+**剩下的建议顺序**（每一步都要能跑）：
+
+1. 删 `ipc/register.ts` 里的组织/招聘通道（页早就没了，纯死代码，~98 行）
+2. `seed/` 与 `setup/` 从「造公司」改成「造一个 Router + 三个 worker 模板」
+3. `workService` 的三处 `org` 调用：模型 → `worker.model ?? 公司默认`；
+   工具策略 → `worker.template`；`subordinatesOf` → 分派深度上限
+4. `comm` 的群聊路由改挂 `thread`
+5. `budget` 两轴（thread / global），删部门轴
+6. 最后删 `org/` + 12 张表
+
+第 1、2 步是纯删除，风险最低，可以立刻做。第 3 步之后才真正动到语义。
+
+---
+
 ## 6. B3-1 已落地，以及一个必须先拍板的发现
 
 **B3-1（`9b80b24`）**：`task.thread_id`（V26）。任务能属于一条工作线，`decompose`
