@@ -16,7 +16,7 @@
 | 2 | 工具策略 | `org.toolPolicyOf()` | worker 的模板默认（本来也没有 UI 能改，等同空） | 小 |
 | 3 | 通讯工具（同事） | `comm` 工具的 `colleagues` 来自 `org.list()` | 没有同事 → 工具不装 | 小 |
 | 4 | 记忆分区 | `employeeId` + 部门 / 项目 scope | 挂在 thread 上 | 中 |
-| 5 | **IM 的对话对象** | "和某人开对话"，成员列表来自 `org` | 只剩「助手」+「工作线」 | **大（产品决定）** |
+| 5 | ~~IM 的对话对象~~ ✅ `74dc9ed` | 会话列表已删；`/chat` 自动落到唯一那条会话 | 「助手」一条 + 工作线在首页 | 已做 |
 | 6 | 预算轴 | `employee` / `department` | `thread` / `global` | 中 |
 
 1–3 是一组（工具注册表），4 和 6 各自独立，**5 是前置**：它决定 `agentsFromOrg`
@@ -28,11 +28,14 @@
 
 ```
 ① 工具注册表的主体改成 worker     ✅ 已做（`work/registrySubject.ts`）
-② 预算回到两轴（thread / global）
-③ 记忆改成 thread scope
-④ IM 收敛成「助手」+「工作线」    ← 需要拍一次产品决定
+② IM 收敛成「助手」一条会话        ✅ 已做（`74dc9ed`）
+③ 预算回到两轴（thread / global）
+④ 记忆改成 thread scope
 ⑤ 删 org/ + 12 张表 + employee
 ```
+
+②之后 `agentsFromOrg` 只剩一个用途：给那条唯一会话挑一个回复者。
+`employee` 的删除不再被 IM 挡住。
 
 ②③ 可以在 ④ 之前做，但 ⑤ 必须最后：只要 IM 还在按人列会话，
 `employee` 就不能删。
