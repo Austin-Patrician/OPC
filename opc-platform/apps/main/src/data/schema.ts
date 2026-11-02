@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1193,7 +1193,81 @@ const V24 = `
 ALTER TABLE project_group ADD COLUMN owner_employee_id TEXT;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24];
+/**
+ * V25: v2 核心四表（thread / worker / event / report）。
+ *
+ * 这一版只**新增**，不动任何旧表：`employee` 仍是主语，直到 B3 把 comm/work/budget
+ * 迁移到 thread 上（docs/v2/00-audit.md §6）。新增与迁移并行一段时间是刻意的，
+ * 因为一次切换主语会让半个仓库同时编译不过。
+ *
+ * 设计要点：
+ * - `thread.attention` 决定它能不能打扰老板，默认 `silent`；
+ * - `worker` 不再有职位、汇报线、在职状态机；`thread_id` 为空即"用完了"；
+ * - `event` 是 Super-agent 的 Trigger，`triage` 的两级过滤状态机就在这里；
+ * - `report` 是唯一一个允许出现在老板注意力队列里的东西。
+ */
+const V25 = `
+CREATE TABLE IF NOT EXISTS thread (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  goal TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'open'
+    CHECK (state IN ('open','running','waiting','done','failed','archived')),
+  attention TEXT NOT NULL DEFAULT 'silent'
+    CHECK (attention IN ('decide','notify','silent')),
+  budget_tokens INTEGER,
+  spent_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  last_activity_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_thread_state ON thread(state, last_activity_at DESC);
+
+CREATE TABLE IF NOT EXISTS worker (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  template TEXT NOT NULL DEFAULT 'research'
+    CHECK (template IN ('research','code','ops')),
+  skills TEXT NOT NULL DEFAULT '[]',
+  thread_id TEXT REFERENCES thread(id) ON DELETE SET NULL,
+  model_provider TEXT,
+  model_id TEXT,
+  status TEXT NOT NULL DEFAULT 'idle'
+    CHECK (status IN ('idle','running','retired')),
+  spent_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  retired_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_worker_thread ON worker(thread_id, status);
+
+CREATE TABLE IF NOT EXISTS event (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (source IN ('manual','folder','calendar','github','im')),
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  thread_id TEXT REFERENCES thread(id) ON DELETE SET NULL,
+  triage TEXT NOT NULL DEFAULT 'pending'
+    CHECK (triage IN ('pending','accepted','dropped','merged')),
+  created_at INTEGER NOT NULL,
+  triaged_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_event_triage ON event(triage, created_at);
+
+CREATE TABLE IF NOT EXISTS report (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES thread(id) ON DELETE CASCADE,
+  level TEXT NOT NULL DEFAULT 'notify'
+    CHECK (level IN ('decide','notify','silent')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  read_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_report_queue ON report(read_at, level, created_at DESC);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

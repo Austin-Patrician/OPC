@@ -1169,3 +1169,90 @@ export interface Message {
   task?: WorkTask;
   mentions?: string[];
 }
+
+/**
+ * ── v2 core: thread / worker / trigger / report ─────────────────────────────
+ *
+ * The centre of the model moved from `employee` to `thread`
+ * (docs/v2/00-audit.md §2): what the boss follows is a line of work, not a
+ * person. A `worker` is an execution body that exists for as long as a thread
+ * needs it — it has a template and skills, and no career, no rank, no reporting
+ * line, and no memory the boss is not allowed to read.
+ */
+
+export type ThreadState = 'open' | 'running' | 'waiting' | 'done' | 'failed' | 'archived';
+
+/**
+ * How loudly a thread is allowed to reach the boss.
+ *
+ * `silent` is the default and the point of the whole design: work that needs no
+ * decision finishes without a notification. `decide` is the only level allowed
+ * to interrupt, and every use of it spends the thread's attention quota.
+ */
+export type AttentionLevel = 'decide' | 'notify' | 'silent';
+
+/** One line of work: goal in, deliverable + verdict out. */
+export interface WorkThread {
+  id: string;
+  title: string;
+  goal: string;
+  state: ThreadState;
+  attention: AttentionLevel;
+  /** Hard token ceiling for the whole thread; null = only the global cap applies. */
+  budgetTokens: number | null;
+  spentTokens: number;
+  createdAt: number;
+  lastActivityAt: number;
+  closedAt: number | null;
+}
+
+/** What kind of work a worker is instantiated for. Not a job title. */
+export type WorkerTemplate = 'research' | 'code' | 'ops';
+
+export type WorkerStatus = 'idle' | 'running' | 'retired';
+
+export interface Worker {
+  id: string;
+  name: string;
+  template: WorkerTemplate;
+  skills: string[];
+  /** Null between threads: a spent worker is retired, not remade. */
+  threadId: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+  status: WorkerStatus;
+  spentTokens: number;
+  createdAt: number;
+  retiredAt: number | null;
+}
+
+/** Where an event came from. v1 only wires `manual` and `folder` (§9). */
+export type TriggerSource = 'manual' | 'folder' | 'calendar' | 'github' | 'im';
+
+/**
+ * The two-level filter of the Super-agent design: a program drops most noise
+ * before a model ever sees it, so `pending` is the only state that costs tokens.
+ */
+export type TriageState = 'pending' | 'accepted' | 'dropped' | 'merged';
+
+export interface TriggerEvent {
+  id: string;
+  source: TriggerSource;
+  kind: string;
+  payload: Record<string, unknown>;
+  threadId: string | null;
+  triage: TriageState;
+  createdAt: number;
+  triagedAt: number | null;
+}
+
+/** A thread's word to the boss. The three levels are the whole interface. */
+export interface WorkReport {
+  id: string;
+  threadId: string;
+  level: AttentionLevel;
+  title: string;
+  body: string;
+  createdAt: number;
+  readAt: number | null;
+}
