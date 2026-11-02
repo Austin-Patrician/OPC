@@ -1,4 +1,11 @@
-import type { AcceptanceTemplate, CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
+import type {
+  AcceptanceTemplate,
+  CreateTaskInput,
+  CreateTaskResult,
+  WorkerTemplate,
+  WorkTask,
+} from '@opc/shared/domain';
+import { inferTemplate } from '../work/workerPool';
 import { UNVERIFIED_GATE as NO_GATE } from '../work/acceptanceGate';
 import type { DispatchInput, DispatchOutcome } from './router';
 
@@ -23,8 +30,15 @@ import type { DispatchInput, DispatchOutcome } from './router';
 export interface WorkDispatchDeps {
   createTask: (input: CreateTaskInput) => CreateTaskResult;
   runTaskAndWait: (taskId: string) => Promise<WorkTask>;
-  /** Who executes event-driven work. Interim: the first active employee. */
-  resolveAssignee: () => string | null;
+  /**
+   * Who executes this event's work.
+   *
+   * Returns the execution body to use — both the person whose tools/model apply
+   * and the worker row that owns the runtime. `null` means nobody can take it.
+   */
+  resolveWorker: (input: { threadId: string; template: WorkerTemplate; hint: string }) =>
+    | { employeeId: string; workerId: string }
+    | null;
   /** Free-token estimate charged before the run; the ledger settles the real cost. */
   estTokens?: number;
 }
@@ -36,13 +50,20 @@ const TEMPLATES: readonly AcceptanceTemplate[] = ['http-ok', 'node-test', 'image
 
 export function createWorkDispatch(deps: WorkDispatchDeps) {
   return async ({ thread, event }: DispatchInput): Promise<DispatchOutcome> => {
-    const assigneeId = deps.resolveAssignee();
-    if (!assigneeId) {
-      return { status: 'failed', reason: '没有可用的执行者：先在设置里配一个能跑的模型' };
-    }
-
     const payload = event.payload;
     const goal = thread.goal.trim() || thread.title.trim();
+
+    const workerTemplate = isTemplate(payload.template)
+      ? payload.template
+      : inferTemplate(`${thread.title} ${goal}`);
+    const picked = deps.resolveWorker({
+      threadId: thread.id,
+      template: workerTemplate,
+      hint: `${thread.title} ${goal}`,
+    });
+    if (!picked) {
+      return { status: 'failed', reason: '没有可用的执行者：先在设置里配一个能跑的模型' };
+    }
     const command = stringList(payload.acceptanceCommand);
     // No command = no machine-checkable definition of done. We say so instead of
     // inventing one: the run still happens, the result still reaches the boss.
@@ -58,7 +79,8 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
         typeof payload.deliverableSpec === 'string' && payload.deliverableSpec.trim()
           ? payload.deliverableSpec
           : goal,
-      assigneeId,
+      assigneeId: picked.employeeId,
+      workerId: picked.workerId,
       estTokens: numberOr(payload.estTokens, deps.estTokens ?? DEFAULT_EST_TOKENS),
       acceptanceCommand: verified ? command : [...NO_GATE],
       acceptanceTemplate: template,
@@ -118,6 +140,10 @@ function summarise(task: WorkTask): string {
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
+function isTemplate(value: unknown): value is WorkerTemplate {
+  return value === 'code' || value === 'research' || value === 'ops';
 }
 
 function numberOr(value: unknown, fallback: number): number {

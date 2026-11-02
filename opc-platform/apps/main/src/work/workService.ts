@@ -625,7 +625,14 @@ export class WorkService {
       draft.threadId ??
       this.threads.createThread({ title: draft.title, goal: draft.brief }).id;
     draft.threadId = threadId;
-    draft.workerId = this.ensureWorker(threadId, draft.assigneeId).id;
+    // The dispatcher may already have chosen an execution body (workerPool); it
+    // wins over the default "one worker per person per thread". A worker from a
+    // different line of work is ignored rather than trusted.
+    const chosen = draft.workerId ? this.threads.getWorker(draft.workerId) : null;
+    draft.workerId =
+      chosen && chosen.threadId === threadId
+        ? chosen.id
+        : this.ensureWorker(threadId, draft.assigneeId).id;
 
     let task: WorkTask;
     try {

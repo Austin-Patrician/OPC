@@ -50,6 +50,7 @@ import { FolderWatcher } from './router/folderWatcher';
 import { Watchdog } from './watchdog/watchdog';
 import { Router } from './router/router';
 import { createWorkDispatch } from './router/workDispatch';
+import { pickWorker } from './work/workerPool';
 import { DEMO_TASK } from './work/acceptanceTemplate';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
@@ -422,9 +423,24 @@ async function bootstrap(): Promise<void> {
     dispatch: createWorkDispatch({
       createTask: work.createTask,
       runTaskAndWait: work.runTaskAndWait,
-      // Interim: the first active employee. Once B4 lands there is no employee
-      // table and this becomes "instantiate a worker from the thread's template".
-      resolveAssignee: () => agentsFromOrg(org)[0]?.id ?? null,
+      // 谁来干：按模板匹配技能，而不是"第一个在职员工"。
+      // 人少的时候仍会有人干（匹配不上就排最后），但"为什么是他"是可解释的。
+      resolveWorker: ({ threadId, template, hint }) => {
+        const people = agentsFromOrg(org).map((agent) => ({
+          employeeId: agent.id,
+          name: agent.name,
+          skills: agent.skills ?? [],
+        }));
+        const picked = pickWorker(people, template, hint);
+        if (!picked) return null;
+        const worker = threads.ensureWorker({
+          threadId,
+          employeeId: picked.employeeId,
+          name: picked.name,
+          template,
+        });
+        return { employeeId: picked.employeeId, workerId: worker.id };
+      },
     }),
   });
 

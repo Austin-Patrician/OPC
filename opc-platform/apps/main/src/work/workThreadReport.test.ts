@@ -200,3 +200,44 @@ describe('boss steering', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+
+/**
+ * 派活时指定的执行体。
+ *
+ * workerPool 挑好人之后会把 workerId 一起交出去——这是"谁来做"唯一被记录的地方。
+ * 一个属于别的工作线的 worker 必须被忽略，否则运行时和线索会错位。
+ */
+describe('an explicitly chosen worker', () => {
+  const base = {
+    title: '写一个返回 ok 的服务',
+    brief: '用 node 内置 http',
+    deliverableSpec: 'server.js 返回 ok',
+    assigneeId: '',
+    estTokens: 5_000,
+    acceptanceCommand: ['node', '{checks}/verify.mjs'],
+    acceptanceTemplate: 'http-ok' as const,
+  };
+
+  it('is the execution body recorded on the task', () => {
+    const thread = threads.createThread({ title: '写一个返回 ok 的服务' });
+    const worker = threads.ensureWorker({ threadId: thread.id, employeeId: assigneeId, name: '李雷', template: 'code' });
+    const created = work.createTask({ ...base, assigneeId, threadId: thread.id, workerId: worker.id });
+    if (!created.ok) throw new Error(created.error.message);
+    expect(created.task.workerId).toBe(worker.id);
+  });
+
+  it('is ignored when it belongs to another line of work', () => {
+    const elsewhere = threads.createThread({ title: '别的线索' });
+    const foreign = threads.ensureWorker({ threadId: elsewhere.id, employeeId: assigneeId, name: '李雷' });
+    const mine = threads.createThread({ title: '我的线索' });
+
+    const created = work.createTask({ ...base, assigneeId, threadId: mine.id, workerId: foreign.id });
+    if (!created.ok) throw new Error(created.error.message);
+
+    expect(created.task.workerId).not.toBe(foreign.id);
+    expect(created.task.workerId).toBeDefined();
+    // The worker that was actually used lives on this thread.
+    expect(threads.getWorker(created.task.workerId!)?.threadId).toBe(mine.id);
+  });
+});

@@ -51,7 +51,8 @@ function dispatch(overrides: {
 }) {
   const calls: unknown[] = [];
   const fn = createWorkDispatch({
-    resolveAssignee: () => (overrides.assignee === undefined ? 'emp-1' : overrides.assignee),
+    resolveWorker: () =>
+      overrides.assignee === null ? null : { employeeId: overrides.assignee ?? 'emp-1', workerId: 'w-1' },
     createTask: (input) => {
       calls.push(input);
       return overrides.create?.() ?? { ok: true, task: task() };
@@ -126,10 +127,10 @@ describe('createWorkDispatch', () => {
     expect(outcome.status).toBe('failed');
   });
 
-  it('puts the task on the thread, so the work line owns it', async () => {
+  it('puts the task on the thread with the worker it was given', async () => {
     const { fn, calls } = dispatch({});
     await fn(input());
-    expect(calls[0]).toMatchObject({ threadId: 'th-1', assigneeId: 'emp-1' });
+    expect(calls[0]).toMatchObject({ threadId: 'th-1', assigneeId: 'emp-1', workerId: 'w-1' });
   });
 
   it('lets the event carry its own acceptance instead of guessing', async () => {

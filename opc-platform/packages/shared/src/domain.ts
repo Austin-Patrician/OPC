@@ -1107,6 +1107,11 @@ export interface CreateTaskInput {
    * parent's thread, so one goal's worth of tasks can be recalled together.
    */
   threadId?: string;
+  /**
+   * Which execution body runs it. Set by the dispatcher when it has already
+   * chosen a worker; omitted means "work it out from the assignee".
+   */
+  workerId?: string;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: AcceptanceTemplate;
