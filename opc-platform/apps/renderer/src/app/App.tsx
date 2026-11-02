@@ -10,7 +10,6 @@ import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { ChannelsPage, DeliverablesPage, DevicePage } from '@/pages/placeholder/staticPages';
 import { IssueListPage } from '@/pages/issues/IssueListPage';
 import { ProjectsPage } from '@/pages/projects/ProjectsPage';
-import { MarketPage } from '@/pages/market/MarketPage';
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
 import { OrgPage } from '@/pages/org/OrgPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
@@ -32,7 +31,6 @@ export function App() {
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="org" element={<OrgPage />} />
-          <Route path="market" element={<MarketPage />} />
           <Route path="issues" element={<IssueListPage />} />
           <Route path="projects" element={<ProjectsPage />} />
         <Route path="budget" element={<BudgetPage />} />

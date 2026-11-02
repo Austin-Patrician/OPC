@@ -125,23 +125,6 @@ const bridge: OpcBridge = {
       };
     },
   },
-  market: {
-    candidates: () => ipcRenderer.invoke(IPC.market.candidates),
-    importPackage: () => ipcRenderer.invoke(IPC.market.importPackage),
-    removeCandidate: (candidateId: string) => ipcRenderer.invoke(IPC.market.removeCandidate, candidateId),
-    hireCandidate: (
-      candidateId: string,
-      input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean; jobId?: string },
-    ) => ipcRenderer.invoke(IPC.market.hireCandidate, candidateId, input),
-    interviews: (candidateId?: string) => ipcRenderer.invoke(IPC.market.interviews, candidateId),
-    createInterview: (candidateId: string, taskPrompt: string) =>
-      ipcRenderer.invoke(IPC.market.createInterview, candidateId, taskPrompt),
-    runInterview: (interviewId: string) => ipcRenderer.invoke(IPC.market.runInterview, interviewId),
-    decideInterview: (input: unknown) => ipcRenderer.invoke(IPC.market.decideInterview, input),
-    packages: () => ipcRenderer.invoke(IPC.market.packages),
-    exportPackage: (input: unknown) => ipcRenderer.invoke(IPC.market.exportPackage, input),
-    verifyPackage: (packageId: string) => ipcRenderer.invoke(IPC.market.verifyPackage, packageId),
-  },
   budget: {
     overview: () => ipcRenderer.invoke(IPC.budget.overview) as Promise<BudgetOverview>,
     setLimit: (input: {

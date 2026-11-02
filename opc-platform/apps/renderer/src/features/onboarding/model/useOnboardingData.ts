@@ -1,24 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppInfo } from '@opc/shared/ipc';
-import type {
-  AgentCandidate,
-  DepartmentNode,
-  ModelDefaults,
-  ProviderConfig,
-} from '@opc/shared/domain';
+import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
 import type { BudgetView } from '@opc/shared/ipc';
 
 /**
  * Everything the guide shows that already exists in the product: the seeded
- * organisation, imported market candidates, configured providers, the company
- * budget row and the app version.
+ * organisation, configured providers, the company budget row and the app version.
  *
- * Read-only: every write goes through the same bridge call the settings / market
+ * Read-only: every write goes through the same bridge call the settings / org
  * pages use, and then this hook is reloaded, so the guide never invents state.
+ *
+ * The talent market used to be read here. It is gone (docs/v2/00-audit.md §5.4):
+ * a personal assistant does not interview its workers, it instantiates them.
  */
 export interface OnboardingData {
   departments: DepartmentNode[];
-  candidates: AgentCandidate[];
   providers: ProviderConfig[];
   defaults: ModelDefaults;
   thinking: string;
@@ -28,7 +24,6 @@ export interface OnboardingData {
 
 const EMPTY: OnboardingData = {
   departments: [],
-  candidates: [],
   providers: [],
   defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
   thinking: 'medium',
@@ -48,9 +43,8 @@ export function useOnboardingData() {
       return;
     }
     try {
-      const [departments, candidates, providers, defaults, thinking, budget, info] = await Promise.all([
+      const [departments, providers, defaults, thinking, budget, info] = await Promise.all([
         bridge.org.list(),
-        bridge.market.candidates(),
         bridge.models.list(),
         bridge.models.getDefaults(),
         bridge.models.getThinking(),
@@ -59,7 +53,6 @@ export function useOnboardingData() {
       ]);
       setData({
         departments,
-        candidates,
         providers,
         defaults,
         thinking,
@@ -74,17 +67,12 @@ export function useOnboardingData() {
     }
   }, []);
 
-  /** Cheap refresh after an import / hire / limit change inside the guide. */
-  const refreshOrgAndMarket = useCallback(async () => {
+  /** Cheap refresh after a limit change or an org edit inside the guide. */
+  const refreshOrg = useCallback(async () => {
     const bridge = window.opc;
     if (!bridge) return;
-    const [departments, candidates] = await Promise.all([bridge.org.list(), bridge.market.candidates()]);
-    setData((previous) => ({ ...previous, departments, candidates }));
-  }, []);
-
-  /** `market.importPackage` already returns the remaining list; no refetch needed. */
-  const setCandidates = useCallback((candidates: AgentCandidate[]) => {
-    setData((previous) => ({ ...previous, candidates }));
+    const departments = await bridge.org.list();
+    setData((previous) => ({ ...previous, departments }));
   }, []);
 
   useEffect(() => {
@@ -94,5 +82,5 @@ export function useOnboardingData() {
   const departmentCount = data.departments.length;
   const agentCount = data.departments.reduce((total, node) => total + node.members.length, 0);
 
-  return { ...data, departmentCount, agentCount, loading, error, reload, refreshOrgAndMarket, setCandidates };
+  return { ...data, departmentCount, agentCount, loading, error, reload, refreshOrg };
 }

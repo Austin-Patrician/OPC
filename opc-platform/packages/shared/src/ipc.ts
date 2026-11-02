@@ -19,16 +19,13 @@ import type {
   DepartmentEditInput,
   EditableProjectStatus,
   EmploymentEvent,
-  EmployeePackageRecord,
   EmployeeToolPolicy,
   Evaluation,
   EvaluationInput,
-  Interview,
   JobEditInput,
   JobInput,
   JobNode,
   JobSeatInput,
-  AgentCandidate,
   HireInput,
   PersonnelInput,
   ModelDefaults,
@@ -107,19 +104,6 @@ export const IPC = {
   },
   decisions: {
     classify: 'decisions:classify',
-  },
-  market: {
-    candidates: 'market:candidates',
-    importPackage: 'market:import',
-    removeCandidate: 'market:remove',
-    hireCandidate: 'market:hire',
-    interviews: 'market:interviews',
-    createInterview: 'market:createInterview',
-    runInterview: 'market:runInterview',
-    decideInterview: 'market:decideInterview',
-    packages: 'market:packages',
-    exportPackage: 'market:exportPackage',
-    verifyPackage: 'market:verifyPackage',
   },
   facts: {
     list: 'facts:list',
@@ -420,45 +404,6 @@ export interface ArtifactReadResult {
   dataUrl?: string;
   bytes?: number;
   error?: string;
-}
-
-export interface MarketBridge {
-  candidates(): Promise<AgentCandidate[]>;
-  /** Opens a file picker and imports an .json agent package. */
-  importPackage(): Promise<AgentCandidate[]>;
-  removeCandidate(candidateId: string): Promise<AgentCandidate[]>;
-  hireCandidate(
-    candidateId: string,
-    input: { departmentId: string; reportsToEmployeeId?: string; isHead?: boolean; jobId?: string },
-  ): Promise<{ candidates: AgentCandidate[]; employeeId: string }>;
-
-  /** Trial runs, newest first; pass a candidate id to narrow it down. */
-  interviews(candidateId?: string): Promise<Interview[]>;
-  /** Creates a trial run; it still has to be executed with `runInterview`. */
-  createInterview(candidateId: string, taskPrompt: string): Promise<Interview[]>;
-  /** Executes a trial run on the configured model and records the outcome. */
-  runInterview(interviewId: string): Promise<Interview[]>;
-  /** Records the decision; `hire` also hires the candidate. */
-  decideInterview(input: {
-    interviewId: string;
-    decision: 'hire' | 'reject';
-    departmentId?: string;
-    reportsToEmployeeId?: string;
-    jobId?: string;
-  }): Promise<{ interviews: Interview[]; candidates: AgentCandidate[]; employeeId?: string }>;
-
-  /** Recorded exports, newest first. */
-  packages(): Promise<EmployeePackageRecord[]>;
-  /** Opens a save dialog, writes the package, and records the receipt. */
-  exportPackage(input: {
-    kind: 'employee' | 'team' | 'company';
-    name: string;
-    description?: string;
-    license?: string;
-    employeeIds?: string[];
-  }): Promise<{ packages: EmployeePackageRecord[]; path?: string; cancelled?: boolean }>;
-  /** Re-hashes the file on disk and compares it with the recorded hash. */
-  verifyPackage(packageId: string): Promise<{ ok: boolean; reason?: string }>;
 }
 
 export interface OrgFactView {
@@ -1105,7 +1050,6 @@ export interface OpcBridge {
   facts: FactsBridge;
   projects: ProjectsBridge;
   memory: MemoryBridge;
-  market: MarketBridge;
   budget: BudgetBridge;
   billing: BillingBridge;
   comm: CommBridge;

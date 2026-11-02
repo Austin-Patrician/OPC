@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { ArrowRight, MessagesSquare, Network, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BudgetView } from '@opc/shared/ipc';
-import type { AgentCandidate, DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
+import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { THINKING_LEVELS, findProvider } from '@/shared/providers/catalog';
 import { companyName } from '@/entities/company/model/options';
@@ -47,7 +47,6 @@ interface StepDoneProps {
   defaults: ModelDefaults;
   thinking: string;
   budget: BudgetView | null;
-  newHires: AgentCandidate[];
   onAction: (target: DoneTarget) => void;
 }
 
@@ -59,7 +58,6 @@ export function StepDone({
   defaults,
   thinking,
   budget,
-  newHires,
   onAction,
 }: StepDoneProps) {
   const { t, i18n } = useTranslation();
@@ -172,11 +170,8 @@ export function StepDone({
         <SummaryCard label={t('onboarding.done.team')} delay={0.56}>
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex shrink-0 -space-x-2">
-              {newHires.slice(0, 3).map((candidate) => (
-                <Avatar key={candidate.id} name={candidate.name} size="sm" className="ring-2 ring-surface" />
-              ))}
               {roster
-                .slice(0, Math.max(0, 3 - newHires.length))
+                .slice(0, 3)
                 .map((member) => (
                   <Avatar
                     key={member.id}
@@ -190,11 +185,6 @@ export function StepDone({
             <div className="min-w-0">
               <div className="truncate text-base-plus font-semibold text-ink">
                 {t('onboarding.done.agentsTotal', { count: agentCount })}
-              </div>
-              <div className="truncate text-xs-plus text-ink-tertiary">
-                {newHires.length > 0
-                  ? t('onboarding.done.newHires', { count: newHires.length })
-                  : t('onboarding.done.noNewHires')}
               </div>
             </div>
           </div>

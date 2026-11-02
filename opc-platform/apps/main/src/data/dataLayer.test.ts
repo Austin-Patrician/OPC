@@ -4,7 +4,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OrgService } from '../org/orgService';
 import { MemoryService } from '../memory/memoryService';
-import { MarketService } from '../market/marketService';
 import { CompanyService } from '../company/companyService';
 import { BudgetRepository } from './budgetRepository';
 import { openCompanyDatabase, probeSqlite, type CompanyDatabase } from './companyDatabase';
@@ -408,49 +407,6 @@ describe('company.db', () => {
     // …and so does the acting head.
     upgraded.appointActingHead(department.id, temp.id);
     expect(upgraded.list().find((node) => node.id === department.id)?.actingHeadEmployeeId).toBe(temp.id);
-  });
-
-  it('adds the interview and package tables to an existing database', async () => {
-    const org = new OrgService(db);
-    const department = org.createDepartment({ name: '工程部' });
-    org.hire({ name: '李雷', role: '工程师', departmentId: department.id });
-
-    // Wind back to v15: the two recruitment tables do not exist yet.
-    db.exec('DROP TABLE IF EXISTS interview; DROP TABLE IF EXISTS employee_package;');
-    db.exec('DROP TABLE IF EXISTS department_job;');
-    db.pragma('user_version = 15');
-    db.close();
-
-    db = openCompanyDatabase(path.join(dir, 'company.db'));
-
-    const upgraded = new OrgService(db);
-    const market = new MarketService(db, upgraded);
-    expect(upgraded.everyone().map((member) => member.name)).toContain('李雷');
-
-    // A trial run works on the upgraded schema, including the SET NULL foreign key.
-    const [candidate] = market.importJson(
-      JSON.stringify({ agents: [{ name: '周航', role: '前端工程师' }] }),
-      'test.json',
-    );
-    market.runTrial = async () => ({ text: 'ok', tokens: 5, costUsd: 0.001 });
-    const interview = market.createInterview(candidate!.id, '任务');
-    await market.runInterview(interview.id);
-    const { employeeId } = market.decideInterview({
-      interviewId: interview.id,
-      decision: 'hire',
-      departmentId: department.id,
-    });
-    expect(employeeId).toBeDefined();
-    // Deleting the candidate nulls the reference instead of blocking the delete.
-    expect(market.interviews()[0]?.candidateId).toBeUndefined();
-
-    // And so does an export.
-    const record = await market.exportPackage({
-      kind: 'company',
-      name: '全公司',
-      filePath: path.join(dir, 'pkg.json'),
-    });
-    expect(record.members.length).toBeGreaterThan(0);
   });
 
   it('merges duplicated relationship edges when upgrading to v17', () => {

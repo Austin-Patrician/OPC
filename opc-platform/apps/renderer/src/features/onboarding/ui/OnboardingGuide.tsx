@@ -3,7 +3,6 @@ import { ArrowLeft, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import type { BudgetView } from '@opc/shared/ipc';
-import type { AgentCandidate } from '@opc/shared/domain';
 import { brandColor, companyName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
@@ -14,10 +13,9 @@ import { StepCompany } from './StepCompany';
 import { StepDone, type DoneTarget } from './StepDone';
 import { StepGeneral } from './StepGeneral';
 import { StepModel } from './StepModel';
-import { StepTeam } from './StepTeam';
 import { WelcomeHero } from './WelcomeHero';
 
-const VIEWS = ['general', 'model', 'company', 'team', 'done'] as const;
+const VIEWS = ['general', 'model', 'company', 'done'] as const;
 type ViewId = (typeof VIEWS)[number];
 
 const ROUTES: Record<DoneTarget, string> = { chat: '/chat', org: '/org', settings: '/settings' };
@@ -52,11 +50,6 @@ function OnboardingDialog() {
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
   const [direction, setDirection] = useState<'next' | 'prev'>('next');
-  const [selection, setSelection] = useState<Record<string, string>>({});
-  const [hired, setHired] = useState<Record<string, string>>({});
-  const [newHires, setNewHires] = useState<AgentCandidate[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [companyBudget, setCompanyBudget] = useState<BudgetView | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -66,7 +59,6 @@ function OnboardingDialog() {
 
   const currentId = VIEWS[step] as ViewId;
   const accent = brandColor(profile.colorId);
-  const pending = data.candidates.filter((candidate) => selection[candidate.id] && !hired[candidate.id]);
 
   const go = useCallback((next: number) => {
     setDirection(next > step ? 'next' : 'prev');
@@ -88,32 +80,16 @@ function OnboardingDialog() {
 
   const back = () => (step === 0 ? setPhase('welcome') : go(step - 1));
 
-  /** Commits the selected hires, then moves on. Failures keep the boss on the step. */
+  /**
+   * Moves the guide forward.
+   *
+   * The hiring step used to commit its selection here through `market.hireCandidate`.
+   * It is gone (docs/v2/00-audit.md §5.4), so nothing on the path to the end of the
+   * guide writes to the database any more — each step writes on its own.
+   */
   const advance = async () => {
-    if (busy) return;
     if (currentId === 'done') {
       complete('chat');
-      return;
-    }
-    if (currentId === 'team' && pending.length > 0) {
-      setBusy(true);
-      setError(null);
-      try {
-        const committed: Record<string, string> = {};
-        for (const candidate of pending) {
-          const departmentId = selection[candidate.id]!;
-          await window.opc!.market.hireCandidate(candidate.id, { departmentId });
-          committed[candidate.id] = departmentId;
-        }
-        setHired((previous) => ({ ...previous, ...committed }));
-        setNewHires((previous) => [...previous, ...pending]);
-        await data.refreshOrgAndMarket();
-        go(step + 1);
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
-      } finally {
-        setBusy(false);
-      }
       return;
     }
     go(step + 1);
@@ -159,11 +135,7 @@ function OnboardingDialog() {
   }, [phase]);
 
   const primaryLabel =
-    currentId === 'done'
-      ? t('onboarding.finish')
-      : currentId === 'team' && pending.length > 0
-        ? t('onboarding.hireAndContinue', { count: pending.length })
-        : t('onboarding.next');
+    currentId === 'done' ? t('onboarding.finish') : t('onboarding.next');
 
   const skipLabel = currentId === 'model' ? t('onboarding.laterConfig') : t('onboarding.skipStep');
 
@@ -182,19 +154,6 @@ function OnboardingDialog() {
             onBudgetChange={setCompanyBudget}
           />
         );
-      case 'team':
-        return (
-          <StepTeam
-            departments={data.departments}
-            candidates={data.candidates}
-            agentCount={data.agentCount}
-            selection={selection}
-            onSelectionChange={setSelection}
-            hired={hired}
-            onCandidatesChange={data.setCandidates}
-            onDepartmentsChange={data.refreshOrgAndMarket}
-          />
-        );
       case 'done':
         return (
           <StepDone
@@ -204,7 +163,6 @@ function OnboardingDialog() {
             defaults={data.defaults}
             thinking={data.thinking}
             budget={companyBudget}
-            newHires={newHires}
             onAction={complete}
           />
         );
@@ -223,7 +181,6 @@ function OnboardingDialog() {
       {phase !== 'wizard' ? (
         <WelcomeHero
           departments={data.departments}
-          candidates={data.candidates}
           providers={data.providers}
           agentCount={data.agentCount}
           leaving={phase === 'leaving'}
@@ -302,9 +259,6 @@ function OnboardingDialog() {
                 </div>
 
                 <div className="flex items-center justify-end gap-2.5">
-                  {error ? (
-                    <span className="hidden max-w-[14rem] truncate text-sm text-danger sm:inline">{error}</span>
-                  ) : null}
                   {currentId !== 'done' ? (
                     <button
                       type="button"
@@ -317,7 +271,6 @@ function OnboardingDialog() {
                   <button
                     type="button"
                     onClick={() => void advance()}
-                    disabled={busy}
                     className="group flex h-10 cursor-pointer items-center gap-2 rounded-full bg-accent pr-4 pl-5 text-base-plus font-semibold text-white shadow-[0_10px_24px_-10px_color-mix(in_srgb,var(--accent)_65%,transparent)] transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
                   >
                     {primaryLabel}

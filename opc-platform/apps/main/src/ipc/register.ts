@@ -25,7 +25,6 @@ import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
 import type { OcrSettings } from '@opc/shared/ocr';
-import type { MarketService } from '../market/marketService';
 import type { OrgFactService } from '../memory/orgFactService';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { ProjectService } from '../org/projectService';
@@ -67,7 +66,6 @@ interface RegisterOptions {
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
-  market: MarketService;
   facts: OrgFactService;
   projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
@@ -93,7 +91,6 @@ export function registerIpc({
   auth,
   workspaceRoot,
   org,
-  market,
   facts,
   projects,
   consolidationRuns,
@@ -684,120 +681,6 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.org.unplaced, () => org.unplaced());
-  ipcMain.handle(IPC.market.candidates, () => market.list());
-  ipcMain.handle(IPC.market.importPackage, async () => {
-    const picked = await dialog.showOpenDialog({
-      title: '导入本地 Agent 包',
-      filters: [{ name: 'Agent 包', extensions: ['json'] }],
-      properties: ['openFile'],
-    });
-    if (picked.canceled || picked.filePaths.length === 0) return market.list();
-    return market.importFile(picked.filePaths[0]!);
-  });
-  ipcMain.handle(IPC.market.removeCandidate, (_event, candidateId: unknown) => {
-    if (typeof candidateId !== 'string') throw new Error('market:remove 参数非法');
-    market.remove(candidateId);
-    return market.list();
-  });
-  ipcMain.handle(IPC.market.hireCandidate, (_event, candidateId: unknown, input: unknown) => {
-    if (typeof candidateId !== 'string' || typeof input !== 'object' || input === null) {
-      throw new Error('market:hire 参数非法');
-    }
-    const { departmentId, reportsToEmployeeId, isHead, jobId } = input as {
-      departmentId?: unknown;
-      reportsToEmployeeId?: unknown;
-      isHead?: unknown;
-      jobId?: unknown;
-    };
-    if (typeof departmentId !== 'string') throw new Error('market:hire 需要 departmentId');
-    const { employeeId } = market.hire(candidateId, {
-      departmentId,
-      reportsToEmployeeId: typeof reportsToEmployeeId === 'string' ? reportsToEmployeeId : undefined,
-      isHead: isHead === true,
-      jobId: typeof jobId === 'string' && jobId ? jobId : undefined,
-    });
-    // The new employee must appear in the IM side too, not only in the org chart.
-    refreshOrg();
-    return { candidates: market.list(), employeeId };
-  });
-
-  ipcMain.handle(IPC.market.interviews, (_event, candidateId: unknown) =>
-    market.interviews(typeof candidateId === 'string' && candidateId ? candidateId : undefined),
-  );
-  ipcMain.handle(IPC.market.createInterview, (_event, candidateId: unknown, taskPrompt: unknown) => {
-    if (typeof candidateId !== 'string' || typeof taskPrompt !== 'string') {
-      throw new Error('market:createInterview 参数非法');
-    }
-    market.createInterview(candidateId, taskPrompt);
-    return market.interviews(candidateId);
-  });
-  ipcMain.handle(IPC.market.runInterview, async (_event, interviewId: unknown) => {
-    if (typeof interviewId !== 'string') throw new Error('market:runInterview 参数非法');
-    const interview = await market.runInterview(interviewId);
-    return market.interviews(interview.candidateId);
-  });
-  ipcMain.handle(IPC.market.decideInterview, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('market:decideInterview 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (typeof draft.interviewId !== 'string') throw new Error('market:decideInterview 需要 interviewId');
-    if (draft.decision !== 'hire' && draft.decision !== 'reject') {
-      throw new Error('market:decideInterview 需要 decision（hire / reject）');
-    }
-    const result = market.decideInterview({
-      interviewId: draft.interviewId,
-      decision: draft.decision,
-      departmentId: typeof draft.departmentId === 'string' ? draft.departmentId : undefined,
-      reportsToEmployeeId:
-        typeof draft.reportsToEmployeeId === 'string' ? draft.reportsToEmployeeId : undefined,
-      jobId: typeof draft.jobId === 'string' && draft.jobId ? draft.jobId : undefined,
-    });
-    if (result.employeeId) refreshOrg();
-    return {
-      interviews: market.interviews(result.interview.candidateId),
-      candidates: market.list(),
-      ...(result.employeeId ? { employeeId: result.employeeId } : {}),
-    };
-  });
-
-  ipcMain.handle(IPC.market.packages, () => market.packages());
-  ipcMain.handle(IPC.market.exportPackage, async (event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('market:exportPackage 参数非法');
-    const draft = input as Record<string, unknown>;
-    const kind = draft.kind;
-    if (kind !== 'employee' && kind !== 'team' && kind !== 'company') {
-      throw new Error('market:exportPackage 需要 kind（employee / team / company）');
-    }
-    if (typeof draft.name !== 'string' || !draft.name.trim()) {
-      throw new Error('market:exportPackage 需要 name');
-    }
-    const employeeIds = Array.isArray(draft.employeeIds)
-      ? draft.employeeIds.filter((id): id is string => typeof id === 'string')
-      : undefined;
-
-    const window = BrowserWindow.fromWebContents(event.sender);
-    const picked = await dialog.showSaveDialog(window ?? undefined!, {
-      title: '导出员工包',
-      defaultPath: `${draft.name.trim().replace(/[\\/:*?"<>|]/g, '-')}.json`,
-      filters: [{ name: 'Agent 包', extensions: ['json'] }],
-    });
-    if (picked.canceled || !picked.filePath) {
-      return { packages: market.packages(), cancelled: true };
-    }
-
-    await market.exportPackage({
-      kind,
-      name: draft.name.trim(),
-      description: typeof draft.description === 'string' ? draft.description : undefined,
-      license: typeof draft.license === 'string' ? draft.license : undefined,
-      employeeIds,
-      filePath: picked.filePath,
-    });
-    return { packages: market.packages(), path: picked.filePath };
-  });
-  ipcMain.handle(IPC.market.verifyPackage, (_event, packageId: unknown) => {
-    if (typeof packageId !== 'string') throw new Error('market:verifyPackage 参数非法');
-    return market.verifyPackage(packageId);
-  });
   ipcMain.handle(IPC.org.place, (_event, employeeId: unknown, departmentId: unknown) => {
     if (typeof employeeId !== 'string' || typeof departmentId !== 'string') {
       throw new Error('org:place 参数非法');

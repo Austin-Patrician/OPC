@@ -13,7 +13,6 @@ import {
   List,
   Network,
   PanelLeft,
-  PackagePlus,
   Plus,
   Search,
   UserPlus,
@@ -2592,21 +2591,6 @@ function MemberDetail({
           </button>
         )}
 
-        <button
-          type="button"
-          data-testid="export-employee-package"
-          onClick={() =>
-            void window.opc!.market.exportPackage({
-              kind: 'employee',
-              name: member.name,
-              employeeIds: [member.id],
-            })
-          }
-          className={cn(buttonClass.secondary, 'mt-2 w-full')}
-        >
-          <PackagePlus className="size-3.5" />
-          {t('org.exportPackage')}
-        </button>
       </DossierSection>
     </>
   );

@@ -21,7 +21,6 @@ import { DecisionService } from './models/decisionService';
 import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
 import type { Agent, SubtaskDraft } from '@opc/shared/domain';
-import { MarketService } from './market/marketService';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -101,8 +100,6 @@ const isConsolidateProbe = process.env.OPC_CONSOLIDATE_PROBE === '1';
 const isMemoryProbe = process.env.OPC_MEMORY_PROBE === '1';
 /** `OPC_CHAT_PERSIST_PROBE=1`: messages survive a ChatService restart. */
 const isChatPersistProbe = process.env.OPC_CHAT_PERSIST_PROBE === '1';
-/** `OPC_MARKET_SEED=1`: leave one imported candidate in the market (for UI checks). */
-const isMarketSeed = process.env.OPC_MARKET_SEED === '1';
 /** `OPC_RESET_COMPANY=1`: wipe business rows, re-seed the clean two-department company. */
 const isResetCompany = process.env.OPC_RESET_COMPANY === '1';
 /** `OPC_FIRST_RUN_PROBE=1`: a temp userData dir → prove what a fresh install contains. */
@@ -111,8 +108,6 @@ const isFirstRunProbe = process.env.OPC_FIRST_RUN_PROBE === '1';
 const isChatProbe = process.env.OPC_CHAT_PROBE === "1";
 /** `OPC_REVIEW_PROBE=1`: system pass → manager verdict.json → original accepted. */
 const isReviewProbe = process.env.OPC_REVIEW_PROBE === "1";
-/** `OPC_MARKET_PROBE=1`: import an agent package, hire it, verify it becomes an employee. */
-const isMarketProbe = process.env.OPC_MARKET_PROBE === "1";
 /** `OPC_ORG_PROBE=1`: department → hire → dispatch → fire → dispatch refused. */
 const isOrgProbe = process.env.OPC_ORG_PROBE === "1";
 /** `OPC_IMAGE_LOOP_PROBE=1`: mock image endpoint → agent tool → image-200 acceptance. */
@@ -251,7 +246,6 @@ async function bootstrap(): Promise<void> {
     apply: applyProxy,
   });
   const org = new OrgService(db);
-  const market = new MarketService(db, org);
   // 首启不再塞演示公司：空的组织架构就是空的公司，老板自己建，
   // 或者用 `OPC_COMPANY_SETUP=<file>` 导入一个公司模板（同样走 hire/assign）。
   if (org.list().length === 0) {
@@ -341,48 +335,6 @@ async function bootstrap(): Promise<void> {
   const speechService = new SpeechService(modelConfig, networkClient);
   const decisionService = new DecisionService(modelConfig);
 
-  /**
-   * A trial run for the hiring market: the candidate's own charter, one real task,
-   * and the tokens it actually cost.
-   *
-   * The cost is recorded because it is half the decision — a candidate who is right
-   * but ten times as expensive is a different hire. Nothing is charged to a budget:
-   * a candidate has no employee row and therefore no budget to charge.
-   */
-  market.runTrial = async ({ candidate, prompt }) => {
-    const defaults = modelConfig.getDefaults().llm;
-    if (!defaults) throw new Error('未配置默认 LLM 模型');
-    const models = await modelConfig.runtime.createModels();
-    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
-    if (!model) throw new Error(`找不到模型 ${defaults.providerId}/${defaults.modelId}`);
-
-    const answer = await models.complete(model, {
-      systemPrompt: [
-        `你是「${candidate.name}」，应聘岗位是 ${candidate.role}（${candidate.level}）。`,
-        candidate.skills.length > 0 ? `你的技能：${candidate.skills.join('、')}` : '',
-        candidate.persona ? `你的工作规范：${candidate.persona}` : '',
-        '这是一次试跑：直接完成交给你的任务，给出可检查的产出，不要描述你打算怎么做。',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-    } as never);
-
-    const content = (answer as { content?: { type: string; text?: string }[] }).content ?? [];
-    const text = content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('')
-      .trim();
-    const usage = (answer as { usage?: { totalTokens?: number; cost?: { total?: number } } }).usage;
-
-    return {
-      text: text || '（模型没有返回文本）',
-      tokens: usage?.totalTokens ?? 0,
-      costUsd: usage?.cost?.total ?? 0,
-    };
-  };
-
   // One runtime service for the whole process: employees, acceptance scripts and
   // the settings page must see exactly the same interpreters. The app-owned
   // `<userData>/runtimes` directory is where the PATH shims live.
@@ -466,7 +418,6 @@ async function bootstrap(): Promise<void> {
     speech: speechService,
     decisions: decisionService,
     org,
-    market,
     facts,
     projects,
     consolidationRuns,
@@ -574,12 +525,10 @@ const isHeadlessMode =
   isConsolidateProbe ||
   isMemoryProbe ||
   isChatPersistProbe ||
-  isMarketSeed ||
   isResetCompany ||
   isFirstRunProbe ||
   isChatProbe ||
   isReviewProbe ||
-  isMarketProbe ||
   isInboxProbe ||
   isCompanySetup ||
   isRunTask;
@@ -1544,36 +1493,6 @@ if (!hasLock) {
       return;
     }
 
-    if (isMarketSeed) {
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const market = new MarketService(db, org);
-      market.importJson(
-        JSON.stringify({
-          format: 'opc-agent-package@1',
-          name: 'design-pack.json',
-          agents: [
-            {
-              name: '苏晚',
-              role: '视觉设计师',
-              level: 'P6',
-              model: '',
-              skills: ['Figma', '信息图', '配色'],
-              persona: '先给两级方案再展开细节。\n图纸必须能实现，配色只用语义 token。\n交付前自检对比度。',
-            },
-          ],
-        }),
-        'design-pack.json',
-      );
-      process.stdout.write(
-        JSON.stringify({ probe: 'market-seed', candidates: market.list().map((item) => item.name) }) + '\n',
-      );
-      app.exit(0);
-      return;
-    }
-
     if (isResetCompany) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
@@ -1788,43 +1707,6 @@ if (!hasLock) {
         );
         app.exit(final.status === 'accepted' || final.status === 'delivered' ? 0 : 1);
       });
-      return;
-    }
-
-    if (isMarketProbe) {
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      const market = new MarketService(db, org);
-      db.exec('DELETE FROM agent_candidate;');
-      const target = org.list()[0];
-      if (!target) throw new Error('市场探针需要至少一个部门');
-      const imported = market.importJson(
-        JSON.stringify({
-          format: 'opc-agent-package@1',
-          name: 'probe-pack.json',
-          agents: [
-            { name: '包小满', role: '数据工程师', level: 'P6', model: 'gpt-5', skills: ['SQL', 'DuckDB'], persona: '你只交付可复现的数据查询。' },
-            { name: '坏包', role: '' },
-          ],
-        }),
-        'probe-pack.json',
-      );
-      market.hire(imported[0]!.id, { departmentId: target.id });
-      const hired = org.list().flatMap((node) => node.members).find((member) => member.name === '包小满');
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'market',
-          importedCount: imported.length,
-          inferredFields: imported[0]?.skills,
-          remainingCandidates: market.list().length,
-          hiredInto: target.name,
-          hiredSkills: hired?.skills,
-          personaStored: hired?.persona,
-          level: hired?.level,
-        }) + '\n',
-      );
-      app.exit(0);
       return;
     }
 

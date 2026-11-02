@@ -7,12 +7,10 @@ import {
   Cpu,
   MessagesSquare,
   Sparkles,
-  TrendingUp,
-  UserPlus,
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentCandidate, DepartmentNode, ProviderConfig } from '@opc/shared/domain';
+import type { DepartmentNode, ProviderConfig } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { LLM_PROVIDERS, PI_CHAT_PROVIDER_TOTAL } from '@/shared/providers/catalog';
 import { bossName, companyName } from '@/entities/company/model/options';
@@ -23,7 +21,6 @@ import { Kbd } from './onboardingUi';
 
 interface WelcomeHeroProps {
   departments: DepartmentNode[];
-  candidates: AgentCandidate[];
   providers: ProviderConfig[];
   agentCount: number;
   leaving: boolean;
@@ -42,7 +39,6 @@ const FEATURED = ['anthropic', 'openai', 'google', 'deepseek'] as const;
  */
 export function WelcomeHero({
   departments,
-  candidates,
   providers,
   agentCount,
   leaving,
@@ -70,7 +66,6 @@ export function WelcomeHero({
   const department = departments[0];
   const lead = department?.members[0];
   const second = department?.members[1] ?? lead;
-  const newcomer = candidates[0];
   const displayName = companyName(profile, t('company.fallbackName'));
   const boss = bossName(profile, t('company.bossFallback'));
   const featured = LLM_PROVIDERS.filter((provider) => FEATURED.includes(provider.id as (typeof FEATURED)[number]));
@@ -164,63 +159,12 @@ export function WelcomeHero({
           style={{ animationDelay: '0.44s', perspective: '1400px' }}
         >
           <div
-            className="relative grid grid-cols-1 items-center gap-4 transition-transform duration-500 ease-out lg:grid-cols-[15rem_1fr_15rem]"
+            className="relative grid grid-cols-1 items-center gap-4 transition-transform duration-500 ease-out lg:grid-cols-[1fr_15rem]"
             style={{
               transformStyle: 'preserve-3d',
               transform: 'rotateX(calc(var(--py, 0) * -4deg)) rotateY(calc(var(--px, 0) * 5deg))',
             }}
           >
-            {/* Left: talent market */}
-            <div className="onb-float hidden lg:block" style={{ animationDuration: '7s' }}>
-              <div className="rounded-2xl border border-line bg-surface/90 p-4 shadow-[0_20px_48px_-16px_rgba(15,23,42,0.12)] backdrop-blur-xl">
-                <div className="flex items-center justify-between text-xs font-semibold text-ink-tertiary">
-                  <span className="inline-flex items-center gap-1.5 text-accent-ink">
-                    <UserPlus className="size-3.5" />
-                    {t('onboarding.welcome.marketTitle')}
-                  </span>
-                  <span className="rounded bg-surface-muted px-1.5 py-0.5 tabular-nums text-ink-secondary">
-                    {t('onboarding.welcome.marketUnit', { count: candidates.length })}
-                  </span>
-                </div>
-
-                {newcomer ? (
-                  <div className="mt-3 rounded-xl border border-line bg-surface-muted/60 p-3">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={newcomer.name} size="md" />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1">
-                          <span className="truncate text-base font-bold text-ink">{newcomer.name}</span>
-                          <span className="rounded border border-line bg-surface px-1.5 text-3xs font-semibold text-ink-tertiary">
-                            {newcomer.level}
-                          </span>
-                        </div>
-                        <div className="truncate text-xs text-ink-tertiary">{newcomer.role}</div>
-                      </div>
-                    </div>
-                    <div className="mt-2.5 flex items-center justify-between gap-1.5">
-                      <span className="inline-flex h-5 items-center gap-1 truncate rounded-md bg-success/10 px-2 text-2xs font-medium text-success">
-                        <TrendingUp className="size-3 shrink-0" />
-                        {newcomer.skills[0] ?? newcomer.source}
-                      </span>
-                      <span className="shrink-0 truncate font-mono text-2xs text-ink-quaternary">{newcomer.model || '—'}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-3 rounded-xl border border-dashed border-line-strong bg-surface-muted/40 px-3 py-4 text-center">
-                    <p className="text-xs leading-relaxed text-ink-tertiary">{t('onboarding.welcome.marketEmpty')}</p>
-                  </div>
-                )}
-
-                <div className="mt-3 flex items-center justify-between text-xs text-ink-tertiary">
-                  <span className="inline-flex items-center gap-1">
-                    <BookOpen className="size-3 text-ink-quaternary" />
-                    {t('onboarding.welcome.briefAutoLoad')}
-                  </span>
-                  <span className="font-medium text-success">● {t('onboarding.welcome.ready')}</span>
-                </div>
-              </div>
-            </div>
-
             {/* Centre: the IM workspace itself */}
             <div className="overflow-hidden rounded-[1.375rem] border border-line bg-surface/95 shadow-[0_28px_70px_-20px_rgba(15,23,42,0.16)] backdrop-blur-2xl">
               <div className="flex h-9 items-center justify-between border-b border-line bg-panel px-3.5">
