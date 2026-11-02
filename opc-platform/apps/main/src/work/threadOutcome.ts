@@ -35,14 +35,11 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
       };
 
     case 'delivered':
-      // Produced, but the last word is human by design.
+      // Only reachable through the boss's own sign-off (`bossDecision`), so asking
+      // again would be asking the same person the same question twice.
       return {
-        state: 'waiting',
-        report: {
-          level: 'decide',
-          title: task.title,
-          body: `交付物已生成，等你过一眼。${summarise(task)}`,
-        },
+        state: 'done',
+        report: { level: 'silent', title: task.title, body: summarise(task) },
       };
 
     case 'rejected':

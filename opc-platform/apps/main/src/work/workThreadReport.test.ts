@@ -104,3 +104,29 @@ describe('task → thread reporting', () => {
     expect(task.workerId).toBeDefined();
   });
 });
+
+describe('a task dispatched without a line of work', () => {
+  it('gets one, so its result still has somewhere to go', async () => {
+    const created = work.createTask({
+      title: '写一个返回 ok 的服务',
+      brief: '用 node 内置 http',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+    });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const final = await work.runTaskAndWait(created.task.id);
+    expect(final.status).toBe('accepted');
+
+    // The line was opened by the dispatch itself, and it carries the goal text.
+    const thread = threads.getThread(final.threadId!);
+    expect(thread?.title).toBe('写一个返回 ok 的服务');
+    expect(thread?.goal).toBe('用 node 内置 http');
+    expect(thread?.state).toBe('done');
+    // Finished work does not interrupt: recorded, not queued.
+    expect(threads.listQueue()).toHaveLength(0);
+  });
+});

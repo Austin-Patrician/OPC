@@ -44,10 +44,12 @@ describe('threadOutcomeFor', () => {
     expect(outcome?.report?.level).toBe('silent');
   });
 
-  it('asks the boss when the work only needs a look', () => {
+  it('stays quiet when the boss already signed it off', () => {
+    // `delivered` is only reachable through `bossDecision`: asking again would be
+    // asking the same person the same question twice.
     const outcome = threadOutcomeFor(task({ status: 'delivered' }));
-    expect(outcome?.state).toBe('waiting');
-    expect(outcome?.report?.level).toBe('decide');
+    expect(outcome?.state).toBe('done');
+    expect(outcome?.report?.level).toBe('silent');
   });
 
   it('carries the acceptance reason instead of a vague failure', () => {

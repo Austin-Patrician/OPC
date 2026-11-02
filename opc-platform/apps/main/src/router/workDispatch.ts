@@ -72,10 +72,9 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
 function toOutcome(task: WorkTask): DispatchOutcome {
   switch (task.status) {
     case 'accepted':
-      return { status: 'delivered', summary: summarise(task) };
     case 'delivered':
-      // Ran and produced something, but the last word is human by design.
-      return { status: 'needs-decision', question: `交付物已生成，等你过一眼：${summarise(task)}` };
+      // `delivered` means the boss already signed it off; either way it is done.
+      return { status: 'delivered', summary: summarise(task) };
     case 'rejected':
       return {
         status: 'needs-decision',

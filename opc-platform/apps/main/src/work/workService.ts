@@ -529,10 +529,6 @@ export class WorkService {
   createTask = (input: CreateTaskInput): CreateTaskResult => {
     const taskId = `task-${crypto.randomUUID()}`;
     const workspaceRelPath = taskWorkspaceRelPath(taskId);
-    // A task that belongs to a line of work runs in that line's worker runtime, so
-    // two people on one thread never share a harness. Tasks without a thread keep
-    // the assignee's own runtime, which is what they had before.
-    const worker = input.threadId ? this.ensureWorker(input.threadId, input.assigneeId) : null;
     const draft: CreateTaskDraft = {
       ...input,
       acceptanceTemplate: input.acceptanceTemplate ?? 'http-ok',
@@ -540,7 +536,6 @@ export class WorkService {
         input.acceptanceCommand.length > 0
           ? input.acceptanceCommand
           : ['node', '{checks}/verify.mjs'],
-      ...(worker ? { workerId: worker.id } : {}),
     };
 
     try {
@@ -568,6 +563,16 @@ export class WorkService {
       }
       throw error;
     }
+
+    // Every task belongs to a line of work, so a finished task always has somewhere
+    // to report to. Today that is one thread per task; a goal that decomposes into
+    // several tasks keeps them together because children inherit the parent's id.
+    // Opened after the budget check, so a refused task leaves no empty thread.
+    const threadId =
+      draft.threadId ??
+      this.threads.createThread({ title: draft.title, goal: draft.brief }).id;
+    draft.threadId = threadId;
+    draft.workerId = this.ensureWorker(threadId, draft.assigneeId).id;
 
     let task: WorkTask;
     try {

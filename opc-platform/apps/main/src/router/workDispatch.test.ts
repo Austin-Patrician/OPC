@@ -71,10 +71,10 @@ describe('createWorkDispatch', () => {
     expect(outcome).toEqual({ status: 'delivered', summary: '产出：summary.md' });
   });
 
-  it('asks the boss when the work stops at human sign-off', async () => {
+  it('treats a boss-approved task as delivered, not as a question', async () => {
     const { fn } = dispatch({ run: async () => task({ status: 'delivered' }) });
     const outcome = await fn(input());
-    expect(outcome.status).toBe('needs-decision');
+    expect(outcome.status).toBe('delivered');
   });
 
   it('reports the acceptance reason instead of a fake pass', async () => {
