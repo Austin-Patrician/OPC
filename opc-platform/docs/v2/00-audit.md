@@ -155,20 +155,26 @@
 
 ## 6. Stage 1 拆除顺序（依赖已排好，不能调换）
 
-关键约束：`interview` / `evaluation` / `employment_event` 的**使用者是 `orgService`**，
-所以表必须等 `org/` 拆完才能删。顺序错了会先把组织层断掉。
+> **B1 执行后的修正（2026-10 实测）**：原计划"B2 = 删 `main/org` + `pages/org`"是错的。
+> `OrgService` 被 18 个文件依赖（`comm` / `work` / `budget` / `projects` / `setup` /
+> `seed` / `ipc` / `employeeModel`），**先删主进程 `org/` 会让仓库直接编译不过**。
+>
+> 修正后的原则：**渲染层可以独立删（UI 孤岛），主进程的 `org/` 必须等 v2 核心就位、
+> 消费者迁移完成后再删。** 所以 "拆" 要拆成两半，中间插进"建"。
 
-| Batch | 删什么 | 预计净删 | 出口验证 |
+| Batch | 动作 | 预计行数 | 出口验证 |
 |---|---|---|---|
-| **B1** | `main/market/` + `pages/market/`（**表先留**） | ~1,500 | 应用能起，侧栏无市场入口 |
-| **B2** | `pages/org/` + `features/employee-stack/` + `main/org/` | ~8,600 | 应用能起，无组织页；`pnpm test` 里 org 用例全部消失 |
-| **B3** | `work/payroll*` + 组织相关预算轴 | ~700 | 预算页只剩 thread/全局两轴 |
-| **B4** | 12 张表 + `schema.ts` 重建 + `employee`→`worker` | ~1,200 DDL | 开发库重建，`--self-test` 通过 |
-| **B5** | `ipc/` + `preload` + `shared/domain` 类型收敛 | ~600 | `pnpm typecheck` 三包全绿 |
+| ~~B1~~ ✅ | 删 `main/market/` + `pages/market/` + onboarding 的组建团队步骤 | −2,131 | 已完成（`ea84eb8`） |
+| **B2** | 删渲染层 `pages/org/`(4,485) + `features/employee-stack/` 的 UI 部分(708) | −5,200 | 应用能起，无组织页；org 数据仍在 |
+| **S2** | **建** v2 核心：`thread` / `worker` / `event` / `report` + Router headless 循环（新增，不删） | +2,000~3,000 | 假事件能走完全程，不调真模型 |
+| **B3** | 迁移消费者：`comm` / `work` / `budget` 从挂 `org` 改为挂 `thread`/`worker` | ±3,000 | 派活→验收→汇报闭环在 v2 对象上跑通 |
+| **B4** | 删 `main/org/`(3,459) + 12 张表 + `schema.ts` 重建 | −4,700 | 开发库重建，`--self-test` 通过 |
+| **B5** | `ipc/` + `preload` + `shared/domain` 类型收敛 | −600 | `pnpm typecheck` 三包全绿 |
 
-**合计预计净删 ≈ 12,600 行**（业务层约 1/3）。保留 12,266 行平台资产不动。
+**合计净删 ≈ 12,600 行**（业务层约 1/3）。保留 12,266 行平台资产不动。
 
-每个 batch 一个 commit，打 tag `v2-before-bN`。
+**顺序铁律**：B2 只是"摘掉界面"，S2/B3 才是真正的替换。`org/` 的删除（B4）必须排在
+S2 之后——它是**最后一步**，不是第一步。任何让 `pnpm typecheck` 变红的批次都不许提交。
 
 ---
 
