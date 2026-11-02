@@ -1,12 +1,9 @@
 import {
-  Archive,
   Inbox,
   Grid3x3,
-  Hash,
   Mail,
   Menu,
   MessageSquare,
-  Smartphone,
   FolderKanban,
   SquareKanban,
   Wallet,
@@ -23,14 +20,11 @@ const PRIMARY_NAV = [
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
   { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { to: '/budget', icon: Wallet, labelKey: 'nav.budget' },
-  { to: '/channels', icon: Hash, labelKey: 'nav.channels' },
-  { to: '/deliverables', icon: Archive, labelKey: 'nav.deliverables' },
   { to: '/skills', icon: Grid3x3, labelKey: 'nav.skills' },
 ] as const;
 
 const SECONDARY_NAV = [
   { to: '/notifications', icon: Mail, labelKey: 'nav.mail', dot: true },
-  { to: '/device', icon: Smartphone, labelKey: 'nav.device' },
   { to: '/settings', icon: Menu, labelKey: 'nav.menu' },
 ] as const;
 

@@ -93,7 +93,7 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
 
         <div className="flex items-baseline gap-3">
           <dt className="w-14 shrink-0 text-2xs text-ink-tertiary">{t('titleBar.fields.role')}</dt>
-          <dd className="min-w-0 flex-1 text-sm leading-snug text-ink">{t('org.founderRole')}</dd>
+          <dd className="min-w-0 flex-1 text-sm leading-snug text-ink">{t('titleBar.founderRole')}</dd>
         </div>
       </dl>
     </div>

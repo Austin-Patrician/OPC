@@ -323,20 +323,6 @@ export interface EmployeeToolPolicy {
   disabledTools: string[];
 }
 
-/** An agent package that has been imported but not hired yet. */
-export interface AgentCandidate {
-  id: string;
-  name: string;
-  role: string;
-  level: string;
-  model: string;
-  skills: string[];
-  persona: string;
-  /** Package name / file it came from, for provenance. */
-  source: string;
-  createdAt: number;
-}
-
 export interface DepartmentNode {
   id: string;
   name: string;
@@ -517,65 +503,6 @@ export interface EvaluationInput {
 }
 
 /** ── 招聘：试跑面试与员工包 (§4.4) ─────────────────────────────────────── */
-
-export type InterviewStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
-export type InterviewDecision = 'hire' | 'reject';
-
-/**
- * One trial run of a candidate on a real task.
- *
- * `tokensUsed` / `costUsd` / `durationMs` are recorded because they are part of the
- * decision, not trivia: a candidate who is right but ten times as expensive is a
- * different hire from one who is right and cheap.
- */
-export interface Interview {
-  id: string;
-  /** Unset once the candidate has been hired and their market row removed. */
-  candidateId?: string;
-  /** Snapshot: the interview has to explain itself after the candidate is gone. */
-  candidateName: string;
-  candidateRole: string;
-  taskPrompt: string;
-  status: InterviewStatus;
-  decision?: InterviewDecision;
-  result: string;
-  error?: string;
-  tokensUsed: number;
-  costUsd: number;
-  durationMs?: number;
-  createdAt: number;
-  finishedAt?: number;
-}
-
-export type EmployeePackageKind = 'employee' | 'team' | 'company';
-
-/** A recorded export. The file itself lives on disk; this is the receipt. */
-export interface EmployeePackageRecord {
-  id: string;
-  kind: EmployeePackageKind;
-  name: string;
-  version: string;
-  description: string;
-  filePath: string;
-  /** SHA-256 of the file, so a copied package can prove it is the one exported. */
-  fileHash: string;
-  fileSize: number;
-  /** Who is in the package, and where they sat when it was taken. */
-  members: { name: string; role: string; level: string; department: string }[];
-  license: string;
-  createdAt: number;
-}
-
-export interface ExportPackageInput {
-  kind: EmployeePackageKind;
-  name: string;
-  description?: string;
-  license?: string;
-  /** Empty means the whole company (kind `company`). */
-  employeeIds?: string[];
-  /** Where to write it; the caller picks the path through a save dialog. */
-  filePath: string;
-}
 
 /** ── Runtime environments (global base environment) ────────────────────── */
 
