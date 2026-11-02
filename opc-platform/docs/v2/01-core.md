@@ -206,17 +206,27 @@ Router 现在尊重**事件自带的 `threadId`**（`verdict.threadId ?? event.t
 **已做（`75d9bf9`）**：把「谁来做」从「第一个在职员工」换成 `pickWorker` 按模板匹配技能，
 并且 `workerId` 变成任务上被记录的事实。这一步本身就除掉了员工体系最坏的症状。
 
+**已做（`a1d37fe`）B4-1**：删掉 22 个组织/招聘 IPC 通道 + 只服务于它们的辅助函数
+（`refreshOrg` / `readModelRef` / `readSkills`），净删 303 行，零行为变化。
+`org.list` 留了下来——onboarding 还要用它显示"当前有几个人"。
+
+**已做（`7c0c231`）B4-2**：首启自动建**一个**「小助手」。
+删掉组织页之后，界面上已经没有任何办法创建执行体，而派活仍然需要一个
+（工具注册表和模型还从 employee 上取）——不建人的话，全新安装丢第一个目标
+只会得到「没有可用的执行者」，产品在第一次使用时就死了。
+刻意不是以前那个六人的演示公司。
+
 **剩下的建议顺序**（每一步都要能跑）：
 
-1. 删 `ipc/register.ts` 里的组织/招聘通道（页早就没了，纯死代码，~98 行）
-2. `seed/` 与 `setup/` 从「造公司」改成「造一个 Router + 三个 worker 模板」
-3. `workService` 的三处 `org` 调用：模型 → `worker.model ?? 公司默认`；
+1. `workService` 的三处 `org` 调用：模型 → `worker.model ?? 公司默认`；
    工具策略 → `worker.template`；`subordinatesOf` → 分派深度上限
-4. `comm` 的群聊路由改挂 `thread`
-5. `budget` 两轴（thread / global），删部门轴
-6. 最后删 `org/` + 12 张表
+2. `comm` 的群聊路由改挂 `thread`
+3. `budget` 两轴（thread / global），删部门轴
+4. `seed/firstCompany` + `setup/companySetup` 退役
+5. 删 `org/` + 12 张表，`ensureDefaultExecutor` 变成「实例化一个 worker 模板」，
+   那时候连这一个人都不需要预先存在
 
-第 1、2 步是纯删除，风险最低，可以立刻做。第 3 步之后才真正动到语义。
+第 1 步之后才真正动到语义，也是最容易出错的地方。
 
 ---
 
