@@ -183,8 +183,12 @@ export class Router {
     event: TriggerEvent,
     verdict: JudgeVerdict,
   ): { thread: WorkThread; opened: boolean } {
-    if (verdict.threadId) {
-      const existing = this.deps.threads.getThread(verdict.threadId);
+    // The verdict wins, but an event that already knows which line of work it
+    // belongs to keeps it: a goal the boss typed arrived with its thread already
+    // open, and opening a second one would split the same piece of work in two.
+    const wanted = verdict.threadId ?? event.threadId ?? null;
+    if (wanted) {
+      const existing = this.deps.threads.getThread(wanted);
       // A verdict that points at a thread that is gone is a new line of work, not
       // an error: the boss deleted it, the event still arrived.
       if (existing && existing.closedAt === null) {

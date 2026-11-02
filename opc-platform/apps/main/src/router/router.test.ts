@@ -171,3 +171,34 @@ describe('router', () => {
     expect(threads.listThreads()[0]?.state).toBe('open');
   });
 });
+
+describe('events that already belong to a line of work', () => {
+  it('joins the thread the event carries instead of opening a second one', async () => {
+    // The boss types a goal on the attention screen: the thread is opened by the
+    // IPC call so the UI can show it immediately, and the event points at it.
+    const thread = threads.createThread({ title: '整理财报', goal: '整理财报' });
+    threads.enqueueEvent({ source: 'manual', kind: 'goal', threadId: thread.id });
+
+    const report = await router({}).tick();
+
+    expect(report.opened).toHaveLength(0);
+    expect(threads.listThreads()).toHaveLength(1);
+  });
+
+  it('still opens a new thread when the judge overrides the event', async () => {
+    const stale = threads.createThread({ title: '旧线索' });
+    threads.setState(stale.id, 'done');
+    threads.enqueueEvent({ source: 'manual', kind: 'goal', threadId: stale.id });
+
+    const report = await router({
+      judge: async (events) =>
+        events.map((event) => ({ eventId: event.id, accept: true, threadId: undefined })),
+      dispatch: async () => ({ status: 'delivered', summary: 'ok' }),
+    }).tick();
+
+    // The event's thread is closed, so the work goes somewhere new rather than
+    // reopening a line the boss already ended.
+    expect(report.opened).toHaveLength(1);
+    expect(report.opened[0]?.id).not.toBe(stale.id);
+  });
+});

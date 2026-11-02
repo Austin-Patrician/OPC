@@ -1679,6 +1679,9 @@
       "minutes": "{{count}} 分钟前",
       "hours": "{{count}} 小时前",
       "days": "{{count}} 天前"
-    }
+    },
+    "goalPlaceholder": "你想让它做什么？（回车开始，Shift+回车换行）",
+    "goalStart": "开始",
+    "goalHint": "它自己拆解、自己派活、自己验收；干完不打扰，需要你拍板才出现。"
   }
 }

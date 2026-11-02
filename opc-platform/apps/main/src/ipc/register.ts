@@ -11,6 +11,7 @@ import type {
   ProviderDraft,
   RuntimeProfileDraft,
   BillingSettingsPatch,
+  WorkThread,
 } from '@opc/shared/domain';
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs';
@@ -69,6 +70,8 @@ interface RegisterOptions {
   org: OrgService;
   /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
   threads: ThreadRepository;
+  /** 老板丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
+  startGoal: (goal: string) => Promise<WorkThread>;
   facts: OrgFactService;
   projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
@@ -95,6 +98,7 @@ export function registerIpc({
   workspaceRoot,
   org,
   threads,
+  startGoal,
   facts,
   projects,
   consolidationRuns,
@@ -687,6 +691,12 @@ export function registerIpc({
   // ── v2: 注意力队列 ─────────────────────────────────────────────────────
   // 老板打开应用看到的是"有什么事需要我"，不是会话列表。silent 的汇报永远不进
   // 队列——干完活不打扰是产品承诺，也是一条测试（router.test.ts）。
+  ipcMain.handle(IPC.threads.start, (_event, goal: unknown) => {
+    if (typeof goal !== 'string' || goal.trim().length === 0) {
+      throw new Error('threads:start 需要一个目标');
+    }
+    return startGoal(goal.trim());
+  });
   ipcMain.handle(IPC.threads.queue, () => threads.listQueueWithThread());
   ipcMain.handle(IPC.threads.list, (_event, limit: unknown) =>
     threads.listThreads({ limit: typeof limit === 'number' ? limit : 50 }),

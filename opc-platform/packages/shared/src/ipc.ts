@@ -114,6 +114,7 @@ export const IPC = {
     consolidationRuns: 'memory:consolidationRuns',
   },
   threads: {
+    start: 'threads:start',
     list: 'threads:list',
     queue: 'threads:queue',
     markRead: 'threads:markRead',
@@ -1084,6 +1085,11 @@ export interface AttentionEntry {
 }
 
 export interface ThreadsBridge {
+  /**
+   * 老板丢一个目标进来：开一条工作线 + 一条 manual 事件，立刻推一次 Router。
+   * 不直接建任务——"这件事值不值得做、该给谁做"仍然是 Router 的决定。
+   */
+  start(goal: string): Promise<WorkThread>;
   /** 未读、且级别不是 silent 的汇报，decide 永远排在前面。 */
   queue(): Promise<AttentionEntry[]>;
   /** 最近的工作线；静默完成的活也在这里，否则老板没法确认它真的在干。 */

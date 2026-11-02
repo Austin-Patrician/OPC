@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Inbox, RefreshCw, Sparkles } from 'lucide-react';
+import { ArrowUp, Check, Inbox, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AttentionEntry } from '@opc/shared/ipc';
 import type { WorkThread } from '@opc/shared/domain';
@@ -33,6 +33,8 @@ export function AttentionPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [goal, setGoal] = useState('');
+  const [starting, setStarting] = useState(false);
 
   const load = useCallback(async () => {
     if (!window.opc?.threads) return;
@@ -90,6 +92,22 @@ export function AttentionPage() {
     }
   };
 
+  /** 丢一个目标：开一条工作线，剩下的交给 Router 决定怎么做。 */
+  const submitGoal = async () => {
+    const text = goal.trim();
+    if (!text || starting) return;
+    setStarting(true);
+    try {
+      await window.opc?.threads.start(text);
+      setGoal('');
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const decideCount = queue.filter((entry) => entry.level === 'decide').length;
 
   return (
@@ -105,6 +123,35 @@ export function AttentionPage() {
           </button>
         }
       />
+
+      {/* 这一页不只是看板：老板在这里丢目标，不需要知道"会话"这个概念。 */}
+      <div className="mb-5 rounded-xl border border-line bg-surface p-3">
+        <textarea
+          value={goal}
+          onChange={(event) => setGoal(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              void submitGoal();
+            }
+          }}
+          rows={2}
+          placeholder={t('attention.goalPlaceholder')}
+          className="w-full resize-none bg-transparent px-1.5 py-1 text-sm-plus leading-relaxed text-ink outline-none placeholder:text-ink-quaternary"
+        />
+        <div className="mt-1.5 flex items-center justify-between gap-3 border-t border-line pt-2">
+          <span className="truncate text-2xs text-ink-quaternary">{t('attention.goalHint')}</span>
+          <button
+            type="button"
+            onClick={() => void submitGoal()}
+            disabled={starting || goal.trim().length === 0}
+            className={cn(buttonClass.primary, 'shrink-0')}
+          >
+            {starting ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
+            {t('attention.goalStart')}
+          </button>
+        </div>
+      </div>
 
       {error ? (
         <div className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">

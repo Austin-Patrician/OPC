@@ -20,7 +20,7 @@ import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
-import type { Agent, SubtaskDraft } from '@opc/shared/domain';
+import type { Agent, SubtaskDraft, WorkThread } from '@opc/shared/domain';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -408,6 +408,40 @@ async function bootstrap(): Promise<void> {
     piSkills,
   });
 
+  // v2 路由：在 IPC 之前建好，老板才能在注意力队列上直接丢一个目标进来。
+  // 定时器在下面按「非无头」条件启动——这里只创建，不驱动。
+  const goalRouter = new Router({
+    threads,
+    // Program layer. The watcher already dropped filesystem noise; this drops
+    // anything that is not work at all.
+    prefilter: (event) => (event.source === 'manual' || event.source === 'folder' ? 'keep' : 'drop'),
+    // No semantic layer yet: everything here was put in by the boss on purpose,
+    // so "would a model think this matters" has nothing to add. It lands with the
+    // noisy sources (IM / GitHub), where it actually earns its tokens.
+    dispatch: createWorkDispatch({
+      createTask: work.createTask,
+      runTaskAndWait: work.runTaskAndWait,
+      // Interim: the first active employee. Once B4 lands there is no employee
+      // table and this becomes "instantiate a worker from the thread's template".
+      resolveAssignee: () => agentsFromOrg(org)[0]?.id ?? null,
+    }),
+  });
+
+  /**
+   * 老板在注意力队列上丢一个目标。
+   *
+   * 只开线 + 入队事件，**不直接建任务**：这件事值不值得做、该给谁做，仍然是
+   * Router 的决定。开线在这里做，是为了让 UI 立刻能显示它，而不是等下一轮 tick。
+   */
+  const startGoal = async (goal: string): Promise<WorkThread> => {
+    const title = goal.split('\n')[0]?.slice(0, 60).trim() || '未命名目标';
+    const thread = threads.createThread({ title, goal });
+    threads.enqueueEvent({ source: 'manual', kind: 'goal', payload: { goal }, threadId: thread.id });
+    // 老板刚打的字不该等 20 秒：立刻推一次，剩下的交给定时器。
+    void goalRouter.tick().catch((error) => console.error('[router] tick 失败', error));
+    return thread;
+  };
+
   // Rows created before issue keys existed get one now; new tasks allocate at insert.
   // Runs in headless mode too, so probes and the issue list see the same data.
   try {
@@ -445,6 +479,7 @@ async function bootstrap(): Promise<void> {
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
     threads,
+    startGoal,
     piExtensions,
     piSkills,
   });
@@ -496,30 +531,12 @@ async function bootstrap(): Promise<void> {
   // result either closes quietly or asks for a decision. Headless probes drive the
   // router themselves instead of waiting for a timer.
   if (!isHeadlessMode && work) {
-    const liveWork = work;
     const inboxDir = path.join(appPaths.userData, 'inbox');
     try {
       mkdirSync(inboxDir, { recursive: true });
     } catch (error) {
       console.warn('[OPC] 无法创建收件目录，文件夹触发源本次不启用', error);
     }
-
-    const router = new Router({
-      threads,
-      // Program layer. The watcher already dropped filesystem noise; this drops
-      // anything that is not work at all.
-      prefilter: (event) => (event.source === 'manual' || event.source === 'folder' ? 'keep' : 'drop'),
-      // No semantic layer yet: everything in the inbox was put there by the boss on
-      // purpose, so "would a model think this matters" has nothing to add. It lands
-      // with the noisy sources (IM / GitHub), where it actually earns its tokens.
-      dispatch: createWorkDispatch({
-        createTask: liveWork.createTask,
-        runTaskAndWait: liveWork.runTaskAndWait,
-        // Interim: the first active employee. Once B4 lands there is no employee
-        // table and this becomes "instantiate a worker from the thread's template".
-        resolveAssignee: () => agentsFromOrg(org)[0]?.id ?? null,
-      }),
-    });
 
     const watcher = new FolderWatcher({
       dir: inboxDir,
@@ -537,7 +554,7 @@ async function bootstrap(): Promise<void> {
     watcher.start();
 
     const tick = setInterval(() => {
-      void router
+      void goalRouter
         .tick()
         .then((report) => {
           // Silence is the expected outcome: only what reaches the boss is logged.
