@@ -11,6 +11,7 @@ import { MemoryService } from './memory/memoryService';
 import { OrgFactService } from './memory/orgFactService';
 import { ProjectService } from './org/projectService';
 import { resetCompany } from './seed/resetCompany';
+import { ensureDefaultExecutor } from './seed/defaultExecutor';
 import { openCompanyDatabase } from './data/companyDatabase';
 import { registerIpc } from './ipc/register';
 import { AuthService } from './models/authService';
@@ -254,13 +255,14 @@ async function bootstrap(): Promise<void> {
   const org = new OrgService(db);
   // One instance for the process: the router writes threads here, IPC reads them.
   const threads = new ThreadRepository(db);
-  // 首启不再塞演示公司：空的组织架构就是空的公司，老板自己建，
-  // 或者用 `OPC_COMPANY_SETUP=<file>` 导入一个公司模板（同样走 hire/assign）。
-  if (org.list().length === 0) {
-    // `warn` and not `info`: an empty company is a state the boss must act on.
-    console.warn(
-      '[OPC] 公司还是空的：去「组织架构」创建部门并招聘，或运行 OPC_COMPANY_SETUP=<file.json> 导入公司模板。',
-    );
+  // 全新安装要有一个人能干活：界面上已经没有招聘和组织架构了，
+  // 所以这里自动建**一个**执行体（不是以前那个六个人的演示公司）。
+  // 用 `OPC_COMPANY_SETUP=<file>` 导入模板仍然有效，它会先于这一步发生。
+  try {
+    const executor = ensureDefaultExecutor(org);
+    if (executor.created) console.warn('[OPC] 已创建默认执行体「小助手」：可以直接丢目标给它了。');
+  } catch (error) {
+    console.error('[OPC] 创建默认执行体失败', error);
   }
 
   chat = new ChatService({
