@@ -13,9 +13,9 @@
 | 位置 | 残留内容 | 现在的表现 | 建议 |
 |---|---|---|---|
 | ~~`widgets/title-bar/StartMenu.tsx`~~ ✅ `385e39a` | 「按部门建群」已**删掉**（不留替代入口） | 现在只剩「和某个人开对话」；`chat:ensureDepartmentGroup` 通道一并删除 | 剩 7 处 department，只用于从 `org.list()` 摊平成员列表——那是「执行体从哪来」的问题 |
-| `features/chat/ui/ChatPanel.tsx` / `ChatHeader.tsx`（12 处） | 会话头上的部门色块与名字 | `conversation.departmentId` 永远对不上，渲染成 undefined | 保留但降级为可选（已经是可选），等 StartMenu 改完一起清 |
+| ~~`features/chat/ui/ChatPanel.tsx` / `ChatHeader.tsx`~~ ✅ | 会话头部门色块 | **已删**；`departments` 这条 prop 链（ChatPage → ChatPanel → ChatHeader）整条消失 | — |
 | `pages/projects/ProjectsPage.tsx`（32 处） | 项目按部门、成员按部门筛 | 一个部门时能用，多个时是错觉 | 项目成员改成「参与的工作线」；优先级低 |
-| `features/agent-dossier/ui/AgentDossierDrawer.tsx`（11 处） | 「员工档案」：职级、汇报线、考核 | 打开是空的或只有一个人 | **改成「执行体卡」**：模板、技能、跑过哪些工作线、花了多少 |
+| ~~`features/agent-dossier/ui/AgentDossierDrawer.tsx`~~ ✅ | 部门卡片 + 职级徽章 | **已删**。抽屉现在只剩：这次对话里有谁、用什么模型花多少钱、各自的工作说明 | 想再加「跑过哪些工作线」需要 thread ↔ conversation 的查询，另行安排 |
 | `features/onboarding/ui/StepCompany.tsx` | 公司名 + 预算 + 部门数 | 显示「1 个部门 · 1 个人」 | 可以先去，onboarding 目标本来就是 3 步 |
 
 ---
