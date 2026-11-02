@@ -5,6 +5,7 @@ import type {
   CompanyProfilePatch,
   CreateTaskInput,
   DecisionClassifyInput,
+  EditableProjectStatus,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -553,7 +554,14 @@ export function registerIpc({
   ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
     consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
   );
-  ipcMain.handle(IPC.projects.list, () => projects.list());
+  ipcMain.handle(IPC.projects.list, (_event, options: unknown) =>
+    projects.list({
+      includeArchived:
+        typeof options === 'object' &&
+        options !== null &&
+        (options as { includeArchived?: unknown }).includeArchived === true,
+    }),
+  );
   ipcMain.handle(IPC.projects.create, (_event, input: unknown) => {
     if (typeof input !== 'object' || input === null) throw new Error('projects:create 参数非法');
     const { name, code, description, departmentId } = input as Record<string, unknown>;
@@ -571,6 +579,20 @@ export function registerIpc({
       throw new Error('projects:assign 参数非法');
     }
     projects.assign(projectId, employeeId, typeof role === 'string' ? role : '');
+    return projects.list();
+  });
+  ipcMain.handle(IPC.projects.setStatus, (_event, projectId: unknown, status: unknown) => {
+    if (typeof projectId !== 'string' || typeof status !== 'string') {
+      throw new Error('projects:setStatus 参数非法');
+    }
+    projects.setStatus(projectId, status as EditableProjectStatus);
+    return projects.list();
+  });
+  ipcMain.handle(IPC.projects.setOwner, (_event, projectId: unknown, employeeId: unknown) => {
+    if (typeof projectId !== 'string' || (employeeId !== null && typeof employeeId !== 'string')) {
+      throw new Error('projects:setOwner 参数非法');
+    }
+    projects.setOwner(projectId, employeeId);
     return projects.list();
   });
   ipcMain.handle(IPC.projects.removeMember, (_event, projectId: unknown, employeeId: unknown) => {

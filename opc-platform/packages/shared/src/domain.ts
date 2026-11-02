@@ -198,6 +198,20 @@ export interface WorkTask {
 /** ── Organisation ───────────────────────────────────────────────────────── */
 
 /**
+ * Lifecycle of a standing commitment.
+ *
+ * `paused` and `done` are real states, not labels: a paused project stops feeding
+ * memory into its members' context, while `archived` is terminal and hides the
+ * project from the index.
+ */
+export type ProjectStatus = 'planning' | 'active' | 'paused' | 'done' | 'archived';
+
+/** The four states a project can be moved to from the UI; `archived` has its own action. */
+export const PROJECT_STATUSES = ['planning', 'active', 'paused', 'done'] as const;
+
+export type EditableProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/**
  * The one company this installation is (§1.3): its `company` row plus the profile
  * preferences that have no column of their own (vision / brand colour / how the
  * boss is addressed). Read and written through `window.opc.company`, so the

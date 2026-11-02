@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 24;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1171,7 +1171,29 @@ UPDATE model_provider
    );
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22];
+/**
+ * V23: 撤掉里程碑。
+ *
+ * 里程碑只在开发库里短暂存在过，没有发布。功能取消后这里把表删掉，避免开发库
+ * 留下孤儿表；对从未跑过那一版构建的库是空操作。
+ */
+const V23 = `
+DROP TABLE IF EXISTS project_milestone;
+`;
+
+/**
+ * V24: 项目负责人。
+ *
+ * 负责人是项目层面唯一的责任人，和"谁被分配进来"是两件事：成员可以有很多个，
+ * 负责人只有一个。没有它，页面上只能从 `assignment.role = '负责人'` 猜，改个角色
+ * 就丢。这里存员工 id，读取时再关联姓名；不为它建外键，因为负责人被调离项目时
+ * 由服务层负责清空，而不是让整行项目级联失败。
+ */
+const V24 = `
+ALTER TABLE project_group ADD COLUMN owner_employee_id TEXT;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

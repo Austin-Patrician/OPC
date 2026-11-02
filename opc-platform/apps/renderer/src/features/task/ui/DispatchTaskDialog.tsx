@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { X, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { Agent, Budget, CreateTaskResult } from '@opc/shared/domain';
+import type { Budget, CreateTaskResult } from '@opc/shared/domain';
 
 export interface DispatchDraft {
   title: string;
@@ -15,8 +15,15 @@ export interface DispatchDraft {
   acceptanceTemplate: 'http-ok' | 'image-200';
 }
 
+/** Anything that can be assigned work; a `ProjectView` member is one. */
+export interface DispatchCandidate {
+  id: string;
+  name: string;
+  role: string;
+}
+
 interface DispatchTaskDialogProps {
-  agents: readonly Agent[];
+  agents: readonly DispatchCandidate[];
   defaultAssigneeId: string;
   /** 可选：派活时选项目，决定这笔钱扣在哪个项目上。 */
   projects?: readonly { id: string; name: string }[];
@@ -43,13 +50,9 @@ export function DispatchTaskDialog({
   onClose,
 }: DispatchTaskDialogProps) {
   const { t } = useTranslation();
-  const [title, setTitle] = useState('写一个 hello world HTTP 服务');
-  const [brief, setBrief] = useState(
-    '用 Node 内置 http 模块实现：GET / 返回纯文本 ok；监听 process.env.PORT（默认 3000）；不引入依赖。',
-  );
-  const [deliverableSpec, setDeliverableSpec] = useState(
-    'server.js：可直接 `node server.js` 启动，GET / 返回 "ok"',
-  );
+  const [title, setTitle] = useState('');
+  const [brief, setBrief] = useState('');
+  const [deliverableSpec, setDeliverableSpec] = useState('');
   const [assigneeId, setAssigneeId] = useState(defaultAssigneeId);
   const [projectGroupId, setProjectGroupId] = useState(defaultProjectId);
   const [estTokens, setEstTokens] = useState(6000);
@@ -111,8 +114,9 @@ export function DispatchTaskDialog({
             <input
               value={title}
               onChange={(event) => setTitle(event.target.value)}
+              placeholder={t('task.placeholder.title')}
               required
-              className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent"
+              className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent"
             />
           </Field>
 
@@ -121,7 +125,8 @@ export function DispatchTaskDialog({
               value={brief}
               onChange={(event) => setBrief(event.target.value)}
               rows={2}
-              className="w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent"
+              placeholder={t('task.placeholder.brief')}
+              className="w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent"
             />
           </Field>
 
@@ -129,8 +134,9 @@ export function DispatchTaskDialog({
             <input
               value={deliverableSpec}
               onChange={(event) => setDeliverableSpec(event.target.value)}
+              placeholder={t('task.placeholder.deliverable')}
               required
-              className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-sm text-ink outline-none focus:border-accent"
+              className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent"
             />
           </Field>
 

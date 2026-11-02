@@ -15,6 +15,7 @@ import type {
   DecisionClassifyResult,
   DepartmentNode,
   DepartmentEditInput,
+  EditableProjectStatus,
   EmploymentEvent,
   EmployeePackageRecord,
   EmployeeToolPolicy,
@@ -35,6 +36,7 @@ import type {
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
+  ProjectStatus,
   ProxyConfig,
   ProxyConfigInput,
   ProxyTestResult,
@@ -129,7 +131,9 @@ export const IPC = {
     create: 'projects:create',
     assign: 'projects:assign',
     archive: 'projects:archive',
+    setStatus: 'projects:setStatus',
     removeMember: 'projects:removeMember',
+    setOwner: 'projects:setOwner',
     setReportsTo: 'projects:setReportsTo',
   },
   org: {
@@ -468,7 +472,9 @@ export interface ProjectView {
   code: string;
   description: string;
   departmentId: string;
-  status: 'active' | 'archived';
+  status: ProjectStatus;
+  /** The one accountable person on the project; always one of `members` when set. */
+  ownerEmployeeId?: string;
   /** ms epoch; the dossier shows when the commitment was opened. */
   createdAt: number;
   members: {
@@ -628,10 +634,15 @@ export interface MemoryBridge {
 }
 
 export interface ProjectsBridge {
-  list(): Promise<ProjectView[]>;
+  /** `includeArchived` is opt-in: the index shows live work by default. */
+  list(options?: { includeArchived?: boolean }): Promise<ProjectView[]>;
   create(input: { name: string; code?: string; description?: string; departmentId?: string }): Promise<ProjectView[]>;
   assign(projectId: string, employeeId: string, role?: string): Promise<ProjectView[]>;
   archive(projectId: string): Promise<ProjectView[]>;
+  /** Moves a project between planning / active / paused / done. */
+  setStatus(projectId: string, status: EditableProjectStatus): Promise<ProjectView[]>;
+  /** Sets the accountable person; `null` clears it. Must be an active member. */
+  setOwner(projectId: string, employeeId: string | null): Promise<ProjectView[]>;
   removeMember(projectId: string, employeeId: string): Promise<ProjectView[]>;
   /** Project-internal reporting line (matrix); `null` clears it. */
   setReportsTo(projectId: string, employeeId: string, managerId: string | null): Promise<ProjectView[]>;

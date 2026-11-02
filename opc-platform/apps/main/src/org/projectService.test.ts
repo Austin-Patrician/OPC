@@ -139,3 +139,122 @@ describe('project reporting line', () => {
     expect(memberOf(project.id, worker.id)?.reportsToEmployeeId).toBe(lead.id);
   });
 });
+
+describe('project lifecycle', () => {
+  it('hides archived projects from the index unless asked for them', () => {
+    const { project } = team();
+    projects.archive(project.id);
+
+    expect(projects.list().some((entry) => entry.id === project.id)).toBe(false);
+    expect(projects.list({ includeArchived: true }).some((entry) => entry.id === project.id)).toBe(true);
+  });
+
+  it('keeps paused and done projects in the index, with their team', () => {
+    const { project, worker } = team();
+
+    projects.setStatus(project.id, 'paused');
+    const paused = projects.list().find((entry) => entry.id === project.id);
+    expect(paused?.status).toBe('paused');
+    expect(paused?.members.some((member) => member.employeeId === worker.id)).toBe(true);
+
+    projects.setStatus(project.id, 'done');
+    expect(projects.list().find((entry) => entry.id === project.id)?.status).toBe('done');
+    // A finished project keeps its people — they are still assigned, the work is over.
+    expect(memberOf(project.id, worker.id)?.employeeId).toBe(worker.id);
+  });
+
+  it('stops feeding a paused project into member context without unassigning anyone', () => {
+    const { project, worker } = team();
+    expect(projects.activeProjectIdsOf(worker.id)).toContain(project.id);
+
+    projects.setStatus(project.id, 'paused');
+    expect(projects.activeProjectIdsOf(worker.id)).not.toContain(project.id);
+
+    projects.setStatus(project.id, 'active');
+    expect(projects.activeProjectIdsOf(worker.id)).toContain(project.id);
+  });
+
+  it('refuses to move an archived project and leaves it terminal', () => {
+    const { project } = team();
+    projects.archive(project.id);
+
+    expect(() => projects.setStatus(project.id, 'active')).toThrow('已归档的项目不能改状态');
+  });
+
+  it('refuses an unknown status', () => {
+    const { project } = team();
+
+    expect(() => projects.setStatus(project.id, 'retired' as never)).toThrow('未知的项目状态');
+  });
+});
+
+describe('project milestones', () => {
+  const milestonesOf = (projectId: string) =>
+    projects.list({ includeArchived: true }).find((entry) => entry.id === projectId)?.milestones ?? [];
+
+  it('stores checkpoints in due-date order with undated ones last', () => {
+    const { project } = team();
+    projects.addMilestone(project.id, { title: '发布', dueAt: 2_000 });
+    projects.addMilestone(project.id, { title: '内测' });
+    projects.addMilestone(project.id, { title: '公测', dueAt: 1_000 });
+
+    expect(milestonesOf(project.id).map((entry) => entry.title)).toEqual(['公测', '发布', '内测']);
+  });
+
+  it('completes with a timestamp and clears it on reopen', () => {
+    const { project } = team();
+    projects.addMilestone(project.id, { title: '内测上线' });
+    const id = milestonesOf(project.id)[0]!.id;
+
+    projects.updateMilestone(id, { done: true });
+    const done = milestonesOf(project.id)[0]!;
+    expect(done.done).toBe(true);
+    expect(done.completedAt).toBeTypeOf('number');
+
+    projects.updateMilestone(id, { done: false });
+    const reopened = milestonesOf(project.id)[0]!;
+    expect(reopened.done).toBe(false);
+    expect(reopened.completedAt).toBeUndefined();
+  });
+
+  it('renames and reschedules without touching completion', () => {
+    const { project } = team();
+    projects.addMilestone(project.id, { title: '内测', dueAt: 1_000 });
+    const id = milestonesOf(project.id)[0]!.id;
+
+    projects.updateMilestone(id, { title: '公测', dueAt: 5_000 });
+
+    expect(milestonesOf(project.id)[0]).toMatchObject({ id, title: '公测', dueAt: 5_000, done: false });
+  });
+
+  it('removes a checkpoint', () => {
+    const { project } = team();
+    projects.addMilestone(project.id, { title: '内测' });
+    const id = milestonesOf(project.id)[0]!.id;
+
+    projects.removeMilestone(id);
+
+    expect(milestonesOf(project.id)).toEqual([]);
+  });
+
+  it('refuses empty titles and unknown milestones', () => {
+    const { project } = team();
+
+    expect(() => projects.addMilestone(project.id, { title: '   ' })).toThrow('里程碑标题不能为空');
+    expect(() => projects.updateMilestone('ms-missing', { done: true })).toThrow('里程碑不存在');
+    expect(() => projects.removeMilestone('ms-missing')).toThrow('里程碑不存在');
+  });
+
+  it('is read-only once the project is archived', () => {
+    const { project } = team();
+    projects.addMilestone(project.id, { title: '内测' });
+    const id = milestonesOf(project.id)[0]!.id;
+    projects.archive(project.id);
+
+    expect(() => projects.addMilestone(project.id, { title: '公测' })).toThrow('项目不存在或已归档');
+    expect(() => projects.updateMilestone(id, { done: true })).toThrow('项目不存在或已归档');
+    expect(() => projects.removeMilestone(id)).toThrow('项目不存在或已归档');
+    // Archiving keeps the history it was hiding.
+    expect(milestonesOf(project.id).map((entry) => entry.title)).toEqual(['内测']);
+  });
+});

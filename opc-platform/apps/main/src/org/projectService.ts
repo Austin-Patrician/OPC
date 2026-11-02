@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { PROJECT_STATUSES, type EditableProjectStatus, type ProjectStatus } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
 export interface ProjectMember {
@@ -18,7 +19,9 @@ export interface ProjectGroup {
   code: string;
   description: string;
   departmentId: string;
-  status: 'active' | 'archived';
+  status: ProjectStatus;
+  /** The one accountable person; always one of `members` when set. */
+  ownerEmployeeId?: string;
   members: ProjectMember[];
   createdAt: number;
 }
@@ -64,8 +67,8 @@ export class ProjectService {
   list = (options: { includeArchived?: boolean } = {}): ProjectGroup[] => {
     const rows = this.db
       .prepare(
-        `SELECT id, name, code, description, department_id, status, created_at
-           FROM project_group ${options.includeArchived ? '' : "WHERE status = 'active'"}
+        `SELECT id, name, code, description, department_id, status, owner_employee_id, created_at
+           FROM project_group ${options.includeArchived ? '' : "WHERE status <> 'archived'"}
           ORDER BY created_at DESC`,
       )
       .all() as {
@@ -74,7 +77,8 @@ export class ProjectService {
       code: string;
       description: string;
       department_id: string | null;
-      status: 'active' | 'archived';
+      status: ProjectStatus;
+      owner_employee_id: string | null;
       created_at: number;
     }[];
 
@@ -103,6 +107,7 @@ export class ProjectService {
       description: row.description,
       departmentId: row.department_id ?? '',
       status: row.status,
+      ...(row.owner_employee_id ? { ownerEmployeeId: row.owner_employee_id } : {}),
       createdAt: row.created_at,
       members: members
         .filter((member) => member.project_group_id === row.id)
@@ -121,7 +126,9 @@ export class ProjectService {
 
   /** Adding someone who is already assigned updates the role instead of duplicating. */
   assign = (projectId: string, employeeId: string, role = ''): void => {
-    const project = this.db.prepare("SELECT id FROM project_group WHERE id = ? AND status = 'active'").get(projectId);
+    const project = this.db
+      .prepare("SELECT id FROM project_group WHERE id = ? AND status <> 'archived'")
+      .get(projectId);
     if (!project) throw new Error('项目不存在或已归档');
     const employee = this.db
       .prepare("SELECT id FROM employee WHERE id = ? AND status = 'active'")
@@ -140,12 +147,24 @@ export class ProjectService {
       return;
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO assignment (id, employee_id, project_group_id, role, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-      )
-      .run(`assign-${crypto.randomUUID()}`, employeeId, projectId, role, now, now);
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO assignment (id, employee_id, project_group_id, role, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+        )
+        .run(`assign-${crypto.randomUUID()}`, employeeId, projectId, role, now, now);
+
+      // The first person on a project becomes its owner. A project with a team but
+      // no accountable person is the state the owner field exists to prevent, and
+      // making the boss pick one more time to get there buys nothing.
+      this.db
+        .prepare(
+          `UPDATE project_group SET owner_employee_id = ?, updated_at = ?
+            WHERE id = ? AND owner_employee_id IS NULL`,
+        )
+        .run(employeeId, now, projectId);
+    })();
   };
 
   removeMember = (projectId: string, employeeId: string): void => {
@@ -176,7 +195,40 @@ export class ProjectService {
           "UPDATE assignment SET status = 'removed', reports_to_employee_id = NULL, updated_at = ? WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
         )
         .run(now, projectId, employeeId);
+      // The owner has to be on the team; an owner id pointing at someone who left
+      // would make the dossier say "负责人：离开的人" forever.
+      this.db
+        .prepare(
+          'UPDATE project_group SET owner_employee_id = NULL, updated_at = ? WHERE id = ? AND owner_employee_id = ?',
+        )
+        .run(now, projectId, employeeId);
     })();
+  };
+
+  /**
+   * 指定项目负责人。
+   *
+   * 负责人必须是本项目在岗成员 —— 允许把"项目外的人"挂成负责人，会让派活、审批
+   * 和上下文注入都指向一个拿不到项目事实的人。传 `null` 表示暂时不指定。
+   */
+  setOwner = (projectId: string, employeeId: string | null): void => {
+    const project = this.db
+      .prepare("SELECT id FROM project_group WHERE id = ? AND status <> 'archived'")
+      .get(projectId);
+    if (!project) throw new Error('项目不存在或已归档');
+
+    if (employeeId !== null) {
+      const member = this.db
+        .prepare(
+          "SELECT 1 AS ok FROM assignment WHERE project_group_id = ? AND employee_id = ? AND status = 'active'",
+        )
+        .get(projectId, employeeId);
+      if (!member) throw new Error('负责人必须是本项目的在岗成员');
+    }
+
+    this.db
+      .prepare('UPDATE project_group SET owner_employee_id = ?, updated_at = ? WHERE id = ?')
+      .run(employeeId, Date.now(), projectId);
   };
 
   /**
@@ -189,7 +241,7 @@ export class ProjectService {
    */
   setReportsTo = (projectId: string, employeeId: string, managerId: string | null): void => {
     const project = this.db
-      .prepare("SELECT id FROM project_group WHERE id = ? AND status = 'active'")
+      .prepare("SELECT id FROM project_group WHERE id = ? AND status <> 'archived'")
       .get(projectId);
     if (!project) throw new Error('项目不存在或已归档');
 
@@ -246,6 +298,28 @@ export class ProjectService {
     return project.members.filter(
       (member) => member.reportsToEmployeeId === managerId && member.status === 'active',
     );
+  };
+
+  /**
+   * Moves a project between planning / active / paused / done.
+   *
+   * `archived` is deliberately not accepted here: archiving also detaches every
+   * assignment, so it stays a separate, explicit action. A paused or finished
+   * project keeps its team — the people are still assigned, the work just is not
+   * being fed into their context (see `activeProjectIdsOf`).
+   */
+  setStatus = (projectId: string, status: EditableProjectStatus): void => {
+    if (!PROJECT_STATUSES.includes(status)) throw new Error(`未知的项目状态：${status}`);
+    const row = this.db
+      .prepare('SELECT status FROM project_group WHERE id = ?')
+      .get(projectId) as { status: ProjectStatus } | undefined;
+    if (!row) throw new Error('项目不存在');
+    if (row.status === 'archived') throw new Error('已归档的项目不能改状态');
+    if (row.status === status) return;
+
+    this.db
+      .prepare('UPDATE project_group SET status = ?, updated_at = ? WHERE id = ?')
+      .run(status, Date.now(), projectId);
   };
 
   archive = (projectId: string): void => {
@@ -308,8 +382,14 @@ export class ProjectService {
       .run(Date.now(), ...where).changes;
   };
 
-  /** Project ids an employee is currently on — the only ones allowed in its context. */
-  activeProjectIdsOf = (employeeId: string): string[] =>    (
+  /**
+   * Project ids an employee is currently on — the only ones allowed in its context.
+   *
+   * Only `active` projects count: a paused or finished project keeps its team, but
+   * its facts must stop leaking into every task those people run.
+   */
+  activeProjectIdsOf = (employeeId: string): string[] =>
+    (
       this.db
         .prepare(
           `SELECT a.project_group_id FROM assignment a

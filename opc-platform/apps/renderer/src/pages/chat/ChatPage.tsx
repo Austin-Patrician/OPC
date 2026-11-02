@@ -34,7 +34,7 @@ export function ChatPage() {
     if (!dispatchOpen || !window.opc?.projects) return;
     void window.opc.projects
       .list()
-      .then(setProjects)
+      .then((rows) => setProjects(rows.filter((project) => project.status === 'active')))
       .catch(() => setProjects([]));
   }, [dispatchOpen]);
 
