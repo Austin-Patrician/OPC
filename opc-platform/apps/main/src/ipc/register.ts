@@ -705,6 +705,25 @@ export function registerIpc({
     if (typeof reportId !== 'string') throw new Error('threads:markRead 参数非法');
     threads.markReportRead(reportId);
   });
+  ipcMain.handle(IPC.threads.decide, (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('threads:decide 参数非法');
+    const draft = raw as Record<string, unknown>;
+    if (typeof draft.reportId !== 'string') throw new Error('threads:decide 需要 reportId');
+    if (typeof draft.threadId !== 'string') throw new Error('threads:decide 需要 threadId');
+    if (draft.decision !== 'approve' && draft.decision !== 'rework') {
+      throw new Error('threads:decide 需要 decision（approve / rework）');
+    }
+    const result = work.decideThread(
+      draft.threadId,
+      draft.decision,
+      typeof draft.note === 'string' ? draft.note : undefined,
+    );
+    if (!result.ok) throw new Error(result.error);
+    // The boss answered: the row leaves the queue either way. A rework will come
+    // back with its own report when the second attempt lands.
+    threads.markReportRead(draft.reportId);
+    return result.thread;
+  });
   ipcMain.handle(IPC.threads.close, (_event, threadId: unknown) => {
     if (typeof threadId !== 'string') throw new Error('threads:close 参数非法');
     return threads.setState(threadId, 'done');

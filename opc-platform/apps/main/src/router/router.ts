@@ -1,4 +1,4 @@
-import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
+import type { AttentionLevel, TriggerEvent, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 
 /**
@@ -50,10 +50,21 @@ export interface DispatchInput {
  * `needs-decision` and `failed` both spend the thread's attention quota, because
  * both leave the boss with something only they can settle.
  */
-export type DispatchOutcome =
+export type DispatchOutcome = (
   | { status: 'delivered'; summary: string }
   | { status: 'needs-decision'; question: string }
-  | { status: 'failed'; reason: string };
+  | { status: 'failed'; reason: string }
+) & {
+  /**
+   * Set when the executor already wrote the line-of-work report itself.
+   *
+   * The task pipeline does exactly that (`WorkService.reportToThread`): it knows
+   * the task's artifacts, its acceptance verdict and whether that verdict meant
+   * anything. Writing a second report from here would duplicate the record and,
+   * worse, could disagree with the first one.
+   */
+  alreadyReported?: boolean;
+};
 
 export interface RouterDeps {
   threads: ThreadRepository;
@@ -67,6 +78,13 @@ export interface RouterDeps {
   batchSize?: number;
 }
 
+/** What the boss hears about, one row per settled thread. */
+export interface SettledRow {
+  threadId: string;
+  level: AttentionLevel;
+  title: string;
+}
+
 export interface TickReport {
   /** Events the program layer dropped without spending a token. */
   dropped: number;
@@ -75,7 +93,7 @@ export interface TickReport {
   /** Threads opened by this tick. */
   opened: WorkThread[];
   /** Reports queued by this tick, with the level that was chosen. */
-  reported: WorkReport[];
+  reported: SettledRow[];
   /** Events that threw. They stay pending so the next tick retries them. */
   failed: number;
 }
@@ -204,35 +222,26 @@ export class Router {
   }
 
   /** Turns an outcome into a thread state plus the report level it earns. */
-  private settle(thread: WorkThread, outcome: DispatchOutcome): WorkReport {
-    switch (outcome.status) {
-      case 'delivered':
-        this.deps.threads.setState(thread.id, 'done');
-        // Quiet on purpose: finishing is the expected case, and a notification
-        // for it is exactly the noise the attention budget exists to prevent.
-        return this.deps.threads.addReport({
-          threadId: thread.id,
-          level: 'silent',
-          title: thread.title,
-          body: outcome.summary,
-        });
-      case 'needs-decision':
-        this.deps.threads.setState(thread.id, 'waiting');
-        return this.deps.threads.addReport({
-          threadId: thread.id,
-          level: 'decide',
-          title: thread.title,
-          body: outcome.question,
-        });
-      case 'failed':
-        this.deps.threads.setState(thread.id, 'failed');
-        return this.deps.threads.addReport({
-          threadId: thread.id,
-          level: 'decide',
-          title: thread.title,
-          body: outcome.reason,
-        });
-    }
+  private settle(thread: WorkThread, outcome: DispatchOutcome): SettledRow {
+    const settled: Record<DispatchOutcome['status'], { level: AttentionLevel; state: 'done' | 'waiting' | 'failed' }> = {
+      // Quiet on purpose: finishing is the expected case, and a notification for
+      // it is exactly the noise the attention budget exists to prevent.
+      delivered: { level: 'silent', state: 'done' },
+      'needs-decision': { level: 'decide', state: 'waiting' },
+      failed: { level: 'decide', state: 'failed' },
+    };
+    const { level, state } = settled[outcome.status];
+    this.deps.threads.setState(thread.id, state);
+    if (outcome.alreadyReported) return { threadId: thread.id, level, title: thread.title };
+
+    const body =
+      outcome.status === 'delivered'
+        ? outcome.summary
+        : outcome.status === 'needs-decision'
+          ? outcome.question
+          : outcome.reason;
+    this.deps.threads.addReport({ threadId: thread.id, level, title: thread.title, body });
+    return { threadId: thread.id, level, title: thread.title };
   }
 }
 

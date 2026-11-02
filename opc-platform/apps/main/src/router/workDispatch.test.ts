@@ -73,7 +73,7 @@ describe('createWorkDispatch', () => {
         task({ status: 'accepted', artifacts: [{ id: 'a', relPath: 'summary.md' } as never] }),
     });
     const outcome = await fn({ thread, event: gated });
-    expect(outcome).toEqual({ status: 'delivered', summary: '产出：summary.md' });
+    expect(outcome).toMatchObject({ status: 'delivered', summary: '产出：summary.md' });
   });
 
   it('treats a boss-approved task as delivered, not as a question', async () => {
@@ -96,13 +96,16 @@ describe('createWorkDispatch', () => {
         }),
     });
     const outcome = await fn(input());
-    expect(outcome).toEqual({ status: 'needs-decision', question: '自动验收没过：退出码 1（120ms）' });
+    expect(outcome).toMatchObject({
+      status: 'needs-decision',
+      question: '自动验收没过：退出码 1（120ms）',
+    });
   });
 
   it('carries a hard failure through with its reason', async () => {
     const { fn } = dispatch({ run: async () => task({ status: 'failed', error: '模型超时' }) });
     const outcome = await fn(input());
-    expect(outcome).toEqual({ status: 'failed', reason: '模型超时' });
+    expect(outcome).toMatchObject({ status: 'failed', reason: '模型超时' });
   });
 
   it('turns a budget refusal into a decision, not a crash', async () => {
@@ -114,7 +117,7 @@ describe('createWorkDispatch', () => {
         }) as unknown as CreateTaskResult,
     });
     const outcome = await fn(input());
-    expect(outcome).toEqual({ status: 'needs-decision', question: '本月额度已用完' });
+    expect(outcome).toMatchObject({ status: 'needs-decision', question: '本月额度已用完' });
   });
 
   it('fails loudly when there is nobody to do the work', async () => {

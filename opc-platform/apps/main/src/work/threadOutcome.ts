@@ -1,4 +1,5 @@
 import type { AttentionLevel, TaskStatus, ThreadState, WorkTask } from '@opc/shared/domain';
+import { isUnverified } from './acceptanceGate';
 
 /**
  * How a finished task speaks to its line of work.
@@ -27,6 +28,18 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
 
   switch (task.status) {
     case 'accepted':
+      if (isUnverified(task)) {
+        // Nothing was proven — only that files landed. Saying "done" here would
+        // be the system claiming a verdict it never had.
+        return {
+          state: 'waiting',
+          report: {
+            level: 'decide',
+            title: task.title,
+            body: `做完了，但我没有可执行的验收条件，判定不了对错。${summarise(task)}`,
+          },
+        };
+      }
       // The expected ending. It is recorded (level `silent` keeps it out of the
       // queue) so the thread keeps a history the boss can read later.
       return {

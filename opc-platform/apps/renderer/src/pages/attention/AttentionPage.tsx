@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowUp, Check, Inbox, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { ArrowUp, Check, Inbox, Loader2, RefreshCw, RotateCcw, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AttentionEntry } from '@opc/shared/ipc';
 import type { WorkThread } from '@opc/shared/domain';
@@ -35,6 +35,10 @@ export function AttentionPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
   const [starting, setStarting] = useState(false);
+  /** Which row is asking for a rework note, and what the boss typed. */
+  const [reworkId, setReworkId] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [pendingId, setPendingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!window.opc?.threads) return;
@@ -89,6 +93,30 @@ export function AttentionPage() {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusyId(null);
+    }
+  };
+
+  /**
+   * 老板的判定。这是系统唯一一处「人说了算」的入口——`decide` 的活系统自己
+   * 判不了，所以才在这里。
+   */
+  const decide = async (entry: AttentionEntry, decision: 'approve' | 'rework', text?: string) => {
+    setPendingId(entry.id);
+    try {
+      const updated = await window.opc!.threads.decide({
+        reportId: entry.id,
+        threadId: entry.threadId,
+        decision,
+        ...(text ? { note: text } : {}),
+      });
+      setQueue((previous) => previous.filter((row) => row.id !== entry.id));
+      setThreads((previous) => previous.map((thread) => (thread.id === updated.id ? updated : thread)));
+      setReworkId(null);
+      setNote('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setPendingId(null);
     }
   };
 
@@ -185,29 +213,92 @@ export function AttentionPage() {
             >
               <ul className="divide-y divide-line">
                 {rows.map((entry) => (
-                  <li key={entry.id} className="flex items-start gap-3 px-4 py-3">
-                    <StatusBadge
-                      tone={level === 'decide' ? 'amber' : 'gray'}
-                      label={level === 'decide' ? t('attention.level.decide') : t('attention.level.notify')}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm-plus font-medium text-ink">{entry.threadTitle}</div>
-                      <p className="mt-0.5 line-clamp-2 text-sm leading-relaxed text-ink-secondary">
-                        {entry.body || entry.title}
-                      </p>
-                      <div className="mt-1 text-2xs text-ink-quaternary">
-                        {relativeTime(entry.createdAt, t)}
+                  <li key={entry.id} className="px-4 py-3">
+                    <div className="flex items-start gap-3">
+                      <StatusBadge
+                        tone={level === 'decide' ? 'amber' : 'gray'}
+                        label={level === 'decide' ? t('attention.level.decide') : t('attention.level.notify')}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm-plus font-medium text-ink">{entry.threadTitle}</div>
+                        <p className="mt-0.5 line-clamp-2 text-sm leading-relaxed text-ink-secondary">
+                          {entry.body || entry.title}
+                        </p>
+                        <div className="mt-1 text-2xs text-ink-quaternary">
+                          {relativeTime(entry.createdAt, t)}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {level === 'decide' ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void decide(entry, 'approve')}
+                              disabled={pendingId === entry.id}
+                              className={cn(buttonClass.primary, 'shrink-0')}
+                            >
+                              <Check className="size-3.5" />
+                              {t('attention.approve')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReworkId(reworkId === entry.id ? null : entry.id);
+                                setNote('');
+                              }}
+                              disabled={pendingId === entry.id}
+                              className={cn(buttonClass.secondary, 'shrink-0')}
+                            >
+                              <RotateCcw className="size-3.5" />
+                              {t('attention.rework')}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void markRead(entry.id)}
+                            disabled={busyId === entry.id}
+                            className={cn(buttonClass.secondary, 'shrink-0')}
+                          >
+                            <Check className="size-3.5" />
+                            {t('attention.markRead')}
+                          </button>
+                        )}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void markRead(entry.id)}
-                      disabled={busyId === entry.id}
-                      className={cn(buttonClass.secondary, 'shrink-0')}
-                    >
-                      <Check className="size-3.5" />
-                      {t('attention.markRead')}
-                    </button>
+
+                    {reworkId === entry.id ? (
+                      <div className="mt-2 rounded-lg border border-line bg-surface-muted/40 p-2">
+                        <textarea
+                          value={note}
+                          onChange={(event) => setNote(event.target.value)}
+                          rows={2}
+                          autoFocus
+                          placeholder={t('attention.reworkPlaceholder')}
+                          className="w-full resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-quaternary"
+                        />
+                        <div className="mt-1 flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReworkId(null);
+                              setNote('');
+                            }}
+                            className={buttonClass.secondary}
+                          >
+                            {t('attention.reworkCancel')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void decide(entry, 'rework', note.trim())}
+                            disabled={pendingId === entry.id}
+                            className={buttonClass.primary}
+                          >
+                            {t('attention.reworkConfirm')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>

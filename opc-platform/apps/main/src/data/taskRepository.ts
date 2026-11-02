@@ -300,6 +300,20 @@ export class TaskRepository {
     return this.getTask(taskId) as WorkTask;
   };
 
+  /**
+   * The most recent task on a line of work.
+   *
+   * When the boss approves or asks for a rework from the attention queue, the
+   * newest task is the one they are looking at — the thread's earlier tasks are
+   * history, and a rework created a new one rather than reopening the old.
+   */
+  latestForThread = (threadId: string): WorkTask | undefined => {
+    const row = this.statement(
+      'SELECT id FROM task WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    ).get(threadId) as { id: string } | undefined;
+    return row ? this.getTask(row.id) : undefined;
+  };
+
   getTask = (taskId: string): WorkTask | undefined => {
     const row = this.statement(
       `SELECT t.*,

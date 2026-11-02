@@ -118,6 +118,7 @@ export const IPC = {
     list: 'threads:list',
     queue: 'threads:queue',
     markRead: 'threads:markRead',
+    decide: 'threads:decide',
     close: 'threads:close',
   },
   projects: {
@@ -1095,6 +1096,16 @@ export interface ThreadsBridge {
   /** 最近的工作线；静默完成的活也在这里，否则老板没法确认它真的在干。 */
   list(limit?: number): Promise<WorkThread[]>;
   markRead(reportId: string): Promise<void>;
+  /**
+   * 老板在队列上做的那两个动作：认可（`approve`）或带着意见重做（`rework`）。
+   * 这是唯一一处「人判定对不对」的入口——系统自己不宣称验收。
+   */
+  decide(input: {
+    reportId: string;
+    threadId: string;
+    decision: 'approve' | 'rework';
+    note?: string;
+  }): Promise<WorkThread>;
   /** 关掉一条工作线（老板手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;
 }

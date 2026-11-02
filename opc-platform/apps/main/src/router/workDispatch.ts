@@ -1,4 +1,5 @@
 import type { AcceptanceTemplate, CreateTaskInput, CreateTaskResult, WorkTask } from '@opc/shared/domain';
+import { UNVERIFIED_GATE as NO_GATE } from '../work/acceptanceGate';
 import type { DispatchInput, DispatchOutcome } from './router';
 
 /**
@@ -30,19 +31,7 @@ export interface WorkDispatchDeps {
 
 const DEFAULT_EST_TOKENS = 20_000;
 
-/**
- * The gate used when the event brought none.
- *
- * It proves nothing about correctness — the pipeline's own "did anything land in
- * the workspace" check still runs, and that is all this claims. It exists so an
- * open-ended goal ("整理这份财报") does not spend three retry rounds pretending a
- * `node --test` failure means the work was wrong.
- *
- * Super-agent never claims acceptance for open-ended work either: it delivers
- * what it can prove is worth delivering and leaves the verdict to the human.
- * See docs/v2/01-core.md §9.
- */
-const NO_GATE = ['node', '-e', 'process.exit(0)'];
+
 const TEMPLATES: readonly AcceptanceTemplate[] = ['http-ok', 'node-test', 'image-200', 'review-verdict'];
 
 export function createWorkDispatch(deps: WorkDispatchDeps) {
@@ -71,7 +60,7 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
           : goal,
       assigneeId,
       estTokens: numberOr(payload.estTokens, deps.estTokens ?? DEFAULT_EST_TOKENS),
-      acceptanceCommand: verified ? command : NO_GATE,
+      acceptanceCommand: verified ? command : [...NO_GATE],
       acceptanceTemplate: template,
       threadId: thread.id,
     });
@@ -86,7 +75,16 @@ export function createWorkDispatch(deps: WorkDispatchDeps) {
   };
 }
 
+/**
+ * Every outcome from here is already reported: the task pipeline writes the
+ * line-of-work report (`WorkService.reportToThread`) with the real artifacts and
+ * verdict in hand. The router only mirrors the state.
+ */
 function toOutcome(task: WorkTask, verified: boolean): DispatchOutcome {
+  return { ...mapOutcome(task, verified), alreadyReported: true };
+}
+
+function mapOutcome(task: WorkTask, verified: boolean): DispatchOutcome {
   switch (task.status) {
     case 'accepted':
       // Two different endings wear the same status. With a real gate, "accepted"

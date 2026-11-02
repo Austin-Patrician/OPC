@@ -10,6 +10,7 @@ import type {
   SubtaskDraft,
   TaskError,
   WorkTask,
+  WorkThread,
 } from '@opc/shared/domain';
 import type {
   AgentCapability,
@@ -407,6 +408,55 @@ export class WorkService {
     this.reportedThreads.delete(taskId);
     this.reportToThread(taskId);
     return updated;
+  };
+
+  /**
+   * 老板在注意力队列上的两个动作（steering 层）。
+   *
+   * `approve` —— 认可。这活只有人能判，所以认可就是终审：任务记成老板通过，
+   * 工作线关掉。`rework` —— 不满意，带着意见再做一次：**新建一个任务**而不是
+   * 重开旧的，因为旧任务的预算已结算、验收记录已定案，重开会让账本和验收历史
+   * 互相矛盾。
+   */
+  decideThread = (
+    threadId: string,
+    decision: 'approve' | 'rework',
+    note?: string,
+  ): { ok: true; thread: WorkThread } | { ok: false; error: string } => {
+    const latest = this.repository.latestForThread(threadId);
+    const text = note?.trim() || '';
+
+    if (decision === 'approve') {
+      // `bossDecision` only accepts a task awaiting judgement; a thread whose task
+      // is already delivered just needs closing.
+      if (latest?.status === 'accepted') {
+        this.bossDecision(latest.id, 'approve', text || undefined);
+      } else {
+        this.threads.setState(threadId, 'done');
+      }
+      const thread = this.threads.getThread(threadId);
+      if (!thread) return { ok: false, error: `未知工作线：${threadId}` };
+      return { ok: true, thread };
+    }
+
+    if (!latest) return { ok: false, error: '这条工作线上还没有任务，无法返工' };
+    const created = this.createTask({
+      title: latest.title,
+      brief: text ? `${latest.brief}\n\n老板的意见：${text}` : `${latest.brief}\n\n老板要求重做`,
+      deliverableSpec: latest.deliverableSpec,
+      assigneeId: latest.assigneeId,
+      estTokens: latest.estTokens,
+      acceptanceCommand: latest.acceptanceCommand,
+      acceptanceTemplate: latest.acceptanceTemplate,
+      threadId,
+    });
+    if (!created.ok) return { ok: false, error: created.error.message };
+
+    this.threads.setState(threadId, 'running');
+    this.runTask(created.task.id);
+    const thread = this.threads.getThread(threadId);
+    if (!thread) return { ok: false, error: `未知工作线：${threadId}` };
+    return { ok: true, thread };
   };
 
   listBudgets = (): Budget[] => this.budgets.list();

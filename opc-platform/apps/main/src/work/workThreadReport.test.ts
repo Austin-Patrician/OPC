@@ -6,6 +6,8 @@ import type { AppPaths } from '../env';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
 import { OrgService } from '../org/orgService';
+import { TaskRepository } from '../data/taskRepository';
+import { UNVERIFIED_GATE } from './acceptanceGate';
 import { WorkService } from './workService';
 
 /**
@@ -128,5 +130,73 @@ describe('a task dispatched without a line of work', () => {
     expect(thread?.state).toBe('done');
     // Finished work does not interrupt: recorded, not queued.
     expect(threads.listQueue()).toHaveLength(0);
+  });
+});
+
+
+/**
+ * steering 层：老板在队列上的两个动作。
+ *
+ * 这是系统唯一一处「人判定对不对」的入口——没有可执行闸门的活，系统自己
+ * 判不了，所以才把它交出来。
+ */
+describe('boss steering', () => {
+  async function needsJudgement() {
+    const thread = threads.createThread({ title: '整理财报', goal: '整理财报' });
+    const created = work.createTask({
+      title: '整理财报',
+      brief: '读三份 PDF',
+      deliverableSpec: '一页摘要',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: [...UNVERIFIED_GATE],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    await work.runTaskAndWait(created.task.id);
+    return { thread, taskId: created.task.id };
+  }
+
+  it('asks instead of claiming a pass it cannot prove', async () => {
+    const { thread } = await needsJudgement();
+    expect(threads.getThread(thread.id)?.state).toBe('waiting');
+    const queue = threads.listQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0]?.level).toBe('decide');
+    expect(queue[0]?.body).toContain('判定不了对错');
+  });
+
+  it('closes the line when the boss approves', async () => {
+    const { thread, taskId } = await needsJudgement();
+    const result = work.decideThread(thread.id, 'approve');
+
+    expect(result.ok).toBe(true);
+    expect(threads.getThread(thread.id)?.state).toBe('done');
+    expect(new TaskRepository(db).getTask(taskId)?.status).toBe('delivered');
+  });
+
+  it('rework puts a second task on the same line, carrying the note', async () => {
+    const { thread, taskId } = await needsJudgement();
+    const result = work.decideThread(thread.id, 'rework', '图表要标上单位');
+
+    expect(result.ok).toBe(true);
+    const latest = new TaskRepository(db).latestForThread(thread.id);
+    expect(latest?.id).not.toBe(taskId);
+    expect(latest?.threadId).toBe(thread.id);
+    expect(latest?.brief).toContain('图表要标上单位');
+
+    // The second attempt runs on its own; let it settle before teardown.
+    for (let i = 0; i < 100 && latest && ['open', 'running'].includes(latest.status); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const current = new TaskRepository(db).getTask(latest.id);
+      if (current) latest.status = current.status;
+    }
+  });
+
+  it('refuses to rework a line that has no task at all', () => {
+    const empty = threads.createThread({ title: '空线索' });
+    const result = work.decideThread(empty.id, 'rework');
+    expect(result.ok).toBe(false);
   });
 });
