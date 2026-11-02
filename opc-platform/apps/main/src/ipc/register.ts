@@ -1,4 +1,4 @@
-import { IPC, type EmployeeStackInput, type SendMessageInput } from '@opc/shared/ipc';
+import { IPC, type SendMessageInput } from '@opc/shared/ipc';
 import type {
   BundledRuntime,
   CompactionSettings,
@@ -24,7 +24,6 @@ import type { PayrollService } from '../work/payroll';
 import type { ManualWakeResult } from '../comm/scheduler';
 import { buildCommOverview } from '../comm/commOverview';
 import { runDiagnostics } from '../diagnostics/report';
-import type { PersonnelInput } from '@opc/shared/domain';
 import type { OcrSettings } from '@opc/shared/ocr';
 import type { OrgFactService } from '../memory/orgFactService';
 import type { ThreadRepository } from '../data/threadRepository';
@@ -33,7 +32,6 @@ import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
 import type { CompanyService } from '../company/companyService';
 import type { OrgService } from '../org/orgService';
-import { agentsFromDepartments, chatDepartmentsFromDepartments } from '../seed/firstCompany';
 import { readImageArtifact } from '../work/artifacts';
 import type { ModelConfigService } from '../models/modelConfigService';
 import type { DecisionService } from '../models/decisionService';
@@ -143,20 +141,6 @@ export function registerIpc({
     notify: (text: string, url?: string) => broadcast(IPC.auth.notifyEvent, { text, url }),
   };
 
-  /**
-   * The one way out of an org mutation: read the org once, hand the same snapshot to
-   * the chat service, and return it.
-   *
-   * Every org channel used to `return org.list()` on its own, which left the chat
-   * snapshot holding the org as it was at launch — a newly hired employee never
-   * joined their department group. Doing the sync here means a new mutation cannot
-   * forget it.
-   */
-  const refreshOrg = () => {
-    const departments = org.list();
-    chat.syncOrg(agentsFromDepartments(departments), chatDepartmentsFromDepartments(departments));
-    return departments;
-  };
   const unsubscribeBudgets = work.subscribeBudgets((budgets) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(IPC.work.budgetsEvent, budgets);
@@ -537,24 +521,6 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.org.list, () => org.list());
-  ipcMain.handle(IPC.org.stack, (_event, employeeId: unknown) => {
-    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:stack 参数非法');
-    return work.stack(employeeId);
-  });
-  ipcMain.handle(IPC.org.setStack, async (_event, employeeId: unknown, input: unknown) => {
-    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:setStack 参数非法');
-    if (typeof input !== 'object' || input === null) throw new Error('org:setStack 参数非法');
-    const view = await work.setStack(employeeId, input as EmployeeStackInput);
-    refreshOrg();
-    return view;
-  });
-  ipcMain.handle(IPC.org.setPersona, (_event, employeeId: unknown, persona: unknown) => {
-    if (typeof employeeId !== 'string' || !employeeId) throw new Error('org:setPersona 参数非法');
-    if (typeof persona !== 'string') throw new Error('org:setPersona 参数非法');
-    if (persona.length > 8000) throw new Error('岗位职责过长（最多 8000 字）');
-    org.setPersona(employeeId, persona);
-    return refreshOrg();
-  });
   ipcMain.handle(IPC.capabilities.list, () => work.capabilities());
   ipcMain.handle(IPC.extensions.list, () => piExtensions.list());
   ipcMain.handle(
@@ -729,221 +695,8 @@ export function registerIpc({
     return threads.setState(threadId, 'done');
   });
 
-  ipcMain.handle(IPC.org.unplaced, () => org.unplaced());
-  ipcMain.handle(IPC.org.place, (_event, employeeId: unknown, departmentId: unknown) => {
-    if (typeof employeeId !== 'string' || typeof departmentId !== 'string') {
-      throw new Error('org:place 参数非法');
-    }
-    org.place(employeeId, departmentId);
-    return refreshOrg();
-  });
 
-  ipcMain.handle(IPC.org.setAvatar, (_event, employeeId: unknown, dataUrl: unknown) => {
-    if (typeof employeeId !== 'string' || typeof dataUrl !== 'string') {
-      throw new Error('org:setAvatar 参数非法');
-    }
-    // A portrait is a resized data URL; anything larger is not what this channel is for.
-    if (dataUrl.length > 700_000) throw new Error('头像过大（请使用 128px 图片）');
-    org.setAvatar(employeeId, dataUrl);
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.personnel, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:personnel 参数非法');
-    org.personnel(input as PersonnelInput);
-    return refreshOrg();
-  });
 
-  ipcMain.handle(IPC.org.createDepartment, (_event, input: unknown) => {
-    const draft = (input ?? {}) as {
-      name?: unknown;
-      code?: unknown;
-      description?: unknown;
-      parentId?: unknown;
-      headEmployeeId?: unknown;
-    };
-    if (typeof draft.name !== 'string' || draft.name.trim().length === 0) {
-      throw new Error('org:createDepartment 参数非法');
-    }
-    org.createDepartment({
-      name: draft.name.trim(),
-      code: typeof draft.code === 'string' ? draft.code : undefined,
-      description: typeof draft.description === 'string' ? draft.description : undefined,
-      parentId: typeof draft.parentId === 'string' && draft.parentId ? draft.parentId : undefined,
-      headEmployeeId:
-        typeof draft.headEmployeeId === 'string' && draft.headEmployeeId ? draft.headEmployeeId : undefined,
-    });
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.updateDepartment, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:updateDepartment 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (typeof draft.id !== 'string' || !draft.id) throw new Error('org:updateDepartment 需要 id');
-    org.updateDepartment({
-      id: draft.id,
-      name: typeof draft.name === 'string' ? draft.name : undefined,
-      code: typeof draft.code === 'string' ? draft.code : undefined,
-      description: typeof draft.description === 'string' ? draft.description : undefined,
-      // `null` is meaningful here (move to the top level), so it is not folded into
-      // `undefined` the way an absent field is.
-      parentId:
-        draft.parentId === null
-          ? null
-          : typeof draft.parentId === 'string'
-            ? draft.parentId
-            : undefined,
-      sortOrder: typeof draft.sortOrder === 'number' ? draft.sortOrder : undefined,
-    });
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.archiveDepartment, (_event, departmentId: unknown) => {
-    if (typeof departmentId !== 'string') throw new Error('org:archiveDepartment 参数非法');
-    org.archiveDepartment(departmentId);
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.appointHead, (_event, departmentId: unknown, employeeId: unknown) => {
-    if (typeof departmentId !== 'string') throw new Error('org:appointHead 参数非法');
-    if (employeeId !== null && typeof employeeId !== 'string') throw new Error('org:appointHead 参数非法');
-    org.appointHead(departmentId, employeeId);
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.appointActingHead, (_event, departmentId: unknown, employeeId: unknown) => {
-    if (typeof departmentId !== 'string') throw new Error('org:appointActingHead 参数非法');
-    if (employeeId !== null && typeof employeeId !== 'string') throw new Error('org:appointActingHead 参数非法');
-    org.appointActingHead(departmentId, employeeId);
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.evaluations, (_event, employeeId: unknown, limit: unknown) => {
-    if (typeof employeeId !== 'string') throw new Error('org:evaluations 参数非法');
-    return org.evaluations(employeeId, typeof limit === 'number' ? limit : undefined);
-  });
-  ipcMain.handle(IPC.org.addEvaluation, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:addEvaluation 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (typeof draft.employeeId !== 'string' || typeof draft.scoreOverall !== 'number') {
-      throw new Error('org:addEvaluation 需要 employeeId / scoreOverall');
-    }
-    const kind = draft.kind;
-    org.addEvaluation({
-      employeeId: draft.employeeId,
-      kind:
-        kind === 'probation' || kind === 'periodic' || kind === 'project' || kind === 'exit'
-          ? kind
-          : undefined,
-      periodKey: typeof draft.periodKey === 'string' ? draft.periodKey : undefined,
-      scoreOverall: draft.scoreOverall,
-      scoreQuality: typeof draft.scoreQuality === 'number' ? draft.scoreQuality : undefined,
-      scoreSpeed: typeof draft.scoreSpeed === 'number' ? draft.scoreSpeed : undefined,
-      scoreCost: typeof draft.scoreCost === 'number' ? draft.scoreCost : undefined,
-      summary: typeof draft.summary === 'string' ? draft.summary : undefined,
-      reviewer: typeof draft.reviewer === 'string' ? draft.reviewer : undefined,
-    });
-    return org.evaluations(draft.employeeId);
-  });
-  ipcMain.handle(IPC.org.jobs, (_event, departmentId: unknown) =>
-    org.jobs(typeof departmentId === 'string' && departmentId ? departmentId : undefined),
-  );
-  ipcMain.handle(IPC.org.createJob, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:createJob 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (typeof draft.title !== 'string') throw new Error('org:createJob 需要 title');
-    org.createJob({
-      title: draft.title,
-      level: typeof draft.level === 'string' ? draft.level : undefined,
-      description: typeof draft.description === 'string' ? draft.description : undefined,
-      skills: readSkills(draft.skills),
-      model: typeof draft.model === 'string' ? draft.model : undefined,
-      modelRef: readModelRef(draft.modelRef) ?? null,
-    });
-    return org.jobs();
-  });
-  ipcMain.handle(IPC.org.updateJob, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:updateJob 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (typeof draft.id !== 'string' || !draft.id) throw new Error('org:updateJob 需要 id');
-    org.updateJob({
-      id: draft.id,
-      title: typeof draft.title === 'string' ? draft.title : undefined,
-      level: typeof draft.level === 'string' ? draft.level : undefined,
-      description: typeof draft.description === 'string' ? draft.description : undefined,
-      skills: readSkills(draft.skills),
-      model: typeof draft.model === 'string' ? draft.model : undefined,
-      // Tri-state: absent keeps the current default, `null` clears it.
-      modelRef: draft.modelRef === undefined ? undefined : (readModelRef(draft.modelRef) ?? null),
-    });
-    return org.jobs();
-  });
-  ipcMain.handle(IPC.org.archiveJob, (_event, jobId: unknown) => {
-    if (typeof jobId !== 'string') throw new Error('org:archiveJob 参数非法');
-    org.archiveJob(jobId);
-    return org.jobs();
-  });
-  ipcMain.handle(IPC.org.setJobSeat, (_event, input: unknown) => {
-    if (typeof input !== 'object' || input === null) throw new Error('org:setJobSeat 参数非法');
-    const draft = input as Record<string, unknown>;
-    if (
-      typeof draft.jobId !== 'string' ||
-      typeof draft.departmentId !== 'string' ||
-      typeof draft.headcount !== 'number'
-    ) {
-      throw new Error('org:setJobSeat 需要 jobId / departmentId / headcount');
-    }
-    org.setJobSeat({
-      jobId: draft.jobId,
-      departmentId: draft.departmentId,
-      headcount: draft.headcount,
-    });
-    return org.jobs();
-  });
-  ipcMain.handle(IPC.org.syncJob, (_event, jobId: unknown) => {
-    if (typeof jobId !== 'string') throw new Error('org:syncJob 参数非法');
-    return org.syncJob(jobId);
-  });
-  ipcMain.handle(IPC.org.events, (_event, employeeId: unknown, limit: unknown) => {
-    if (typeof employeeId !== 'string') throw new Error('org:events 参数非法');
-    return org.events(employeeId, typeof limit === 'number' ? limit : undefined);
-  });
-  ipcMain.handle(IPC.org.hire, (_event, input: unknown) => {
-    const draft = (input ?? {}) as Record<string, unknown>;
-    if (typeof draft.name !== 'string' || typeof draft.departmentId !== 'string') {
-      throw new Error('org:hire 参数非法');
-    }
-    org.hire({
-      name: draft.name,
-      // A job's title is the role now; the renderer only sends one when it hired
-      // into a department with no job catalogue.
-      role: typeof draft.role === 'string' ? draft.role : '',
-      level: typeof draft.level === 'string' ? draft.level : undefined,
-      departmentId: draft.departmentId,
-      title: typeof draft.title === 'string' ? draft.title : undefined,
-      reportsToEmployeeId:
-        typeof draft.reportsToEmployeeId === 'string' ? draft.reportsToEmployeeId : undefined,
-      isHead: draft.isHead === true,
-      model: typeof draft.model === 'string' ? draft.model : undefined,
-      modelRef: readModelRef(draft.modelRef),
-      skills: Array.isArray(draft.skills) ? draft.skills.filter((s): s is string => typeof s === 'string') : undefined,
-      persona: typeof draft.persona === 'string' ? draft.persona : undefined,
-      jobId: typeof draft.jobId === 'string' && draft.jobId ? draft.jobId : undefined,
-      probationDays: typeof draft.probationDays === 'number' ? draft.probationDays : undefined,
-    });
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.transfer, (_event, employeeId: unknown, departmentId: unknown, reportsTo: unknown, jobId: unknown) => {
-    if (typeof employeeId !== 'string' || typeof departmentId !== 'string') {
-      throw new Error('org:transfer 参数非法');
-    }
-    org.transfer(
-      employeeId,
-      departmentId,
-      typeof reportsTo === 'string' ? reportsTo : undefined,
-      typeof jobId === 'string' ? jobId : undefined,
-    );
-    return refreshOrg();
-  });
-  ipcMain.handle(IPC.org.fire, (_event, employeeId: unknown) => {
-    if (typeof employeeId !== 'string') throw new Error('org:fire 参数非法');
-    org.fire(employeeId);
-    return refreshOrg();
-  });
 
   ipcMain.handle(IPC.artifacts.read, (_event, taskId: unknown, relPath: unknown) => {
     if (typeof taskId !== 'string' || typeof relPath !== 'string') {
@@ -1145,20 +898,6 @@ function isModelRef(value: unknown): value is ModelRef {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.providerId === 'string' && typeof candidate.modelId === 'string';
-}
-
-/** Optional ref from the renderer: absent/invalid means "inherit the default". */
-function readModelRef(value: unknown): ModelRef | undefined {
-  return isModelRef(value) && value.providerId && value.modelId ? value : undefined;
-}
-
-/** Skill tags from the renderer: strings only, trimmed, empties dropped. */
-function readSkills(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function isCreateTaskInput(value: unknown): value is CreateTaskInput {

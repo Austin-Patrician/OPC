@@ -16,21 +16,10 @@ import type {
   DecisionClassifyInput,
   DecisionClassifyResult,
   DepartmentNode,
-  DepartmentEditInput,
   WorkThread,
   EditableProjectStatus,
-  EmploymentEvent,
   EmployeeToolPolicy,
-  Evaluation,
-  EvaluationInput,
-  JobEditInput,
-  JobInput,
-  JobNode,
-  JobSeatInput,
-  HireInput,
-  PersonnelInput,
   ModelDefaults,
-  OrgMember,
   ModelOption,
   ModelRef,
   ProviderConfig,
@@ -133,30 +122,6 @@ export const IPC = {
   },
   org: {
     list: 'org:list',
-    unplaced: 'org:unplaced',
-    place: 'org:place',
-    setAvatar: 'org:setAvatar',
-    setPersona: 'org:setPersona',
-    personnel: 'org:personnel',
-    createDepartment: 'org:createDepartment',
-    updateDepartment: 'org:updateDepartment',
-    archiveDepartment: 'org:archiveDepartment',
-    appointHead: 'org:appointHead',
-    appointActingHead: 'org:appointActingHead',
-    evaluations: 'org:evaluations',
-    addEvaluation: 'org:addEvaluation',
-    jobs: 'org:jobs',
-    createJob: 'org:createJob',
-    updateJob: 'org:updateJob',
-    archiveJob: 'org:archiveJob',
-    setJobSeat: 'org:setJobSeat',
-    syncJob: 'org:syncJob',
-    events: 'org:events',
-    hire: 'org:hire',
-    transfer: 'org:transfer',
-    fire: 'org:fire',
-    stack: 'org:stack',
-    setStack: 'org:setStack',
   },
   artifacts: {
     read: 'artifacts:read',
@@ -667,56 +632,13 @@ export interface EmployeeStackInput {
   policy?: EmployeeToolPolicy;
 }
 
+/**
+ * 只剩一个方法：部门树已经被界面删掉了（docs/v2/00-audit.md §4），
+ * onboarding 还需要它来显示"当前有几个人"。其余组织/招聘通道随之删除。
+ * B4 删掉 org/ 之后，这里会换成 `workers()`。
+ */
 export interface OrgBridge {
   list(): Promise<DepartmentNode[]>;
-  /** Employees without an active position (terminated / newly unplaced). */
-  unplaced(): Promise<OrgMember[]>;
-  /** Places (or re-hires) an employee into a department. */
-  place(employeeId: string, departmentId: string): Promise<DepartmentNode[]>;
-  setAvatar(employeeId: string, dataUrl: string): Promise<DepartmentNode[]>;
-  /** The charter injected into the employee's system prompt; `''` clears it. */
-  setPersona(employeeId: string, persona: string): Promise<DepartmentNode[]>;
-  /** Transfer / terminate / reinstate / re-assign manager, in one entry point. */
-  personnel(input: PersonnelInput): Promise<DepartmentNode[]>;
-  createDepartment(input: {
-    name: string;
-    code?: string;
-    description?: string;
-    headEmployeeId?: string;
-    parentId?: string;
-  }): Promise<DepartmentNode[]>;
-  /** Rename / re-code / re-describe, or move a department in the tree. */
-  updateDepartment(input: DepartmentEditInput): Promise<DepartmentNode[]>;
-  /** Soft-deletes a department; refuses while it still holds people or children. */
-  archiveDepartment(departmentId: string): Promise<DepartmentNode[]>;
-  /** Appoints the head of a department; `null` clears the seat. */
-  appointHead(departmentId: string, employeeId: string | null): Promise<DepartmentNode[]>;
-  /** Appoints the person covering a vacant head seat; `null` clears it. */
-  appointActingHead(departmentId: string, employeeId: string | null): Promise<DepartmentNode[]>;
-  /** Performance reviews for one employee, newest first. */
-  evaluations(employeeId: string, limit?: number): Promise<Evaluation[]>;
-  addEvaluation(input: EvaluationInput): Promise<Evaluation[]>;
-  /**
-   * The company-wide job catalogue, or only the jobs one department plans / uses.
-   * `filled` and `headcount` are totals; per-department caps are in `seats`.
-   */
-  jobs(departmentId?: string): Promise<JobNode[]>;
-  createJob(input: JobInput): Promise<JobNode[]>;
-  updateJob(input: JobEditInput): Promise<JobNode[]>;
-  archiveJob(jobId: string): Promise<JobNode[]>;
-  /** Sets one department's headcount for one job; returns the whole catalogue. */
-  setJobSeat(input: JobSeatInput): Promise<JobNode[]>;
-  /** Copies the job's skills/model onto the people already in it; returns how many. */
-  syncJob(jobId: string): Promise<number>;
-  /** One employee's HR timeline, newest first. */
-  events(employeeId: string, limit?: number): Promise<EmploymentEvent[]>;
-  hire(input: HireInput): Promise<DepartmentNode[]>;
-  transfer(employeeId: string, departmentId: string, reportsToEmployeeId?: string, jobId?: string): Promise<DepartmentNode[]>;
-  fire(employeeId: string): Promise<DepartmentNode[]>;
-  /** One employee's model and tool policy, with the runtime's current availability. */
-  stack(employeeId: string): Promise<EmployeeStackView>;
-  /** Saves a model override and/or tool policy; takes effect for the next task immediately. */
-  setStack(employeeId: string, input: EmployeeStackInput): Promise<EmployeeStackView>;
 }
 
 export interface ArtifactsBridge {
