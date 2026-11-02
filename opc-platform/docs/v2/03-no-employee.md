@@ -15,7 +15,7 @@
 | 1 | 工具注册表的主体 | `buildRegistry(employeeId)` | `buildRegistry(worker)` ✅ 已做 | 中 |
 | 2 | 工具策略 | `org.toolPolicyOf()` | worker 的模板默认（本来也没有 UI 能改，等同空） | 小 |
 | 3 | 通讯工具（同事） | `comm` 工具的 `colleagues` 来自 `org.list()` | 没有同事 → 工具不装 | 小 |
-| 4 | 记忆分区 | `employeeId` + 部门 / 项目 scope | 挂在 thread 上 | 中 |
+| 4 | ~~记忆分区~~ ✅ | scope_type 增加 `thread`，召回/写入以工作线优先 | 已做 | — |
 | 5 | ~~IM 的对话对象~~ ✅ `74dc9ed` | 会话列表已删；`/chat` 自动落到唯一那条会话 | 「助手」一条 + 工作线在首页 | 已做 |
 | 6 | ~~预算轴~~ ✅ `7d84427` | 整个预算子系统已删除 | 没有预算，就没有轴 | 已做 |
 
@@ -30,8 +30,8 @@
 ① 工具注册表的主体改成 worker     ✅ `work/registrySubject.ts`
 ② IM 收敛成「助手」一条会话        ✅ `74dc9ed`
 ③ 预算整个删掉（不做两轴了）        ✅ `7d84427`
-④ 记忆改成 thread scope            ← 下一步
-⑤ 删 org/ + 12 张表 + employee
+④ 记忆改成 thread scope            ✅ 已做
+⑤ 删 org/ + 12 张表 + employee      ← 只剩这一步
 ```
 
 ③ 原本计划是"预算从四轴收成两轴"，后来直接删了整个子系统。
