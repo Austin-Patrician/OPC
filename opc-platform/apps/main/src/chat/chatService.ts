@@ -123,6 +123,19 @@ export class ChatService {
    * Opens the 1v1 with an employee, creating it on first use. `displayName` lets
    * the caller resolve someone hired after the chat seed was built.
    */
+  /**
+   * 老板和助手之间唯一的那条会话。
+   *
+   * v2 之后没有「会话列表」——用户感觉始终只和一个 Agent 打交道。迁移期这条会话
+   * 就是和默认执行体的 DM；员工彻底消失之后，它会变成 Router 的那张脸。
+   * 没有执行体时返回 null，由界面去说「还没有可用的人」。
+   */
+  ensureAssistant = (): string | null => {
+    const agent = this.snapshot.agents[0];
+    if (!agent) return null;
+    return this.openDirect(agent.id);
+  };
+
   openDirect = (agentId: string, displayName?: string): string => {
     const existing = this.snapshot.conversations.find(
       // `memberIds.length === 1` keeps boss↔agent threads apart from peer threads,

@@ -10,9 +10,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { NavLink } from 'react-router-dom';
-import type { Conversation } from '@/entities/conversation/model/types';
 import { cn } from '@/shared/lib/cn';
-import { RailSearch } from './RailSearch';
 
 const PRIMARY_NAV = [
   { to: '/attention', icon: Inbox, labelKey: 'nav.attention' },
@@ -46,18 +44,14 @@ const rowClass = (isActive: boolean) =>
  * and an `overflow` ancestor there would clip the panel.
  */
 export function NavRail({
-  conversations,
   unreadTotal,
 }: {
-  conversations: readonly Conversation[];
   unreadTotal: number;
 }) {
   const { t } = useTranslation();
 
   return (
     <nav className="nav-rail flex w-rail shrink-0 flex-col pt-[1.75rem] select-none">
-      <RailSearch conversations={conversations} />
-
       <div className="mt-1.5 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
         {PRIMARY_NAV.map(({ to, icon: Icon, labelKey, ...rest }) => (
           <NavLink key={to} to={to} title={t(labelKey)} className={({ isActive }) => rowClass(isActive)}>

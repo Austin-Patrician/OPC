@@ -45,17 +45,6 @@
     },
     "founderRole": "创始人"
   },
-  "sessions": {
-    "searchPlaceholder": "搜索",
-    "newHire": "聘用新 Agent 员工",
-    "newGroup": "组建多 Agent 项目群",
-    "manageOrg": "管理 HR 组织架构",
-    "empty": "没有匹配的会话",
-    "archived": "已归档",
-    "archive": "归档",
-    "restore": "恢复",
-    "more": "更多操作"
-  },
   "chat": {
     "lifecycle": {
       "cooling": "冷却中",

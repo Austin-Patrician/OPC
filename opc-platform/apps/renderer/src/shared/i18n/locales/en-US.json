@@ -45,17 +45,6 @@
     },
     "founderRole": "Founder"
   },
-  "sessions": {
-    "searchPlaceholder": "Search",
-    "newHire": "Hire a new agent",
-    "newGroup": "Create a multi-agent group",
-    "manageOrg": "Manage org chart",
-    "empty": "No conversations match",
-    "archived": "Archived",
-    "archive": "Archive",
-    "restore": "Restore",
-    "more": "More actions"
-  },
   "chat": {
     "lifecycle": {
       "cooling": "Cooling",

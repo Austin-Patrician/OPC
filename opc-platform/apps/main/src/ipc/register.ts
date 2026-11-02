@@ -322,6 +322,7 @@ export function registerIpc({
     chat.sendMessage(input);
   });
 
+  ipcMain.handle(IPC.chat.ensureAssistant, () => chat.ensureAssistant());
   ipcMain.handle(IPC.chat.openDirect, (_event, agentId: unknown) => {
     if (typeof agentId !== 'string') throw new Error('chat:openDirect 参数非法');
     const member = org.list().flatMap((department) => department.members).find((item) => item.id === agentId);
@@ -848,6 +849,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.getSnapshot);
     ipcMain.removeHandler(IPC.chat.sendMessage);
     ipcMain.removeHandler(IPC.chat.markRead);
+    ipcMain.removeHandler(IPC.chat.ensureAssistant);
     ipcMain.removeHandler(IPC.chat.openDirect);
     ipcMain.removeHandler(IPC.chat.archive);
     ipcMain.removeHandler(IPC.chat.restore);

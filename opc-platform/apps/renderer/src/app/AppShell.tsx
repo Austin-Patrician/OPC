@@ -35,7 +35,7 @@ export function AppShell() {
           the native Windows caption buttons sit directly on it. The rail keeps its
           own top inset to clear the avatar that hangs over the chrome edge. */}
       <div className="flex min-h-0 flex-1 gap-2 overflow-hidden px-2 pb-2">
-        <NavRail conversations={conversations} unreadTotal={unreadTotal} />
+        <NavRail unreadTotal={unreadTotal} />
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
           <Outlet />
         </div>
