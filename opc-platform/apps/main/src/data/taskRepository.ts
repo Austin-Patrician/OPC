@@ -405,6 +405,13 @@ export class TaskRepository {
   listTasks = (limit = 20): WorkTask[] =>
     this.selectIds(`SELECT id FROM task ORDER BY created_at DESC LIMIT ${Math.max(1, Math.min(1000, limit))}`);
 
+  /** 一条工作线上的任务，最新在前。链式召回从这里往下跳（§3.3）。 */
+  listByThread = (threadId: string, limit = 5): WorkTask[] =>
+    this.selectIds(
+      `SELECT id FROM task WHERE thread_id = ? ORDER BY created_at DESC LIMIT ${Math.max(1, Math.min(100, limit))}`,
+      threadId,
+    );
+
   listChildren = (taskId: string): WorkTask[] =>
     this.selectIds('SELECT id FROM task WHERE parent_task_id = ? ORDER BY created_at', taskId);
 

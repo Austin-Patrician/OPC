@@ -4,27 +4,30 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
-import { Router, type RouterDeps } from './router';
+import { Router, composeInput, spill, threadKeyOf, type RouterDeps } from './router';
 
 /**
- * The router with fakes — the exit criterion of S2: a fake event walks the whole
- * path (filter → judge → thread → dispatch → report) without a model.
+ * 调度循环。
  *
- * What these lock down is the promise the product makes: **finishing work does
- * not interrupt the boss.** Only a decision or a failure does.
+ * 这一层**不含模型**，所以这里的用例都不碰 LLM——它们锁的是确定性部分：
+ *
+ *   - 程序层把噪声挡在模型之前（§3.1 Fast Path）
+ *   - 已经订阅的事件直通给执行体，不花 Router 一个 token（§3.2 Fast Path）
+ *   - 剩下的事件和未播报的汇报合成**一条**输入（§2.1 批处理）
+ *   - 交不进去时回滚标记，宁可重讲一次也不丢（宁可重复不可丢失）
  */
 let dir: string;
 let db: CompanyDatabase;
 let threads: ThreadRepository;
-let tick: number;
+let now: number;
 let seq: number;
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'opc-router-'));
   db = openCompanyDatabase(path.join(dir, 'company.db'));
-  tick = 1_700_000_000_000;
+  now = 1_700_000_000_000;
   seq = 0;
-  threads = new ThreadRepository(db, { now: () => (tick += 1_000), id: () => `id-${(seq += 1)}` });
+  threads = new ThreadRepository(db, { now: () => (now += 1_000), id: () => `id-${(seq += 1)}` });
 });
 
 afterEach(() => {
@@ -32,173 +35,223 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function router(overrides: Omit<Partial<RouterDeps>, 'threads'> = {}) {
-  return new Router({ threads, ...overrides });
+function make(overrides: Partial<RouterDeps> = {}) {
+  const delivered: string[] = [];
+  const passed: string[] = [];
+  const router = new Router({
+    threads,
+    deliver: (text) => delivered.push(text),
+    passthrough: (intent) => passed.push(intent.event.id),
+    ...overrides,
+  });
+  return { router, delivered, passed };
 }
 
-describe('router', () => {
-  it('does nothing at all on an empty queue', async () => {
-    const report = await router({}).tick();
-    expect(report).toEqual({ dropped: 0, rejected: 0, opened: [], reported: [], failed: 0 });
+describe('调度循环', () => {
+  it('队列空的时候一个 token 都不花', () => {
+    const { router, delivered } = make();
+    const report = router.tick();
+    expect(delivered).toHaveLength(0);
+    expect(report).toEqual({ dropped: 0, passthrough: 0, routed: 0, reports: 0, failed: 0 });
   });
 
-  it('drops program-layer noise without opening a thread or calling the judge', async () => {
+  it('程序层丢掉的噪声见不到 Router', () => {
     threads.enqueueEvent({ kind: 'im.typing', source: 'im' });
-    let judged = 0;
-    const report = await router({
+    const { router, delivered } = make({
       prefilter: (event) => (event.kind === 'im.typing' ? 'drop' : 'keep'),
-      judge: async (events) => {
-        judged += events.length;
-        return events.map((event) => ({ eventId: event.id, accept: true }));
-      },
-    }).tick();
+    });
 
+    const report = router.tick();
     expect(report.dropped).toBe(1);
-    expect(judged).toBe(0);
+    expect(delivered).toHaveLength(0);
     expect(threads.listThreads()).toHaveLength(0);
   });
 
-  it('judges a whole burst in one call, not one call per event', async () => {
-    for (const kind of ['a', 'b', 'c']) threads.enqueueEvent({ kind });
-    let calls = 0;
-    let seen = 0;
-    const report = await router({
-      judge: async (events) => {
-        calls += 1;
-        seen = events.length;
-        return events.map((event) => ({ eventId: event.id, accept: true }));
+  it('一批事件合成一条输入，不是一条一个调用', () => {
+    for (const text of ['第一件', '第二件', '第三件']) {
+      threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text } });
+    }
+    const { router, delivered } = make();
+
+    const report = router.tick();
+    expect(report.routed).toBe(3);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('新事件（3）');
+    expect(delivered[0]).toContain('第一件');
+    expect(delivered[0]).toContain('第三件');
+  });
+
+  it('已订阅的线上再来事件，直通给执行体，不经过 Router', () => {
+    const thread = threads.createThread({
+      title: '季度财报',
+      goal: '整理 Q3 财报',
+      threadKey: 'folder:inbox/q3.md',
+    });
+    const worker = threads.createWorker({ name: '执行体', threadId: thread.id });
+    threads.subscribe(thread.id, worker.id);
+    threads.enqueueEvent({
+      source: 'folder',
+      kind: 'file',
+      payload: { path: 'inbox/q3.md', threadKey: 'folder:inbox/q3.md' },
+    });
+
+    const { router, delivered, passed } = make();
+    const report = router.tick();
+
+    expect(report.passthrough).toBe(1);
+    expect(report.routed).toBe(0);
+    expect(delivered).toHaveLength(0);
+    expect(passed).toHaveLength(1);
+  });
+
+  it('没订阅的线仍然走 Router——直通是优化，不是正确性', () => {
+    const thread = threads.createThread({
+      title: '季度财报',
+      goal: '整理 Q3 财报',
+      threadKey: 'folder:inbox/q3.md',
+    });
+    // 有线程、没订阅者：归属还不确定，必须让 Router 判。
+    threads.enqueueEvent({
+      source: 'folder',
+      kind: 'file',
+      payload: { path: 'inbox/q3.md', threadKey: 'folder:inbox/q3.md' },
+    });
+
+    const { router, delivered, passed } = make();
+    const report = router.tick();
+
+    expect(thread.id).toBeTruthy();
+    expect(report.passthrough).toBe(0);
+    expect(report.routed).toBe(1);
+    expect(passed).toHaveLength(0);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('终态的线不再接手过路事件——那些是新工作', () => {
+    const thread = threads.createThread({
+      title: '旧事',
+      goal: '旧事',
+      threadKey: 'folder:inbox/old.md',
+    });
+    const worker = threads.createWorker({ name: '执行体', threadId: thread.id });
+    threads.subscribe(thread.id, worker.id);
+    threads.setState(thread.id, 'done');
+
+    threads.enqueueEvent({
+      source: 'folder',
+      kind: 'file',
+      payload: { path: 'inbox/old.md', threadKey: 'folder:inbox/old.md' },
+    });
+
+    const { router, passed } = make();
+    const report = router.tick();
+    expect(passed).toHaveLength(0);
+    expect(report.routed).toBe(1);
+  });
+
+  it('汇报会被带进上下文，而且只讲一次', () => {
+    const thread = threads.createThread({ title: '整理 Q3 财报', goal: '整理' });
+    threads.addReport({ threadId: thread.id, level: 'silent', title: '做完了', body: '产出 report.md' });
+
+    const { router, delivered } = make();
+    const first = router.tick();
+    expect(first.reports).toBe(1);
+    expect(delivered[0]).toContain('执行体汇报（1');
+    expect(delivered[0]).toContain('产出 report.md');
+
+    // 第二轮没有新东西：讲过的不会再讲一遍。
+    const second = router.tick();
+    expect(second.reports).toBe(0);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('交不进去就回滚：宁可重复一遍，不可丢一次', () => {
+    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text: '在吗' } });
+    const thread = threads.createThread({ title: '线', goal: '线' });
+    threads.addReport({ threadId: thread.id, level: 'notify', title: '进展' });
+
+    let attempts = 0;
+    const router = new Router({
+      threads,
+      deliver: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('会话挂了');
       },
-    }).tick();
+    });
 
-    expect(calls).toBe(1);
-    expect(seen).toBe(3);
-    expect(report.opened).toHaveLength(3);
-  });
+    const failed = router.tick();
+    expect(failed.routed).toBe(0);
+    expect(failed.failed).toBe(1);
 
-  it('finishes quietly: a delivered thread is done and does not reach the queue', async () => {
-    threads.enqueueEvent({ kind: 'folder.changed', payload: { goal: '读一下这份财报' } });
-    const report = await router({
-      dispatch: async () => ({ status: 'delivered', summary: '摘要写好了，在 artifacts 里' }),
-    }).tick();
-
-    const thread = threads.listThreads()[0]!;
-    expect(thread.state).toBe('done');
-    expect(thread.goal).toBe('读一下这份财报');
-    expect(report.reported[0]?.level).toBe('silent');
-    expect(threads.listQueue()).toHaveLength(0);
-  });
-
-  it('asks the boss only when a decision is actually needed', async () => {
-    threads.enqueueEvent({ kind: 'manual', payload: { goal: '发一封邮件' } });
-    await router({
-      dispatch: async () => ({ status: 'needs-decision', question: '发给张总还是李总？' }),
-    }).tick();
-
-    const thread = threads.listThreads()[0]!;
-    expect(thread.state).toBe('waiting');
-    const queue = threads.listQueue();
-    expect(queue).toHaveLength(1);
-    expect(queue[0]?.level).toBe('decide');
-    expect(queue[0]?.body).toBe('发给张总还是李总？');
-  });
-
-  it('turns an executor crash into a failed thread with a visible reason', async () => {
-    threads.enqueueEvent({ kind: 'manual' });
-    const report = await router({
-      dispatch: async () => {
-        throw new Error('workspace 不存在');
-      },
-    }).tick();
-
-    const thread = threads.listThreads()[0]!;
-    expect(thread.state).toBe('failed');
-    expect(report.reported[0]?.level).toBe('decide');
-    expect(threads.listQueue()[0]?.body).toBe('workspace 不存在');
-    // The event is settled: retrying work that already touched files is worse
-    // than asking the boss.
-    expect(threads.listPendingEvents()).toHaveLength(0);
-  });
-
-  it('keeps an event pending when the judge itself blows up', async () => {
-    threads.enqueueEvent({ kind: 'manual' });
-    const report = await router({
-      judge: async () => {
-        throw new Error('模型挂了');
-      },
-    }).tick();
-
-    expect(report.failed).toBe(1);
-    expect(report.rejected).toBe(0);
-    // Nothing was accepted, so nothing was lost: the event is still pending.
-    expect(threads.listPendingEvents()).toHaveLength(1);
-  });
-
-  it('joins an existing line of work instead of opening a second one', async () => {
-    const first = threads.enqueueEvent({ kind: 'manual', payload: { goal: '整理财报' } });
-    const thread = threads.createThread({ title: '整理财报' });
-    threads.triageEvent(first.id, 'accepted', thread.id);
-
-    threads.enqueueEvent({ kind: 'folder.changed', payload: { goal: '又下载了一份' } });
-    const report = await router({
-      judge: async (events) => events.map((event) => ({ eventId: event.id, accept: true, threadId: thread.id })),
-      dispatch: async () => ({ status: 'delivered', summary: 'ok' }),
-    }).tick();
-
-    expect(report.opened).toHaveLength(0);
-    expect(threads.listThreads()).toHaveLength(1);
-  });
-
-  it('opens a new thread when the verdict points at one that is already closed', async () => {
-    const closed = threads.createThread({ title: '旧活' });
-    threads.setState(closed.id, 'done');
-    threads.enqueueEvent({ kind: 'manual' });
-
-    const report = await router({
-      judge: async (events) => events.map((event) => ({ eventId: event.id, accept: true, threadId: closed.id })),
-      dispatch: async () => ({ status: 'delivered', summary: 'ok' }),
-    }).tick();
-
-    expect(report.opened).toHaveLength(1);
-    expect(report.opened[0]?.id).not.toBe(closed.id);
-  });
-
-  it('triages without executing when no executor is wired yet', async () => {
-    threads.enqueueEvent({ kind: 'manual' });
-    const report = await router({}).tick();
-
-    expect(report.opened).toHaveLength(1);
-    expect(report.reported).toHaveLength(0);
-    expect(threads.listThreads()[0]?.state).toBe('open');
+    // 事件回到 pending，汇报回到未播报。
+    const retried = router.tick();
+    expect(retried.routed).toBe(1);
+    expect(retried.reports).toBe(1);
   });
 });
 
-describe('events that already belong to a line of work', () => {
-  it('joins the thread the event carries instead of opening a second one', async () => {
-    // The boss types a goal on the attention screen: the thread is opened by the
-    // IPC call so the UI can show it immediately, and the event points at it.
-    const thread = threads.createThread({ title: '整理财报', goal: '整理财报' });
-    threads.enqueueEvent({ source: 'manual', kind: 'goal', threadId: thread.id });
-
-    const report = await router({}).tick();
-
-    expect(report.opened).toHaveLength(0);
-    expect(threads.listThreads()).toHaveLength(1);
+describe('上下文打包（Inline & Spill）', () => {
+  it('短内容全放进去，长内容截断并留 recall 入口', () => {
+    expect(spill('短', 'recall x')).toBe('短');
+    const long = '整'.repeat(2_000);
+    const packed = spill(long, 'recall evt-1');
+    expect(packed.length).toBeLessThan(long.length);
+    expect(packed).toContain('recall evt-1');
   });
 
-  it('still opens a new thread when the judge overrides the event', async () => {
-    const stale = threads.createThread({ title: '旧线索' });
-    threads.setState(stale.id, 'done');
-    threads.enqueueEvent({ source: 'manual', kind: 'goal', threadId: stale.id });
+  it('事件带 id 与并线键，模型才能顺着引用往下跳', () => {
+    const text = composeInput(
+      [
+        {
+          id: 'evt-1',
+          source: 'folder',
+          kind: 'file',
+          payload: { path: 'inbox/a.md', threadKey: 'folder:inbox/a.md' },
+          threadId: null,
+          triage: 'pending',
+          createdAt: 0,
+          triagedAt: null,
+        },
+      ],
+      [],
+    );
+    // id 就是链式召回的入口：模型看到 evt-1 就能 recall 出整条线。
+    expect(text).toContain('evt-1');
+    expect(text).toContain('folder:inbox/a.md');
+  });
 
-    const report = await router({
-      judge: async (events) =>
-        events.map((event) => ({ eventId: event.id, accept: true, threadId: undefined })),
-      dispatch: async () => ({ status: 'delivered', summary: 'ok' }),
-    }).tick();
+  it('长内容不整段塞进窗口，截断处留 recall 入口', () => {
+    const text = composeInput(
+      [
+        {
+          id: 'evt-2',
+          source: 'im',
+          kind: 'boss_message',
+          payload: { text: '整'.repeat(2_000), threadKey: 'im:topic-1' },
+          threadId: null,
+          triage: 'pending',
+          createdAt: 0,
+          triagedAt: null,
+        },
+      ],
+      [],
+    );
+    expect(text.length).toBeLessThan(1_200);
+    expect(text).toContain('recall evt-2');
+  });
 
-    // The event's thread is closed, so the work goes somewhere new rather than
-    // reopening a line the boss already ended.
-    expect(report.opened).toHaveLength(1);
-    expect(report.opened[0]?.id).not.toBe(stale.id);
+  it('没有 threadKey 的事件永远不并线', () => {
+    expect(
+      threadKeyOf({
+        id: 'e',
+        source: 'im',
+        kind: 'boss_message',
+        payload: { text: '在吗' },
+        threadId: null,
+        triage: 'pending',
+        createdAt: 0,
+        triagedAt: null,
+      }),
+    ).toBeNull();
   });
 });

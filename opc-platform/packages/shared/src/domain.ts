@@ -1143,6 +1143,15 @@ export interface WorkThread {
   id: string;
   title: string;
   goal: string;
+  /**
+   * 这条线在**环境里**的身份：`folder:inbox/report.md`、`im:dm-router`、
+   * `github:o/r#12`。
+   *
+   * 它是直通（§3.2）的唯一依据。同一个话题的后续事件带着同一个 key 到达，
+   * 程序查一次表就知道该不该绕过 Router 直接发给订阅它的 worker——不需要模型判断，
+   * 也不会因为模型换了措辞就分成两条线。
+   */
+  threadKey: string | null;
   state: ThreadState;
   attention: AttentionLevel;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */
@@ -1186,7 +1195,15 @@ export type TriggerSource = 'manual' | 'folder' | 'calendar' | 'github' | 'im';
  * The two-level filter of the Super-agent design: a program drops most noise
  * before a model ever sees it, so `pending` is the only state that costs tokens.
  */
-export type TriageState = 'pending' | 'accepted' | 'dropped' | 'merged';
+/**
+ * 一条 Trigger 走到哪一步了。
+ *
+ * 加 `routed` 是因为 v2 把"交给 Router 判断"和"并进某条线"分成了两件事：
+ * v1 的 Router 一次调用就同时判定"要不要做"和"归哪条线"，所以一个 `accepted`
+ * 够了；现在语义层是一个真会话，它可能先收下事件、下一轮才决定开哪条线，
+ * 也可能判断"这事不需要线"。没有 `routed`，这条事件会在下一轮被再交一次。
+ */
+export type TriageState = 'pending' | 'routed' | 'accepted' | 'dropped' | 'merged';
 
 export interface TriggerEvent {
   id: string;

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
+import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
 import { agentsFromOrg, chatDepartmentsFromOrg, ensureFirstCompany } from './seed/firstCompany';
 import { loadSmokeScript } from './smoke';
@@ -43,8 +44,9 @@ import { createInboxRunner } from './comm/inboxRunner';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
 import { Watchdog } from './watchdog/watchdog';
-import { Router } from './router/router';
-import { createWorkDispatch } from './router/workDispatch';
+import { createRouterHost } from './router/routerHost';
+import { createLineOpener } from './router/workDispatch';
+import type { TickReport } from './router/router';
 import { pickWorker } from './work/workerPool';
 import { DEMO_TASK } from './work/acceptanceTemplate';
 
@@ -227,6 +229,21 @@ function hardenSession() {
   });
 }
 
+/** Loaded once: pi-durable is ESM-only, the main bundle is CJS. */
+let routerContextPromise: Promise<Context> | null = null;
+function getBackgroundContext() {
+  routerContextPromise ??= import('@earendil-works/chord/context').then(
+    (module) => module.BACKGROUND_CONTEXT,
+  );
+  return routerContextPromise;
+}
+
+/** 只有真到达老板的东西才值得一行日志；安静是预期结果。 */
+function logTick(report: TickReport): void {
+  if (report.routed === 0 && report.passthrough === 0 && report.reports === 0) return;
+  console.warn('[router]', report);
+}
+
 async function bootstrap(): Promise<void> {
   initAppPaths();
 
@@ -320,31 +337,6 @@ async function bootstrap(): Promise<void> {
       .trim();
   };
 
-  /**
-   * Router 的回答。聊天窗口里对面那个人是它，不是某个执行体。
-   *
-   * 用**公司默认模型**而不是谁的模型覆盖：Router 是序点，每步通常是长输入短输出，
-   * 回答要快，不需要最强的那个（Super-agent §2.1）。执行体才是需要强模型的地方。
-   *
-   * 提示词的关键是那条禁令：**不许声称自己干了活**。Worker 的推理与工具调用都
-   * 在隔离的上下文里，Router 看不到它们，也不该把它们讲成自己的。
-   */
-  chat.replyAsRouter = async ({ text }) => {
-    const ref = modelConfig.getDefaults().llm;
-    if (!ref) throw new Error('未配置默认 LLM 模型');
-    return completeAs(
-      ref,
-      [
-        '你是这个工作台的调度者，老板唯一对话的对象。',
-        '你只做两件事：把话接住，把活派出去。活本身由执行体在各自的上下文里干，你不干。',
-        '所以：不要声称自己读过文件、跑过命令、改过代码——你没做。也不要编造成果。',
-        '老板问「怎么样了」，就照实说你手上有哪些工作线、它们各自到哪一步了；不知道就说不知道。',
-        '用中文直接回答，简短、具体，不要复述他的原话。',
-      ].join('\n'),
-      text,
-    );
-  };
-
   // An agent answers with its own model. No provider → no answer, never a canned one.
   chat.replyWithModel = async ({ agent, text }) => {
     const ref = resolveEmployeeModelRef(modelConfig, org, agent.id);
@@ -426,19 +418,26 @@ async function bootstrap(): Promise<void> {
 
   // v2 路由：在 IPC 之前建好，老板才能在注意力队列上直接丢一个目标进来。
   // 定时器在下面按「非无头」条件启动——这里只创建，不驱动。
-  const goalRouter = new Router({
-    threads,
-    // Program layer. The watcher already dropped filesystem noise; this drops
-    // anything that is not work at all.
-    prefilter: (event) => (event.source === 'manual' || event.source === 'folder' ? 'keep' : 'drop'),
-    // No semantic layer yet: everything here was put in by the boss on purpose,
-    // so "would a model think this matters" has nothing to add. It lands with the
-    // noisy sources (IM / GitHub), where it actually earns its tokens.
-    dispatch: createWorkDispatch({
-      createTask: work.createTask,
-      runTaskAndWait: work.runTaskAndWait,
+  /**
+   * Router：一个真的会话。
+   *
+   * 从这一版起，`router` 不是"一个会调模型的循环"，而是**一个常驻的 LLM 会话**
+   * （自己的 sqlite、自己的上下文、自己的工具），外面套一层确定性的调度循环：
+   * 程序层过滤 → 直通判定 → 攒批交给会话。语义判断全在会话里，不在这个循环里。
+   */
+  const routerHost = createRouterHost({
+    db,
+    agentsDir: appPaths.agentsDir,
+    workspaceDir: appPaths.workspaceDir,
+    modelConfig,
+    envFor: () => runtimeService.envFor() as Record<string, string>,
+    context: () => getBackgroundContext(),
+    openLine: createLineOpener({
+      threads,
+      createTask: work!.createTask,
+      // 启动但不等待：派活是异步的，Router 拿到 id 就结束这一轮（§4.1）。
+      startTask: (taskId) => work!.runTask(taskId),
       // 谁来干：按模板匹配技能，而不是"第一个在职员工"。
-      // 人少的时候仍会有人干（匹配不上就排最后），但"为什么是他"是可解释的。
       resolveWorker: ({ threadId, template, hint }) => {
         const people = agentsFromOrg(org).map((agent) => ({
           employeeId: agent.id,
@@ -456,7 +455,22 @@ async function bootstrap(): Promise<void> {
         return { employeeId: picked.employeeId, workerId: worker.id };
       },
     }),
+    // Router 对老板说话：走聊天这条唯一的外观信道（§2.2）。
+    reply: (text) => chat!.appendRouterMessage(chat!.ensureAssistant(), text),
   });
+  const goalRouter = routerHost;
+
+  /**
+   * 老板在聊天里说话 = 一条 Trigger（§3「事件驱动」）。
+   *
+   * 注意这里**不带 `threadKey`**：聊天是人对 Router 说话的信道，不是某条工作线的
+   * 事件流。带上键的话，一旦 Router 为这个话题开过线，后面每句话都会被直通给那个
+   * 执行体，Router 就再也听不到老板说话了——那是把信道和执行流混成一件事。
+   */
+  chat.onBossMessage = ({ text }) => {
+    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text } });
+    logTick(goalRouter.tick());
+  };
 
   /**
    * 老板在注意力队列上丢一个目标。
@@ -469,7 +483,7 @@ async function bootstrap(): Promise<void> {
     const thread = threads.createThread({ title, goal });
     threads.enqueueEvent({ source: 'manual', kind: 'goal', payload: { goal }, threadId: thread.id });
     // 老板刚打的字不该等 20 秒：立刻推一次，剩下的交给定时器。
-    void goalRouter.tick().catch((error) => console.error('[router] tick 失败', error));
+    logTick(goalRouter.tick());
     return thread;
   };
 
@@ -581,21 +595,7 @@ async function bootstrap(): Promise<void> {
     });
     watcher.start();
 
-    const tick = setInterval(() => {
-      void goalRouter
-        .tick()
-        .then((report) => {
-          // Silence is the expected outcome: only what reaches the boss is logged.
-          if (report.opened.length > 0 || report.reported.length > 0) {
-            console.warn('[router]', {
-              dropped: report.dropped,
-              opened: report.opened.map((thread) => thread.title),
-              reported: report.reported.map((row) => `${row.level}:${row.title}`),
-            });
-          }
-        })
-        .catch((error) => console.error('[router] tick 失败', error));
-    }, 20_000);
+    const tick = setInterval(() => logTick(goalRouter.tick()), 20_000);
     tick.unref?.();
 
     app.on('before-quit', () => {

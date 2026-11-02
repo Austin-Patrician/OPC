@@ -1,180 +1,124 @@
-import type { CreateTaskResult, WorkTask } from '@opc/shared/domain';
-import { describe, expect, it } from 'vitest';
-import type { DispatchInput } from './router';
-import { createWorkDispatch } from './workDispatch';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { CreateTaskInput, CreateTaskResult } from '@opc/shared/domain';
+import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
+import { ThreadRepository } from '../data/threadRepository';
+import { UNVERIFIED_GATE } from '../work/acceptanceGate';
+import { createLineOpener } from './workDispatch';
 
 /**
- * The seam between the router and the task pipeline.
+ * 「派活」这个动作。
  *
- * The mapping back to the boss is the product decision under test: work that is
- * verified closes quietly, work that cannot be verified asks instead of pretending.
+ * 这里锁的是三条产品承诺：
+ *
+ * 1. **不阻塞**。派完立刻返回 id，不等任务跑完——这就是 §4.1 的全双工在
+ *    Router 这一层的落地方式（活本身是跨进程的 durable task，天然异步）。
+ * 2. **同一个环境身份不出第二条线**。老板在同一话题里连说三句，是一条线的三段
+ *    上下文，不是三件互不相干的事。
+ * 3. **没有闸门就说没有闸门**。验不了的活用 `UNVERIFIED_GATE`，结论是"需要人
+ *    看一眼"，不假装通过。
  */
-const thread = { id: 'th-1', title: '整理这份财报', goal: '输出一页摘要' } as never;
-const event = { id: 'ev-1', kind: 'folder.added', payload: { file: 'a.pdf' } } as never;
+let dir: string;
+let db: CompanyDatabase;
+let threads: ThreadRepository;
+let now: number;
+let seq: number;
 
-function input(): DispatchInput {
-  return { thread, event };
-}
+beforeEach(() => {
+  dir = mkdtempSync(path.join(tmpdir(), 'opc-opener-'));
+  db = openCompanyDatabase(path.join(dir, 'company.db'));
+  now = 1_700_000_000_000;
+  seq = 0;
+  threads = new ThreadRepository(db, { now: () => (now += 1_000), id: () => `id-${(seq += 1)}` });
+});
 
-function task(overrides: Partial<WorkTask> = {}): WorkTask {
-  return {
-    id: 'task-1',
-    title: '整理这份财报',
-    brief: 'b',
-    deliverableSpec: 'd',
-    assigneeId: 'emp-1',
-    assigneeName: '李雷',
-    priority: 'P2',
-    labels: [],
-    blockedBy: [],
-    isReview: false,
-    depth: 0,
-    childCount: 0,
-    estTokens: 1000,
-    acceptanceCommand: ['node', '{checks}/verify.mjs'],
-    status: 'accepted',
-    workspaceRelPath: 'w',
-    createdAt: 0,
-    updatedAt: 0,
-    artifacts: [],
-    steps: [],
-    tokensUsed: 0,
-    costUsd: 0,
-    ...overrides,
-  } as unknown as WorkTask;
-}
+afterEach(() => {
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
 
-function dispatch(overrides: {
-  assignee?: string | null;
-  create?: () => CreateTaskResult;
-  run?: () => Promise<WorkTask>;
-}) {
-  const calls: unknown[] = [];
-  const fn = createWorkDispatch({
-    resolveWorker: () =>
-      overrides.assignee === null ? null : { employeeId: overrides.assignee ?? 'emp-1', workerId: 'w-1' },
-    createTask: (input) => {
-      calls.push(input);
-      return overrides.create?.() ?? { ok: true, task: task() };
+function opener(overrides: {
+  noWorker?: boolean;
+  create?: (input: CreateTaskInput) => CreateTaskResult;
+} = {}) {
+  const created: CreateTaskInput[] = [];
+  const started: string[] = [];
+  const open = createLineOpener({
+    threads,
+    // 真实装配里 resolveWorker 会 ensureWorker；这里照做，外键才有对象。
+    resolveWorker: ({ threadId }) => {
+      if (overrides.noWorker) return null;
+      const worker = threads.ensureWorker({ threadId, employeeId: 'emp-1', name: '执行体' });
+      return { employeeId: 'emp-1', workerId: worker.id };
     },
-    runTaskAndWait: overrides.run ?? (async () => task()),
+    createTask: (input) => {
+      created.push(input);
+      return overrides.create?.(input) ?? ({ ok: true, task: { id: 'task-1' } } as never);
+    },
+    startTask: (taskId) => started.push(taskId),
   });
-  return { fn, calls };
+  return { open, created, started };
 }
 
-describe('createWorkDispatch', () => {
-  it('closes quietly when the work passed its own acceptance', async () => {
-    const gated = {
-      id: 'ev-0',
-      kind: 'folder.added',
-      payload: { acceptanceCommand: ['node', 'check.js'] },
-    } as never;
-    const { fn } = dispatch({
-      run: async () =>
-        task({ status: 'accepted', artifacts: [{ id: 'a', relPath: 'summary.md' } as never] }),
+describe('派活', () => {
+  it('开线、订阅、建任务、启动，然后**立刻**返回', () => {
+    const { open, created, started } = opener();
+    const result = open({ goal: '整理 Q3 财报，输出一页摘要' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.threadId).toBeTruthy();
+    expect(result.taskId).toBe('task-1');
+    // 启动了但没等：返回值里没有任何执行结果。
+    expect(started).toEqual(['task-1']);
+    expect(created[0]!.threadId).toBe(result.threadId);
+    // 订阅在建任务之前就位，否则任务开头那几条事件会漏掉。
+    expect(threads.subscribersOf(result.threadId)).toHaveLength(1);
+  });
+
+  it('同一个并线键不出第二条线', () => {
+    const { open } = opener();
+    const first = open({ goal: '看这个文件', threadKey: 'folder:inbox/a.md' });
+    const second = open({ goal: '这个文件又变了', threadKey: 'folder:inbox/a.md' });
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.threadId).toBe(first.threadId);
+    expect(threads.listThreads()).toHaveLength(1);
+  });
+
+  it('没有闸门时用 UNVERIFIED_GATE，不假装验过', () => {
+    const { open, created } = opener();
+    open({ goal: '写一份调研' });
+    expect(created[0]!.acceptanceCommand).toEqual([...UNVERIFIED_GATE]);
+  });
+
+  it('给了可执行验收命令就用它', () => {
+    const { open, created } = opener();
+    open({ goal: '加一个接口', template: 'code', acceptance: ['npm', 'test'] });
+    expect(created[0]!.acceptanceCommand).toEqual(['npm', 'test']);
+  });
+
+  it('没人能干时如实说，不建线也不建任务', () => {
+    const { open, created, started } = opener({ noWorker: true });
+    const result = open({ goal: '随便干点什么' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('执行体');
+    expect(created).toHaveLength(0);
+    expect(started).toHaveLength(0);
+  });
+
+  it('建任务失败时把理由原样带回去，不吞掉', () => {
+    const { open } = opener({
+      create: () => ({ ok: false, error: { code: 'X', message: '配额不足' } }) as never,
     });
-    const outcome = await fn({ thread, event: gated });
-    expect(outcome).toMatchObject({ status: 'delivered', summary: '产出：summary.md' });
-  });
-
-  it('treats a boss-approved task as delivered, not as a question', async () => {
-    const { fn } = dispatch({ run: async () => task({ status: 'delivered' }) });
-    const outcome = await fn(input());
-    expect(outcome.status).toBe('delivered');
-  });
-
-  it('reports the acceptance reason instead of a fake pass', async () => {
-    const { fn } = dispatch({
-      run: async () =>
-        task({
-          status: 'rejected',
-          acceptance: {
-            verdict: 'fail',
-            reason: '退出码 1（120ms）',
-            evidence: { command: ['node'], exitCode: 1, stdoutTail: '', stderrTail: '', durationMs: 120 },
-            createdAt: 0,
-          } as never,
-        }),
-    });
-    const outcome = await fn(input());
-    expect(outcome).toMatchObject({
-      status: 'needs-decision',
-      question: '自动验收没过：退出码 1（120ms）',
-    });
-  });
-
-  it('carries a hard failure through with its reason', async () => {
-    const { fn } = dispatch({ run: async () => task({ status: 'failed', error: '模型超时' }) });
-    const outcome = await fn(input());
-    expect(outcome).toMatchObject({ status: 'failed', reason: '模型超时' });
-  });
-
-  it('turns a budget refusal into a decision, not a crash', async () => {
-    const { fn } = dispatch({
-      create: () =>
-        ({
-          ok: false,
-          error: { code: 'BUDGET_BLOCKED', message: '本月额度已用完' },
-        }) as unknown as CreateTaskResult,
-    });
-    const outcome = await fn(input());
-    expect(outcome).toMatchObject({ status: 'needs-decision', question: '本月额度已用完' });
-  });
-
-  it('fails loudly when there is nobody to do the work', async () => {
-    const { fn } = dispatch({ assignee: null });
-    const outcome = await fn(input());
-    expect(outcome.status).toBe('failed');
-  });
-
-  it('puts the task on the thread with the worker it was given', async () => {
-    const { fn, calls } = dispatch({});
-    await fn(input());
-    expect(calls[0]).toMatchObject({ threadId: 'th-1', assigneeId: 'emp-1', workerId: 'w-1' });
-  });
-
-  it('lets the event carry its own acceptance instead of guessing', async () => {
-    const custom = {
-      id: 'ev-2',
-      kind: 'folder.added',
-      payload: {
-        acceptanceCommand: ['node', 'check.js'],
-        acceptanceTemplate: 'node-test',
-        estTokens: 5000,
-      },
-    } as never;
-    const { fn, calls } = dispatch({});
-    await fn({ thread, event: custom });
-    expect(calls[0]).toMatchObject({
-      acceptanceCommand: ['node', 'check.js'],
-      acceptanceTemplate: 'node-test',
-      estTokens: 5000,
-    });
-  });
-
-  it('does not invent an acceptance gate for an open-ended goal', async () => {
-    const { fn, calls } = dispatch({});
-    await fn(input());
-    // The pipeline's "did anything land" check still runs; that is all it claims.
-    expect(calls[0]).toMatchObject({ acceptanceCommand: ['node', '-e', 'process.exit(0)'] });
-  });
-
-  it('asks the boss instead of claiming a pass it cannot prove', async () => {
-    // No acceptance command in the event → "accepted" only means files landed.
-    const { fn } = dispatch({ run: async () => task({ status: 'accepted' }) });
-    const outcome = await fn(input());
-    expect(outcome.status).toBe('needs-decision');
-    expect(outcome.status === 'needs-decision' && outcome.question).toContain('判定不了对错');
-  });
-
-  it('closes quietly only when the event brought a real gate and it passed', async () => {
-    const gated = {
-      id: 'ev-3',
-      kind: 'folder.added',
-      payload: { acceptanceCommand: ['node', 'check.js'] },
-    } as never;
-    const { fn } = dispatch({ run: async () => task({ status: 'accepted' }) });
-    const outcome = await fn({ thread, event: gated });
-    expect(outcome.status).toBe('delivered');
+    const result = open({ goal: '干活' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('配额不足');
   });
 });

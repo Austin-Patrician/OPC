@@ -35,6 +35,8 @@ interface PreparedStatement {
 export interface CreateThreadInput {
   title: string;
   goal?: string;
+  /** 环境身份；同一个 key 的后续事件会并到这条线上。 */
+  threadKey?: string | null;
   attention?: AttentionLevel;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */
   budgetTokens?: number | null;
@@ -75,6 +77,7 @@ interface ThreadRow {
   id: string;
   title: string;
   goal: string;
+  thread_key: string | null;
   state: ThreadState;
   attention: AttentionLevel;
   budget_tokens: number | null;
@@ -150,6 +153,7 @@ export class ThreadRepository {
       id: this.id(),
       title: input.title,
       goal: input.goal ?? '',
+      thread_key: input.threadKey ?? null,
       state: 'open' as ThreadState,
       attention: input.attention ?? ('silent' as AttentionLevel),
       budget_tokens: input.budgetTokens ?? null,
@@ -159,8 +163,8 @@ export class ThreadRepository {
       closed_at: null,
     };
     this.statement(
-      `INSERT INTO thread (id, title, goal, state, attention, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
-       VALUES (@id, @title, @goal, @state, @attention, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
+      `INSERT INTO thread (id, title, goal, thread_key, state, attention, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
+       VALUES (@id, @title, @goal, @thread_key, @state, @attention, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
     ).run(row);
     return toThread(row as ThreadRow);
   }
@@ -444,6 +448,127 @@ export class ThreadRepository {
     return toReport(row);
   }
 
+  // ── 链式召回的读取面（§3.3）─────────────────────────────────────────────
+
+  /** 一条线的汇报，最新在前。Router 讲"最近怎么样"时只看这几条。 */
+  listReportsOf(threadId: string, limit = 5): WorkReport[] {
+    const rows = this.statement(
+      'SELECT * FROM report WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?',
+    ).all(threadId, limit) as ReportRow[];
+    return rows.map(toReport);
+  }
+
+  getReport(id: string): WorkReport | null {
+    const row = this.statement('SELECT * FROM report WHERE id = ?').get(id) as ReportRow | undefined;
+    return row ? toReport(row) : null;
+  }
+
+  getEvent(id: string): TriggerEvent | null {
+    const row = this.statement('SELECT * FROM event WHERE id = ?').get(id) as EventRow | undefined;
+    return row ? toEvent(row) : null;
+  }
+
+  // ── 并线与订阅（§3.2）────────────────────────────────────────────────────
+
+  /**
+   * 这个环境身份上还在推进的那条线。
+   *
+   * 这是**直通**的判定：命中就说明"这条事件流的归属已经确定了"，程序可以直接
+   * 发给订阅它的 worker，不必再让 Router 判一次。所以它必须是确定性的、便宜的、
+   * 不看模型的——就是一个带索引的等值查询。
+   *
+   * 终态的线不返回：一条已经关掉的线不该再接过路的事件，那些事件是新工作。
+   */
+  threadByKey(key: string): WorkThread | null {
+    const row = this.statement(
+      `SELECT * FROM thread
+        WHERE thread_key = ? AND state NOT IN ('done','failed','archived')
+        ORDER BY last_activity_at DESC LIMIT 1`,
+    ).get(key) as ThreadRow | undefined;
+    return row ? toThread(row) : null;
+  }
+
+  /** Idempotent: re-subscribing a live worker is a no-op, not a duplicate row. */
+  subscribe(threadId: string, workerId: string): void {
+    this.statement(
+      `INSERT INTO subscription (thread_id, worker_id, created_at, dropped_at)
+       VALUES (?, ?, ?, NULL)
+       ON CONFLICT(thread_id, worker_id) DO UPDATE SET dropped_at = NULL`,
+    ).run(threadId, workerId, this.now());
+  }
+
+  /**
+   * 退订。行不删：谁在什么时候盯过哪条线，是排查"为什么这个事件没人接"的唯一线索。
+   */
+  unsubscribe(threadId: string, workerId: string): void {
+    this.statement(
+      'UPDATE subscription SET dropped_at = ? WHERE thread_id = ? AND worker_id = ? AND dropped_at IS NULL',
+    ).run(this.now(), threadId, workerId);
+  }
+
+  /** Workers still watching this line, newest subscription first. */
+  subscribersOf(threadId: string): Worker[] {
+    const rows = this.statement(
+      `SELECT w.* FROM subscription s
+         JOIN worker w ON w.id = s.worker_id
+        WHERE s.thread_id = ? AND s.dropped_at IS NULL AND w.status != 'retired'
+        ORDER BY s.created_at DESC`,
+    ).all(threadId) as WorkerRow[];
+    return rows.map(toWorker);
+  }
+
+  /** Every live subscription, for the passthrough index. */
+  listLiveSubscriptions(): { threadId: string; workerId: string }[] {
+    const rows = this.statement(
+      `SELECT s.thread_id, s.worker_id FROM subscription s
+         JOIN thread t ON t.id = s.thread_id
+         JOIN worker w ON w.id = s.worker_id
+        WHERE s.dropped_at IS NULL
+          AND t.state NOT IN ('done','failed','archived')
+          AND w.status != 'retired'`,
+    ).all() as { thread_id: string; worker_id: string }[];
+    return rows.map((row) => ({ threadId: row.thread_id, workerId: row.worker_id }));
+  }
+
+  // ── 汇报播报（Router 对老板说过了）──────────────────────────────────────
+
+  /**
+   * 还没被 Router 拿去说过的汇报。
+   *
+   * 和 `listQueue` 不同：那是"老板还没读的"，这是"我还没讲的"。两者都需要——
+   * 一条 silent 汇报老板永远不必读，但 Router 要把它并进那一轮的上下文里，否则
+   * 它下一次回答"怎么样了"时对事实一无所知。
+   */
+  listUnannouncedReports(limit = 50): WorkReport[] {
+    const rows = this.statement(
+      `SELECT * FROM report WHERE announced_at IS NULL ORDER BY created_at ASC LIMIT ?`,
+    ).all(limit) as ReportRow[];
+    return rows.map(toReport);
+  }
+
+  markAnnounced(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const at = this.now();
+    const run = this.statement('UPDATE report SET announced_at = ? WHERE id = ?');
+    for (const id of ids) run.run(at, id);
+  }
+
+  /** 交不进去时撤回：宁可下一轮再讲一遍，不可丢一次。 */
+  unmarkAnnounced(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const run = this.statement('UPDATE report SET announced_at = NULL WHERE id = ?');
+    for (const id of ids) run.run(id);
+  }
+
+  /** 撤回一次 triage，让事件回到 pending。 */
+  resetTriage(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const run = this.statement(
+      "UPDATE event SET triage = 'pending', triaged_at = NULL, thread_id = NULL WHERE id = ?",
+    );
+    for (const id of ids) run.run(id);
+  }
+
   // ── internals ───────────────────────────────────────────────────────────
 
   private mustGetThread(id: string): WorkThread {
@@ -463,6 +588,7 @@ function toThread(row: ThreadRow): WorkThread {
     id: row.id,
     title: row.title,
     goal: row.goal,
+    threadKey: row.thread_key ?? null,
     state: row.state,
     attention: row.attention,
     budgetTokens: row.budget_tokens,

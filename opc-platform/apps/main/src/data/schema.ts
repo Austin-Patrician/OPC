@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1302,7 +1302,56 @@ ALTER TABLE task ADD COLUMN worker_id TEXT REFERENCES worker(id) ON DELETE SET N
 CREATE INDEX IF NOT EXISTS idx_task_worker ON task(worker_id);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27];
+/**
+ * V28: Router 要真的能干三件事，这三件都需要落盘的东西。
+ *
+ * 1. **并线**（§3.2）。同一个 IM 话题 / 同一个 PR / 同一个文件下连续到达的事件属于
+ *    同一条事件流。判断"是不是同一条"不能靠模型，得靠一个确定性的身份，所以
+ *    thread 有了 `thread_key`：事件带着 key 来，已订阅的走直通（Fast Path），
+ *    没订阅的才交给 Router（Slow Path）。
+ *
+ * 2. **订阅**（§3.2）。Thread × Worker 是多对多：一条线可以有多人干，一个人可以
+ *    盯多条线。同一个 Thread 的新事件会直通给所有订阅它的 worker，它们不需要
+ *    点对点通信，也能看到彼此的操作。
+ *
+ * 3. **已播报**。一条汇报只该让老板听见一次。`announced_at` 记的是"Router 已经拿
+ *    它对外说过了"，和 `read_at`（老板读过）是两件事：没有这个字段，Router 每一轮
+ *    都会把旧汇报重新讲一遍。
+ */
+const V28 = `
+ALTER TABLE thread ADD COLUMN thread_key TEXT;
+CREATE INDEX IF NOT EXISTS idx_thread_key ON thread(thread_key, state, last_activity_at DESC);
+
+CREATE TABLE IF NOT EXISTS subscription (
+  thread_id  TEXT NOT NULL REFERENCES thread(id) ON DELETE CASCADE,
+  worker_id  TEXT NOT NULL REFERENCES worker(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  dropped_at INTEGER,
+  PRIMARY KEY (thread_id, worker_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_live ON subscription(dropped_at, worker_id);
+
+ALTER TABLE report ADD COLUMN announced_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_report_unannounced ON report(announced_at, created_at DESC);
+
+-- 事件的 triage 多了 routed。队列是瞬时数据，重建比迁移便宜，也不会有人想念旧行。
+DROP TABLE IF EXISTS event;
+CREATE TABLE event (
+  id         TEXT PRIMARY KEY,
+  source     TEXT NOT NULL DEFAULT 'manual'
+    CHECK (source IN ('manual','folder','calendar','github','im')),
+  kind       TEXT NOT NULL,
+  payload    TEXT NOT NULL DEFAULT '{}',
+  thread_id  TEXT REFERENCES thread(id) ON DELETE SET NULL,
+  triage     TEXT NOT NULL DEFAULT 'pending'
+    CHECK (triage IN ('pending','routed','accepted','dropped','merged')),
+  created_at INTEGER NOT NULL,
+  triaged_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_event_triage ON event(triage, created_at);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

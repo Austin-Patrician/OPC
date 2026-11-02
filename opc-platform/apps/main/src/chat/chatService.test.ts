@@ -100,29 +100,40 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(conversation.memberIds).toEqual([ROUTER_ID]);
   });
 
-  it('回复由 Router 自己给，不借任何执行体的名字或模型', async () => {
-    const chat = new ChatService({ agents: [agent('agent-a', 'dept-1', '甲')], departments: [], conversations: [] });
-    const asked: string[] = [];
-    chat.replyAsRouter = async ({ text }) => {
-      asked.push(text);
-      return '我记下了，这就去查。';
-    };
-    // 执行体的回答路径不该被碰到；碰到就说明 Router 还在替员工说话。
+  it('老板说的话变成一条 Trigger，聊天本身不生成回复', async () => {
+    const chat = new ChatService({
+      agents: [agent('agent-a', 'dept-1', '甲')],
+      departments: [],
+      conversations: [],
+    });
+    const triggers: { conversationId: string; text: string }[] = [];
+    chat.onBossMessage = (input) => triggers.push(input);
+    // 旧路径必须死了：还有任何一个执行体被叫来"替 Router 说话"都是错的。
     chat.replyWithModel = async () => {
-      throw new Error('Router 不该走员工的回答路径');
+      throw new Error('聊天不该自己生成回复');
     };
 
     const id = chat.ensureAssistant();
     chat.sendMessage({ conversationId: id, text: '上次那个报表做完了吗' });
+    await vi.advanceTimersByTimeAsync(1_000);
 
-    await vi.advanceTimersByTimeAsync(1000);
+    expect(triggers).toEqual([{ conversationId: id, text: '上次那个报表做完了吗' }]);
+    const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+    // 只有老板那一条。回复要等 Router 决定，不是这里编出来的。
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0]!.senderId).toBe('user');
+  });
+
+  it('Router 说话走唯一的出口，署名是它自己', () => {
+    const chat = new ChatService({ agents: [], departments: [], conversations: [] });
+    const id = chat.ensureAssistant();
+
+    chat.appendRouterMessage(id, '三条线都在跑，最短的那条十分钟内有结果。');
 
     const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
     const reply = conversation.messages.at(-1)!;
-    expect(asked).toEqual(['上次那个报表做完了吗']);
     expect(reply.senderId).toBe(ROUTER_ID);
     expect(reply.senderName).toBe('助手');
-    expect(reply.senderName).not.toBe('甲');
   });
 
   it('再点一次不会开出第二条会话', () => {

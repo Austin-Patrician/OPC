@@ -1,104 +1,74 @@
-import type { AttentionLevel, TriggerEvent, WorkThread } from '@opc/shared/domain';
+import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 
 /**
- * The Router: a headless scheduling loop, **not** a chat window.
+ * 调度循环。
  *
- * This is the load-bearing decision of v2 (docs/v2/00-audit.md §6, S2). If the
- * router were implemented as a conversation, the product would end up as one more
- * chat app with the same single-session blocking problem it was meant to solve.
- * Here it is a loop with a queue: events in, threads out, reports queued by how
- * much of the boss's attention they are allowed to take.
+ * 这里**不含模型调用**，也不做语义判断——那是 Router 会话的事
+ * （`routerSession.ts`）。这一层只做三件确定性的活，因为它们不该花 token：
  *
- * One tick does exactly four things, in this order:
+ *   ① **程序层过滤**（§3.1 Fast Path）。噪声在这里就死掉，永远见不到模型。
+ *   ② **直通判定**（§3.2 Fast Path）。事件带着环境身份（`threadKey`）来，
+ *      这个身份上已经有一条活跃的线、线也已经有 worker 在盯，就直接发给它，
+ *      不必再让 Router 判一次。原文 7.1 量过：去掉直通后完成时间几乎不变，但
+ *      Router 的决策数与读缓存 token 各涨约 30%，所以它省的是**成本与延迟**。
+ *   ③ **攒批**（§2.1）。剩下的事件和待播报的汇报合成一条输入交给 Router 会话。
+ *      会话忙的时候 pi 自己会把输入排队到下一个 boundary，所以这里只管交，
+ *      不管攒——批处理是运行时给的，不是我们模拟的。
  *
- *   1. **Program-layer filter** — cheap predicates drop most noise. A dropped
- *      event never reaches a model, which is the whole point of the two levels.
- *   2. **Semantic judgement** — the surviving batch is judged in *one* call, not
- *      one per event: the batch shares the prefill, so a burst costs less per
- *      decision than a trickle (Super-agent §事件驱动, batching).
- *   3. **Thread** — an accepted event opens a line of work, or joins one.
- *   4. **Dispatch + report** — the work goes to an executor; whatever comes back
- *      becomes a report whose level decides whether the boss is interrupted.
- *
- * Nothing here calls a model itself. `judge` and `dispatch` are injected, so a
- * test can run the whole path with fakes, and B3 can wire the real services.
+ * 语义层（"这件事值不值得做"）由 Router 会话判断，于是这个循环里没有 `judge`。
+ * 原来那个"一次调用判一批 accept/reject"的注入点是照抄文章批处理的样子搭的骨架，
+ * 现在模型真的在了，骨架该拆了。
  */
 
-/** What the program layer says about a single event, before any model is involved. */
 export type PrefilterVerdict = 'keep' | 'drop';
 
-/** What the semantic layer says about a batch of surviving events. */
-export interface JudgeVerdict {
-  eventId: string;
-  accept: boolean;
-  /** Opens a new thread with this title; ignored when joining an existing one. */
-  title?: string;
-  /** Attaches to an existing line of work instead of opening a new one. */
-  threadId?: string;
+/** 事件的环境身份。适配器在 payload 里放 `threadKey`，没放就永远不并线。 */
+export function threadKeyOf(event: TriggerEvent): string | null {
+  const key = event.payload.threadKey;
+  return typeof key === 'string' && key.trim().length > 0 ? key.trim() : null;
 }
 
-export interface DispatchInput {
-  thread: WorkThread;
+export interface Intent {
   event: TriggerEvent;
+  thread: WorkThread;
+  workerId: string;
 }
-
-/**
- * What an executor may report back.
- *
- * `delivered` is the quiet path — it is recorded but does not interrupt.
- * `needs-decision` and `failed` both spend the thread's attention quota, because
- * both leave the boss with something only they can settle.
- */
-export type DispatchOutcome = (
-  | { status: 'delivered'; summary: string }
-  | { status: 'needs-decision'; question: string }
-  | { status: 'failed'; reason: string }
-) & {
-  /**
-   * Set when the executor already wrote the line-of-work report itself.
-   *
-   * The task pipeline does exactly that (`WorkService.reportToThread`): it knows
-   * the task's artifacts, its acceptance verdict and whether that verdict meant
-   * anything. Writing a second report from here would duplicate the record and,
-   * worse, could disagree with the first one.
-   */
-  alreadyReported?: boolean;
-};
 
 export interface RouterDeps {
   threads: ThreadRepository;
-  /** Program layer. Defaults to keeping everything, so a wiring mistake is loud. */
+  /** 程序层。默认全留，配错了会很明显（每一条都进模型）。 */
   prefilter?: (event: TriggerEvent) => PrefilterVerdict;
-  /** Semantic layer. Absent = accept everything the program layer kept. */
-  judge?: (events: readonly TriggerEvent[]) => Promise<JudgeVerdict[]>;
-  /** Executor. Absent = the router can triage but cannot finish anything. */
-  dispatch?: (input: DispatchInput) => Promise<DispatchOutcome>;
-  /** How many pending events one tick will look at. */
+  /** 未订阅 → Slow Path：交给 Router 会话判断。 */
+  deliver: (text: string) => void;
+  /**
+   * 已订阅 → Fast Path：直接发给盯这条线的执行体。
+   *
+   * 不存在时退化成"全部交给 Router"，功能不丢，只是贵一些——这也正好说明直通
+   * 是优化而不是正确性。
+   */
+  passthrough?: (intent: Intent) => void;
+  /** 一轮最多看多少条事件。 */
   batchSize?: number;
-}
-
-/** What the boss hears about, one row per settled thread. */
-export interface SettledRow {
-  threadId: string;
-  level: AttentionLevel;
-  title: string;
+  now?: () => number;
 }
 
 export interface TickReport {
-  /** Events the program layer dropped without spending a token. */
+  /** 程序层丢掉、没花一个 token 的。 */
   dropped: number;
-  /** Events the semantic layer rejected. */
-  rejected: number;
-  /** Threads opened by this tick. */
-  opened: WorkThread[];
-  /** Reports queued by this tick, with the level that was chosen. */
-  reported: SettledRow[];
-  /** Events that threw. They stay pending so the next tick retries them. */
+  /** 直通给订阅者的（没花 Router 一个 token）。 */
+  passthrough: number;
+  /** 交给 Router 会话的事件数。 */
+  routed: number;
+  /** 一并带过去的待播报汇报数。 */
+  reports: number;
+  /** 出异常的事件。它们留在 pending，下一轮重试。 */
   failed: number;
 }
 
-const DEFAULT_BATCH = 20;
+const DEFAULT_BATCH = 40;
+/** Inline & Spill 的长度上限：超过就截断并留一个 recall 入口（§3.3）。 */
+const INLINE_LIMIT = 600;
 
 export class Router {
   private readonly batchSize: number;
@@ -108,144 +78,151 @@ export class Router {
   }
 
   /**
-   * One pass. Safe to call on a timer; safe to call twice in a row.
+   * 一轮。可以按定时器调用，也可以连着调两次。
    *
-   * An event that throws anywhere in the path is left `pending` on purpose: the
-   * alternative is losing work silently, and the queue is the only record that it
-   * ever arrived.
+   * 任何一步抛异常，那条事件就留在 `pending`：静默丢工作比慢一轮糟得多，
+   * 而队列是"它确实来过"的唯一证据。
    */
-  tick = async (): Promise<TickReport> => {
-    const report: TickReport = { dropped: 0, rejected: 0, opened: [], reported: [], failed: 0 };
+  tick = (): TickReport => {
+    const report: TickReport = { dropped: 0, passthrough: 0, routed: 0, reports: 0, failed: 0 };
 
     const pending = this.deps.threads.listPendingEvents(this.batchSize);
-    if (pending.length === 0) return report;
+    const slow: TriggerEvent[] = [];
 
-    // ① Program layer: no model, no cost, no thread.
-    const kept: TriggerEvent[] = [];
     for (const event of pending) {
-      if ((this.deps.prefilter?.(event) ?? 'keep') === 'drop') {
-        this.deps.threads.triageEvent(event.id, 'dropped');
-        report.dropped += 1;
-      } else {
-        kept.push(event);
-      }
-    }
-    if (kept.length === 0) return report;
-
-    // ② Semantic layer: one call for the whole batch.
-    const verdicts = await this.judgeBatch(kept);
-    if (verdicts === null) {
-      // The judge is down. Leave the batch pending rather than dropping it:
-      // losing work because a model hiccuped is the silent failure P6 forbids.
-      report.failed += kept.length;
-      return report;
-    }
-    const byId = new Map(verdicts.map((verdict) => [verdict.eventId, verdict]));
-
-    for (const event of kept) {
-      const verdict = byId.get(event.id);
-      if (!verdict?.accept) {
-        this.deps.threads.triageEvent(event.id, 'dropped');
-        report.rejected += 1;
-        continue;
-      }
-
       try {
-        const { thread, opened } = this.openOrJoin(event, verdict);
-        if (opened) report.opened.push(thread);
-        this.deps.threads.triageEvent(event.id, 'accepted', thread.id);
-
-        if (!this.deps.dispatch) continue;
-        this.deps.threads.setState(thread.id, 'running');
-
-        let outcome: DispatchOutcome;
-        try {
-          outcome = await this.deps.dispatch({ thread, event });
-        } catch (error) {
-          // An executor crash is a failed thread with a visible reason, not a
-          // silent retry: retrying a run that already wrote files is how you get
-          // duplicated deliverables and a bill for both.
-          outcome = {
-            status: 'failed',
-            reason: error instanceof Error ? error.message : String(error),
-          };
+        if ((this.deps.prefilter?.(event) ?? 'keep') === 'drop') {
+          this.deps.threads.triageEvent(event.id, 'dropped');
+          report.dropped += 1;
+          continue;
         }
-        report.reported.push(this.settle(thread, outcome));
+
+        const intent = this.intentFor(event);
+        if (intent && this.deps.passthrough) {
+          this.deps.passthrough(intent);
+          // 归属已经确定，这条事件不必再出现在 Router 的上下文里。
+          this.deps.threads.triageEvent(event.id, 'accepted', intent.thread.id);
+          this.deps.threads.touch(intent.thread.id);
+          report.passthrough += 1;
+          continue;
+        }
+
+        slow.push(event);
       } catch {
-        // A repository throw is a bug, not a decision. The event stays pending.
         report.failed += 1;
       }
+    }
+
+    // 汇报不需要经过 Router 判断——它是既成事实，只需要被讲出去。
+    const reports = this.deps.threads.listUnannouncedReports(20);
+    report.reports = reports.length;
+
+    if (slow.length === 0 && reports.length === 0) return report;
+
+    // 先把它们标成"已经交给 Router 了"，再真的交。反过来的话，一次崩溃就会
+    // 让同一批事件被讲两遍。
+    // `routed` 而不是 `accepted`：交出去不等于归了线，归线是 Router 下一轮的事。
+    for (const event of slow) this.deps.threads.triageEvent(event.id, 'routed');
+    this.deps.threads.markAnnounced(reports.map((row) => row.id));
+    report.routed = slow.length;
+
+    try {
+      this.deps.deliver(composeInput(slow, reports));
+    } catch (error) {
+      // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
+      this.deps.threads.resetTriage(slow.map((event) => event.id));
+      this.deps.threads.unmarkAnnounced(reports.map((row) => row.id));
+      report.routed = 0;
+      report.reports = 0;
+      report.failed += slow.length;
+      console.error('[router] 交给会话失败', error);
     }
 
     return report;
   };
 
-  /**
-   * A judge that throws fails the whole batch: `null`, never an empty list.
-   *
-   * The distinction matters — an empty list means "the judge looked and said no
-   * to everything", which is a decision we can act on. A throw means the judge
-   * never ran, and the batch has to be retried, not dropped.
-   */
-  private async judgeBatch(events: readonly TriggerEvent[]): Promise<JudgeVerdict[] | null> {
-    if (!this.deps.judge) return events.map((event) => ({ eventId: event.id, accept: true }));
-    try {
-      const verdicts = await this.deps.judge(events);
-      return verdicts.filter((verdict) => typeof verdict?.eventId === 'string');
-    } catch {
-      return null;
-    }
-  }
-
-  private openOrJoin(
-    event: TriggerEvent,
-    verdict: JudgeVerdict,
-  ): { thread: WorkThread; opened: boolean } {
-    // The verdict wins, but an event that already knows which line of work it
-    // belongs to keeps it: a goal the boss typed arrived with its thread already
-    // open, and opening a second one would split the same piece of work in two.
-    const wanted = verdict.threadId ?? event.threadId ?? null;
-    if (wanted) {
-      const existing = this.deps.threads.getThread(wanted);
-      // A verdict that points at a thread that is gone is a new line of work, not
-      // an error: the boss deleted it, the event still arrived.
-      if (existing && existing.closedAt === null) {
-        this.deps.threads.touch(existing.id);
-        return { thread: existing, opened: false };
-      }
-    }
-    const thread = this.deps.threads.createThread({
-      title: verdict.title?.trim() || event.kind,
-      goal: typeof event.payload.goal === 'string' ? event.payload.goal : '',
-    });
-    return { thread, opened: true };
-  }
-
-  /** Turns an outcome into a thread state plus the report level it earns. */
-  private settle(thread: WorkThread, outcome: DispatchOutcome): SettledRow {
-    const settled: Record<DispatchOutcome['status'], { level: AttentionLevel; state: 'done' | 'waiting' | 'failed' }> = {
-      // Quiet on purpose: finishing is the expected case, and a notification for
-      // it is exactly the noise the attention budget exists to prevent.
-      delivered: { level: 'silent', state: 'done' },
-      'needs-decision': { level: 'decide', state: 'waiting' },
-      failed: { level: 'decide', state: 'failed' },
-    };
-    const { level, state } = settled[outcome.status];
-    this.deps.threads.setState(thread.id, state);
-    if (outcome.alreadyReported) return { threadId: thread.id, level, title: thread.title };
-
-    const body =
-      outcome.status === 'delivered'
-        ? outcome.summary
-        : outcome.status === 'needs-decision'
-          ? outcome.question
-          : outcome.reason;
-    this.deps.threads.addReport({ threadId: thread.id, level, title: thread.title, body });
-    return { threadId: thread.id, level, title: thread.title };
+  /** 这条事件是不是已经有主了。 */
+  private intentFor(event: TriggerEvent): Intent | null {
+    const key = threadKeyOf(event);
+    if (!key) return null;
+    const thread = this.deps.threads.threadByKey(key);
+    if (!thread) return null;
+    const [worker] = this.deps.threads.subscribersOf(thread.id);
+    return worker ? { event, thread, workerId: worker.id } : null;
   }
 }
 
-/** Convenience for the settings page: what the queue level actually means. */
+/**
+ * 把一批事件与汇报拼成**一条**输入。
+ *
+ * 一条而不是多条，是因为 Router 的上下文窗口就是缓存：一次调用处理十条，
+ * prefill 共享，单条决定的成本比逐条低得多（§2.1 批处理）。
+ *
+ * 每个对象都带 id 并内联了相邻对象的 id，这样模型可以顺着引用图往下跳
+ * （§3.3 链式召回）——它不需要一开始就把全文装进窗口。
+ */
+export function composeInput(
+  events: readonly TriggerEvent[],
+  reports: readonly WorkReport[],
+): string {
+  const lines: string[] = [];
+
+  if (events.length > 0) {
+    lines.push(`## 新事件（${events.length}）`);
+    for (const event of events) {
+      const key = threadKeyOf(event);
+      lines.push(
+        `- ${event.id} · ${event.source}/${event.kind}` + (key ? ` · 并线键 ${key}` : ''),
+      );
+      const body = bodyOf(event.payload);
+      if (body) lines.push(indent(spill(body, `recall ${event.id}`)));
+    }
+  }
+
+  if (reports.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(`## 执行体汇报（${reports.length}，都还没告诉老板）`);
+    for (const report of reports) {
+      lines.push(`- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.title}`);
+      if (report.body.trim()) lines.push(indent(spill(report.body, `recall ${report.id}`)));
+    }
+  }
+
+  lines.push('');
+  lines.push(
+    '判断：这些里有哪些需要老板知道？哪些该派活（open_line_of_work）？' +
+      '哪些直接不管？要说话就调用 reply_to_boss——不调用它，老板听不到你。',
+  );
+
+  return lines.join('\n');
+}
+
+/** 事件里最像"内容"的那个字段。适配器约定：`text` / `goal` / `path`。 */
+function bodyOf(payload: Record<string, unknown>): string {
+  for (const field of ['text', 'goal', 'path', 'summary', 'brief'] as const) {
+    const value = payload[field];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  const keys = Object.keys(payload).filter((key) => key !== 'threadKey');
+  if (keys.length === 0) return '';
+  return JSON.stringify(Object.fromEntries(keys.map((key) => [key, payload[key]])));
+}
+
+/** Inline & Spill：短的全放，长的截断并留一个按需读取的入口。 */
+export function spill(text: string, hint: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= INLINE_LIMIT) return trimmed;
+  return `${trimmed.slice(0, INLINE_LIMIT)}…（已截断，全文用 ${hint}）`;
+}
+
+function indent(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
+}
+
+/** 注意力三级的说明，设置/首页共用。 */
 export const ATTENTION_COPY: Record<AttentionLevel, string> = {
   decide: '需要你拍板',
   notify: '知道一下就行',

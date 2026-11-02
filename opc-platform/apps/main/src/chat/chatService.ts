@@ -70,12 +70,13 @@ export class ChatService {
   /** Injected by bootstrap; the only way an agent can actually answer. */
   replyWithModel?: (input: { agent: Agent; text: string; history: Message[] }) => Promise<string>;
   /**
-   * Injected by bootstrap: Router 自己的回答。
+   * Injected by bootstrap: 老板说的话，交给调度层当成一条 Trigger（§3）。
    *
-   * 与 `replyWithModel` 分开是有意的——Router 不是员工，它不该借任何人的名字、
-   * 头衔或模型。它就是它自己：常驻、轻量、只负责接住话并把活派出去。
+   * 注意方向：**这里不再生成回复**。聊天是信道，不是大脑。老板说什么进 Router，
+   * Router 决定是自己接住还是派活；要说话时通过 `appendRouterMessage` 送回来。
+   * 原来那条"挑一个 agent 用它的岗位人设回答"的路径就是 v1 的残留，删了。
    */
-  replyAsRouter?: (input: { text: string; history: Message[] }) => Promise<string>;
+  onBossMessage?: (input: { conversationId: string; text: string }) => void;
   /**
    * Injected by bootstrap: §7.4 routing for group/channel messages.
    * Absent (e.g. in a probe) keeps the inline reply path.
@@ -544,9 +545,9 @@ export class ChatService {
       return;
     }
 
-    // 和 Router 说话：不需要挑人。它就在这里，总会回。
+    // 和 Router 说话：这不是"发给某个人"，是这条信道上的一个 Trigger。
     if (conversation.kind === 'dm' && conversation.memberIds[0] === ROUTER_ID) {
-      this.replyAsRouterTurn(conversation, text);
+      this.onBossMessage?.({ conversationId: conversation.id, text });
       return;
     }
 
@@ -566,19 +567,17 @@ export class ChatService {
   };
 
   /**
-   * Router 回一句。
+   * Router 对老板说话。
    *
-   * 它回答的是「接住话」这部分；真正的活由 Router 的 tick 循环派给工作线上的
-   * 执行体，回来再汇报。所以这里没有工具调用、没有验收，只有一句话。
+   * 整个系统里只有这一个地方能让人看见 Router 的结论（§2.2：执行体不直接与人
+   * 交互，由 Router 统一回复）。所以它只有一个入口，而且不经过任何"挑谁来回"的
+   * 逻辑——说话的就是 Router 本身。
    */
-  private replyAsRouterTurn(conversation: Conversation, text: string): void {
-    this.setTyping(conversation.id, [ROUTER_FACE.name]);
-    this.later(760, async () => {
-      const reply = await this.buildReply(ROUTER_FACE, text);
-      this.appendReply(conversation, ROUTER_FACE, reply);
-      this.setTyping(conversation.id, []);
-    });
-  }
+  appendRouterMessage = (conversationId: string, text: string): void => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    this.appendReply(conversation, ROUTER_FACE, text);
+  };
 
   /** Routing facts the comm layer needs; no members = not a conversation we route. */
   conversationInfo = (
@@ -670,22 +669,6 @@ export class ChatService {
    * so say exactly that instead of inventing a plausible-sounding plan.
    */
   private async buildReply(speaker: Speaker, text: string): Promise<string> {
-    if (speaker.id === ROUTER_ID && this.replyAsRouter) {
-      try {
-        const answer = await this.replyAsRouter({
-          text,
-          history: this.snapshot.conversations
-            .flatMap((item) => item.messages)
-            .filter((message) => message.kind === 'text'),
-        });
-        if (answer.trim()) return answer.trim();
-      } catch (error) {
-        return `（模型调用失败：${error instanceof Error ? error.message : String(error)}）`;
-      }
-    }
-    if (speaker.id === ROUTER_ID) {
-      return `（还没配置可用模型，我无法回答「${text.slice(0, 30)}」这类问题。到 设置 → 模型 配好 provider 后，我会直接用模型回你。）`;
-    }
     return this.buildAgentReply(speaker as Agent, text);
   }
 
