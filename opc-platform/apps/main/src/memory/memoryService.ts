@@ -3,7 +3,11 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import { rankMemories, type MemoryCandidate } from './memoryScore';
 
 export interface MemoryScope {
-  type: 'personal' | 'org' | 'department' | 'project';
+  /**
+   * v2 之后主作用域是 `thread`：一条工作线的经验跟着这条线走，而不跟着某个人走。
+   * 其余几种是迁移期保留的——`personal` 仍用来记"这个人自己的习惯"。
+   */
+  type: 'personal' | 'org' | 'department' | 'project' | 'thread';
   id?: string;
 }
 

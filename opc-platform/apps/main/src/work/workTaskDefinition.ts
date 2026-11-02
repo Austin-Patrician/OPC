@@ -58,6 +58,8 @@ export interface WorkTaskServices {
     assigneeId: string;
     title: string;
     brief: string;
+    /** 这条工作线自己的经验能一起召回（v2 的记忆作用域）。 */
+    threadId?: string;
   }) => Promise<{ kind: string; content: string; scopeType: string }[]>;
   /** Company/department facts that apply to this assignee. */
   recallFacts?: (task: {
@@ -126,6 +128,7 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             assigneeId: workTask.assigneeId,
             title: workTask.title,
             brief: workTask.brief,
+            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
           });
           if (memories.length > 0) {
             workTask.memories = memories;

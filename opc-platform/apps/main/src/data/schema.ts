@@ -309,7 +309,7 @@ CREATE TABLE IF NOT EXISTS employee_memory (
   employee_id      TEXT NOT NULL,
   kind             TEXT NOT NULL,
   content          TEXT NOT NULL,
-  scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','org','department','project')),
+  scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','org','department','project','thread')),
   scope_id         TEXT,
   -- float32 blob; NULL when no embedding provider is configured (lexical ranking).
   embedding        BLOB,
@@ -328,6 +328,7 @@ CREATE TABLE IF NOT EXISTS employee_memory (
   FOREIGN KEY (employee_id) REFERENCES employee(id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_scope ON employee_memory(employee_id, scope_type, scope_id);
+CREATE INDEX IF NOT EXISTS idx_memory_thread ON employee_memory(scope_type, scope_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_recent ON employee_memory(employee_id, created_at DESC);
 
 -- Shared facts (org / department / project). Not personal: everyone scoped to the

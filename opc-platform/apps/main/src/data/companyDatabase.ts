@@ -27,6 +27,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   applyPragmas(db);
   repairAcceptanceTemplateConstraint(db);
   repairBudgetScopeConstraint(db);
+  repairMemoryScopeConstraint(db);
   repairLegacyColumns(db);
   repairDepartmentParentConstraint(db);
   repairEmploymentEventKindConstraint(db);
@@ -168,6 +169,60 @@ export function repairBudgetScopeConstraint(db: CompanyDatabase): boolean {
   } catch (error) {
     db.exec('ROLLBACK');
     throw new Error(`重建 budget 表以允许 project/department 预算失败：${String(error)}`, { cause: error });
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  return true;
+}
+
+/**
+ * 记忆的作用域早期只允许 personal / org / department / project。
+ *
+ * v2 里记忆跟着**工作线**走，所以合法值多了 `thread`。`CREATE TABLE IF NOT
+ * EXISTS` 会把老安装的旧 CHECK 留在原地——第一次写一条线程记忆就会撞
+ * "CHECK constraint failed"。同样的重建手法：外键关掉、在迁移事务外重建、幂等。
+ */
+export function repairMemoryScopeConstraint(db: CompanyDatabase): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employee_memory'")
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return false;
+
+  const scopes = ['personal', 'org', 'department', 'project', 'thread'];
+  const scopeCheck = /CHECK\s*\(\s*scope_type\s+IN\s*\([^)]*\)\s*\)/i.exec(row.sql);
+  if (!scopeCheck) return false;
+  if (scopes.every((scope) => scopeCheck[0].includes(`'${scope}'`))) return false;
+
+  const indexes = (
+    db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'employee_memory' AND sql IS NOT NULL",
+      )
+      .all() as { name: string; sql: string }[]
+  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
+
+  const rebuilt = row.sql
+    .replace(/^CREATE TABLE\s+["']?employee_memory["']?/i, 'CREATE TABLE employee_memory_rebuild')
+    .replace(
+      scopeCheck[0],
+      `CHECK (scope_type IN (${scopes.map((scope) => `'${scope}'`).join(',')}))`,
+    );
+  if (!rebuilt.includes("'personal'") || !rebuilt.includes("'project'")) {
+    return false;
+  }
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec('INSERT INTO employee_memory_rebuild SELECT * FROM employee_memory');
+    db.exec('DROP TABLE employee_memory');
+    db.exec('ALTER TABLE employee_memory_rebuild RENAME TO employee_memory');
+    for (const index of indexes) db.exec(index.sql);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw new Error(`重建 employee_memory 表以允许 thread 作用域失败：${String(error)}`, { cause: error });
   } finally {
     db.pragma('foreign_keys = ON');
   }

@@ -241,7 +241,9 @@ export class WorkService {
               content: `任务《${task.title}》通过验收。交付物：${task.artifacts
                 .map((artifact) => artifact.relPath)
                 .join('、') || '（无）'}。要求：${task.deliverableSpec}`,
-              scope: { type: 'personal' },
+              scope: task.threadId
+                ? { type: 'thread', id: task.threadId }
+                : { type: 'personal' },
               sourceType: 'task',
               sourceId: task.id,
             })
@@ -276,6 +278,8 @@ export class WorkService {
               .find((entry) => entry.id === task.assigneeId);
             const departmentId = member?.departmentId;
             const scopes = [
+              // 这条工作线自己的经验优先——它跟着线索走，换个人做也还在。
+              ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
               { type: 'personal' as const },
               ...(departmentId ? [{ type: 'department' as const, id: departmentId }] : []),
               // Only the projects this employee is on — never every project.
@@ -977,18 +981,22 @@ export class WorkService {
         essential: false,
         available: true,
         extension: createRememberToolExtension({
-          // 记忆先按执行体记，等记忆迁移到 thread 作用域时这里会换成 thread id。
           employeeId: personId,
           taskId: () => currentTaskIdFor(personId),
-          remember: async ({ content, kind }) =>
-            memory.remember({
+          remember: async ({ content, kind }) => {
+            // 记在**当前这条工作线**上：同一条线索的下一个执行体能读到，
+            // 换一条线就看不到——这正是"记忆跟着事走"的意思。
+            const taskId = currentTaskIdFor(personId);
+            const threadId = taskId ? this.repository.getTask(taskId)?.threadId : undefined;
+            return memory.remember({
               employeeId: personId,
               kind,
               content,
-              scope: { type: 'personal' },
+              scope: threadId ? { type: 'thread', id: threadId } : { type: 'personal' },
               sourceType: 'task',
-              sourceId: currentTaskIdFor(personId),
-            }),
+              sourceId: taskId,
+            });
+          },
         }),
       });
     } else {
