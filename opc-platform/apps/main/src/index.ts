@@ -250,6 +250,8 @@ async function bootstrap(): Promise<void> {
     apply: applyProxy,
   });
   const org = new OrgService(db);
+  // One instance for the process: the router writes threads here, IPC reads them.
+  const threads = new ThreadRepository(db);
   // 首启不再塞演示公司：空的组织架构就是空的公司，老板自己建，
   // 或者用 `OPC_COMPANY_SETUP=<file>` 导入一个公司模板（同样走 hire/assign）。
   if (org.list().length === 0) {
@@ -442,6 +444,7 @@ async function bootstrap(): Promise<void> {
         : { ok: false, message: '心跳未启动（无头模式），无法手动唤醒', items: 0 },
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
+    threads,
     piExtensions,
     piSkills,
   });
@@ -494,7 +497,6 @@ async function bootstrap(): Promise<void> {
   // router themselves instead of waiting for a timer.
   if (!isHeadlessMode && work) {
     const liveWork = work;
-    const threads = new ThreadRepository(db);
     const inboxDir = path.join(appPaths.userData, 'inbox');
     try {
       mkdirSync(inboxDir, { recursive: true });

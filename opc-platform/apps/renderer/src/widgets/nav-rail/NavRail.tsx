@@ -1,5 +1,6 @@
 import {
   Archive,
+  Inbox,
   Grid3x3,
   Hash,
   Mail,
@@ -17,6 +18,7 @@ import { cn } from '@/shared/lib/cn';
 import { RailSearch } from './RailSearch';
 
 const PRIMARY_NAV = [
+  { to: '/attention', icon: Inbox, labelKey: 'nav.attention' },
   { to: '/chat', icon: MessageSquare, labelKey: 'nav.im' },
   { to: '/issues', icon: SquareKanban, labelKey: 'nav.issues' },
   { to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },

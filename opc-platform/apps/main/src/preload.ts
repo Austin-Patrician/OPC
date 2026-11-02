@@ -125,6 +125,12 @@ const bridge: OpcBridge = {
       };
     },
   },
+  threads: {
+    queue: () => ipcRenderer.invoke(IPC.threads.queue),
+    list: (limit?: number) => ipcRenderer.invoke(IPC.threads.list, limit),
+    markRead: (reportId: string) => ipcRenderer.invoke(IPC.threads.markRead, reportId),
+    close: (threadId: string) => ipcRenderer.invoke(IPC.threads.close, threadId),
+  },
   budget: {
     overview: () => ipcRenderer.invoke(IPC.budget.overview) as Promise<BudgetOverview>,
     setLimit: (input: {

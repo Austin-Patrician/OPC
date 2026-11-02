@@ -15,6 +15,7 @@
     "empty": "暂无内容"
   },
   "nav": {
+    "attention": "注意力队列",
     "im": "IM 消息工作台",
     "org": "HR 组织架构",
     "market": "Agent 人才市场",
@@ -1642,6 +1643,42 @@
       "sunset": "日落橙",
       "forest": "森林绿",
       "graphite": "石墨黑"
+    }
+  },
+  "attention": {
+    "crumbs": "工作台",
+    "title": "注意力队列",
+    "description": "这里是需要你的地方。干完的活不打扰你，只有需要拍板、或者跑不动了，才会出现在上面。",
+    "refresh": "刷新",
+    "emptyTitle": "现在没有需要你处理的事",
+    "emptyHint": "把文件丢进收件夹，它会自己开工；干完记在下面的工作线里，不响铃。",
+    "markRead": "知道了",
+    "close": "收尾",
+    "threads": "最近的工作线",
+    "threadsHint": "静默完成的活也在这里 —— 否则「干完不打扰」就变成了「看不见」。",
+    "noThreads": "还没有工作线。它会在有人把文件放进收件夹之后出现。",
+    "decideFootNote": "有 {{count}} 件事在等你拍板。其余的都已完成。",
+    "level": {
+      "decide": "需要你拍板",
+      "notify": "知道一下"
+    },
+    "levelHint": {
+      "decide": "不决定就不会继续的事。",
+      "notify": "做完了或遇到了情况，你看一眼就好。"
+    },
+    "state": {
+      "open": "待开工",
+      "running": "执行中",
+      "waiting": "等你",
+      "done": "已完成",
+      "failed": "失败",
+      "archived": "已归档"
+    },
+    "time": {
+      "justNow": "刚刚",
+      "minutes": "{{count}} 分钟前",
+      "hours": "{{count}} 小时前",
+      "days": "{{count}} 天前"
     }
   }
 }

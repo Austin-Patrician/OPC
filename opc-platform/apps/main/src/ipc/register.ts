@@ -26,6 +26,7 @@ import { runDiagnostics } from '../diagnostics/report';
 import type { PersonnelInput } from '@opc/shared/domain';
 import type { OcrSettings } from '@opc/shared/ocr';
 import type { OrgFactService } from '../memory/orgFactService';
+import type { ThreadRepository } from '../data/threadRepository';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { ProjectService } from '../org/projectService';
 import type { AuthService } from '../models/authService';
@@ -66,6 +67,8 @@ interface RegisterOptions {
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   org: OrgService;
+  /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
+  threads: ThreadRepository;
   facts: OrgFactService;
   projects: ProjectService;
   consolidationRuns: ConsolidationRunStore;
@@ -91,6 +94,7 @@ export function registerIpc({
   auth,
   workspaceRoot,
   org,
+  threads,
   facts,
   projects,
   consolidationRuns,
@@ -678,6 +682,22 @@ export function registerIpc({
         : [{ type: written.scopeType, id: written.scopeId }],
       50,
     );
+  });
+
+  // ── v2: 注意力队列 ─────────────────────────────────────────────────────
+  // 老板打开应用看到的是"有什么事需要我"，不是会话列表。silent 的汇报永远不进
+  // 队列——干完活不打扰是产品承诺，也是一条测试（router.test.ts）。
+  ipcMain.handle(IPC.threads.queue, () => threads.listQueueWithThread());
+  ipcMain.handle(IPC.threads.list, (_event, limit: unknown) =>
+    threads.listThreads({ limit: typeof limit === 'number' ? limit : 50 }),
+  );
+  ipcMain.handle(IPC.threads.markRead, (_event, reportId: unknown) => {
+    if (typeof reportId !== 'string') throw new Error('threads:markRead 参数非法');
+    threads.markReportRead(reportId);
+  });
+  ipcMain.handle(IPC.threads.close, (_event, threadId: unknown) => {
+    if (typeof threadId !== 'string') throw new Error('threads:close 参数非法');
+    return threads.setState(threadId, 'done');
   });
 
   ipcMain.handle(IPC.org.unplaced, () => org.unplaced());

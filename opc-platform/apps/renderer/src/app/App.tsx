@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
+import { AttentionPage } from '@/pages/attention/AttentionPage';
 import { BudgetPage } from '@/pages/budget/BudgetPage';
 import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
@@ -26,7 +27,9 @@ export function App() {
       <ThemeSync />
       <Routes>
         <Route element={<AppShell />}>
-          <Route index element={<Navigate to="/chat" replace />} />
+          {/* 老板打开应用先看到"有什么事需要我"，不是会话列表。 */}
+          <Route index element={<Navigate to="/attention" replace />} />
+          <Route path="attention" element={<AttentionPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="issues" element={<IssueListPage />} />

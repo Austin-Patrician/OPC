@@ -58,6 +58,12 @@ export interface EnqueueEventInput {
   threadId?: string | null;
 }
 
+/** A queue row with the line of work attached, for the attention screen. */
+export interface QueueEntry extends WorkReport {
+  threadTitle: string;
+  threadState: ThreadState;
+}
+
 export interface AddReportInput {
   threadId: string;
   level?: AttentionLevel;
@@ -396,6 +402,29 @@ export class ThreadRepository {
         LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);
+  }
+
+  /**
+   * The same queue, joined to the line of work it came from.
+   *
+   * The boss's screen never shows a report id; it shows "整理 Q3 财报
+   * 需要你拍板". Without the join the UI would have to fetch every thread just to
+   * put a title on a row.
+   */
+  listQueueWithThread(limit = 50): QueueEntry[] {
+    const rows = this.statement(
+      `SELECT r.*, t.title AS thread_title, t.state AS thread_state
+         FROM report r
+         JOIN thread t ON t.id = r.thread_id
+        WHERE r.read_at IS NULL AND r.level != 'silent'
+        ORDER BY CASE r.level WHEN 'decide' THEN 0 ELSE 1 END, r.created_at DESC
+        LIMIT ?`,
+    ).all(limit) as (ReportRow & { thread_title: string; thread_state: ThreadState })[];
+    return rows.map((row) => ({
+      ...toReport(row),
+      threadTitle: row.thread_title,
+      threadState: row.thread_state,
+    }));
   }
 
   markReportRead(id: string): WorkReport {

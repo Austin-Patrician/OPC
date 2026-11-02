@@ -15,6 +15,7 @@
     "empty": "Nothing here yet"
   },
   "nav": {
+    "attention": "Attention",
     "im": "Messages",
     "org": "Org chart",
     "market": "Talent market",
@@ -1642,6 +1643,42 @@
       "sunset": "Sunset",
       "forest": "Forest",
       "graphite": "Graphite"
+    }
+  },
+  "attention": {
+    "crumbs": "Workspace",
+    "title": "Attention queue",
+    "description": "This is where you are needed. Finished work stays quiet; only decisions and dead ends surface here.",
+    "refresh": "Refresh",
+    "emptyTitle": "Nothing needs you right now",
+    "emptyHint": "Drop a file into the inbox folder and it starts on its own. Finished work is recorded below, silently.",
+    "markRead": "Got it",
+    "close": "Close",
+    "threads": "Recent lines of work",
+    "threadsHint": "Quietly finished work shows up here too — otherwise “no interruption” becomes “invisible”.",
+    "noThreads": "No lines of work yet. They appear once something lands in the inbox folder.",
+    "decideFootNote": "{{count}} waiting on your call. The rest is done.",
+    "level": {
+      "decide": "Needs your call",
+      "notify": "Worth knowing"
+    },
+    "levelHint": {
+      "decide": "Nothing moves until you decide.",
+      "notify": "Finished, or hit something — a glance is enough."
+    },
+    "state": {
+      "open": "Queued",
+      "running": "Running",
+      "waiting": "Waiting",
+      "done": "Done",
+      "failed": "Failed",
+      "archived": "Archived"
+    },
+    "time": {
+      "justNow": "just now",
+      "minutes": "{{count}} min ago",
+      "hours": "{{count}} h ago",
+      "days": "{{count}} d ago"
     }
   }
 }

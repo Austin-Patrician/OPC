@@ -17,6 +17,7 @@ import type {
   DecisionClassifyResult,
   DepartmentNode,
   DepartmentEditInput,
+  WorkThread,
   EditableProjectStatus,
   EmploymentEvent,
   EmployeeToolPolicy,
@@ -111,6 +112,12 @@ export const IPC = {
   },
   memory: {
     consolidationRuns: 'memory:consolidationRuns',
+  },
+  threads: {
+    list: 'threads:list',
+    queue: 'threads:queue',
+    markRead: 'threads:markRead',
+    close: 'threads:close',
   },
   projects: {
     list: 'projects:list',
@@ -1053,7 +1060,35 @@ export interface OpcBridge {
   budget: BudgetBridge;
   billing: BillingBridge;
   comm: CommBridge;
+  threads: ThreadsBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
+}
+
+/**
+ * v2 注意力队列（docs/v2/01-core.md）。
+ *
+ * 老板打开应用看到的不是会话列表，而是"有什么事需要我"。一个 report 的级别
+ * 决定它出现在这里还是只留在记录里：silent 永远不进来。
+ */
+export interface AttentionEntry {
+  id: string;
+  threadId: string;
+  /** 「整理 Q3 财报」——老板认的是这件事，不是 id。 */
+  threadTitle: string;
+  level: 'decide' | 'notify' | 'silent';
+  title: string;
+  body: string;
+  createdAt: number;
+}
+
+export interface ThreadsBridge {
+  /** 未读、且级别不是 silent 的汇报，decide 永远排在前面。 */
+  queue(): Promise<AttentionEntry[]>;
+  /** 最近的工作线；静默完成的活也在这里，否则老板没法确认它真的在干。 */
+  list(limit?: number): Promise<WorkThread[]>;
+  markRead(reportId: string): Promise<void>;
+  /** 关掉一条工作线（老板手动收尾）。 */
+  close(threadId: string): Promise<WorkThread>;
 }
