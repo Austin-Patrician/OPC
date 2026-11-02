@@ -169,7 +169,7 @@ describe('report', () => {
 
 describe('schema version', () => {
   it('is at the version that introduced the v2 core tables', () => {
-    expect(SCHEMA_VERSION).toBe(25);
+    expect(SCHEMA_VERSION).toBe(26);
     expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION);
   });
 });

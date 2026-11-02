@@ -147,6 +147,11 @@ export interface WorkTask {
   parentTaskId?: string;
   /** The project this work is charged to (§8.1); absent = no project axis. */
   projectGroupId?: string;
+  /**
+   * The v2 line of work this task belongs to. Absent for tasks created before
+   * threads existed, and for work that never belonged to a goal.
+   */
+  threadId?: string;
   /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
   issueKey?: string;
   /** P0 (do it now) … P3 (someday). Defaults to P2. */
@@ -1092,6 +1097,11 @@ export interface CreateTaskInput {
   assigneeId: string;
   /** Charges this project's budget as well; subtasks inherit it (§8.1). */
   projectGroupId?: string;
+  /**
+   * The line of work this task belongs to (v2 core). Subtasks inherit their
+   * parent's thread, so one goal's worth of tasks can be recalled together.
+   */
+  threadId?: string;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: AcceptanceTemplate;

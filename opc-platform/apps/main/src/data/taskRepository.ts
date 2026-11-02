@@ -19,6 +19,8 @@ export interface CreateTaskDraft {
   assigneeId: string;
   /** Charges this project's budget; stored so a resumed task keeps its axis. */
   projectGroupId?: string;
+  /** The v2 line of work this task belongs to; subtasks inherit it. */
+  threadId?: string;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: AcceptanceTemplate;
@@ -61,6 +63,7 @@ interface TaskRow {
   employee_name: string;
   parent_task_id: string | null;
   project_group_id: string | null;
+  thread_id: string | null;
   review_of_task_id: string | null;
   issue_key: string | null;
   priority: string | null;
@@ -266,10 +269,10 @@ export class TaskRepository {
     const now = Date.now();
     this.statement(
       `INSERT INTO task (id, title, brief, deliverable_spec, employee_id, employee_name,
-                         parent_task_id, project_group_id, review_of_task_id, is_review, depth, est_tokens,
+                         parent_task_id, project_group_id, thread_id, review_of_task_id, is_review, depth, est_tokens,
                          acceptance_command, acceptance_template, status, workspace_rel_path,
                          attempts, tokens_used, cost_usd, issue_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
     ).run(
       taskId,
       draft.title,
@@ -279,6 +282,7 @@ export class TaskRepository {
       assignee.name,
       placement?.parentTaskId ?? null,
       draft.projectGroupId ?? null,
+      draft.threadId ?? null,
       placement?.depth ?? 0,
       draft.estTokens,
       JSON.stringify(draft.acceptanceCommand),
@@ -333,6 +337,7 @@ export class TaskRepository {
       dueAt: row.due_at ?? undefined,
       parentTaskId: row.parent_task_id ?? undefined,
       projectGroupId: row.project_group_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
       reviewOfTaskId: row.review_of_task_id ?? undefined,
       isReview: row.is_review === 1,
       depth: row.depth,

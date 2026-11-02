@@ -450,6 +450,9 @@ export class WorkService {
           estTokens: subtask.estTokens,
           acceptanceCommand: ['node', '{checks}/verify.mjs'],
           acceptanceTemplate: subtask.acceptanceTemplate ?? 'http-ok',
+          // Same line of work as the parent: a goal decomposed into five tasks is
+          // still one thing to the boss, and must be recallable as one thread.
+          ...(parent.threadId ? { threadId: parent.threadId } : {}),
         },
         taskWorkspaceRelPath(childId),
         childId,

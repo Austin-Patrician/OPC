@@ -9,6 +9,7 @@ import { BudgetRepository } from './budgetRepository';
 import { openCompanyDatabase, probeSqlite, type CompanyDatabase } from './companyDatabase';
 import { SCHEMA_VERSION } from './schema';
 import { TaskRepository, taskWorkspaceRelPath } from './taskRepository';
+import { ThreadRepository } from './threadRepository';
 
 /**
  * The data layer against a real SQLite file.
@@ -772,5 +773,82 @@ describe('MemoryService', () => {
       limit: 3,
     });
     expect(foreignProject).toHaveLength(0);
+  });
+});
+
+/**
+ * B3 step 1: a task can belong to a v2 line of work.
+ *
+ * Only the linkage is asserted here — `employee_id` is still the executor until
+ * B3 step 2 swaps the runtime identity. What matters now is that the thread
+ * survives the FK, and that dropping a thread does not take its tasks with it.
+ */
+describe('task ↔ thread', () => {
+  function setup() {
+    const org = new OrgService(db);
+    const { worker } = hireTeam(org);
+    const repository = new TaskRepository(db);
+    repository.seedEmployees([
+      {
+        id: worker.id,
+        name: '李雷',
+        role: '全栈工程师',
+        level: 'P5',
+        departmentId: worker.departmentId,
+        model: '',
+        status: 'online',
+        skills: ['Node.js'],
+        briefMd: '用最小依赖实现',
+      },
+    ]);
+    const threads = new ThreadRepository(db);
+    return { worker, repository, threads };
+  }
+
+  function draft(assigneeId: string, threadId?: string) {
+    return {
+      title: '整理 Q3 财报',
+      brief: '读三份 PDF',
+      deliverableSpec: '一页摘要',
+      assigneeId,
+      estTokens: 1000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok' as const,
+      ...(threadId ? { threadId } : {}),
+    };
+  }
+
+  it('keeps the thread a task was created for', () => {
+    const { worker, repository, threads } = setup();
+    const thread = threads.createThread({ title: '整理 Q3 财报' });
+    const task = repository.createTask(
+      draft(worker.id, thread.id),
+      taskWorkspaceRelPath('task-t1'),
+      'task-t1',
+    );
+    expect(task.threadId).toBe(thread.id);
+    expect(repository.getTask('task-t1')?.threadId).toBe(thread.id);
+  });
+
+  it('leaves threadId absent for work that never belonged to a goal', () => {
+    const { worker, repository } = setup();
+    const task = repository.createTask(
+      draft(worker.id),
+      taskWorkspaceRelPath('task-t2'),
+      'task-t2',
+    );
+    expect(task.threadId).toBeUndefined();
+  });
+
+  it('nulls the link instead of blocking when a thread is deleted', () => {
+    const { worker, repository, threads } = setup();
+    const thread = threads.createThread({ title: '临时线索' });
+    repository.createTask(draft(worker.id, thread.id), taskWorkspaceRelPath('task-t3'), 'task-t3');
+
+    db.prepare('DELETE FROM thread WHERE id = ?').run(thread.id);
+
+    // The task survives: the work happened, and hiding it would be a lie.
+    expect(repository.getTask('task-t3')).toBeDefined();
+    expect(repository.getTask('task-t3')?.threadId).toBeUndefined();
   });
 });

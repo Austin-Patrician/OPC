@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1267,7 +1267,22 @@ CREATE TABLE IF NOT EXISTS report (
 CREATE INDEX IF NOT EXISTS idx_report_queue ON report(read_at, level, created_at DESC);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25];
+/**
+ * V26: 任务可以属于一条工作线。
+ *
+ * B3 的第一步只做**关联**，不换执行身份：`employee_id` 照旧是执行者，`thread_id`
+ * 说明这个任务在替哪条工作线干活。这样一条线索拆出来的子任务天然同属一条线，
+ * 老板问"那件事怎么样了"时能一次召回全部任务，而运行时一行不用改。
+ *
+ * 换执行身份（harness 按 thread 开库、worker 取代 employee）放在 B3 第二步，
+ * 因为那一步要同时动 AgentPool 与工具注册表。
+ */
+const V26 = `
+ALTER TABLE task ADD COLUMN thread_id TEXT REFERENCES thread(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_task_thread ON task(thread_id);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,
