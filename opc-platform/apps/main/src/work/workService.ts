@@ -47,6 +47,7 @@ import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
+import { subjectOfPerson, subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
@@ -89,6 +90,7 @@ interface EmployeeHarness {
   /** Several runtimes can belong to one person once workers exist. */
   employeeId: string;
 }
+
 
 /**
  * One installable capability group.
@@ -940,7 +942,7 @@ export class WorkService {
 
     const agents: AgentCapability[] = [];
     for (const employee of employees) {
-      const snapshot = (await this.buildRegistry(employee.id)).snapshot();
+      const snapshot = (await this.buildRegistry(this.subjectOfEmployee(employee.id))).snapshot();
       const department = departmentOf.get(employee.id);
       agents.push({
         employeeId: employee.id,
@@ -982,7 +984,13 @@ export class WorkService {
    * page renders it. Reasons are codes, not sentences, so both locales can
    * explain the same missing provider without the main process translating.
    */
-  private async toolSlots(employeeId: string): Promise<ToolSlot[]> {
+  private async toolSlots(subject: RegistrySubject): Promise<ToolSlot[]> {
+    // 迁移期：能从人身上查的就查，查不到就走"没有员工"的分支。
+    const personId = subject.employeeId ?? subject.id;
+    const policy = subject.employeeId
+      ? (this.deps.org?.toolPolicyOf(subject.employeeId) ?? EMPTY_TOOL_POLICY)
+      : EMPTY_TOOL_POLICY;
+
     const { createCodingTools } = await import('@earendil-works/pi-durable/tools');
     const slots: ToolSlot[] = [
       {
@@ -1071,16 +1079,17 @@ export class WorkService {
         essential: false,
         available: true,
         extension: createRememberToolExtension({
-          employeeId,
-          taskId: () => currentTaskIdFor(employeeId),
+          // 记忆先按执行体记，等记忆迁移到 thread 作用域时这里会换成 thread id。
+          employeeId: personId,
+          taskId: () => currentTaskIdFor(personId),
           remember: async ({ content, kind }) =>
             memory.remember({
-              employeeId,
+              employeeId: personId,
               kind,
               content,
               scope: { type: 'personal' },
               sourceType: 'task',
-              sourceId: currentTaskIdFor(employeeId),
+              sourceId: currentTaskIdFor(personId),
             }),
         }),
       });
@@ -1097,20 +1106,24 @@ export class WorkService {
         essential: false,
         available: true,
         extension: createCommToolExtension({
-          employeeId,
+          employeeId: personId,
+          // 「同事」这个概念随员工一起消失。还在迁移期时按老办法列出来，
+          // 彻底没有员工之后这里就是空的——通讯工具仍然可用，只是没人可聊。
           colleagues: () =>
-            (this.deps.org?.list().flatMap((department) => department.members) ?? [])
-              .filter((member) => member.id !== employeeId && member.status === 'active')
-              .map((member) => ({
-                id: member.id,
-                name: member.name,
-                role: `${member.role} · ${member.level}`,
-                reportsToMe: member.reportsToEmployeeId === employeeId,
-                manager: member.id === this.reportingLineOf(employeeId),
-              })),
+            subject.employeeId
+              ? (this.deps.org?.list().flatMap((department) => department.members) ?? [])
+                  .filter((member) => member.id !== personId && member.status === 'active')
+                  .map((member) => ({
+                    id: member.id,
+                    name: member.name,
+                    role: `${member.role} · ${member.level}`,
+                    reportsToMe: member.reportsToEmployeeId === personId,
+                    manager: member.id === this.reportingLineOf(personId),
+                  }))
+              : [],
           sendDirectMessage: (input) => comm.sendDirectMessage(input),
           ackConversation: (ownerId, conversationId) => comm.ack(ownerId, conversationId),
-          currentConversationId: () => comm.latestConversationId(employeeId),
+          currentConversationId: () => comm.latestConversationId(personId),
         }),
       });
     } else {
@@ -1119,14 +1132,15 @@ export class WorkService {
 
     // 拆解的前提是"有人可派"。一个人干不了两个人的活，所以只有一个人时工具根本不装；
     // 有两三个人时，谁都可以把活交给别人——这里已经没有汇报线了。
-    if (this.assignableTo(employeeId).length > 0) {
+    const assignable = subject.employeeId ? this.assignableTo(subject.employeeId) : [];
+    if (assignable.length > 0) {
       slots.push({
         name: 'opc.decompose',
         essential: false,
         available: true,
         extension: createDecomposeToolExtension({
-          requesterId: employeeId,
-          parentTaskId: () => currentTaskIdFor(employeeId),
+          requesterId: personId,
+          parentTaskId: () => currentTaskIdFor(personId),
           decompose: (parentId, requesterId, subtasks) =>
             this.decompose(parentId, requesterId, subtasks),
         }),
@@ -1143,7 +1157,7 @@ export class WorkService {
       const enabled = skills.enabled();
       // Advertising a skill the model cannot open would be a trap: the section
       // and the tool have to be on or off together.
-      const canRead = isToolEnabled(this.deps.org?.toolPolicyOf(employeeId) ?? EMPTY_TOOL_POLICY, 'read_skill');
+      const canRead = isToolEnabled(policy, 'read_skill');
       slots.push(
         enabled.length > 0 && canRead
           ? {
@@ -1183,9 +1197,11 @@ export class WorkService {
    * Conditions and the employee's deny-list live here on purpose, so no page can
    * describe a tool the model does not get.
    */
-  private async buildRegistry(employeeId: string): Promise<Registry> {
-    const slots = await this.toolSlots(employeeId);
-    const policy = this.deps.org?.toolPolicyOf(employeeId) ?? EMPTY_TOOL_POLICY;
+  private async buildRegistry(subject: RegistrySubject): Promise<Registry> {
+    const slots = await this.toolSlots(subject);
+    const policy = subject.employeeId
+      ? (this.deps.org?.toolPolicyOf(subject.employeeId) ?? EMPTY_TOOL_POLICY)
+      : EMPTY_TOOL_POLICY;
 
     // The registry carries our durable task definition: without it a resumed
     // task is "blocked: missing_task".
@@ -1222,7 +1238,7 @@ export class WorkService {
     if (!member) throw new Error('员工不存在');
 
     const policy = this.deps.org.toolPolicyOf(employeeId);
-    const slots = await this.toolSlots(employeeId);
+    const slots = await this.toolSlots(this.subjectOfEmployee(employeeId));
     return {
       employeeId,
       model: this.deps.org.modelRefOf(employeeId) ?? null,
@@ -1259,7 +1275,7 @@ export class WorkService {
       throw new Error('员工不存在');
     }
 
-    const slots = await this.toolSlots(employeeId);
+    const slots = await this.toolSlots(this.subjectOfEmployee(employeeId));
     const knownExtensions = new Map(slots.map((slot) => [slot.name, slot]));
 
     let policy: EmployeeToolPolicy | undefined;
@@ -1436,6 +1452,24 @@ export class WorkService {
   }
 
   /**
+   * 运行时主体的两种来源：执行体本身，或迁移期里还没有执行体的那个人。
+   */
+  private subjectOfEmployee(employeeId: string): RegistrySubject {
+    const person = this.deps.org?.everyone().find((entry) => entry.id === employeeId);
+    return subjectOfPerson({
+      id: employeeId,
+      ...(person?.name ? { name: person.name } : {}),
+      ...(person?.skills ? { skills: person.skills } : {}),
+    });
+  }
+
+  /** 有执行体就用执行体，没有就退回按人（旧任务/旧数据）。 */
+  private subjectFor(identity: RuntimeIdentity): RegistrySubject {
+    const worker = this.threads.getWorker(identity.runtimeKey);
+    return worker ? subjectOfWorker(worker) : this.subjectOfEmployee(identity.employeeId);
+  }
+
+  /**
    * Who may take a subtask from this person: every other execution body.
    *
    * Reporting lines are gone from this decision on purpose — with one person there
@@ -1504,7 +1538,8 @@ export class WorkService {
     const context = await getBackgroundContext();
     const storagePath = path.join(this.deps.paths.agentsDir, `${identity.runtimeKey}.sqlite`);
 
-    const registry = await this.buildRegistry(identity.employeeId);
+    const subject = this.subjectFor(identity);
+    const registry = await this.buildRegistry(subject);
 
     const models = this.deps.modelConfig
       ? await this.deps.modelConfig.runtime.createModels()
