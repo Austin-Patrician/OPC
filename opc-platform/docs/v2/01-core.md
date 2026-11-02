@@ -218,15 +218,38 @@ Router 现在尊重**事件自带的 `threadId`**（`verdict.threadId ?? event.t
 
 **剩下的建议顺序**（每一步都要能跑）：
 
-1. `workService` 的三处 `org` 调用：模型 → `worker.model ?? 公司默认`；
-   工具策略 → `worker.template`；`subordinatesOf` → 分派深度上限
+1. ~~`workService` 的三处 `org` 调用~~ 部分完成（`01084f7`）：**模型**已挪到执行体上
+   （`worker.model → employee.model → 公司默认`，建 worker 时钉住）。
+   还剩两处：
+   - **工具策略** → `worker.template`（需要先定"研究型/工程型/运维型各拿哪些工具"）
+   - **`subordinatesOf`** → 见下面的发现
 2. `comm` 的群聊路由改挂 `thread`
 3. `budget` 两轴（thread / global），删部门轴
 4. `seed/firstCompany` + `setup/companySetup` 退役
-5. 删 `org/` + 12 张表，`ensureDefaultExecutor` 变成「实例化一个 worker 模板」，
-   那时候连这一个人都不需要预先存在
+5. 删 `org/` + 12 张表
 
-第 1 步之后才真正动到语义，也是最容易出错的地方。
+### ⚠️ 发现：`decompose` 现在根本走不到
+
+`validateDecomposition` 有两条互相咬死的规则：
+
+```
+不能把子任务派给自己        (DECOMPOSE_SELF)
+子任务只能派给直接下属      (DECOMPOSE_NOT_SUBORDINATE，读 org)
+```
+
+而**全新安装只有一个执行体**（`ensureDefaultExecutor` 建的那一个人）。
+于是：派给自己被拒 → 派给别人没别人 → 层级派活在这套配置下 100% 失败。
+
+这不是 bug，是 v1 残留语义和 v2 单执行体现实撞在一起的结果。三个方向：
+
+| | 做法 | 代价 |
+|---|---|---|
+| **A** | 允许派给自己，但每个子任务用**不同的 worker**（模板不同就不同） | 要让 `ensureWorker` 按 (thread, employee, **template**) 去重，否则兄弟任务共用一个 harness 会互相踩 |
+| B | 一时用不到就先关掉：`decompose` 工具在少于 2 个执行体时不暴露 | 一行判断，零风险，但功能暂时没有 |
+| C | 保持现状（能拆但一定失败） | 最差：模型会反复尝试并拿到拒绝 |
+
+我倾向 **B 先行、A 随后**：先让工具在没人可派时**不出现**（和项目里
+"装一个只会失败的工具比没有更糟"的既有原则一致），等 worker 去重按模板做完再开 A。
 
 ---
 
