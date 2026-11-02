@@ -485,12 +485,12 @@ export class WorkService {
       return { ok: false, error: { code: 'DECOMPOSE_SELF', message: '只有负责人能拆解自己的任务' } };
     }
 
-    const subordinates = this.deps.org?.subordinatesOf(requesterId) ?? [];
+    const assignable = this.assignableTo(requesterId);
     const refusal = validateDecomposition({
       parent,
       requesterId,
       subtasks,
-      subordinates,
+      assignable,
       parentRemainingTokens: Math.max(0, parent.estTokens - parent.tokensUsed),
     });
     if (refusal) return { ok: false, error: refusal };
@@ -1117,8 +1117,9 @@ export class WorkService {
       slots.push({ name: 'opc.comm', essential: false, available: false, reason: 'comm-disabled' });
     }
 
-    // Managers can decompose; individual contributors cannot (the org chart decides).
-    if ((this.deps.org?.subordinatesOf(employeeId) ?? []).length > 0) {
+    // 拆解的前提是"有人可派"。一个人干不了两个人的活，所以只有一个人时工具根本不装；
+    // 有两三个人时，谁都可以把活交给别人——这里已经没有汇报线了。
+    if (this.assignableTo(employeeId).length > 0) {
       slots.push({
         name: 'opc.decompose',
         essential: false,
@@ -1131,7 +1132,7 @@ export class WorkService {
         }),
       });
     } else {
-      slots.push({ name: 'opc.decompose', essential: false, available: false, reason: 'no-subordinates' });
+      slots.push({ name: 'opc.decompose', essential: false, available: false, reason: 'sole-executor' });
     }
 
     // Skills (`~/.agents/skills`). One extension that contributes a prompt
@@ -1432,6 +1433,19 @@ export class WorkService {
         });
       }
     }
+  }
+
+  /**
+   * Who may take a subtask from this person: every other execution body.
+   *
+   * Reporting lines are gone from this decision on purpose — with one person there
+   * is nobody to hand work to, and with peers there is no reason to route it
+   * through a manager that no longer exists.
+   */
+  private assignableTo(employeeId: string): { id: string }[] {
+    return (this.deps.org?.everyone() ?? [])
+      .filter((member) => member.id !== employeeId)
+      .map((member) => ({ id: member.id }));
   }
 
   /**

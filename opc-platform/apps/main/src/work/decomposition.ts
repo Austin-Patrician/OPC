@@ -1,5 +1,4 @@
 import type { SubtaskDraft, TaskError, WorkTask } from '@opc/shared/domain';
-import type { OrgMember } from '@opc/shared/domain';
 
 export interface DecomposeLimits {
   maxDepth: number;
@@ -12,8 +11,15 @@ export interface DecomposeContext {
   parent: WorkTask;
   requesterId: string;
   subtasks: readonly SubtaskDraft[];
-  /** Direct reports of the requester (`position.reports_to_employee_id`). */
-  subordinates: readonly OrgMember[];
+  /**
+   * Who may take a subtask: the other execution bodies in the company.
+   *
+   * Reporting lines used to decide this, which meant a company of peers could not
+   * hand work to each other and a company of one could not decompose at all. In
+   * the v2 shape there are no managers — there are executors — so the only rule
+   * left is "not yourself", which keeps two tasks out of one runtime.
+   */
+  assignable: readonly { id: string }[];
   /** Tokens the parent still has: est − actual. */
   parentRemainingTokens: number;
   limits?: Partial<DecomposeLimits>;
@@ -58,12 +64,12 @@ export function validateDecomposition(ctx: DecomposeContext): TaskError | null {
     return { code: 'DECOMPOSE_SELF', message: '不能把子任务派给自己' };
   }
 
-  const subordinateIds = new Set(ctx.subordinates.map((member) => member.id));
-  const outsider = ctx.subtasks.find((sub) => !subordinateIds.has(sub.assigneeId));
+  const assignableIds = new Set(ctx.assignable.map((member) => member.id));
+  const outsider = ctx.subtasks.find((sub) => !assignableIds.has(sub.assigneeId));
   if (outsider) {
     return {
-      code: 'DECOMPOSE_NOT_SUBORDINATE',
-      message: `${outsider.assigneeId} 不是 ${ctx.requesterId} 的直接下属`,
+      code: 'DECOMPOSE_NOT_ASSIGNABLE',
+      message: `公司里没有这个人可以接活：${outsider.assigneeId}`,
     };
   }
 

@@ -106,11 +106,12 @@ describe('WorkService.capabilities', () => {
     const catalog = await workWith(org).capabilities();
     const find = (id: string) => catalog.agents.find((entry) => entry.employeeId === id)!;
 
+    // 谁都可以把活交给别人：这里已经没有汇报线了，只有"公司里还有没有别人"。
     expect(find(manager.id).extensions.map((extension) => extension.name)).toContain(
       'opc.decompose',
     );
     expect(find(manager.id).tools.map((tool) => tool.name)).toContain('decompose_task');
-    expect(find(report.id).extensions.map((extension) => extension.name)).not.toContain(
+    expect(find(report.id).extensions.map((extension) => extension.name)).toContain(
       'opc.decompose',
     );
   });
@@ -218,7 +219,7 @@ describe('WorkService.stack', () => {
     });
     expect(byName.get('opc.decompose')).toMatchObject({
       available: false,
-      reason: 'no-subordinates',
+      reason: 'sole-executor',
     });
   });
 

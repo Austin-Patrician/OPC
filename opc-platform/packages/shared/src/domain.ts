@@ -1023,7 +1023,7 @@ export type BudgetErrorCode =
   | 'DECOMPOSE_DEPTH'
   | 'DECOMPOSE_FANOUT'
   | 'DECOMPOSE_BUDGET'
-  | 'DECOMPOSE_NOT_SUBORDINATE'
+  | 'DECOMPOSE_NOT_ASSIGNABLE'
   | 'DECOMPOSE_SELF';
 
 /** Structured refusal: the UI shows this verbatim instead of a generic error. */
