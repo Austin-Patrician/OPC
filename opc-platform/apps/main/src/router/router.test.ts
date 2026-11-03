@@ -160,7 +160,8 @@ describe('调度循环', () => {
 
   it('汇报会被带进上下文，而且只讲一次', async () => {
     const thread = threads.createThread({ title: '整理 Q3 财报', goal: '整理' });
-    threads.addReport({ threadId: thread.id, level: 'silent', title: '做完了', body: '产出 report.md' });
+    // `notify` 而不是 `silent`：这一条是"你该知道一下"，所以它要走 Router 讲出去。
+    threads.addReport({ threadId: thread.id, level: 'notify', title: '做完了', body: '产出 report.md' });
 
     const { router, delivered } = make();
     const first = await router.tick();
@@ -323,5 +324,83 @@ describe('上下文打包（Inline & Spill）', () => {
         triagedAt: null,
       }),
     ).toBeNull();
+  });
+});
+
+/**
+ * 负载：Router 的调用次数只跟"新的事件流"和"要开口说的汇报"增长，不跟事件总量增长。
+ *
+ * 这是原文 §3.3 的要点，也是这一层最容易退化的地方——只要有人往 Router 的输入里多塞
+ * 一类东西，成本就悄悄变成线性的，而功能一点没坏，测试也不会红。所以这里数的是
+ * **Router 被打扰了几次**，不是"功能对不对"。
+ */
+describe('Router 的负载', () => {
+  function subscribedLine(key: string) {
+    const thread = threads.createThread({ title: key, threadKey: key });
+    const worker = threads.createWorker({ name: '李雷', threadId: thread.id });
+    threads.subscribe(thread.id, worker.id);
+    return { thread, worker };
+  }
+
+  it('同一身份上 20 条事件，一次都不打扰 Router', async () => {
+    const { thread } = subscribedLine('github:acme/api#1');
+    for (let index = 0; index < 20; index += 1) {
+      threads.enqueueEvent({
+        source: 'github',
+        kind: 'comment.created',
+        payload: { threadKey: 'github:acme/api#1', text: `第 ${index} 条评论` },
+      });
+    }
+    const { router, delivered, passed } = make();
+
+    const report = await router.tick();
+
+    expect(report.passthrough).toBe(20);
+    expect(report.routed).toBe(0);
+    expect(delivered).toHaveLength(0);
+    expect(passed).toHaveLength(20);
+    // 归属已经确定，事件不该再在 Router 的上下文里出现一遍。
+    expect(threads.listPendingEvents(50)).toHaveLength(0);
+    expect(threads.getThread(thread.id)?.lastActivityAt).toBeGreaterThan(0);
+  });
+
+  it('20 条没有归属的事件才是一次 Router 调用', async () => {
+    for (let index = 0; index < 20; index += 1) {
+      threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: `第 ${index} 句` } });
+    }
+    const { router, delivered } = make();
+
+    const report = await router.tick();
+
+    expect(report.routed).toBe(20);
+    // 一条输入，不是二十条：上下文就是这个循环的缓存。
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('一次成功交付不惊动 Router：silent 汇报是记录，不是话', async () => {
+    const { thread } = subscribedLine('folder:inbox/a.md');
+    threads.addReport({ threadId: thread.id, level: 'silent', title: '做完了', body: 'server.js' });
+
+    const { router, delivered } = make();
+    const report = await router.tick();
+
+    expect(report.reports).toBe(0);
+    expect(delivered).toHaveLength(0);
+    // 记录还在：安静不等于被删掉。
+    expect(threads.listReportsOf(thread.id)).toHaveLength(1);
+  });
+
+  it('需要你知道的汇报才进 Router，而且和事件是同一份输入', async () => {
+    const { thread } = subscribedLine('folder:inbox/b.md');
+    threads.addReport({ threadId: thread.id, level: 'decide', title: '要不要发', body: '两个版本' });
+    threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/b.md' } });
+
+    const { router, delivered } = make();
+    const report = await router.tick();
+
+    expect(report.reports).toBe(1);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('执行体汇报');
+    expect(delivered[0]).toContain('要不要发');
   });
 });

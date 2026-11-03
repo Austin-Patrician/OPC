@@ -658,13 +658,21 @@ export class ThreadRepository {
   /**
    * 还没被 Router 拿去说过的汇报。
    *
-   * 和 `listQueue` 不同：那是"你还没读的"，这是"我还没讲的"。两者都需要——
-   * 一条 silent 汇报你永远不必读，但 Router 要把它并进那一轮的上下文里，否则
-   * 它下一次回答"怎么样了"时对事实一无所知。
+   * 和 `listQueue` 不同：那是"你还没读的"，这是"我还没讲的"。
+   *
+   * **`silent` 不进这个队列**，这一点是 Router 负载的关键。一条 silent 汇报是
+   * "干完了，只在记录里"——它不需要任何人开口。以前它也会被塞进 Router 的输入，
+   * 于是**每完成一件正常的事，就要花一次 Router 的推理**去决定"这件事要不要说"，
+   * 而答案永远是"不用说"。事件量一上来，Router 的时间全花在这个恒为否的问题上。
+   *
+   * 原文说 Router 只负责新任务的冷启动与跨任务协调（§3.3）。判断"一次成功的交付
+   * 要不要汇报"不属于这两件事里的任何一件，所以它不该出现在这里。
    */
-  listUnannouncedReports(limit = 50): WorkReport[] {
+  listUnannouncedReports(limit = 50, options: { includeSilent?: boolean } = {}): WorkReport[] {
     const rows = this.statement(
-      `SELECT * FROM report WHERE announced_at IS NULL ORDER BY created_at ASC LIMIT ?`,
+      `SELECT * FROM report
+        WHERE announced_at IS NULL ${options.includeSilent ? '' : "AND level != 'silent'"}
+        ORDER BY created_at ASC LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);
   }
