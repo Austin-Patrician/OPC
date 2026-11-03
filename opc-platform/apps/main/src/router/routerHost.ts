@@ -282,6 +282,9 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     ? createDecisionGate({
         decisions: deps.decisions,
         threshold: () => deps.policy().noiseThreshold,
+        // 判噪策略本身也是配置：什么算噪声，取决于你怎么用这个工作台，不取决于
+        // 写代码的人怎么想。每次重新读，改完下一批生效。
+        policy: () => deps.policy().semanticPrompt,
       })
     : null;
 

@@ -144,6 +144,23 @@ export function TriagePage() {
             </Row>
           ) : null}
 
+          {policy.semantic === 'decision' ? (
+            <Row
+              label={t('settings.triage.prompt')}
+              hint={t('settings.triage.promptHint')}
+              disabled={!loaded}
+            >
+              <textarea
+                aria-label={t('settings.triage.prompt')}
+                data-testid="triage-semantic-prompt"
+                value={policy.semanticPrompt}
+                rows={4}
+                onChange={(event) => patch({ semanticPrompt: event.target.value })}
+                className="w-full resize-y rounded-md border border-line bg-surface px-2.5 py-2 text-xs leading-relaxed text-ink outline-none focus:border-accent"
+              />
+            </Row>
+          ) : null}
+
           <p className="px-4 py-3 text-xs leading-relaxed text-ink-tertiary">
             {t('settings.triage.decisionHint')}
           </p>

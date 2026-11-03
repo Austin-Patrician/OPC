@@ -996,12 +996,34 @@ export interface TriagePolicy {
   semantic: 'router' | 'decision';
   /** `decision` 模式：判为噪声的概率达到这个值就丢掉（0~1）。 */
   noiseThreshold: number;
+  /**
+   * `decision` 模式交给分类器的**策略本身**——一段提示词。
+   *
+   * 为什么它是配置而不是代码里的一句常量：什么算噪声，取决于你怎么用这个工作台。
+   * 一个跑发布的人希望"CI 绿了"是噪声，一个盯代码的人希望它是一条事件。写死在
+   * `semanticGate.ts` 里等于让写代码的人替所有人决定。
+   */
+  semanticPrompt: string;
 }
+
+/**
+ * 语义层的默认策略。
+ *
+ * 它只回答一个问题：**这条事件里有没有一件需要动手的事**。写成一"条"而不是一"段"，
+ * 是因为分类器要在一批里逐条套用它；写成可编辑的，是因为"什么算噪声"因工作台而异。
+ */
+export const DEFAULT_SEMANTIC_PROMPT = [
+  '噪声 = 里面没有一件需要动手的事：',
+  '通知与心跳、状态回执、流水线自己写出来的回环、同一件事的重复投递、',
+  '已经处理过的旧消息被重新推送。',
+  '只要它可能意味着"有人想要一个结果"，就不是噪声——宁可多问一句。',
+].join(' ');
 
 export const DEFAULT_TRIAGE_POLICY: TriagePolicy = {
   fastPath: 'noise',
   sources: ['im', 'folder', 'manual'],
   semantic: 'router',
+  semanticPrompt: DEFAULT_SEMANTIC_PROMPT,
   noiseThreshold: 0.7,
 };
 
@@ -1010,6 +1032,7 @@ export interface TriagePolicyPatch {
   sources?: TriggerSource[];
   semantic?: TriagePolicy['semantic'];
   noiseThreshold?: number;
+  semanticPrompt?: string;
 }
 
 /** A thread's word to you. The three levels are the whole interface. */

@@ -1,5 +1,5 @@
 import type { TriggerSource, TriagePolicy, TriagePolicyPatch } from '@opc/shared/domain';
-import { DEFAULT_TRIAGE_POLICY } from '@opc/shared/domain';
+import { DEFAULT_SEMANTIC_PROMPT, DEFAULT_TRIAGE_POLICY } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
 /**
@@ -33,7 +33,21 @@ export function normalizeTriagePolicy(raw: unknown): TriagePolicy {
     sources: sources.length > 0 ? sources : DEFAULT_TRIAGE_POLICY.sources,
     semantic: input.semantic === 'decision' ? 'decision' : 'router',
     noiseThreshold: clampThreshold(input.noiseThreshold),
+    semanticPrompt: normalizePrompt(input.semanticPrompt),
   };
+}
+
+/**
+ * 策略文本。空的那份等于"没有策略"，分类器会退化成靠自己的常识判——那不如用默认。
+ *
+ * 截到 2000 字：它每一批都要发一次，一段贴进来的长文会把每次分类的输入撑大，而
+ * 判噪这件事本来就不需要那么长。
+ */
+function normalizePrompt(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_SEMANTIC_PROMPT;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return DEFAULT_SEMANTIC_PROMPT;
+  return trimmed.slice(0, 2000);
 }
 
 function clampThreshold(value: unknown): number {

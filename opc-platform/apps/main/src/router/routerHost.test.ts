@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { DEFAULT_TRIAGE_POLICY, type TriagePolicy } from '@opc/shared/domain';
+import { DEFAULT_SEMANTIC_PROMPT, DEFAULT_TRIAGE_POLICY, type TriagePolicy } from '@opc/shared/domain';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
@@ -92,6 +92,7 @@ describe('Router 装起来能跑', () => {
       sources: ['folder'],
       semantic: 'router',
       noiseThreshold: 0.7,
+      semanticPrompt: DEFAULT_SEMANTIC_PROMPT,
     });
     threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
     threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/a.md' } });

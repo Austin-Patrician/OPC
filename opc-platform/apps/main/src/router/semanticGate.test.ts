@@ -110,6 +110,43 @@ describe('语义门', () => {
     expect(calls).toBe(3);
   });
 
+  it('策略是一段可编辑的提示词，进的是 state（一批一份，不是每条一份）', async () => {
+    let seen = '';
+    const decisions = {
+      classify: async (input: { state: string; questions: Record<string, unknown> }) => {
+        seen = input.state;
+        const answers: NonNullable<DecisionClassifyResult['answers']> = {};
+        for (const key of Object.keys(input.questions)) answers[key] = { type: 'bool', probability: 0 };
+        return { ok: true, answers };
+      },
+    } as unknown as DecisionService;
+
+    const gate = createDecisionGate({
+      decisions,
+      threshold: () => 0.5,
+      policy: () => '只有@我的消息才算活，其余都是噪声',
+    });
+    await gate([event('a'), event('b')]);
+
+    expect(seen).toContain('只有@我的消息才算活');
+    // 一批两条事件，一份策略：写两遍只会让每次判断更贵。
+    expect(seen.split('只有@我的消息才算活')).toHaveLength(2);
+  });
+
+  it('没给策略就不加那一段，而不是发一段空的', async () => {
+    let seen = '';
+    const decisions = {
+      classify: async (input: { state: string; questions: Record<string, unknown> }) => {
+        seen = input.state;
+        return { ok: true, answers: {} };
+      },
+    } as unknown as DecisionService;
+
+    await createDecisionGate({ decisions, threshold: () => 0.5 })([event('a')]);
+    expect(seen).not.toContain('## 判噪策略');
+    expect(seen).toContain('环境事件');
+  });
+
   it('关着的时候是 keepAll：一条都不动', async () => {
     const events = [event('a'), event('b')];
     const result = await keepAll(events);

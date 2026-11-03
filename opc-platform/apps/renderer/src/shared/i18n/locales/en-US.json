@@ -591,7 +591,9 @@
       "threshold07": "Default",
       "threshold09": "Conservative",
       "decisionHint": "The classifier is the model configured under Settings → Models → Decision. When none is configured this layer switches itself off and every event goes to the assistant — nothing is lost.",
-      "footnote": "Both layers fail upward: unclear, unconfigured, or a failed call all let the event through. What you tune here is cost, not whether work gets done."
+      "footnote": "Both layers fail upward: unclear, unconfigured, or a failed call all let the event through. What you tune here is cost, not whether work gets done.",
+      "prompt": "Noise policy",
+      "promptHint": "A prompt the classifier follows for every event. What counts as noise depends on how you use the workbench, so it is configuration rather than a constant. Clearing it falls back to the default."
     },
     "trigger": {
       "title": "Trigger sources",

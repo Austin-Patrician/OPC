@@ -38,6 +38,13 @@ export interface DecisionGateDeps {
   decisions: DecisionService;
   /** 每次都重新读：设置里调了阈值，下一批就按新阈值判。 */
   threshold: () => number;
+  /**
+   * **判噪策略本身**——一段用户可编辑的提示词。每次重新读，改完下一批就按新策略。
+   *
+   * 它放在 `state` 而不是塞进每一道 question 里：一批十条事件共用一份策略，写一遍
+   * 就够；写十遍只会让每条判断更贵，而且十条之间还可能被抄得不一样。
+   */
+  policy?: () => string;
   /** 一次调用判几条。太多会让单条判断变糙，太少则摊不薄调用成本。 */
   chunkSize?: number;
 }
@@ -55,7 +62,7 @@ export function createDecisionGate(deps: DecisionGateDeps): SemanticScreener {
 
     for (let start = 0; start < events.length; start += chunkSize) {
       const chunk = events.slice(start, start + chunkSize);
-      const verdicts = await classifyChunk(deps, chunk);
+      const verdicts = await classifyChunk(deps, chunk, deps.policy?.() ?? '');
 
       if (!verdicts.ok) {
         // 门失败 = 全放行。这里不留"退回程序层"的分支：程序层已经判过了。
@@ -85,25 +92,23 @@ export function createDecisionGate(deps: DecisionGateDeps): SemanticScreener {
 async function classifyChunk(
   deps: DecisionGateDeps,
   chunk: readonly TriggerEvent[],
+  policy: string,
 ): Promise<{ ok: true; probabilities: number[] } | { ok: false; error: string }> {
   const questions: Record<string, DecisionQuestion> = {};
   chunk.forEach((_, index) => {
     questions[`noise_${index}`] = {
       type: 'bool',
-      instructions:
-        `第 ${index} 条事件是不是噪声？噪声 = 里面没有一件需要动手的事：` +
-        '通知/心跳/状态回执、流水线自己写出来的回环、同一件事的重复投递。' +
-        '只要它可能意味着"有人想要某个结果"，就不是噪声。',
+      instructions: `第 ${index} 条事件是不是噪声？按下面这份策略判：${policy}`,
       criteria: {
-        true: '噪声：没有任何需要动手的事',
-        false: '不是噪声：可能有人想要一个结果',
+        true: '噪声：按策略，这里没有需要动手的事',
+        false: '不是噪声：按策略，可能有人想要一个结果',
       },
     };
   });
 
   let result;
   try {
-    result = await deps.decisions.classify({ state: describe(chunk), questions });
+    result = await deps.decisions.classify({ state: describe(chunk, policy), questions });
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -118,8 +123,13 @@ async function classifyChunk(
   return { ok: true, probabilities };
 }
 
-function describe(chunk: readonly TriggerEvent[]): string {
-  const lines = [`以下是 ${chunk.length} 条进入工作台的环境事件，按顺序编号。`, ''];
+function describe(chunk: readonly TriggerEvent[], policy: string): string {
+  const lines = [
+    // 策略放在最前面：模型读到的第一段话就是"什么算噪声"，而不是先看十条事件再猜。
+    ...(policy ? ['## 判噪策略', policy, ''] : []),
+    `以下是 ${chunk.length} 条进入工作台的环境事件，按顺序编号。`,
+    '',
+  ];
   chunk.forEach((event, index) => {
     const body = bodyOf(event.payload).slice(0, INLINE);
     lines.push(`[${index}] ${event.source}/${event.kind}`);
