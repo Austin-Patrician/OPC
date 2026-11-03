@@ -256,6 +256,36 @@ describe('语义门（§3.1 Slow Path 的前半）', () => {
   });
 });
 
+/**
+ * 常驻层（`07-memory.md` 的 L0）。
+ *
+ * 它要证明的不是"能放进去"，是**每一轮都在**——不管这一轮的事件是什么。这就是
+ * 公理 A4：必须每轮生效的东西不能依赖模型主动去取。
+ */
+describe('常驻约束', () => {
+  it('每一轮都在输入里，和这一轮发生了什么无关', async () => {
+    const { router, delivered } = make({ standing: () => ['称呼用「你」', '回答不要客套'] });
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '这个文件怎么回事' } });
+
+    await router.tick();
+
+    expect(delivered[0]).toContain('用户要求过、一直有效的（2 条');
+    expect(delivered[0]).toContain('称呼用「你」');
+    expect(delivered[0]).toContain('回答不要客套');
+  });
+
+  it('和"工作台的规矩"分开列：一个是人写的，一个是从使用里学的', async () => {
+    const text = composeInput([], [], ['文档放 README 里就够了'], ['回答不要客套']);
+    expect(text).toContain('工作台的规矩（1');
+    expect(text).toContain('用户要求过、一直有效的（1 条');
+  });
+
+  it('没有常驻约束时不留空标题', () => {
+    const text = composeInput([], [], ['文档放 README 里就够了']);
+    expect(text).not.toContain('用户要求过');
+  });
+});
+
 describe('上下文打包（Inline & Spill）', () => {
   it('短内容全放进去，长内容给摘要并留 recall 入口', () => {
     expect(spillText('短', 'recall x', 600)).toBe('短');

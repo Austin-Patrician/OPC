@@ -62,6 +62,13 @@ export interface WorkTaskServices {
     threadId?: string;
   }) => Promise<{ kind: string; content: string; scopeType: string }[]>;
   /** Company/department facts that apply to this assignee. */
+  /**
+   * 常驻约束（`standing` 层）。
+   *
+   * 单独一个口子而不是塞进 `recallMemories`：那个是"按相关度挑几条"，这个是
+   * "每一轮原样在场"。混在一起，用户说过的那条禁令就会因为本轮不相关而消失。
+   */
+  recallStanding?: (task: { assigneeId: string }) => Promise<{ content: string }[]>;
   recallFacts?: (task: {
     assigneeId: string;
     /** 这条线自己的规定能一起召回。 */
@@ -146,6 +153,26 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             recordDurableStep,
             onTaskChanged,
           });
+        }
+      }
+
+      if (services?.recallStanding) {
+        try {
+          const standing = await services.recallStanding({ assigneeId: workTask.assigneeId });
+          if (standing.length > 0) {
+            workTask.standing = standing;
+            logStep(task.input.workTaskId, `注入 ${standing.length} 条常驻约束`, {
+              repository,
+              recordDurableStep,
+              onTaskChanged,
+            });
+          }
+        } catch (error) {
+          logStep(
+            task.input.workTaskId,
+            `常驻约束读取失败（${error instanceof Error ? error.message : String(error)}）`,
+            { repository, recordDurableStep, onTaskChanged },
+          );
         }
       }
 

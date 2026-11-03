@@ -81,6 +81,14 @@ export interface RouterDeps {
   passthrough?: (intent: Intent) => void;
   /** 工作台长期有效的规矩（`fact` 的 global 那几条），每轮带进上下文。 */
   rules?: () => readonly string[];
+  /**
+   * 常驻约束（记忆里的 `standing` 层）。
+   *
+   * 和 `rules` 分开而不是合并：`rules` 是人**写**在设置里的，`standing` 是从使用里
+   * **习得**的。两者都长期有效，但来源不同——合并之后就再也分不清"这条是谁定的"。
+   * 它不参与检索、不看相关度、不衰减：每一轮原样在场。
+   */
+  standing?: () => readonly string[];
   /** 一轮最多看多少条事件。 */
   batchSize?: number;
   now?: () => number;
@@ -189,7 +197,14 @@ export class Router {
     report.routed = slow.length;
 
     try {
-      this.deps.deliver(composeInput(slow, reports, this.deps.rules?.() ?? []));
+      this.deps.deliver(
+        composeInput(
+          slow,
+          reports,
+          this.deps.rules?.() ?? [],
+          this.deps.standing?.() ?? [],
+        ),
+      );
     } catch (error) {
       // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
       this.deps.threads.resetTriage(slow.map((event) => event.id));
@@ -238,6 +253,7 @@ export function composeInput(
   events: readonly TriggerEvent[],
   reports: readonly WorkReport[],
   rules: readonly string[] = [],
+  standing: readonly string[] = [],
   budget: InlineBudget = DEFAULT_INLINE_BUDGET,
 ): string {
   const lines: string[] = [];
@@ -247,6 +263,12 @@ export function composeInput(
   if (rules.length > 0) {
     lines.push(`## 工作台的规矩（${rules.length}，长期有效）`);
     for (const rule of rules) lines.push(`- ${spillText(rule, 'list_lines', budget.ceiling)}`);
+    lines.push('');
+  }
+
+  if (standing.length > 0) {
+    lines.push(`## 用户要求过、一直有效的（${standing.length} 条，违反就是错）`);
+    for (const rule of standing) lines.push(`- ${spillText(rule, 'recall_memory', budget.ceiling)}`);
     lines.push('');
   }
 

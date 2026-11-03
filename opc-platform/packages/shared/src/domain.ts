@@ -184,6 +184,13 @@ export interface WorkTask {
   /** Current company/department facts (fact), most specific last. */
   facts?: { statement: string; scopeType: string }[];
   /**
+   * 常驻约束：用户要求过、一直有效的那几条。
+   *
+   * 和 `memories` 分开：那些是"按相关度想起来的相关经验"，可能这次一条都不相关；
+   * 这一组是**每一轮原样在场**的，不参与检索、不看相关度。
+   */
+  standing?: { content: string }[];
+  /**
    * 你中途改的方向。
    *
    * 和 `brief` 分开存，因为它们是两种东西：`brief` 是派活时说的话，`steering` 是

@@ -1,4 +1,10 @@
-import { IPC, type SendMessageInput, type TriggerPatch, type TriggerStatus } from '@opc/shared/ipc';
+import {
+  IPC,
+  type SendMessageInput,
+  type StandingMemoryView,
+  type TriggerPatch,
+  type TriggerStatus,
+} from '@opc/shared/ipc';
 import type {
   BundledRuntime,
   CompactionSettings,
@@ -67,6 +73,11 @@ interface RegisterOptions {
   consolidationRuns: ConsolidationRunStore;
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
+  /** 常驻约束：每轮都在生效的那几条（读写都在服务里，这里只转发）。 */
+  standing: {
+    list: () => StandingMemoryView[];
+    forget: (id: string) => boolean;
+  };
   /** 触发源：外部平台推进来的那扇门。 */
   triggers: {
     status: () => TriggerStatus;
@@ -101,6 +112,7 @@ export function registerIpc({
   piSkills,
   triage,
   triggers,
+  standing,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -459,6 +471,14 @@ export function registerIpc({
 
   // 两层过滤的策略：读一份、写一份。写的是部分更新，没提到的字段保持原值——
   // 表单只提交它改过的那几行，不整份覆盖。
+  ipcMain.handle(IPC.memory.standing, () => standing.list());
+  ipcMain.handle(IPC.memory.forget, (_event, id: unknown) => {
+    if (typeof id !== 'string' || id.trim().length === 0) {
+      throw new Error('memory:forget 参数非法');
+    }
+    return standing.forget(id);
+  });
+
   ipcMain.handle(IPC.trigger.status, () => triggers.status());
   ipcMain.handle(IPC.trigger.set, (_event, patch: unknown) => {
     if (typeof patch !== 'object' || patch === null) {

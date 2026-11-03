@@ -133,6 +133,8 @@ const bridge: OpcBridge = {
   memory: {
     consolidationRuns: (ownerId?: string) =>
       ipcRenderer.invoke(IPC.memory.consolidationRuns, ownerId),
+    standing: () => ipcRenderer.invoke(IPC.memory.standing),
+    forget: (id: string) => ipcRenderer.invoke(IPC.memory.forget, id),
   },
   facts: {
     list: (filter?: { threadId?: string }) => ipcRenderer.invoke(IPC.facts.list, filter),

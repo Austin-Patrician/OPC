@@ -13,6 +13,27 @@ export interface MemoryScope {
   id?: string;
 }
 
+/**
+ * 记忆的层。
+ *
+ * - `standing`：**常驻约束**。每轮进上下文，不参与检索、不衰减、有硬上限。
+ *   存的是"违反了就会被指出来"的东西：称呼、语气、格式禁令。
+ * - `long`：长期记忆。按相关度召回，衰减只影响排序。
+ *
+ * 区别不是重要程度，是**失效方式**：常驻约束漏一次用户就看见了；长期记忆想不起来
+ * 只是慢一点。用同一条衰减曲线套两者，必然要么漏前者、要么被后者撑爆。
+ */
+export type MemoryTier = 'long' | 'standing';
+
+/**
+ * 常驻层的硬上限。
+ *
+ * 上限不是节省，是**纪律**：每轮都进上下文的东西必须少。20 条一旦满了，系统就被迫
+ * 做一件正确的事——要么撤掉一条，要么把它合并成更宽的一条。没有上限的"常驻"最后会
+ * 变成一段谁都不读的日志。
+ */
+export const MAX_STANDING = 20;
+
 export interface RememberInput {
   ownerId: string;
   kind: MemoryCandidate['kind'] | 'preference' | 'summary';
@@ -20,6 +41,8 @@ export interface RememberInput {
   scope: MemoryScope;
   sourceType: 'task' | 'conversation' | 'consolidation' | 'manual';
   sourceId?: string;
+  /** 默认 `long`。只有用户明说「以后都这样」时才该是 `standing`。 */
+  tier?: MemoryTier;
 }
 
 /**
@@ -35,6 +58,8 @@ export interface MemorySnippet {
   content: string;
   scopeType: string;
   scopeId: string | null;
+  /** 常驻约束还是长期记忆。界面用它分组，调用方用它决定要不要按相关度筛。 */
+  tier: MemoryTier;
   strength: number;
   createdAt: number;
   sourceType: string;
@@ -63,13 +88,14 @@ interface MemoryRow {
   recall_count: number;
   source_type: string;
   source_id: string | null;
+  tier: MemoryTier;
   embedding: Buffer | null;
 }
 
 /** 所有取回路径读同一组列：少一列，某个调用方就会悄悄拿不到指针。 */
 const SNIPPET_COLUMNS =
   'id, owner_id, content, kind, scope_type, scope_id, strength, created_at, ' +
-  'last_recalled_at, recall_count, source_type, source_id, embedding';
+  'last_recalled_at, recall_count, source_type, source_id, tier, embedding';
 
 /** Cosine similarity over the stored Float32 blobs; undefined when either side lacks one. */
 export function cosine(a: Float32Array, b: Float32Array): number {
@@ -111,6 +137,9 @@ export class MemoryService {
   remember = async (input: RememberInput): Promise<string> => {
     const id = `mem-${crypto.randomUUID()}`;
     const now = Date.now();
+    const tier: MemoryTier = input.tier ?? 'long';
+    const content = input.content.trim();
+    if (tier === 'standing') this.admitStanding(input.ownerId, content);
     let embedding: Buffer | null = null;
     let embeddingModel: string | null = null;
     if (this.embed) {
@@ -125,8 +154,8 @@ export class MemoryService {
       .prepare(
         `INSERT INTO memory
            (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
-            source_type, source_id, valid_from, strength, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?)`,
+            source_type, source_id, valid_from, strength, created_at, updated_at, tier)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?)`,
       )
       .run(
         id,
@@ -142,8 +171,81 @@ export class MemoryService {
         now,
         now,
         now,
+        tier,
       );
     return id;
+  };
+
+  /**
+   * 进常驻层之前的两道门：**同样的内容不记第二遍**，**满了就明说满了**。
+   *
+   * 第一道是必要的而不是优化：常驻层只有 20 个位置，一句「别写注释」被记三遍就吃掉
+   * 三个位置，而那三遍在上下文里长得一模一样。
+   *
+   * 第二道选择抛错而不是"自动淘汰最旧的"：淘汰是无提示的删除，而常驻层里被删掉的
+   * 那一条，正是用户以为还在生效的那一条。让调用方把话说清楚，比悄悄换掉一条诚实。
+   */
+  private admitStanding(ownerId: string, content: string): void {
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM memory
+          WHERE owner_id = ? AND tier = 'standing' AND content = ?
+            AND is_archived = 0 AND valid_until IS NULL
+          LIMIT 1`,
+      )
+      .get(ownerId, content) as { id: string } | undefined;
+    if (existing) throw new Error(`这条已经在常驻约束里了（${existing.id}）`);
+
+    const used = this.countStanding(ownerId);
+    if (used >= MAX_STANDING) {
+      throw new Error(
+        `常驻约束已经 ${used} 条，满了（上限 ${MAX_STANDING}）。` +
+          '先撤掉一条、或者把两条合并成一条更宽的，再记新的。',
+      );
+    }
+  }
+
+  countStanding = (ownerId: string): number =>
+    (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM memory
+            WHERE owner_id = ? AND tier = 'standing' AND is_archived = 0 AND valid_until IS NULL`,
+        )
+        .get(ownerId) as { n: number }
+    ).n;
+
+  /**
+   * 常驻层。**不排序、不衰减、不按相关度挑**——它每一轮原样进上下文。
+   *
+   * 按创建时间正序而不是倒序：这个列表会出现在每一轮的输入里，顺序稳定才能吃到
+   * provider 的提示词缓存，也让"上一轮和这一轮的区别"一眼看得出来。
+   */
+  standing = (ownerId: string): MemorySnippet[] => {
+    const rows = this.db
+      .prepare(
+        `SELECT ${SNIPPET_COLUMNS}
+           FROM memory
+          WHERE owner_id = ? AND tier = 'standing' AND is_archived = 0 AND valid_until IS NULL
+          ORDER BY created_at ASC
+          LIMIT ${MAX_STANDING}`,
+      )
+      .all(ownerId) as MemoryRow[];
+    return rows.map(toSnippetRow);
+  };
+
+  /**
+   * 撤掉一条。
+   *
+   * 归档而不是删除：用户撤掉的那一条本身就是信息（他以前要求过什么、后来不要了）。
+   * 而且撤错了还能找回来。
+   */
+  forget = (id: string): boolean => {
+    const now = Date.now();
+    const result = this.db
+      .prepare('UPDATE memory SET is_archived = 1, valid_until = ?, updated_at = ? WHERE id = ? AND is_archived = 0')
+      .run(now, now, id);
+    return result.changes > 0;
   };
 
   /**
@@ -179,6 +281,8 @@ export class MemoryService {
         `SELECT ${SNIPPET_COLUMNS}
            FROM memory
           WHERE owner_id IN (${ownerPlaceholders}) AND is_archived = 0 AND valid_until IS NULL
+            -- 常驻层不参与检索：它本来就在上下文里，再挤进 top-5 只是占掉一个名额。
+            AND tier = 'long'
             ${scopeClause ? `AND (${scopeClause})` : ''}
           ORDER BY created_at DESC
           LIMIT 200`,
@@ -258,6 +362,7 @@ function toSnippetRow(row: MemoryRow): MemorySnippet {
     content: row.content,
     scopeType: row.scope_type,
     scopeId: row.scope_id ?? null,
+    tier: row.tier ?? 'long',
     strength: row.strength,
     createdAt: row.created_at,
     sourceType: row.source_type,
@@ -286,6 +391,7 @@ function toSnippet(
     content: candidate.content,
     scopeType: candidate.scopeType,
     scopeId: row?.scope_id ?? null,
+    tier: row?.tier ?? 'long',
     // 衰减后的强度：界面上问「这条现在还结不结实」时，答案是衰减之后的值。
     strength: decayedStrength(
       candidate.strength,

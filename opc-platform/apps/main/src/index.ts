@@ -553,6 +553,17 @@ async function bootstrap(): Promise<void> {
     facts,
     consolidationRuns,
     triage,
+    standing: {
+      list: () =>
+        memory.standing(USER_MEMORY_OWNER).map((item) => ({
+          id: item.id,
+          content: item.content,
+          kind: item.kind,
+          createdAt: item.createdAt,
+          sourceType: item.sourceType,
+        })),
+      forget: (id: string) => memory.forget(id),
+    },
     triggers: {
       status: triggerStatus,
       set: (patch: unknown) => {

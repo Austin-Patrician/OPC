@@ -230,20 +230,41 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
    * 会读记忆的人是执行体（读自己的 id）。也就是说，记得这件事的库、和会去回忆的人，
    * 从来不是同一个。现在 Router 有了读的入口，写和读终于指向同一个 owner。
    */
-  const remember = async (text: string) => {
+  const remember = async (text: string, options?: { standing?: boolean }) => {
     if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
     const content = text.trim();
     if (!content) return { ok: false, reason: '内容是空的' };
-    const id = await deps.memory.remember({
+    const tier = options?.standing ? ('standing' as const) : ('long' as const);
+    let id: string;
+    try {
+      id = await deps.memory.remember({
       // 挂在**这个人**名下，不是挂在 'router' 名下：一条「以后结论放前面」是关于他的，
       // 执行体也得读得到。挂在自己名下的话，关于同一个人的偏好会被切成 N+1 份。
       ownerId: USER_MEMORY_OWNER,
       kind: 'preference',
       content,
-      scope: { type: 'personal' },
-      sourceType: 'manual',
-    });
+        scope: { type: 'personal' },
+        sourceType: 'manual',
+        tier,
+      });
+    } catch (error) {
+      // 常驻层满了、或者这条已经在里面了：把原因原样交回去，别让模型自己编一个。
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
     return { ok: true, id };
+  };
+
+  /**
+   * 撤掉一条。
+   *
+   * 用户说「以后别这样了」时必须有一条路可走——没有一个撤入口的记忆系统，常驻层
+   * 一旦填满就永久填满，而里面每一条都在替用户说话。
+   */
+  const forget = async (id: string) => {
+    if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
+    return deps.memory.forget(id)
+      ? { ok: true }
+      : { ok: false, reason: `没找到这条记忆，或者它已经撤掉了：${id}` };
   };
 
   /**
@@ -302,6 +323,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         askUser,
         closeLine,
         remember,
+        forget,
         recallMemory,
       }),
     );
@@ -334,11 +356,21 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const rules = (): string[] =>
     deps.facts ? deps.facts.current([{ type: 'global' }], 12).map((fact) => fact.statement) : [];
 
+  /**
+   * 常驻约束：每轮都在场的那几条。
+   *
+   * 它**不经过检索**——「回答不要客套」不该因为这一轮的事件不相关就不出现。这正是
+   * `07-memory.md` 公理 A4 的落地：必须每轮生效的东西不能依赖模型主动去取。
+   */
+  const standing = (): string[] =>
+    deps.memory ? deps.memory.standing(USER_MEMORY_OWNER).map((item) => item.content) : [];
+
   const router = new Router({
     threads,
     prefilter: fastPath,
     semantic,
     rules,
+    standing,
     deliver: (text) => session.deliver(text),
     /**
      * 直通（§3.2 Fast Path）：这条事件流的归属已经确定，程序直接发给盯它的执行体，

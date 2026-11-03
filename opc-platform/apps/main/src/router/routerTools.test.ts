@@ -20,6 +20,7 @@ function host(
   const replies: string[] = [];
   const steered: string[] = [];
   const remembered: string[] = [];
+  const forgotten: string[] = [];
   const extension = createRouterTools({
     openLine: (input) => {
       calls.push(`open:${input.goal}`);
@@ -45,9 +46,13 @@ function host(
       }),
     askUser: () => ({ ok: true }),
     closeLine: () => ({ ok: true }),
-    remember: (text) => {
-      remembered.push(text);
+    remember: (text, options) => {
+      remembered.push(options?.standing ? `[常驻] ${text}` : text);
       return Promise.resolve({ ok: true, id: 'mem-1' });
+    },
+    forget: (id) => {
+      forgotten.push(id);
+      return Promise.resolve({ ok: id.startsWith('mem-') });
     },
     recallMemory: (query) =>
       Promise.resolve(
@@ -70,7 +75,7 @@ function host(
   });
   const registry = createRegistry();
   registry.install(extension);
-  return { registry, calls, replies, steered, remembered };
+  return { registry, calls, replies, steered, remembered, forgotten };
 }
 
 /** 直接调工具的 execute：这正是模型会做的事。 */
@@ -85,7 +90,7 @@ async function run(registry: ReturnType<typeof createRegistry>, name: string, ar
 }
 
 describe('Router 的工具带', () => {
-  it('九个动作，一个执行类工具都没有', () => {
+  it('十个动作，一个执行类工具都没有', () => {
     const { registry } = host();
     const names = registry
       .snapshot()
@@ -96,6 +101,7 @@ describe('Router 的工具带', () => {
     expect(names).toEqual([
       'ask_user',
       'close_line',
+      'forget_memory',
       'list_lines',
       'open_line_of_work',
       'recall',
@@ -177,6 +183,26 @@ describe('Router 的工具带', () => {
 
     const found = await run(registry, 'recall_memory', { query: '文档放哪' });
     expect(found.output.map((block) => block.text).join('')).toContain('README');
+  });
+
+  it('常驻约束要显式开口：standing 不设就只是普通记忆', async () => {
+    const { registry, remembered } = host();
+
+    await run(registry, 'remember', { text: '回答不要客套' });
+    await run(registry, 'remember', { text: '称呼用「你」', standing: true });
+
+    // 常驻层每一轮都进上下文，位置有限——所以它不能是默认行为。
+    expect(remembered).toEqual(['回答不要客套', '[常驻] 称呼用「你」']);
+  });
+
+  it('撤掉一条记忆：转给服务层，撤回执不撒谎', async () => {
+    const { registry, forgotten } = host();
+
+    await run(registry, 'forget_memory', { id: 'mem-1' });
+    expect(forgotten).toEqual(['mem-1']);
+
+    const missing = (await run(registry, 'forget_memory', { id: 'not-a-memory' })) as { isError?: boolean };
+    expect(missing.isError).toBe(true);
   });
 
   it('想不起来就说没有，不编造一条', async () => {

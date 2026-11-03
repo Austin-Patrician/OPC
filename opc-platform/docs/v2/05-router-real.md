@@ -163,11 +163,11 @@ im:dingtalk:cidAAA           钉钉某个群会话
 | 原文要求 | 实现 | 位置 |
 |---|---|---|
 | 常驻，承接所有入口的人类交互 | 一个 durable conversation，`Harness.root()` | `routerSession.ts` |
-| 全局序点、协调点、记忆 | 会话历史 + `list_lines` + `recall` + `remember` / `recall_memory` | 同上 |
+| 全局序点、协调点、记忆 | 会话历史 + `list_lines` + `recall` + `remember` / `recall_memory` / `forget_memory` | 同上 |
 | **不直接执行具体任务** | 注册表里没有 bash / 读写文件 / 代码执行 | `routerTools.ts`（有测试锁住） |
 | 可以配轻量模型 | 工作台默认模型，`thinking` 默认 low | `routerHost.ts` |
 | 批处理 | 交给 pi 的 inbox：忙时排队，下一个 boundary 合成一次调用 | `routerSession.deliver` |
-| 「记忆」不只是上下文窗口 | `remember` / `recall_memory` 读写 `owner_id = 'router'` | `routerHost.ts` |
+| 「记忆」不只是上下文窗口 | 三层：常驻约束（每轮在场）、长期记忆（按相关度召回）、情景档案。归属是**用户**，不是 Router。见 `07-memory.md` | `routerHost.ts` + `memory/` |
 | 「规矩」不只执行体知道 | `fact` 的 global 几条每轮拼进输入 | `router.composeInput(rules)` |
 
 ### §2.2 Worker 层

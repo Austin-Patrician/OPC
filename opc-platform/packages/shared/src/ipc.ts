@@ -97,6 +97,8 @@ export const IPC = {
   },
   memory: {
     consolidationRuns: 'memory:consolidationRuns',
+    standing: 'memory:standing',
+    forget: 'memory:forget',
   },
   router: {
     getTriage: 'router:getTriage',
@@ -504,9 +506,27 @@ export interface SkillsBridge {
   setEnabled(id: string, enabled: boolean): Promise<PiSkillCatalog>;
 }
 
+/**
+ * 一条常驻约束。
+ *
+ * 界面上它必须**显示得出来**：用户看不见的记忆等于赌博，而常驻层的每一条都在替他
+ * 说话——说错了他得能当场改掉。
+ */
+export interface StandingMemoryView {
+  id: string;
+  content: string;
+  kind: string;
+  createdAt: number;
+  sourceType: string;
+}
+
 export interface MemoryBridge {
   /** Recent consolidation runs — the audit trail of "下班反思". */
   consolidationRuns(ownerId?: string): Promise<ConsolidationRunView[]>;
+  /** 每轮都在生效的那几条（`tier = 'standing'`）。 */
+  standing(): Promise<StandingMemoryView[]>;
+  /** 撤掉一条。归档，不是销毁。 */
+  forget(id: string): Promise<boolean>;
 }
 
 /**

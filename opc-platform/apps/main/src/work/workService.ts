@@ -40,7 +40,7 @@ import { HarnessBrain } from './harnessBrain';
 import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
-import { recallOwners } from '../memory/owners';
+import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
@@ -287,6 +287,10 @@ export class WorkService {
               scopeType: snippet.scopeType,
             }));
           }
+        : undefined,
+      // 常驻约束：和谁在干活无关，它讲的是"这个人要求过什么"。
+      recallStanding: this.deps.memory
+        ? async () => this.deps.memory!.standing(USER_MEMORY_OWNER).map((item) => ({ content: item.content }))
         : undefined,
       recallFacts: this.deps.facts
         ? async (task) => {

@@ -191,6 +191,13 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     for (const entry of task.steering) lines.push(`- ${entry.note}`);
   }
 
+  // 用户亲口要求过、一直有效的那些。排在"工作台的规定"之前：前者是他刚说的，
+  // 后者是配置里的默认值，冲突时听刚说的那个人。
+  if (task.standing && task.standing.length > 0) {
+    lines.push('', '用户要求过、一直有效（必须遵守）：');
+    for (const rule of task.standing) lines.push(`- ${rule.content}`);
+  }
+
   if (task.facts && task.facts.length > 0) {
     lines.push('', '工作台的规定（必须遵守，优先级高于你的习惯）：');
     for (const fact of task.facts) lines.push(`- ${fact.statement}`);

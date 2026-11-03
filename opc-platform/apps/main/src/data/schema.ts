@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 36;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1631,7 +1631,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_event_dedupe ON event(dedupe_key)
   WHERE dedupe_key IS NOT NULL;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35];
+/**
+ * V36：记忆的**层**。
+ *
+ * 原文把"必须每轮生效的东西"和"按需回忆的东西"混成一句话（§2.1 的"记忆"），但它们的
+ * 失效方式完全不同：一条「回答不要客套」漏一次用户就看见了；一条"上次那个客户叫张伟"
+ * 想不起来只是慢一点。混在一张表里用同一条衰减曲线，必然要么漏掉前者，要么被后者撑爆。
+ *
+ * 所以加一列：
+ *
+ * - `standing`：常驻约束。**每轮进上下文**，不参与检索、不衰减、有硬上限（20 条）。
+ *   只能被显式撤掉或被更新的版本取代。
+ * - `long`：长期记忆。按相关度召回，衰减只影响排序（`07-memory.md` §1 公理 A2）。
+ *
+ * 默认值是 `long`：老库里的所有行都是"按需回忆"的那一类，没有一条该自动变成常驻约束——
+ * 常驻是要用户明说的。
+ */
+const V36 = `
+ALTER TABLE memory ADD COLUMN tier TEXT NOT NULL DEFAULT 'long'
+  CHECK (tier IN ('long','standing'));
+CREATE INDEX IF NOT EXISTS idx_memory_tier ON memory(tier, owner_id, created_at);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

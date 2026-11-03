@@ -15,6 +15,7 @@ import { CompanyMark } from '@/entities/company/ui/CompanyMark';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { buttonClass, PageHeader, Row, Section, TextField } from '../kit';
+import { StandingMemorySection } from './StandingMemorySection';
 
 const NAME_MAX = 40;
 const USER_MAX = 20;
@@ -447,6 +448,8 @@ export function CompanyPage() {
           </Row>
         </Section>
 
+        {/* 它一直记着的几条：看得见，才改得掉。 */}
+        <StandingMemorySection />
       </div>
     </>
   );

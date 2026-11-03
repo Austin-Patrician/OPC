@@ -608,6 +608,13 @@
       "configured": "Configured",
       "notConfigured": "Not configured (requests from this source are rejected)",
       "portHint": "The listener binds to localhost only; receiving internet pushes requires a reverse proxy or tunnel. A port change takes effect after a restart."
+    },
+    "standing": {
+      "title": "Things it always remembers",
+      "desc": "Requirements in effect on every turn: how to address you, tone, formatting rules. They cost nothing extra, but a wrong one has to be removable on the spot.",
+      "empty": "Nothing yet. Anything you tell it that should hold from now on shows up here.",
+      "revoke": "Remove",
+      "footnote": "Removing only archives the entry — the record stays. You can also just say “don't do that any more” in the conversation and it will remove that one itself."
     }
   },
   "notFound": {

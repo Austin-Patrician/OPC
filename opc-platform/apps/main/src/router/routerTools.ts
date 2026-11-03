@@ -89,7 +89,19 @@ export interface RouterToolDeps {
   closeLine(threadId: string, summary: string): { ok: boolean; reason?: string };
 
   /** 记一件关于你的事（偏好、否决过的方向、要求的格式）。 */
-  remember(text: string): Promise<{ ok: boolean; id?: string; reason?: string }>;
+  /**
+   * 记一条。
+   *
+   * `standing` 是"每轮都要在场"的那一层：称呼、语气、格式禁令。只有用户明说
+   * 「以后都这样」时才该用它——常驻层有硬上限，塞满了会挤掉真正重要的。
+   */
+  remember(
+    text: string,
+    options?: { standing?: boolean },
+  ): Promise<{ ok: boolean; id?: string; reason?: string }>;
+
+  /** 撤掉一条记忆（用户说"以后别这样了"）。 */ 
+  forget(id: string): Promise<{ ok: boolean; reason?: string }>;
 
   /** 按一句话回想以前记过什么。带 id，别人才追得回出处。 */
   recallMemory(query: string): Promise<{ ok: boolean; items?: MemoryHit[]; reason?: string }>;
@@ -284,17 +296,27 @@ export function createRouterTools(deps: RouterToolDeps) {
         name: 'remember',
         description:
           '记一件关于用户的事：他的偏好、他否决过的方向、他要求过的格式。' +
-          '记的是**跨工作线**仍然成立的事；某条线内部的进展不属于这里。只是记下来，不必为此回话。',
+          '记的是**跨工作线**仍然成立的事；某条线内部的进展不属于这里。只是记下来，不必为此回话。' +
+          '以后都成立的规矩（称呼、语气、格式禁令）用 standing 记——那种每轮都会生效，位置有限。',
         parameters: Type.Object({
           text: Type.String({
-            description: '一句话，写清是谁的什么偏好。例如「他说文档放 README 里就够了，别单开 wiki」。',
+            description:
+              '一句话，写清是谁的什么偏好。例如「他说文档放 README 里就够了，别单开 wiki」。' +
+              'standing 时要写成可执行的约束，不是描述：「回答不要客套」而不是「他好像喜欢简洁」。',
           }),
+          standing: Type.Optional(
+            Type.Boolean({
+              description:
+                '这条要每轮都生效吗。只有用户明说「以后都这样」「记住」时才设 true；' +
+                '常驻层位置有限（20 条），满了会被拒绝。',
+            }),
+          ),
         }),
         execute: async (args) => {
-          const result = await deps.remember(args.text);
+          const result = await deps.remember(args.text, { standing: args.standing === true });
           // id 放进 details 而不是正文：模型需要它去 recall，用户不需要在聊天里看到它。
           return result.ok
-            ? ok('记住了。', { memoryId: result.id ?? null })
+            ? ok(args.standing ? '记住了，以后都按这个来。' : '记住了。', { memoryId: result.id ?? null })
             : fail(`没记上：${result.reason ?? '未知原因'}`);
         },
       }),
@@ -323,6 +345,20 @@ export function createRouterTools(deps: RouterToolDeps) {
               .concat(lines)
               .join('\n'),
           );
+        },
+      }),
+
+      defineTool({
+        name: 'forget_memory',
+        description:
+          '撤掉一条记忆。用户说「以后别这样了」「那条不算」的时候用它。' +
+          '不知道是哪一条，先 recall_memory 找到 id。撤掉是归档，不是销毁。',
+        parameters: Type.Object({
+          id: Type.String({ description: '要撤掉的那条记忆的 id（mem-…）。' }),
+        }),
+        execute: async (args) => {
+          const result = await deps.forget(args.id);
+          return result.ok ? ok('撤掉了。') : fail(`没撤掉：${result.reason ?? '未知原因'}`);
         },
       }),
 
