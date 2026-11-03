@@ -11,6 +11,7 @@ import type {
   WorkThread,
 } from '@opc/shared/domain';
 import crypto from 'node:crypto';
+import { parseThreadKey } from '../router/threadKey';
 import type { CompanyDatabase } from './companyDatabase';
 
 /**
@@ -37,9 +38,19 @@ export interface CreateThreadInput {
   goal?: string;
   /** 环境身份；同一个 key 的后续事件会并到这条线上。 */
   threadKey?: string | null;
+  /** 来源。不给就从 `threadKey` 的前缀反解，再不给就是 `manual`。 */
+  source?: TriggerSource;
+  /** 外面那个 id。不给就同上。 */
+  externalId?: string | null;
   attention?: AttentionLevel;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */
   budgetTokens?: number | null;
+}
+
+/** `openThread` 的返回：这次是新开的，还是并进了已有的那条线。 */
+export interface OpenedThread {
+  thread: WorkThread;
+  created: boolean;
 }
 
 export interface CreateWorkerInput {
@@ -58,6 +69,11 @@ export interface EnqueueEventInput {
   kind: string;
   payload?: Record<string, unknown>;
   threadId?: string | null;
+  /**
+   * 外部平台的投递指纹（`github:<x-github-delivery>`、`feishu:<message_id>`）。
+   * 同一个指纹只落一条事件——重投不是新工作。
+   */
+  dedupeKey?: string | null;
 }
 
 /** A queue row with the line of work attached, for the attention screen. */
@@ -77,6 +93,8 @@ interface ThreadRow {
   id: string;
   title: string;
   goal: string;
+  source: TriggerSource;
+  external_id: string | null;
   thread_key: string | null;
   state: ThreadState;
   attention: AttentionLevel;
@@ -109,6 +127,7 @@ interface EventRow {
   kind: string;
   payload: string;
   thread_id: string | null;
+  dedupe_key: string | null;
   triage: TriageState;
   created_at: number;
   triaged_at: number | null;
@@ -150,10 +169,13 @@ export class ThreadRepository {
 
   createThread(input: CreateThreadInput): WorkThread {
     const at = this.now();
+    const identity = input.threadKey ? parseThreadKey(input.threadKey) : null;
     const row = {
       id: this.id(),
       title: input.title,
       goal: input.goal ?? '',
+      source: input.source ?? (identity?.source as TriggerSource | undefined) ?? 'manual',
+      external_id: input.externalId ?? identity?.externalId ?? null,
       thread_key: input.threadKey ?? null,
       state: 'open' as ThreadState,
       attention: input.attention ?? ('silent' as AttentionLevel),
@@ -164,10 +186,37 @@ export class ThreadRepository {
       closed_at: null,
     };
     this.statement(
-      `INSERT INTO thread (id, title, goal, thread_key, state, attention, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
-       VALUES (@id, @title, @goal, @thread_key, @state, @attention, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
+      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, state, attention, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
+       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @state, @attention, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
     ).run(row);
     return toThread(row as ThreadRow);
+  }
+
+  /**
+   * 按身份开线：**有就并进去，没有才新建**。
+   *
+   * 这是"冷启动"那个动作本身（§3.3）。它取代了 `threadByKey() ?? createThread()`：
+   * 那种写法在"查一次、建一条"之间有一个窗口，而直通（程序直接派活）与 Router（模型
+   * 决定开线）**会同时**走到这里——同一个 PR 的前两条评论一起来时，两边都查不到线，
+   * 于是建两条，其中一条永远收不到事件。
+   *
+   * 库里有部分唯一索引兜底（V35）。撞上约束不是错误，是"别人先建好了"：重读一次，
+   * 用他建的那条。
+   */
+  openThread(input: CreateThreadInput): OpenedThread {
+    const key = input.threadKey ?? null;
+    if (key) {
+      const existing = this.threadByKey(key);
+      if (existing) return { thread: existing, created: false };
+    }
+    try {
+      return { thread: this.createThread(input), created: true };
+    } catch (error) {
+      // 并发下唯一索引会挡第二次插入；读回来就是了。
+      const raced = key ? this.threadByKey(key) : null;
+      if (raced) return { thread: raced, created: false };
+      throw error;
+    }
   }
 
   getThread(id: string): WorkThread | null {
@@ -356,15 +405,47 @@ export class ThreadRepository {
       kind: input.kind,
       payload: JSON.stringify(input.payload ?? {}),
       thread_id: input.threadId ?? null,
+      dedupe_key: input.dedupeKey ?? null,
       triage: 'pending' as TriageState,
       created_at: this.now(),
       triaged_at: null,
     };
     this.statement(
-      `INSERT INTO event (id, source, kind, payload, thread_id, triage, created_at, triaged_at)
-       VALUES (@id, @source, @kind, @payload, @thread_id, @triage, @created_at, @triaged_at)`,
+      `INSERT INTO event (id, source, kind, payload, thread_id, dedupe_key, triage, created_at, triaged_at)
+       VALUES (@id, @source, @kind, @payload, @thread_id, @dedupe_key, @triage, @created_at, @triaged_at)`,
     ).run(row);
     return toEvent(row as EventRow);
+  }
+
+  /**
+   * 落一条外部事件，**同一个投递指纹只落一次**。
+   *
+   * GitHub 在超时或非 2xx 时会重投，飞书在 3 秒内没收到应答也会重投。重投不是新工作：
+   * 同一条 PR 评论被落两次，就会有两个任务在同一个执行体上干同一件事。
+   *
+   * 去重靠库里的偏唯一索引（V35），不靠"先查再插"——直通和 Router 会并发走到这里。
+   * 撞上索引不是错误，是"这条已经来过了"。
+   */
+  enqueueOnce(input: EnqueueEventInput): { event: TriggerEvent; inserted: boolean } {
+    const key = input.dedupeKey?.trim() || null;
+    if (key) {
+      const existing = this.eventByDedupeKey(key);
+      if (existing) return { event: existing, inserted: false };
+    }
+    try {
+      return { event: this.enqueueEvent({ ...input, dedupeKey: key }), inserted: true };
+    } catch (error) {
+      const raced = key ? this.eventByDedupeKey(key) : null;
+      if (raced) return { event: raced, inserted: false };
+      throw error;
+    }
+  }
+
+  eventByDedupeKey(key: string): TriggerEvent | null {
+    const row = this.statement('SELECT * FROM event WHERE dedupe_key = ?').get(key) as
+      | EventRow
+      | undefined;
+    return row ? toEvent(row) : null;
   }
 
   /** The only events a model may be asked about: the ones the program layer kept. */
@@ -631,6 +712,8 @@ function toThread(row: ThreadRow): WorkThread {
     title: row.title,
     goal: row.goal,
     threadKey: row.thread_key ?? null,
+    source: row.source ?? 'manual',
+    externalId: row.external_id ?? null,
     state: row.state,
     attention: row.attention,
     budgetTokens: row.budget_tokens,

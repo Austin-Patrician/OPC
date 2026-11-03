@@ -142,6 +142,10 @@ const bridge: OpcBridge = {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
     setTriage: (patch: unknown) => ipcRenderer.invoke(IPC.router.setTriage, patch),
   },
+  trigger: {
+    status: () => ipcRenderer.invoke(IPC.trigger.status),
+    set: (patch: unknown) => ipcRenderer.invoke(IPC.trigger.set, patch),
+  },
   workers: {
     list: () => ipcRenderer.invoke(IPC.workers.list),
   },

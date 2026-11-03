@@ -592,6 +592,20 @@
       "threshold09": "保守",
       "decisionHint": "分类器用的是 设置 → 模型 → Decision 里配的那个模型。没配时这一层自动关掉，事件全部交给助手——不会丢。",
       "footnote": "两层的失败方向都是\"往上交\"：判不动、模型没配、调用失败，一律放行。这里调的是花多少钱，不是活会不会丢。"
+    },
+    "trigger": {
+      "title": "触发源",
+      "desc": "外部平台把事件推进来。事件先过签名校验，再落成一条待判断的事件——过不了校验的请求一条都进不来。",
+      "github": "GitHub",
+      "feishu": "飞书",
+      "dingtalk": "钉钉",
+      "secret": "密钥",
+      "githubHint": "GitHub webhook 的 Secret。仓库 Settings → Webhooks 里填同一个值。收到 pull_request / issues / issue_comment / push / check_run，外加 ping（不是活，会被忽略）。",
+      "feishuHint": "飞书事件订阅的 Encrypt Key。单聊不并线（那是跟助手说话的信道），群里的话题才开线。",
+      "dingtalkHint": "钉钉机器人的加签密钥。群消息按会话并线，单聊交给助手自己判断。",
+      "configured": "已配",
+      "notConfigured": "未配（这一家的请求会被拒绝）",
+      "portHint": "地址只监听本机；要从公网收到推送，需要在中间自己放一条隧道。改端口要重启才生效。"
     }
   },
   "notFound": {

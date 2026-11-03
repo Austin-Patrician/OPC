@@ -1,4 +1,4 @@
-import { IPC, type SendMessageInput } from '@opc/shared/ipc';
+import { IPC, type SendMessageInput, type TriggerPatch, type TriggerStatus } from '@opc/shared/ipc';
 import type {
   BundledRuntime,
   CompactionSettings,
@@ -67,6 +67,11 @@ interface RegisterOptions {
   consolidationRuns: ConsolidationRunStore;
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
+  /** 触发源：外部平台推进来的那扇门。 */
+  triggers: {
+    status: () => TriggerStatus;
+    set: (patch: TriggerPatch) => TriggerStatus;
+  };
   /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
@@ -95,6 +100,7 @@ export function registerIpc({
   piExtensions,
   piSkills,
   triage,
+  triggers,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -453,6 +459,14 @@ export function registerIpc({
 
   // 两层过滤的策略：读一份、写一份。写的是部分更新，没提到的字段保持原值——
   // 表单只提交它改过的那几行，不整份覆盖。
+  ipcMain.handle(IPC.trigger.status, () => triggers.status());
+  ipcMain.handle(IPC.trigger.set, (_event, patch: unknown) => {
+    if (typeof patch !== 'object' || patch === null) {
+      throw new Error('trigger:set 参数非法');
+    }
+    return triggers.set(patch as TriggerPatch);
+  });
+
   ipcMain.handle(IPC.router.getTriage, () => triage.get());
   ipcMain.handle(IPC.router.setTriage, (_event, patch: unknown) => {
     if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {

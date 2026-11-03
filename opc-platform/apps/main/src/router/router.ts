@@ -1,6 +1,7 @@
 import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { SemanticScreener } from './semanticGate';
+import { isValidThreadKey } from './threadKey';
 import { bodyOf } from './triage';
 
 /**
@@ -29,10 +30,16 @@ import { bodyOf } from './triage';
 
 export type PrefilterVerdict = 'keep' | 'drop';
 
-/** 事件的环境身份。适配器在 payload 里放 `threadKey`，没放就永远不并线。 */
+/**
+ * 事件的环境身份。适配器在 payload 里放 `threadKey`，没放就永远不并线。
+ *
+ * 键要过 `isValidThreadKey`：它也可能来自外部数据（webhook 正文），一个半截键
+ * 不该被当成身份——那种键会把不相关的东西并成一条线。判不过就当没有身份，
+ * 事件照旧进 Slow Path。
+ */
 export function threadKeyOf(event: TriggerEvent): string | null {
   const key = event.payload.threadKey;
-  return typeof key === 'string' && key.trim().length > 0 ? key.trim() : null;
+  return isValidThreadKey(key) ? key.trim() : null;
 }
 
 export interface Intent {

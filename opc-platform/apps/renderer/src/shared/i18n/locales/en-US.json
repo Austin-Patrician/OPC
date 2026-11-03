@@ -592,6 +592,20 @@
       "threshold09": "Conservative",
       "decisionHint": "The classifier is the model configured under Settings → Models → Decision. When none is configured this layer switches itself off and every event goes to the assistant — nothing is lost.",
       "footnote": "Both layers fail upward: unclear, unconfigured, or a failed call all let the event through. What you tune here is cost, not whether work gets done."
+    },
+    "trigger": {
+      "title": "Trigger sources",
+      "desc": "Let outside platforms push events in. Every request passes a signature check before it becomes a pending event — anything that fails never lands.",
+      "github": "GitHub",
+      "feishu": "Feishu",
+      "dingtalk": "DingTalk",
+      "secret": "Secret",
+      "githubHint": "The GitHub webhook Secret. Fill the same value in the repo's Settings → Webhooks. Delivers pull_request / issues / issue_comment / push / check_run, plus ping (not work — ignored).",
+      "feishuHint": "The Encrypt Key of your Feishu event subscription. Direct messages do not join a line (that is the channel to the assistant); group topics do.",
+      "dingtalkHint": "The signing secret of your DingTalk bot. Group messages join a line per conversation; direct messages go to the assistant.",
+      "configured": "Configured",
+      "notConfigured": "Not configured (this source is rejected)",
+      "portHint": "The listener binds to localhost only; to receive pushes from the internet, put a tunnel in front of it. A port change takes effect after a restart."
     }
   },
   "notFound": {

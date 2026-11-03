@@ -69,16 +69,16 @@ export function createLineOpener(deps: LineOpenerDeps) {
     const goal = input.goal.trim();
     if (!goal) return { ok: false, reason: '目标为空，不知道该做什么' };
 
-    // 同一个环境身份上已经有线，就并进去，不开第二条：你在同一个话题里连说
-    // 三句话，应该是同一条线的三段上下文，而不是三件互相不知道对方存在的事。
-    const existing = input.threadKey ? deps.threads.threadByKey(input.threadKey) : null;
-    const thread =
-      existing ??
-      deps.threads.createThread({
-        title: input.title?.trim() || firstLine(goal),
-        goal,
-        threadKey: input.threadKey ?? null,
-      });
+    // 同一个环境身份上已经有线，就并进去，不开第二条：你在同一个话题里连说三句话，
+    // 应该是同一条线的三段上下文，而不是三件互相不知道对方存在的事。
+    //
+    // `openThread` 而不是"查一次再建"：直通与 Router 会同时走到这里，两次查询之间
+    // 那个窗口中两边都会建线（唯一索引会挡住第二条，但那样一等就是一次异常）。
+    const { thread } = deps.threads.openThread({
+      title: input.title?.trim() || firstLine(goal),
+      goal,
+      threadKey: input.threadKey ?? null,
+    });
 
     const template = input.template ?? inferTemplate(`${thread.title} ${goal}`);
     // 归属已定的事件（直通）必须还给同一个执行体：`workerId` 存在就沿用它，

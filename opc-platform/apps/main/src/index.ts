@@ -33,8 +33,16 @@ import { WorkService } from './work/workService';
 import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
 import { BillingSettingsService } from './work/billingSettings';
+import { TaskRepository } from './data/taskRepository';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
+import { createDingTalkAdapter } from './trigger/dingtalk';
+import { createFeishuAdapter } from './trigger/feishu';
+import { createGitHubAdapter } from './trigger/github';
+import { ingestTrigger } from './trigger/ingest';
+import { TriggerRegistry } from './trigger/registry';
+import { startTriggerServer, type TriggerServer } from './trigger/server';
+import { TriggerSettingsStore } from './trigger/settings';
 import { Watchdog } from './watchdog/watchdog';
 import { createRouterHost } from './router/routerHost';
 import { TriagePolicyStore } from './router/triagePolicy';
@@ -391,6 +399,40 @@ async function bootstrap(): Promise<void> {
   const triage = new TriagePolicyStore(db);
 
   /**
+   * 触发源（§3 事件驱动）：GitHub、飞书、钉钉。
+   *
+   * 三家各自一个适配器，只管自己那套方言；`TriggerRegistry` 按 `/hook/<id>` 认人，
+   * 认出来之后验身、归一，再交给 `ingestTrigger` 落事件。**加一个新的触发源不改
+   * 调度循环一行**——这就是这一层存在的理由。
+   *
+   * 密钥每次请求重新读（`secret()` 是个闭包），所以在设置里改完立刻生效；端口不行，
+   * 端口要重启才换，界面上说清楚。
+   */
+  const triggerSettings = new TriggerSettingsStore(db);
+  const triggerRegistry = new TriggerRegistry([
+    createGitHubAdapter(() => triggerSettings.get().secrets.github),
+    createFeishuAdapter(() => triggerSettings.get().secrets.feishu),
+    createDingTalkAdapter(() => triggerSettings.get().secrets.dingtalk),
+  ]);
+  let triggerServer: TriggerServer | null = null;
+  const triggerStatus = () => {
+    const settings = triggerSettings.get();
+    return {
+      running: triggerServer !== null,
+      port: triggerServer?.port ?? settings.port,
+      entries: triggerRegistry.entries.map((entry) => {
+        const url = triggerServer?.urls.find((candidate) => candidate.id === entry.id)?.url;
+        return {
+          id: entry.id,
+          source: entry.source,
+          url: url ?? `http://127.0.0.1:${settings.port}/hook/${entry.id}`,
+          configured: Boolean(settings.secrets[entry.id as keyof typeof settings.secrets]?.trim()),
+        };
+      }),
+    };
+  };
+
+  /**
    * Router：一个真的会话。
    *
    * 从这一版起，`router` 不是"一个会调模型的循环"，而是**一个常驻的 LLM 会话**
@@ -505,6 +547,15 @@ async function bootstrap(): Promise<void> {
     facts,
     consolidationRuns,
     triage,
+    triggers: {
+      status: triggerStatus,
+      set: (patch: unknown) => {
+        triggerSettings.set(patch as never);
+        // 端口改了要重启才生效，所以这里回的是**当前**状态而不是愿望：界面照着
+        // 它显示"重启后生效"，比让用户以为已经换过去要诚实。
+        return triggerStatus();
+      },
+    },
     company: new CompanyService(db),
     network,
     runtime: runtimeService,
@@ -545,6 +596,37 @@ async function bootstrap(): Promise<void> {
     } catch (error) {
       console.warn('[OPC] 无法创建收件目录，文件夹触发源本次不启用', error);
     }
+
+    /**
+     * 触发入口。只监听本机：GitHub / 飞书 / 钉钉都在公网上，要接起来还得在中间放一条
+     * 隧道——这一步由用户决定，我们只把门装好。起不来（端口被占）不影响应用打开，
+     * 设置页会显示"没在运行"和原因。
+     */
+    const triggerTasks = new TaskRepository(db);
+    void startTriggerServer({
+      registry: triggerRegistry,
+      port: triggerSettings.get().port,
+      onAccepted: (trigger, meta) => {
+        const result = ingestTrigger({ threads, tasks: triggerTasks }, trigger, meta);
+        if (!result.inserted) return;
+        // 一条外部事件到了就推一轮：GitHub 的评论不该等 20 秒的定时器。
+        pushTick();
+      },
+      onOutcome: (outcome) => {
+        if (outcome.reason) console.warn('[trigger]', outcome.reason);
+      },
+    })
+      .then((server) => {
+        triggerServer = server;
+        console.warn('[trigger] 触发入口已就绪', server.urls.map((entry) => entry.url).join(' '));
+      })
+      .catch((error: unknown) => {
+        console.warn('[trigger] 触发入口没能启动（端口可能被占用）', error);
+      });
+
+    app.on('before-quit', () => {
+      void triggerServer?.close().catch(() => undefined);
+    });
 
     const watcher = new FolderWatcher({
       dir: inboxDir,

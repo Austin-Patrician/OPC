@@ -102,6 +102,10 @@ export const IPC = {
     getTriage: 'router:getTriage',
     setTriage: 'router:setTriage',
   },
+  trigger: {
+    status: 'trigger:status',
+    set: 'trigger:set',
+  },
   threads: {
     start: 'threads:start',
     list: 'threads:list',
@@ -515,6 +519,36 @@ export interface RouterBridge {
   setTriage(patch: TriagePolicyPatch): Promise<TriagePolicy>;
 }
 
+/**
+ * 触发源：外部平台把事件推进来的那扇门。
+ *
+ * 界面需要知道的只有三件事：门开着没有、地址是什么、这一家配了密钥没有。密钥本身
+ * 不回传给渲染进程——它没有用到的场合，还多一个能泄露它的地方。
+ */
+export interface TriggerEntryStatus {
+  id: string;
+  source: string;
+  /** 要填到平台里的那个 URL。门没开时也给（它是"应该在哪"）。 */
+  url: string;
+  configured: boolean;
+}
+
+export interface TriggerStatus {
+  running: boolean;
+  port: number;
+  entries: TriggerEntryStatus[];
+}
+
+export interface TriggerPatch {
+  port?: number;
+  secrets?: Partial<Record<'github' | 'feishu' | 'dingtalk', string>>;
+}
+
+export interface TriggerBridge {
+  status(): Promise<TriggerStatus>;
+  set(patch: TriggerPatch): Promise<TriggerStatus>;
+}
+
 export interface FactsBridge {
   /** 当前生效的事实：整条工作线的（给 threadId），或者整个工作台的。 */
   list(filter?: { threadId?: string }): Promise<FactView[]>;
@@ -699,6 +733,7 @@ export interface OpcBridge {
   facts: FactsBridge;
   memory: MemoryBridge;
   router: RouterBridge;
+  trigger: TriggerBridge;
   billing: BillingBridge;
   threads: ThreadsBridge;
   diagnostics: {

@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from './companyDatabase';
 import { SCHEMA_VERSION } from './schema';
 import { ThreadRepository } from './threadRepository';
+import { threadIdentity } from '../router/threadKey';
+
+/** 适配器造身份的那一步，用例里也要走同一段代码——两处各写一遍迟早对不上。 */
+const threadKeyOf_ = (source: 'github' | 'im', externalId: string): string =>
+  threadIdentity(source, externalId).key;
 
 /**
  * The v2 core tables against a real SQLite file (migration V25).
@@ -212,5 +217,56 @@ describe('ensureWorker', () => {
     threads.retireWorker(first.id);
     const again = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
     expect(again.id).not.toBe(first.id);
+  });
+});
+
+/**
+ * 一条线的**环境身份**（§3.2 / V35）。
+ *
+ * 原文把"具备连续完整上下文的 request"叫 Thread：一个 PR、一封邮件的往来、一个 IM
+ * 话题。它们之所以是一条线，是因为**外面那个东西自己有一个 id**。所以这份用例测的
+ * 是身份的三件事：能规范化、同一身份只有一条活线、按身份开线是幂等的。
+ */
+describe('thread identity', () => {
+  const key = (raw: string) => threadKeyOf_('github', raw);
+
+  it('把同一身份上的空白折掉，两次出现在同一条线上', () => {
+    const a = threads.openThread({ title: 'PR', threadKey: key('acme/api#12') });
+    const b = threads.openThread({ title: 'PR', threadKey: key(' acme/api#12 ') });
+
+    expect(a.created).toBe(true);
+    expect(b.created).toBe(false);
+    expect(b.thread.id).toBe(a.thread.id);
+  });
+
+  it('来源与外部 id 从键里反解出来，界面不用自己拆字符串', () => {
+    const { thread } = threads.openThread({ title: 'PR', threadKey: key('acme/api#12') });
+    expect(thread.source).toBe('github');
+    expect(thread.externalId).toBe('acme/api#12');
+  });
+
+  it('同一身份上不许有第二条活线', () => {
+    const first = threads.createThread({ title: 'A', threadKey: key('acme/api#1') });
+    expect(() => threads.createThread({ title: 'B', threadKey: key('acme/api#1') })).toThrow();
+    // 关掉之后身份就空出来了：同一个 PR 重新打开是一条新线。
+    threads.setState(first.id, 'done');
+    const again = threads.openThread({ title: 'A', threadKey: key('acme/api#1') });
+    expect(again.created).toBe(true);
+    expect(again.thread.id).not.toBe(first.id);
+  });
+
+  it('并发开线只留一条：撞上唯一索引不是错误，是"别人先建好了"', () => {
+    const a = threads.openThread({ title: 'PR', threadKey: key('acme/api#9') });
+    // 模拟"另一边刚刚建完"：绕过 openThread 直接插，然后 openThread 必须读回这一条。
+    const b = threads.openThread({ title: 'PR', threadKey: key('acme/api#9') });
+    expect(b.thread.id).toBe(a.thread.id);
+    expect(threads.listThreads({ limit: 10 }).filter((t) => t.threadKey === key('acme/api#9'))).toHaveLength(1);
+  });
+
+  it('没有身份的线照旧能开，来源默认是 manual', () => {
+    const thread = threads.createThread({ title: '你随手丢的一个目标' });
+    expect(thread.threadKey).toBeNull();
+    expect(thread.source).toBe('manual');
+    expect(thread.externalId).toBeNull();
   });
 });

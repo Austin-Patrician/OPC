@@ -894,6 +894,10 @@ export interface WorkThread {
    * 也不会因为模型换了措辞就分成两条线。
    */
   threadKey: string | null;
+  /** 这条线是哪个来源的影子。与 `threadKey` 的前缀一致，单独存一份为了能按来源筛。 */
+  source: TriggerSource;
+  /** 外面那个 id：`acme/api#12`、`oc_xxx:om_yyy`。没有身份的老线是 null。 */
+  externalId: string | null;
   state: ThreadState;
   attention: AttentionLevel;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */

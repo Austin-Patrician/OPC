@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1211,6 +1211,10 @@ CREATE TABLE IF NOT EXISTS thread (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   goal TEXT NOT NULL DEFAULT '',
+  -- 这条线是**谁**的影子：外面那个 PR / 话题 / 事件。
+  source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (source IN ('manual','folder','calendar','github','im')),
+  external_id TEXT,
   state TEXT NOT NULL DEFAULT 'open'
     CHECK (state IN ('open','running','waiting','done','failed','archived')),
   attention TEXT NOT NULL DEFAULT 'silent'
@@ -1247,6 +1251,8 @@ CREATE TABLE IF NOT EXISTS event (
   kind TEXT NOT NULL,
   payload TEXT NOT NULL DEFAULT '{}',
   thread_id TEXT REFERENCES thread(id) ON DELETE SET NULL,
+  -- 外部平台的投递 id。重投不是新工作：同一个 id 只落一条事件（V35 的偏唯一索引）。
+  dedupe_key TEXT,
   triage TEXT NOT NULL DEFAULT 'pending'
     CHECK (triage IN ('pending','accepted','dropped','merged')),
   created_at INTEGER NOT NULL,
@@ -1575,7 +1581,57 @@ ALTER TABLE company RENAME COLUMN industry TO domain;
 UPDATE OR REPLACE app_setting SET key = 'profile.goal' WHERE key = 'profile.vision';
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34];
+/**
+ * V35：一条线的**环境身份**。
+ *
+ * 原文说"具备连续/完整上下文的 request 才叫 Thread"——一个 PR、一封邮件的往来、一个
+ * IM 话题。它们能被称为一条线，靠的是**外面那个东西有自己的 id**，而不是我们给它起
+ * 了个标题。所以线要记住自己是谁的影子：来源 + 外部 id。
+ *
+ * 三条一起做，因为它们是一个东西：
+ *
+ * 1. `source` / `external_id` 从 `thread_key` 的前缀反解出来，界面与排查都读它；
+ * 2. **同一身份上只允许一条活线**。老代码只按 `last_activity_at` 取最新的一条，重复
+ *    的键不会报错，只会让旧的那条永远收不到事件——静默的孤儿。先把手上的重复摘掉键
+ *    （内容都在，只是不再声称自己是那个身份），再建部分唯一索引把它焊死；
+ * 3. 索引是**部分**的：终态的线不占位，同一个 PR 关掉之后重新打开是一条新线。
+ */
+const V35 = `
+ALTER TABLE thread ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'
+  CHECK (source IN ('manual','folder','calendar','github','im'));
+ALTER TABLE thread ADD COLUMN external_id TEXT;
+
+UPDATE thread
+   SET source = CASE
+         WHEN thread_key LIKE 'github:%'   THEN 'github'
+         WHEN thread_key LIKE 'im:%'       THEN 'im'
+         WHEN thread_key LIKE 'calendar:%' THEN 'calendar'
+         WHEN thread_key LIKE 'folder:%'   THEN 'folder'
+         ELSE 'manual' END,
+       external_id = CASE WHEN instr(thread_key, ':') > 0
+                          THEN substr(thread_key, instr(thread_key, ':') + 1) END
+ WHERE thread_key IS NOT NULL;
+
+UPDATE thread SET thread_key = NULL
+ WHERE thread_key IS NOT NULL
+   AND state NOT IN ('done','failed','archived')
+   AND EXISTS (
+     SELECT 1 FROM thread other
+      WHERE other.thread_key = thread.thread_key
+        AND other.state NOT IN ('done','failed','archived')
+        AND (other.last_activity_at > thread.last_activity_at
+             OR (other.last_activity_at = thread.last_activity_at AND other.id > thread.id))
+   );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_key_live ON thread(thread_key)
+  WHERE thread_key IS NOT NULL AND state NOT IN ('done','failed','archived');
+
+ALTER TABLE event ADD COLUMN dedupe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_dedupe ON event(dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

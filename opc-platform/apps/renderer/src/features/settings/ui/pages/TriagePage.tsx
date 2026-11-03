@@ -4,6 +4,7 @@ import type { TriggerSource, TriagePolicy } from '@opc/shared/domain';
 import { DEFAULT_TRIAGE_POLICY } from '@opc/shared/domain';
 import { cn } from '@/shared/lib/cn';
 import { PageHeader, Row, Section, Segmented } from '../kit';
+import { TriggerSourceSection } from './TriggerSourceSection';
 
 /**
  * Settings → 通用 → 调度。
@@ -151,6 +152,9 @@ export function TriagePage() {
         <p className="px-1 text-2xs leading-relaxed text-ink-quaternary">
           {t('settings.triage.footnote')}
         </p>
+
+        {/* 事件**从哪进来**和**怎么被过滤**是同一件事的两半，放在一页里。 */}
+        <TriggerSourceSection />
       </div>
     </>
   );
