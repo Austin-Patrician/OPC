@@ -137,6 +137,25 @@ export interface TaskSteering {
   at: number;
 }
 
+/**
+ * 执行体看到的一条**原始记录**（§3.3）。
+ *
+ * 在这之前执行体只看到 Router 写的一句话（`brief`）——原始事件、这条线之前的汇报、
+ * 之前跑过的任务，它一概看不到。后果不是"信息少"，是**不可自纠**：Router 把 A 理解成
+ * B 时，执行体是唯一有机会发现的人，而它手里没有 A。
+ *
+ * 这里给的是 **ID + 摘要**，不是全文。全文留在库里，要用就 `recall <id>`——和 Router
+ * 那一侧用的是同一个 spill 函数，所以两层看到的是同一段文字。
+ */
+export interface TaskRecord {
+  kind: 'event' | 'report' | 'task';
+  /** `recall <id>` 用的就是它。 */
+  id: string;
+  title: string;
+  /** 已 spill 过的正文：头尾 + 略去了多少 + 全文怎么取。 */
+  excerpt: string;
+}
+
 export interface WorkTask {
   id: string;
   title: string;
@@ -183,6 +202,12 @@ export interface WorkTask {
   memories?: { kind: string; content: string; scopeType: string }[];
   /** Current company/department facts (fact), most specific last. */
   facts?: { statement: string; scopeType: string }[];
+  /**
+   * 这件事的原始记录（事件 / 汇报 / 之前跑过的任务），带 ID 与摘要。
+   *
+   * 有了它，执行体才能"顺着引用图往回走"，而不是只能相信 Router 的转述。
+   */
+  records?: TaskRecord[];
   /**
    * 常驻约束：用户要求过、一直有效的那几条。
    *

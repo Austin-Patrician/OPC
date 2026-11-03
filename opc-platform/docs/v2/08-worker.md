@@ -374,7 +374,7 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 | 期 | 做什么 | 凭什么说成立 |
 |---|---|---|
 | **E0** ✅ | 隔离 / 工具 / 不说话 / 终局汇报 / 串行 / 可判定结束 / 记忆注入 / steer | 见 §3 的表，每条都有用例 |
-| **E1** | `WorkTask.records` + 只读 `recall` + 复用 `spillText` | 保真用例（逐字保留）、作用域用例、预算性能断言 |
+| **E1** ✅ | `WorkTask.records` + 只读 `recall` + 复用 `spillText` | 保真用例（逐字保留）、作用域用例、预算性能断言 |
 | **E2** | `investigate`（子代理）：深度 1、串行、只读 + scratch、合账、透明但可见 | 六条用例，一条一个限制 |
 | **E3** | `escalate` / `hand_back` + "进度不进 Router"的闸门 | 四次断言，含"report 表里没有 progress" |
 | **E4** | `thread.speculative` + 汇报规则 | 三条用例，含"静默线的 escalate 也不 decide" |
@@ -396,3 +396,49 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 | §6 Watchdog 的语义层（"方向是否偏离"） | **暂不做，且知道缺什么** | 判偏离需要参照物：执行体得先声明它打算怎么干。现在它不声明。等 E1/E2 把"它看到的证据"和"它拆出的子问题"变成数据，这件事才有判据——在那之前接一个模型去猜，只会多一种误判 |
 | Router 的轻量模型档 | **缺口，但不是架构问题** | 设置里只有一个默认 LLM，Router 和执行体取同一个。原文说 Router 常常用轻量模型就够。这是一个设置项，不是一层设计——列在这里是为了不假装它已经做了 |
 | `agents/*.sqlite` 回收 | **不做** | 见 §9：要的是可见的占用，不是自动清理 |
+
+---
+
+## 12. E1 已落地：执行体看得见原始证据
+
+### 落到了哪
+
+| 东西 | 在哪 |
+|---|---|
+| `TaskRecord`（kind / id / title / excerpt）与 `WorkTask.records` | `packages/shared/src/domain.ts` |
+| 摘要生成（时间序、最多 8 条、按条数分摊预算） | `work/records.ts` 的 `buildRecords` |
+| 原始记录的口子（和记忆四条通道并列） | `workTaskDefinition.ts` 的 `recallRecords` |
+| 取数：这条线的事件 / 汇报 / 之前跑过的任务 | `workService.recordsOfThread` |
+| 读侧：按 id 取全文，**作用域在这里守住** | `workService.recallRecord` |
+| 工具 `recall`（只读、分页、越界与打错分开说） | `work/recallTool.ts` |
+| 提示词里的那一段 | `harnessBrain.buildPrompt`，排在交付物之后、要求之前 |
+| 事件按线取 | `ThreadRepository.listEventsOf` |
+
+一个细节值得记下：**记录不落库，每次 `produce` 现取**。派活时快照一份，会把"派活之后
+才到的事件"漏掉——而直通那条路本来就意味着事件会一直在来。现取的代价是每次尝试多两条
+`SELECT`，换来的是执行体看到的永远是此刻的这条线。
+
+### 三个判断
+
+1. **给 ID 而不是给全文。** 全文会挤掉 workspace 那个真正的主战场（§3.3：浪费窗口就是浪费
+   智能）。摘要用 Router 那一侧的同一个 `spillText`，所以两层看到的是同一段文字——
+   `05-router-real.md` §5 立过这条原则，执行体这侧之前根本没被 spill 过。
+2. **记录是背景，不是要求。** 排在「交付物」之后、「要求」之前：放前面模型会以为那是任务
+   本身，放后面会被读成附加约束。
+3. **作用域由任务决定，不由模型决定。** `recall` 只能读自己这条线上的事件/汇报/任务；
+   越界与"打错 id"回两句话——一句教它边界，一句让它别慌。
+
+### 用例
+
+`records.test.ts`（6 条）：短正文原样给、长正文取头尾并给出 recall 入口、时间升序、最多八条
+取最近、**40 条长记录合起来不超预算**（性能断言）、空输入给空数组。
+
+`harnessBrain.test.ts`（+3）：单独一段、段序（交付物 < 原始记录 < 要求）、多行摘要缩进、
+没有记录不留空标题。
+
+`recallTool.test.ts`（5 条）：id 与页码转交、默认第 1 页、越界与打错说两句不同的话、
+没有在跑的任务不猜作用域、空 id 不查库。
+
+`workThreadReport.test.ts`（+4）：真实事件 → 任务里出现「注入 1 条原始记录」，摘要里
+**逐字**保留用户原话（`8081`）；顺着那个 id 取得到全文；别的线上的取不到；任务自己不
+算背景。

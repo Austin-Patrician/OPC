@@ -84,6 +84,84 @@ async function runOne(overrides: { threadId?: string } = {}) {
   return { thread, task: final };
 }
 
+/**
+ * 原始记录（§3.3 / E1）。
+ *
+ * 以前执行体只看到 `brief = goal`——Router 用自己的话把目标重写了一遍。这条链路锁的是
+ * **它现在能回到源头**：摘要里有 ID 和用户原话，顺着 ID 能取到全文，别条线的取不到。
+ */
+describe('原始记录', () => {
+  async function runWithEvent(text: string) {
+    const thread = threads.createThread({ title: '写一个返回 ok 的服务' });
+    const event = threads.enqueueEvent({
+      source: 'im',
+      kind: 'message',
+      payload: { text },
+      threadId: thread.id,
+    });
+    threads.triageEvent(event.id, 'accepted', thread.id);
+
+    const created = work.createTask({
+      title: '写一个返回 ok 的服务',
+      brief: '用 node 内置 http',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    const final = await work.runTaskAndWait(created.task.id);
+    return { thread, event, task: final };
+  }
+
+  it('线上的事件以 id + 摘要进入执行体的上下文，原话逐字保留', async () => {
+    const { thread, event, task } = await runWithEvent('健康检查的端口改成 8081，不要 3000');
+
+    expect(task.steps.map((step) => step.text)).toContain('注入 1 条原始记录');
+
+    const records = work.recordsOfThread(thread.id, task.id);
+    expect(records[0]).toMatchObject({ kind: 'event', id: event.id });
+    // 逐字：不是 Router 重写过的那个版本。
+    expect(records[0]?.excerpt).toContain('8081');
+  });
+
+  it('顺着那个 id 能取到全文——摘要短，源头不短', async () => {
+    const { event, task } = await runWithEvent('健康检查的端口改成 8081，不要 3000');
+    const recalled = work.recallRecord({ taskId: task.id, id: event.id, page: 1 });
+
+    expect(recalled.found).toBe(true);
+    if (recalled.found) expect(recalled.text).toContain('8081');
+  });
+
+  it('取不到别的线上的记录：作用域由任务决定，不由模型决定', async () => {
+    const { task } = await runWithEvent('健康检查的端口改成 8081');
+    const otherThread = threads.createThread({ title: '另一条线' });
+    const otherEvent = threads.enqueueEvent({
+      source: 'github',
+      kind: 'comment',
+      payload: { text: '另一条线的秘密' },
+      threadId: otherThread.id,
+    });
+
+    expect(work.recallRecord({ taskId: task.id, id: otherEvent.id, page: 1 })).toEqual({
+      found: false,
+      reason: 'out-of-scope',
+    });
+    expect(work.recallRecord({ taskId: task.id, id: 'ev-nope', page: 1 })).toEqual({
+      found: false,
+      reason: 'not-found',
+    });
+  });
+
+  it('任务自己不算"背景"：记录里排掉当前这条', async () => {
+    const { thread, task } = await runWithEvent('健康检查的端口改成 8081');
+    const records = work.recordsOfThread(thread.id, task.id);
+    expect(records.some((record) => record.id === task.id)).toBe(false);
+  });
+});
+
 describe('task → thread reporting', () => {
   it('closes the line of work quietly when the work passes acceptance', async () => {
     const { thread, task } = await runOne();

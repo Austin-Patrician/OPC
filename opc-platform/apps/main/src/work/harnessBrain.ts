@@ -177,13 +177,27 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     `任务：${task.title}`,
     `说明：${task.brief}`,
     `交付物：${task.deliverableSpec}`,
+  ];
+
+  // 原始记录（§3.3）：给 ID + 摘要，全文用 recall 取。排在"要求"之前、说明之后——
+  // 它是对这份说明的**证据**，不是又一条要求。
+  if (task.records && task.records.length > 0) {
+    lines.push('', '这件事的原始记录（要看全文就 recall <id>）：');
+    for (const record of task.records) {
+      lines.push(`- ${record.kind} ${record.id} · ${record.title}`);
+      // 摘要本身是多行的（头 + 略去多少 + 尾），缩进两格才不会被当成并列条目。
+      for (const line of record.excerpt.split('\n')) lines.push(`  ${line}`);
+    }
+  }
+
+  lines.push(
     '',
     `要求：`,
     '1. 用 write 工具创建所需文件（相对当前工作目录）。',
     '2. 用 bash 做**离线**检查（例如 `node --check server.js`）；**不要**启动长驻服务、不要访问网络——',
     '   沙箱会阻断出网，而系统会在沙箱外用真实验收脚本启动并判定。',
     '3. 确认无误后立即结束，不要输出大段解释。',
-  ];
+  );
 
   // 你改的方向排在"要求"之后：它是后说的，而且与原说明冲突时以它为准。
   if (task.steering && task.steering.length > 0) {

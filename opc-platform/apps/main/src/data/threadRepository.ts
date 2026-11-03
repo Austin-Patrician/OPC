@@ -448,6 +448,19 @@ export class ThreadRepository {
     return row ? toEvent(row) : null;
   }
 
+  /**
+   * 这条线上的事件，新的在前。
+   *
+   * 和 `listPendingEvents` 是两件事：那个是"还没分诊的"，这个是"已经落在这条线上的"
+   * ——执行体要看到的是后者（§3.3 的原始记录），它不该看到别人线上的事。
+   */
+  listEventsOf(threadId: string, limit = 20): TriggerEvent[] {
+    const rows = this.statement(
+      'SELECT * FROM event WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+    ).all(threadId, limit) as EventRow[];
+    return rows.map(toEvent);
+  }
+
   /** The only events a model may be asked about: the ones the program layer kept. */
   listPendingEvents(limit = 20): TriggerEvent[] {
     const rows = this.statement(

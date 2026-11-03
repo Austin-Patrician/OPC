@@ -6,6 +6,7 @@ import type {
   CreateTaskResult,
   SubtaskDraft,
   TaskError,
+  TaskRecord,
   WorkTask,
   WorkThread,
 } from '@opc/shared/domain';
@@ -49,6 +50,10 @@ import { createImageToolExtension } from './imageTool';
 import { createOcrToolExtension } from './ocrTool';
 import { createSpeechToolExtension } from './speechTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
+import { buildRecords, type RecordSource } from './records';
+import { createRecallToolExtension, type RecallOutcome } from './recallTool';
+import { bodyOf } from '../router/triage';
+import { recallView } from '../router/inline';
 import { setWorkTaskServices, WorkTaskDefinition } from './workTaskDefinition';
 import {
   EMPTY_TOOL_POLICY,
@@ -314,6 +319,17 @@ export class WorkService {
       recallStanding: this.deps.memory
         ? async () => this.deps.memory!.standing(USER_MEMORY_OWNER).map((item) => ({ content: item.content }))
         : undefined,
+      /**
+       * 原始记录：这条线上的事件、之前的汇报、之前跑过的任务。
+       *
+       * 这是 E1 的全部意义。以前执行体只看到 `brief = goal`——Router 用自己的话把目标
+       * 重写了一遍，执行体拿到的是转述。转述是有损的，而且当 Router 理解偏了，执行体
+       * 是唯一有机会发现的人，却手里没有原文。
+       *
+       * 只给 ID + 摘要：全文留在库里，`recall` 随时能取。
+       */
+      recallRecords: (task) =>
+        task.threadId ? this.recordsOfThread(task.threadId, task.taskId) : [],
       recallFacts: this.deps.facts
         ? async (task) => {
             // 规定挂在**这条线**上；工作台那一层（global）永远都在，它讲的是这个助手
@@ -958,6 +974,18 @@ export class WorkService {
       slots.push({ name: 'opc.memory', essential: false, available: false, reason: 'memory-disabled' });
     }
 
+    // 原始记录（§3.3）：顺着 ID 回到源头，而不是只相信 Router 的转述。
+    // 只读、永远可用——它查的是库，不是外部服务，所以没有"装了却只能失败"的问题。
+    slots.push({
+      name: 'opc.recall',
+      essential: false,
+      available: true,
+      extension: createRecallToolExtension({
+        taskId: () => currentTaskIdFor(personId),
+        recall: (input) => this.recallRecord(input),
+      }),
+    });
+
     // 拆解的前提是"还有别的执行体可派"。只有一个时工具根本不装；
     // 有两个以上时，谁都可以把活交给别人——这里已经没有汇报线了。
     const assignable = this.assignableTo(subject.id);
@@ -1175,6 +1203,97 @@ export class WorkService {
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
+  }
+
+  /**
+   * 这条线上的原始记录，按时间排，取最近几条。
+   *
+   * 三样东西，各有各的用途：**事件**是这件事的来由（用户原话、CI 输出、PR 评论）；
+   * **汇报**是之前几轮的结果（干成过什么、哪里没过）；**任务**是这条线跑过几回、
+   * 每次要求什么。
+   *
+   * 当前这条任务自己不进去——它是"背景"，不是"背景里的自己"。
+   */
+  recordsOfThread(threadId: string, currentTaskId = ''): TaskRecord[] {
+    const sources: RecordSource[] = [];
+
+    for (const event of this.threads.listEventsOf(threadId, 6)) {
+      sources.push({
+        kind: 'event',
+        id: event.id,
+        title: `${event.source}/${event.kind}`,
+        body: bodyOf(event.payload),
+        at: event.createdAt,
+      });
+    }
+
+    for (const report of this.threads.listReportsOf(threadId, 4)) {
+      sources.push({
+        kind: 'report',
+        id: report.id,
+        title: `${report.level} · ${report.title}`,
+        body: report.body,
+        at: report.createdAt,
+      });
+    }
+
+    for (const task of this.repository.listByThread(threadId, 4)) {
+      if (task.id === currentTaskId) continue;
+      sources.push({
+        kind: 'task',
+        id: task.id,
+        title: `${task.status} · ${task.title}`,
+        body: `${task.brief}\n交付物：${task.deliverableSpec}`,
+        at: task.createdAt,
+      });
+    }
+
+    return buildRecords(sources);
+  }
+
+  /**
+   * `recall` 的读侧：按 id 取这一条线上的一条记录的全文。
+   *
+   * 作用域在这里守住——不是模型说查什么就查什么。`out-of-scope` 和 `not-found`
+   * 分开报：前者是边界（它该知道边界在哪），后者是打错了。
+   */
+  recallRecord(input: { taskId: string; id: string; page: number }): RecallOutcome {
+    const task = this.repository.getTask(input.taskId);
+    if (!task?.threadId) return { found: false, reason: 'no-task' };
+    const threadId = task.threadId;
+
+    const event = this.threads.getEvent(input.id);
+    if (event) {
+      if (event.threadId !== threadId) return { found: false, reason: 'out-of-scope' };
+      return {
+        found: true,
+        text: recallView(bodyOf(event.payload), event.id, input.page),
+      };
+    }
+
+    const report = this.threads.getReport(input.id);
+    if (report) {
+      if (report.threadId !== threadId) return { found: false, reason: 'out-of-scope' };
+      return {
+        found: true,
+        text: recallView(`${report.title}\n\n${report.body}`, report.id, input.page),
+      };
+    }
+
+    const other = this.repository.getTask(input.id);
+    if (other) {
+      if (other.threadId !== threadId) return { found: false, reason: 'out-of-scope' };
+      return {
+        found: true,
+        text: recallView(
+          `${other.title}\n\n${other.brief}\n\n交付物：${other.deliverableSpec}`,
+          other.id,
+          input.page,
+        ),
+      };
+    }
+
+    return { found: false, reason: 'not-found' };
   }
 
   /**

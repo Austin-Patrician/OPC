@@ -106,6 +106,51 @@ describe('执行体看到的提示词', () => {
     expect(buildPrompt(task())).not.toContain('做事规矩');
   });
 
+  /**
+   * 原始记录（§3.3）：给 ID + 摘要，全文用 recall 取。
+   *
+   * 它排在「交付物」之后、「要求」之前——这是**证据**，不是又一条要求。放在要求后面，
+   * 模型会把它读成附加约束；放在最前面，它会以为那是任务本身。
+   */
+  it('原始记录单独一段，排在交付物之后、要求之前，并且带 recall 入口', () => {
+    const prompt = buildPrompt(
+      task({
+        records: [
+          {
+            kind: 'event',
+            id: 'ev-3f2a',
+            title: 'im/message',
+            excerpt: '健康检查的端口改成 8081',
+          },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('这件事的原始记录（要看全文就 recall <id>）');
+    expect(prompt).toContain('- event ev-3f2a · im/message');
+    expect(prompt).toContain('  健康检查的端口改成 8081');
+
+    const at = (needle: string) => prompt.indexOf(needle);
+    expect(at('交付物：')).toBeLessThan(at('这件事的原始记录'));
+    expect(at('这件事的原始记录')).toBeLessThan(at('要求：'));
+  });
+
+  it('摘要的多行被缩进，不会被读成并列条目', () => {
+    const prompt = buildPrompt(
+      task({
+        records: [
+          { kind: 'event', id: 'ev-1', title: 'im/message', excerpt: '第一行\n…（略去 9 行）…' },
+        ],
+      }),
+    );
+    expect(prompt).toContain('  第一行');
+    expect(prompt).toContain('  …（略去 9 行）…');
+  });
+
+  it('没有原始记录时不留空标题', () => {
+    expect(buildPrompt(task())).not.toContain('原始记录');
+  });
+
   it('改过两次就两条都在，按说的顺序', () => {
     const prompt = buildPrompt(
       task({

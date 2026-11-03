@@ -1,4 +1,4 @@
-import type { TaskAcceptance, WorkTask } from '@opc/shared/domain';
+import type { TaskAcceptance, TaskRecord, WorkTask } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 import type { Context } from '@earendil-works/chord/context';
 import { defineTask, type TaskDefinition } from '@earendil-works/pi-durable';
@@ -85,6 +85,18 @@ export interface WorkTaskServices {
     /** 这条线自己的规定能一起召回。 */
     threadId?: string;
   }) => Promise<{ statement: string; scopeType: string }[]>;
+  /**
+   * 这件事的**原始记录**：这条线上的事件、之前的汇报、之前跑过的任务。
+   *
+   * 单独一个口子，和记忆那三条通道并列而不是混进去：记忆是"可能有用的事实"，
+   * 记录是"这件事自己的证据"。混在一起，执行体就分不清"别人说过什么"和
+   * "这次是怎么回事"。
+   */
+  recallRecords?: (task: {
+    assigneeId: string;
+    taskId: string;
+    threadId?: string;
+  }) => TaskRecord[];
   /** Used when the primary brain throws (e.g. revoked key): degrade, don't fail. */
   fallbackBrain: TaskBrain;
   repository: TaskRepository;
@@ -230,6 +242,30 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             recordDurableStep,
             onTaskChanged,
           });
+        }
+      }
+
+      if (services?.recallRecords) {
+        try {
+          const records = services.recallRecords({
+            assigneeId: workTask.assigneeId,
+            taskId: workTask.id,
+            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
+          });
+          if (records.length > 0) {
+            workTask.records = records;
+            logStep(task.input.workTaskId, `注入 ${records.length} 条原始记录`, {
+              repository,
+              recordDurableStep,
+              onTaskChanged,
+            });
+          }
+        } catch (error) {
+          logStep(
+            task.input.workTaskId,
+            `原始记录读取失败（${error instanceof Error ? error.message : String(error)}）`,
+            { repository, recordDurableStep, onTaskChanged },
+          );
         }
       }
 

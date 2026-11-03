@@ -86,8 +86,16 @@ describe('WorkService.capabilities', () => {
       'coding-tools',
       'opc.sandbox',
       'opc.limits',
+      'opc.recall',
     ]);
-    expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['bash', 'edit', 'read', 'write']);
+    // `recall` 是只读的读库工具：执行体要能顺着 id 回到源头，而不是只相信转述（§3.3）。
+    expect(agent.tools.map((tool) => tool.name).sort()).toEqual([
+      'bash',
+      'edit',
+      'read',
+      'recall',
+      'write',
+    ]);
     // Skills are worker attributes, returned beside the runtime facts, never as tools.
     expect(agent.skills).toEqual(['React', '可访问性']);
     expect(agent.template).toBe('code');
