@@ -351,7 +351,28 @@ async function bootstrap(): Promise<void> {
   // 这里本来有 `chat.replyWithModel`：一个执行体用「你是「X」，岗位是 Y」的人设直接
   // 回答你。v2 的双层架构里没有这条路——Worker 只向 Router 汇报，由 Router 统一
   // 对外说话（§2.2）。留着它就等于留了第二个能回答你的人。
-  const memory = new MemoryService(db);
+  const memory = new MemoryService(db, {
+    /**
+     * 一条偏好被升进常驻层时告诉你。
+     *
+     * 升级之后它每一轮都在生效——**不可见的自动升级是赌博**。所以要说一句，并且给出
+     * 两条后路：当场否决，或者去设置页改。
+     */
+    onPromoted: ({ content, observations }) => {
+      // 通知是加分项：聊天服务还没起来时，记忆本身已经升级好了，不该因此回滚。
+      const conversationId = chat?.ensureAssistant();
+      if (!conversationId) return;
+      try {
+        chat?.appendRouterMessage(
+          conversationId,
+          `你提过 ${observations} 次的这件事，我记成长期规矩了：「${content}」。` +
+            '不对的话跟我说一声，或者去 设置 → 它记得什么 里改。',
+        );
+      } catch (error) {
+        console.warn('[memory] 晋级没通知出去（不影响记忆本身）', error);
+      }
+    },
+  });
   const facts = new FactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
   const imageService = new ImageService(modelConfig, networkClient);
@@ -604,15 +625,20 @@ async function bootstrap(): Promise<void> {
     facts,
     consolidationRuns,
     triage,
-    standing: {
+    memories: {
       list: () =>
-        memory.standing(USER_MEMORY_OWNER).map((item) => ({
+        memory.list(USER_MEMORY_OWNER).map((item) => ({
           id: item.id,
-          content: item.content,
+          tier: item.tier,
           kind: item.kind,
+          subject: item.subject,
+          content: item.content,
           createdAt: item.createdAt,
           sourceType: item.sourceType,
+          observations: item.observations,
+          scopeType: item.scopeType,
         })),
+      update: (id: string, content: string) => memory.update(id, content),
       forget: (id: string) => memory.forget(id),
     },
     triggers: {

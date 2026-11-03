@@ -1,7 +1,7 @@
 import {
   IPC,
   type SendMessageInput,
-  type StandingMemoryView,
+  type MemoryView,
   type TriggerPatch,
   type TriggerStatus,
 } from '@opc/shared/ipc';
@@ -73,9 +73,10 @@ interface RegisterOptions {
   consolidationRuns: ConsolidationRunStore;
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
-  /** 常驻约束：每轮都在生效的那几条（读写都在服务里，这里只转发）。 */
-  standing: {
-    list: () => StandingMemoryView[];
+  /** 记忆：读写都在服务里，这里只转发。 */
+  memories: {
+    list: () => MemoryView[];
+    update: (id: string, content: string) => boolean;
     forget: (id: string) => boolean;
   };
   /** 触发源：外部平台推进来的那扇门。 */
@@ -112,7 +113,7 @@ export function registerIpc({
   piSkills,
   triage,
   triggers,
-  standing,
+  memories,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -471,12 +472,18 @@ export function registerIpc({
 
   // 两层过滤的策略：读一份、写一份。写的是部分更新，没提到的字段保持原值——
   // 表单只提交它改过的那几行，不整份覆盖。
-  ipcMain.handle(IPC.memory.standing, () => standing.list());
+  ipcMain.handle(IPC.memory.list, () => memories.list());
+  ipcMain.handle(IPC.memory.update, (_event, id: unknown, content: unknown) => {
+    if (typeof id !== 'string' || typeof content !== 'string') {
+      throw new Error('memory:update 参数非法');
+    }
+    return memories.update(id, content);
+  });
   ipcMain.handle(IPC.memory.forget, (_event, id: unknown) => {
     if (typeof id !== 'string' || id.trim().length === 0) {
       throw new Error('memory:forget 参数非法');
     }
-    return standing.forget(id);
+    return memories.forget(id);
   });
 
   ipcMain.handle(IPC.trigger.status, () => triggers.status());

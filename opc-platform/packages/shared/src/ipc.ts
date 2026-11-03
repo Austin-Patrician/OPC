@@ -97,7 +97,8 @@ export const IPC = {
   },
   memory: {
     consolidationRuns: 'memory:consolidationRuns',
-    standing: 'memory:standing',
+    list: 'memory:list',
+    update: 'memory:update',
     forget: 'memory:forget',
   },
   router: {
@@ -507,24 +508,33 @@ export interface SkillsBridge {
 }
 
 /**
- * 一条常驻约束。
+ * 一条记忆，给「它记得什么」这一页看。
  *
- * 界面上它必须**显示得出来**：用户看不见的记忆等于赌博，而常驻层的每一条都在替他
- * 说话——说错了他得能当场改掉。
+ * 界面必须能回答三个问题：**记住了什么**、**记错了怎么改**、**它是从哪知道的**。
+ * 第三条尤其重要——能追到来源的记忆才是可信的记忆。
  */
-export interface StandingMemoryView {
+export interface MemoryView {
   id: string;
-  content: string;
+  /** `standing` 每轮都生效；`long` 命中相关度才出现。 */
+  tier: 'long' | 'standing';
   kind: string;
+  /** 主题键：同一条规矩改过几次都只留一条，靠它认出来。 */
+  subject: string | null;
+  content: string;
   createdAt: number;
   sourceType: string;
+  /** 被观察到几次。到 3 次会自己升进常驻层。 */
+  observations: number;
+  scopeType: string;
 }
 
 export interface MemoryBridge {
   /** Recent consolidation runs — the audit trail of "下班反思". */
   consolidationRuns(ownerId?: string): Promise<ConsolidationRunView[]>;
-  /** 每轮都在生效的那几条（`tier = 'standing'`）。 */
-  standing(): Promise<StandingMemoryView[]>;
+  /** 当前有效的全部记忆。常驻的排在最前。 */
+  list(): Promise<MemoryView[]>;
+  /** 改一条的说法。改的是内容，不是归属。 */
+  update(id: string, content: string): Promise<boolean>;
   /** 撤掉一条。归档，不是销毁。 */
   forget(id: string): Promise<boolean>;
 }

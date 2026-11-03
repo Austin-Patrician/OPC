@@ -143,7 +143,8 @@
       "billing": "Billing",
       "network": "Network & proxy",
       "runtime": "Runtimes",
-      "triage": "Event routing"
+      "triage": "Event routing",
+      "memory": "What it remembers"
     },
     "llm": {
       "desc": "Providers and models come from pi's built-in catalog; the default model and thinking level apply to the runtime.",
@@ -609,12 +610,19 @@
       "notConfigured": "Not configured (requests from this source are rejected)",
       "portHint": "The listener binds to localhost only; receiving internet pushes requires a reverse proxy or tunnel. A port change takes effect after a restart."
     },
-    "standing": {
-      "title": "Things it always remembers",
-      "desc": "Requirements in effect on every turn: how to address you, tone, formatting rules. They cost nothing extra, but a wrong one has to be removable on the spot.",
-      "empty": "Nothing yet. Anything you tell it that should hold from now on shows up here.",
-      "revoke": "Remove",
-      "footnote": "Removing only archives the entry — the record stays. You can also just say “don't do that any more” in the conversation and it will remove that one itself."
+    "memory": {
+      "title": "What it remembers",
+      "desc": "Everything it knows about you lives here. Two layers: standing items take effect on every turn, long-term items surface when relevant. Both can be edited or removed.",
+      "standingTitle": "Standing (in effect every turn)",
+      "standingDesc": "Tone, how to address you, formatting rules — the things you would notice being broken. They are never retrieved; they are always present, and their number is capped.",
+      "standingEmpty": "Nothing yet. The third time you ask for the same thing, it moves up here on its own.",
+      "longTitle": "Long-term (surfaces when relevant)",
+      "longDesc": "Recalled when needed. Unused entries drift down the ranking over time, but none of them disappear.",
+      "longEmpty": "Nothing yet. The reasons you give when asking for a redo, and the direction changes you make mid-flight, become entries here.",
+      "content": "Memory content",
+      "forget": "Remove",
+      "observedTimes": "asked {{count}} times",
+      "footnote": "Every entry carries its source and date — something you can trace is something you can trust. Anything asked for three times moves into the standing layer on its own, and tells you when it does."
     }
   },
   "notFound": {

@@ -64,6 +64,19 @@ export type MemoryKind =
  */
 export const MAX_STANDING = 20;
 
+/**
+ * 观察到几次才升进常驻层。
+ *
+ * 三次。一次可能是一时兴起，两次可能是碰巧，三次是习惯。这里用阈值而不是"看到就升"，
+ * 是因为公理 A2 说的：**应用一条错误的推断**比忘掉一条更贵——而常驻层每一轮都在生效。
+ */
+export const PROMOTE_AFTER = 3;
+
+export interface MemoryServiceOptions {
+  /** 一条记忆升进常驻层时通知外面（组合根用它去说话）。 */
+  onPromoted?: (memory: { id: string; content: string; observations: number }) => void;
+}
+
 export interface RememberInput {
   ownerId: string;
   kind: MemoryKind;
@@ -117,6 +130,8 @@ export interface MemorySnippet {
   /** 被谁取代（`null` = 还是当前这条）。 */
   supersededBy: string | null;
   volatility: MemoryVolatility;
+  /** 这个主题被观察到几次。到 3 次会自己升进常驻层。 */
+  observations: number;
   strength: number;
   createdAt: number;
   sourceType: string;
@@ -142,6 +157,7 @@ interface MemoryRow {
   subject: string | null;
   superseded_by: string | null;
   volatility: MemoryVolatility;
+  observations: number;
   strength: number;
   created_at: number;
   last_recalled_at: number | null;
@@ -156,7 +172,7 @@ interface MemoryRow {
 const SNIPPET_COLUMNS =
   'id, owner_id, content, kind, scope_type, scope_id, strength, created_at, ' +
   'last_recalled_at, recall_count, source_type, source_id, tier, ' +
-  'subject, superseded_by, volatility, embedding';
+  'subject, superseded_by, volatility, observations, embedding';
 
 /** Cosine similarity over the stored Float32 blobs; undefined when either side lacks one. */
 export function cosine(a: Float32Array, b: Float32Array): number {
@@ -193,7 +209,10 @@ export class MemoryService {
   /** Injected when an embedding model is configured (kept optional on purpose). */
   embed?: (text: string) => Promise<Float32Array | undefined>;
 
-  constructor(private readonly db: CompanyDatabase) {}
+  constructor(
+    private readonly db: CompanyDatabase,
+    private readonly options: MemoryServiceOptions = {},
+  ) {}
 
   remember = async (input: RememberInput): Promise<string> => {
     const id = `mem-${crypto.randomUUID()}`;
@@ -208,12 +227,23 @@ export class MemoryService {
     // 没有 subject 时退一步：同样的内容也只留一条。这不是同义词合并，是"同一句话说
     // 了两遍"——最常见的那种脏数据，而它能被**确定性地**认出来。
     const live = subject
-      ? this.liveBySubject(input.ownerId, subject, tier)
+      ? this.liveBySubject(input.ownerId, subject)
       : this.liveByContent(input.ownerId, content, tier);
-    if (live && live.content === content) return live.id;
+
+    // 已经在常驻层的那条，被重新说一遍时**不许掉回长期层**：用户再提一次，是把它说得
+    // 更清楚，不是要它失效。
+    const effectiveTier: MemoryTier = live && 'tier' in live && live.tier === 'standing' ? 'standing' : tier;
+
+    // 同样的内容再说一遍不是"没有新信息"——**它是最强的信号**。计数加一，也许就到了
+    // 该升进常驻层的时候。
+    if (live && live.content === content) {
+      this.bumpObservations(live.id, live.observations + 1);
+      this.maybePromote(live.id);
+      return live.id;
+    }
 
     // 同一主题上要替换掉旧的，净增为 0，所以不占常驻层的新位置。
-    if (tier === 'standing') this.admitStanding(input.ownerId, live?.id ?? null);
+    if (effectiveTier === 'standing') this.admitStanding(input.ownerId, live?.id ?? null);
     let embedding: Buffer | null = null;
     let embeddingModel: string | null = null;
     if (this.embed) {
@@ -224,12 +254,13 @@ export class MemoryService {
       }
     }
 
+    const observations = this.observationCount(input.ownerId, subject);
     const insert = this.db.prepare(
       `INSERT INTO memory
          (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
           source_type, source_id, valid_from, strength, created_at, updated_at, tier,
-          subject, volatility)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?)`,
+          subject, volatility, observations)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)`,
     );
     const close = this.db.prepare(
       `UPDATE memory SET valid_until = ?, superseded_by = ?, updated_at = ? WHERE id = ?`,
@@ -253,12 +284,93 @@ export class MemoryService {
         now,
         now,
         now,
-        tier,
+        effectiveTier,
         subject,
         volatility,
+        // 同一个主题上的第 N 次观察：计数跟着主题走，不跟着某一版内容走。
+        observations,
       );
     })();
+
+    this.maybePromote(id);
     return id;
+  };
+
+  /**
+   * 这个主题是第几次被观察到。
+   *
+   * 有 subject 就数这条主题上的历史（含被取代的旧版本）；没有 subject 时每次都是独立的
+   * 一条，所以是 1。**计数跟着主题走**——他先要三段，后改成五段，那是同一件事被看了两次。
+   */
+  private observationCount(ownerId: string, subject: string | null): number {
+    if (!subject) return 1;
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM memory WHERE owner_id = ? AND subject = ?')
+      .get(ownerId, subject) as { n: number };
+    return row.n + 1;
+  }
+
+  private bumpObservations(id: string, observations: number): void {
+    this.db
+      .prepare('UPDATE memory SET observations = ?, updated_at = ? WHERE id = ?')
+      .run(observations, Date.now(), id);
+  }
+
+  /**
+   * 到了次数就升进常驻层。
+   *
+   * 三个前提：还在长期记忆层、观察次数够了、常驻层还有位置。**没有位置就不升**——
+   * 淘汰一条别人正在生效的约束，比少升一条糟糕得多。
+   *
+   * 升完要通知外面：不可见的自动升级是赌博（`07-memory.md` §5④）。
+   */
+  private maybePromote(id: string): void {
+    const row = this.db
+      .prepare(
+        `SELECT id, owner_id, content, observations, tier FROM memory
+          WHERE id = ? AND is_archived = 0 AND valid_until IS NULL`,
+      )
+      .get(id) as
+      | { id: string; owner_id: string; content: string; observations: number; tier: MemoryTier }
+      | undefined;
+    if (!row || row.tier === 'standing' || row.observations < PROMOTE_AFTER) return;
+    if (this.countStanding(row.owner_id) >= MAX_STANDING) return;
+
+    this.db.prepare('UPDATE memory SET tier = ?, updated_at = ? WHERE id = ?').run(
+      'standing',
+      Date.now(),
+      row.id,
+    );
+    this.options.onPromoted?.({ id: row.id, content: row.content, observations: row.observations });
+  }
+
+  /** 改一条的内容。改完还是同一条、同一层——改的是说法，不是归属。 */
+  update = (id: string, content: string): boolean => {
+    const text = content.trim();
+    if (text.length === 0) return false;
+    const result = this.db
+      .prepare('UPDATE memory SET content = ?, updated_at = ? WHERE id = ? AND is_archived = 0')
+      .run(text, Date.now(), id);
+    return result.changes > 0;
+  };
+
+  /**
+   * 当前有效的全部记忆，常驻的排在最前。
+   *
+   * 「它记得什么」这个问题的答案必须是一份清单，而不是两套接口：用户不关心我们要靠
+   * `tier` 分成两条路径去查，他只想知道"这东西到底记住了我什么"。
+   */
+  list = (ownerId: string, limit = 200): MemorySnippet[] => {
+    const rows = this.db
+      .prepare(
+        `SELECT ${SNIPPET_COLUMNS}
+           FROM memory
+          WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
+          ORDER BY CASE tier WHEN 'standing' THEN 0 ELSE 1 END, created_at DESC
+          LIMIT ?`,
+      )
+      .all(ownerId, limit) as MemoryRow[];
+    return rows.map(toSnippetRow);
   };
 
   /** 同一句原话已经记过了，没有就是 null。 */
@@ -266,15 +378,17 @@ export class MemoryService {
     ownerId: string,
     content: string,
     tier: MemoryTier,
-  ): { id: string; content: string } | null {
+  ): { id: string; content: string; observations: number } | null {
     const row = this.db
       .prepare(
-        `SELECT id, content FROM memory
+        `SELECT id, content, observations FROM memory
           WHERE owner_id = ? AND content = ? AND tier = ?
             AND is_archived = 0 AND valid_until IS NULL
           LIMIT 1`,
       )
-      .get(ownerId, content, tier) as { id: string; content: string } | undefined;
+      .get(ownerId, content, tier) as
+      | { id: string; content: string; observations: number }
+      | undefined;
     return row ?? null;
   }
 
@@ -282,16 +396,17 @@ export class MemoryService {
   private liveBySubject(
     ownerId: string,
     subject: string,
-    tier: MemoryTier,
-  ): { id: string; content: string } | null {
+  ): { id: string; content: string; observations: number; tier: MemoryTier } | null {
     const row = this.db
       .prepare(
-        `SELECT id, content FROM memory
-          WHERE owner_id = ? AND subject = ? AND tier = ?
+        `SELECT id, content, observations, tier FROM memory
+          WHERE owner_id = ? AND subject = ?
             AND is_archived = 0 AND valid_until IS NULL
           LIMIT 1`,
       )
-      .get(ownerId, subject, tier) as { id: string; content: string } | undefined;
+      .get(ownerId, subject) as
+      | { id: string; content: string; observations: number; tier: MemoryTier }
+      | undefined;
     return row ?? null;
   }
 
@@ -488,6 +603,7 @@ function toSnippetRow(row: MemoryRow): MemorySnippet {
     subject: row.subject ?? null,
     supersededBy: row.superseded_by ?? null,
     volatility: row.volatility ?? 'slow',
+    observations: row.observations ?? 1,
     strength: row.strength,
     createdAt: row.created_at,
     sourceType: row.source_type,
@@ -520,6 +636,7 @@ function toSnippet(
     subject: row?.subject ?? null,
     supersededBy: row?.superseded_by ?? null,
     volatility: candidate.volatility ?? 'slow',
+    observations: row?.observations ?? 1,
     // 衰减后的强度：界面上问「这条现在还结不结实」时，答案是衰减之后的值。
     strength: decayedStrength(
       candidate.strength,

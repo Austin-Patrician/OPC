@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1709,7 +1709,27 @@ CREATE TABLE IF NOT EXISTS memory_signal (
 CREATE INDEX IF NOT EXISTS idx_memory_signal_pending ON memory_signal(processed_at, at);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38];
+/**
+ * V39：**观察次数**，用来判断一条偏好要不要升进常驻层。
+ *
+ * 「同一件事被要求过三次」比「说过一次」可靠得多，而这件事以前数不出来：P2 的去重会
+ * 把重复的那次合成一条，历史行又只是"被取代的旧版本"。所以要一个计数器，它回答的是
+ * 「这个主题被独立观察到几次」。
+ *
+ * 默认 1 让老库保持现状：谁也不会因为升级而突然多出一条常驻约束。
+ */
+const V39 = `
+ALTER TABLE memory ADD COLUMN observations INTEGER NOT NULL DEFAULT 1;
+
+-- 一个主题只留一条活着的，**不分层**：同一条偏好在常驻层和长期层各躺一份是最糟的
+-- 状态——用户看到两行一样的字，而只有其中一行真的每轮生效。
+DROP INDEX IF EXISTS idx_memory_subject_live;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_subject_live
+  ON memory(owner_id, subject)
+  WHERE subject IS NOT NULL AND is_archived = 0 AND valid_until IS NULL;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,
