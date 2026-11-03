@@ -320,8 +320,19 @@ async function bootstrap(): Promise<void> {
     if (!model) throw new Error('找不到模型');
     const transcript = turns.map((turn) => `${turn.senderId === 'user' ? '你' : '助手'}：${turn.text}`).join('\n');
     const answer = await models.complete(model, {
-      systemPrompt:
-        '把这段对话里值得长期记住的经验、事实和用户的偏好提炼成条目。每条一行，格式为「类型|内容」，类型只能是 experience/fact/preference。只提炼对话里明确出现的，不要推测。',
+      systemPrompt: [
+        '下面是一段助手和用户的对话。只提炼**会改变下次行为**的东西：',
+        '- 他明确要求过的做法、他偏好什么、他讨厌什么',
+        '- 关于他本人或他的工作的稳定事实',
+        '',
+        '**不要记**这几类。它们是这份数据变脏的全部原因：',
+        '- 这段对话里发生了什么：进度、结论、失败、谁说了什么、工具报了什么错',
+        '- 方法论与通用原则（"应当先确认验收标准"这种话对谁都成立，等于没说）',
+        '- 同一个意思的第二种说法',
+        '',
+        '每条一行，格式为「类型|内容」，类型只能是 preference / fact。',
+        '一条都提炼不出来就输出空——这是正常结果，不是失败。',
+      ].join('\n'),
       messages: [{ role: 'user', content: [{ type: 'text', text: transcript }] }],
     } as never);
     const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
@@ -334,10 +345,11 @@ async function bootstrap(): Promise<void> {
       .filter((line) => line.includes('|'))
       .map((line) => {
         const [rawKind, ...rest] = line.split('|');
-        const kind = (['experience', 'fact', 'preference'] as const).includes(
-          rawKind!.trim() as 'experience' | 'fact' | 'preference',
+        // 只收这两类：`experience` 是情景记录，属于对话历史，不属于记忆。
+        const kind = (['fact', 'preference'] as const).includes(
+          rawKind!.trim() as 'fact' | 'preference',
         )
-          ? (rawKind!.trim() as 'experience' | 'fact' | 'preference')
+          ? (rawKind!.trim() as 'fact' | 'preference')
           : 'fact';
         return { kind, content: rest.join('|').trim() };
       })

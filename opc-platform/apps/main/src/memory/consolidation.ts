@@ -24,7 +24,7 @@ export async function consolidateConversation(
   memory: MemoryService,
   conversation: ConversationSlice,
   summarize: Summarizer | undefined,
-  options: { minMessages?: number; runs?: ConsolidationRunStore } = {},
+  options: { minMessages?: number; runs?: ConsolidationRunStore; maxLessons?: number } = {},
 ): Promise<{ written: number; skipped?: string }> {
   const messages = conversation.messages.filter((message) => (message.text ?? '').trim().length > 0);
   const runId = options.runs?.start({
@@ -47,7 +47,12 @@ export async function consolidateConversation(
   }
 
   try {
-    const lessons = await summarize({ messages: messages.slice(-40) });
+    const lessons = (await summarize({ messages: messages.slice(-40) })).slice(
+      0,
+      // 模型不听指令时，代码兜底。一次巩固往长期记忆里灌十条"经验"，是这份数据变脏的
+      // 主要方式；记忆的价值在密度，不在条数。
+      options.maxLessons ?? 3,
+    );
     let written = 0;
     for (const lesson of lessons) {
       const content = lesson.content.trim();

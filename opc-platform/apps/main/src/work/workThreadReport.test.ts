@@ -247,6 +247,24 @@ describe('user steering', () => {
    * 这条是 P5 的全部意义。以前格式要求只存在记忆里，执行体按相关度捞经验——而
    * 「代码里不要写注释」和任务标题字面上几乎不重叠，捞不到，于是第四次还在犯。
    */
+  /**
+   * 通过验收**不再**往记忆里写东西。
+   *
+   * 它以前会在每次验收通过时写一条「任务《X》通过验收。交付物：…」，挂在线上。那是
+   * 日志冒充记忆：内容与 `report` 表里那条一模一样，而它读起来是"发生过什么"，不是
+   * "下次该怎么做"。真实库上这类攒了 185 条，把真正的偏好淹在下面。
+   */
+  it('一次成功的交付不会往记忆里写东西——那是日志，不是记忆', async () => {
+    const { thread, task } = await runOne();
+    expect(task.status).toBe('accepted');
+
+    expect(memory.list(thread.id)).toHaveLength(0);
+    expect(memory.list(USER_MEMORY_OWNER)).toHaveLength(0);
+    expect(memory.list(assigneeId)).toHaveLength(0);
+    // 记录本身没丢：它在汇报里。
+    expect(threads.listReportsOf(thread.id).length).toBeGreaterThan(0);
+  });
+
   it('用户要求过的做事规矩，会出现在执行体的提示词里', async () => {
     // 故意让它的字面和任务标题高度重合：如果它走"相关度"那一路，这次一定会被捞到。
     await memory.remember({

@@ -238,24 +238,17 @@ export class WorkService {
         }
         const passed = outcome === 'completed' && result?.verdict === 'pass';
 
-        if (passed && task && this.deps.memory) {
-          void this.deps.memory
-            .remember({
-              // 线级的经验挂在**线**上，不挂在写它的那个人身上：换个人接手，这条线
-              // 踩过的坑还得在。没有线的活才落到执行体自己名下。
-              ownerId: task.threadId ?? task.assigneeId,
-              kind: 'experience',
-              content: `任务《${task.title}》通过验收。交付物：${task.artifacts
-                .map((artifact) => artifact.relPath)
-                .join('、') || '（无）'}。要求：${task.deliverableSpec}`,
-              scope: task.threadId
-                ? { type: 'thread', id: task.threadId }
-                : { type: 'personal' },
-              sourceType: 'task',
-              sourceId: task.id,
-            })
-            .catch(() => undefined);
-        }
+        /*
+         * 这里本来有一次 `memory.remember`：每通过一次验收就写一条
+         * 「任务《X》通过验收。交付物：… 要求：…」，挂在线上，kind = experience。
+         *
+         * 它被删掉了，因为它是**日志冒充记忆**：内容与 `report` 表里那条一模一样，而
+         * 它读起来是"发生过什么"，不是"下次该怎么做"。真实库上这一类攒了 185 条，把
+         * 真正的偏好淹在下面——用户看一眼的结论是"脏数据"。
+         *
+         * 判据回到公理 A1：**记忆的单位不是事实，是被替代掉的决策**。这条记录替代不了
+         * 任何决策，它只是一份副本。
+         */
 
         if (!passed && task?.isReview && task.reviewOfTaskId) {
           // The reviewer never produced a verdict: surface it instead of leaving the
