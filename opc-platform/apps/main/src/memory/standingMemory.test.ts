@@ -94,8 +94,11 @@ describe('常驻层', () => {
   });
 
   it('同样的内容不记第二遍——常驻层只有那么多位置', async () => {
-    await stand('回答不要客套');
-    await expect(stand('回答不要客套')).rejects.toThrow('已经在常驻约束里');
+    const first = await stand('回答不要客套');
+    // 重复写是"已经记住了"，不是错误：返回同一条，不占第二个位置。
+    const again = await stand('回答不要客套');
+
+    expect(again).toBe(first);
     expect(memory.countStanding(USER_MEMORY_OWNER)).toBe(1);
   });
 

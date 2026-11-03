@@ -3,6 +3,23 @@
  * swappable: today lexical scoring, tomorrow vector similarity feeding the same
  * scoring function.
  */
+/**
+ * 记忆的时间常数。
+ *
+ * 「他最近在做一个 Rust 项目」会过期，「他讨厌客套话」不会。用一条半衰期套住所有记忆，
+ * 结果必然是两头都错：稳定的那条过早消失，易变的那条变成陈词。
+ *
+ * 它**只影响排序**（`07-memory.md` 公理 A2）。没有任何一条记忆会因为变旧而不可达。
+ */
+export type MemoryVolatility = 'stable' | 'slow' | 'session';
+
+/** 每一档的半衰期（天）。`stable` 一年才掉一半——短于这个窗口就是"永久有效"。 */
+export const HALF_LIFE_DAYS: Readonly<Record<MemoryVolatility, number>> = {
+  stable: 365,
+  slow: 30,
+  session: 3,
+};
+
 export interface MemoryCandidate {
   id: string;
   content: string;
@@ -12,24 +29,32 @@ export interface MemoryCandidate {
   createdAt: number;
   lastRecalledAt: number | null;
   recallCount: number;
+  volatility?: MemoryVolatility;
   /** Optional cosine similarity in [0,1] when an embedding exists. */
   similarity?: number;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Half-life decay: memory that is never recalled fades, but never reaches zero. */
-export const DECAY_HALF_LIFE_DAYS = 30;
+/** 这条记忆该用哪条曲线。没写就是 `slow`——老库里的行全是这个。 */
+export function halfLifeOf(candidate: Pick<MemoryCandidate, 'volatility'>): number {
+  return HALF_LIFE_DAYS[candidate.volatility ?? 'slow'];
+}
 
+/** 默认半衰期（`slow`）。保留这个名字，因为大多数调用方只关心"大概多久"。 */
+export const DECAY_HALF_LIFE_DAYS = HALF_LIFE_DAYS.slow;
+
+/** Half-life decay: memory that is never recalled fades, but never reaches zero. */
 export function decayedStrength(
   baseStrength: number,
   lastRecalledAt: number | null,
   createdAt: number,
   now: number,
+  halfLifeDays: number = DECAY_HALF_LIFE_DAYS,
 ): number {
   const anchor = lastRecalledAt ?? createdAt;
   const ageDays = Math.max(0, (now - anchor) / DAY);
-  const factor = Math.pow(0.5, ageDays / DECAY_HALF_LIFE_DAYS);
+  const factor = Math.pow(0.5, ageDays / halfLifeDays);
   // A floor keeps very old memories retrievable rather than silently deleted.
   return Math.max(0.05, baseStrength * factor);
 }
@@ -82,7 +107,13 @@ export function relevanceOf(candidate: MemoryCandidate, query: string): number {
 }
 
 export function scoreCandidate(candidate: MemoryCandidate, query: string, now: number): number {
-  const strength = decayedStrength(candidate.strength, candidate.lastRecalledAt, candidate.createdAt, now);
+  const strength = decayedStrength(
+    candidate.strength,
+    candidate.lastRecalledAt,
+    candidate.createdAt,
+    now,
+    halfLifeOf(candidate),
+  );
   const recallBonus = Math.min(0.1, candidate.recallCount * 0.02);
   return relevanceOf(candidate, query) + strength * 0.15 + recallBonus;
 }
@@ -117,7 +148,13 @@ export function rankMemories(
       candidate,
       score: scoreCandidate(candidate, query, now),
       relevance: relevanceOf(candidate, query),
-      strength: decayedStrength(candidate.strength, candidate.lastRecalledAt, candidate.createdAt, now),
+      strength: decayedStrength(
+        candidate.strength,
+        candidate.lastRecalledAt,
+        candidate.createdAt,
+        now,
+        halfLifeOf(candidate),
+      ),
     }))
     // `>=` 而不是 `>`：显式回忆传 0 时必须把「完全不相干」也放进来——那是它的用途。
     .filter((entry) => entry.strength >= minStrength && entry.relevance >= minRelevance)

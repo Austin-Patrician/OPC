@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
 import type { CompanyDatabase } from '../data/companyDatabase';
-import { decayedStrength, rankMemories, relevanceOf, scoreCandidate, type MemoryCandidate } from './memoryScore';
+import {
+  decayedStrength,
+  halfLifeOf,
+  rankMemories,
+  relevanceOf,
+  scoreCandidate,
+  type MemoryCandidate,
+  type MemoryVolatility,
+} from './memoryScore';
 
 export interface MemoryScope {
   /**
@@ -26,6 +34,28 @@ export interface MemoryScope {
 export type MemoryTier = 'long' | 'standing';
 
 /**
+ * 记忆的类型。
+ *
+ * `kind` 以前是个自由字符串，实际上只有一个值（`'preference'`）。后果是「他否决过的
+ * 方向」和「回复不要用被动语态」在库里是同一类，之后既不能按类型筛，也不能按类型
+ * 决定该注入给谁——只有 Router 关心的（称呼、语气）和执行体也必须遵守的（格式、
+ * 验收口径）被混在一起。
+ *
+ * 分档不是为了好看，是为了**注入时机**：`format` / `workflow` 要进执行体的提示词，
+ * `person` / `term` 只在被问到的时候才有意义。
+ */
+export type MemoryKind =
+  | 'preference'
+  | 'constraint'
+  | 'fact'
+  | 'person'
+  | 'term'
+  | 'format'
+  | 'workflow'
+  | 'experience'
+  | 'summary';
+
+/**
  * 常驻层的硬上限。
  *
  * 上限不是节省，是**纪律**：每轮都进上下文的东西必须少。20 条一旦满了，系统就被迫
@@ -36,13 +66,35 @@ export const MAX_STANDING = 20;
 
 export interface RememberInput {
   ownerId: string;
-  kind: MemoryCandidate['kind'] | 'preference' | 'summary';
+  kind: MemoryKind;
   content: string;
   scope: MemoryScope;
   sourceType: 'task' | 'conversation' | 'consolidation' | 'manual';
   sourceId?: string;
   /** 默认 `long`。只有用户明说「以后都这样」时才该是 `standing`。 */
   tier?: MemoryTier;
+  /**
+   * 主题键：这条记忆讲的是哪件事（`output.format`、`称呼`、`accent.color`）。
+   *
+   * 给了它，同一个主题上就**只留一条活着的**——新的取代旧的，旧的留档。没给就只按
+   * 内容完全相同去重，因为主题是"这条讲什么"，猜错了会把两件不相干的事合成一件。
+   */
+  subject?: string | null;
+  /** 默认 `slow`。`stable` 是"永久有效"，`session` 是"这阵子的事"。 */
+  volatility?: MemoryVolatility;
+}
+
+/**
+ * 主题键的规范化。
+ *
+ * 只做无歧义的变换：去空白、转小写、限长。不做同义词合并——`output.format` 与
+ * `reply.format` 是不是一回事，那是语义判断，属于 P3 的抽取管线，不该在写入路径上猜。
+ */
+export function normalizeSubject(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().toLowerCase().replace(/\s+/g, '-');
+  if (cleaned.length === 0) return null;
+  return cleaned.slice(0, 80);
 }
 
 /**
@@ -60,6 +112,11 @@ export interface MemorySnippet {
   scopeId: string | null;
   /** 常驻约束还是长期记忆。界面用它分组，调用方用它决定要不要按相关度筛。 */
   tier: MemoryTier;
+  /** 主题键。同一个主题上只会有一条活着的。 */
+  subject: string | null;
+  /** 被谁取代（`null` = 还是当前这条）。 */
+  supersededBy: string | null;
+  volatility: MemoryVolatility;
   strength: number;
   createdAt: number;
   sourceType: string;
@@ -82,6 +139,9 @@ interface MemoryRow {
   kind: string;
   scope_type: string;
   scope_id: string | null;
+  subject: string | null;
+  superseded_by: string | null;
+  volatility: MemoryVolatility;
   strength: number;
   created_at: number;
   last_recalled_at: number | null;
@@ -95,7 +155,8 @@ interface MemoryRow {
 /** 所有取回路径读同一组列：少一列，某个调用方就会悄悄拿不到指针。 */
 const SNIPPET_COLUMNS =
   'id, owner_id, content, kind, scope_type, scope_id, strength, created_at, ' +
-  'last_recalled_at, recall_count, source_type, source_id, tier, embedding';
+  'last_recalled_at, recall_count, source_type, source_id, tier, ' +
+  'subject, superseded_by, volatility, embedding';
 
 /** Cosine similarity over the stored Float32 blobs; undefined when either side lacks one. */
 export function cosine(a: Float32Array, b: Float32Array): number {
@@ -139,7 +200,20 @@ export class MemoryService {
     const now = Date.now();
     const tier: MemoryTier = input.tier ?? 'long';
     const content = input.content.trim();
-    if (tier === 'standing') this.admitStanding(input.ownerId, content);
+    const subject = normalizeSubject(input.subject);
+    const volatility: MemoryVolatility = input.volatility ?? 'slow';
+
+    // 一级：同一个主题、同样的内容 → 什么都不做。这不是优化，是**唯一能保证库不烂的
+    // 地方**——同一句话记三遍，之后 recall 时三条会挤占五个名额里的三个。
+    // 没有 subject 时退一步：同样的内容也只留一条。这不是同义词合并，是"同一句话说
+    // 了两遍"——最常见的那种脏数据，而它能被**确定性地**认出来。
+    const live = subject
+      ? this.liveBySubject(input.ownerId, subject, tier)
+      : this.liveByContent(input.ownerId, content, tier);
+    if (live && live.content === content) return live.id;
+
+    // 同一主题上要替换掉旧的，净增为 0，所以不占常驻层的新位置。
+    if (tier === 'standing') this.admitStanding(input.ownerId, live?.id ?? null);
     let embedding: Buffer | null = null;
     let embeddingModel: string | null = null;
     if (this.embed) {
@@ -150,18 +224,26 @@ export class MemoryService {
       }
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO memory
-           (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
-            source_type, source_id, valid_from, strength, created_at, updated_at, tier)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?)`,
-      )
-      .run(
+    const insert = this.db.prepare(
+      `INSERT INTO memory
+         (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
+          source_type, source_id, valid_from, strength, created_at, updated_at, tier,
+          subject, volatility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?)`,
+    );
+    const close = this.db.prepare(
+      `UPDATE memory SET valid_until = ?, superseded_by = ?, updated_at = ? WHERE id = ?`,
+    );
+
+    // 二级：同一个主题、不同的内容 → 取代。旧行只关掉、不删：**他以前要求过什么、
+    // 后来改成什么**本身就是信息，而且用户说「改回去」时那条还在。
+    this.db.transaction(() => {
+      if (live) close.run(now, id, now, live.id);
+      insert.run(
         id,
         input.ownerId,
         input.kind,
-        input.content.trim(),
+        content,
         input.scope.type,
         input.scope.id ?? null,
         embedding,
@@ -172,29 +254,60 @@ export class MemoryService {
         now,
         now,
         tier,
+        subject,
+        volatility,
       );
+    })();
     return id;
   };
 
-  /**
-   * 进常驻层之前的两道门：**同样的内容不记第二遍**，**满了就明说满了**。
-   *
-   * 第一道是必要的而不是优化：常驻层只有 20 个位置，一句「别写注释」被记三遍就吃掉
-   * 三个位置，而那三遍在上下文里长得一模一样。
-   *
-   * 第二道选择抛错而不是"自动淘汰最旧的"：淘汰是无提示的删除，而常驻层里被删掉的
-   * 那一条，正是用户以为还在生效的那一条。让调用方把话说清楚，比悄悄换掉一条诚实。
-   */
-  private admitStanding(ownerId: string, content: string): void {
-    const existing = this.db
+  /** 同一句原话已经记过了，没有就是 null。 */
+  private liveByContent(
+    ownerId: string,
+    content: string,
+    tier: MemoryTier,
+  ): { id: string; content: string } | null {
+    const row = this.db
       .prepare(
-        `SELECT id FROM memory
-          WHERE owner_id = ? AND tier = 'standing' AND content = ?
+        `SELECT id, content FROM memory
+          WHERE owner_id = ? AND content = ? AND tier = ?
             AND is_archived = 0 AND valid_until IS NULL
           LIMIT 1`,
       )
-      .get(ownerId, content) as { id: string } | undefined;
-    if (existing) throw new Error(`这条已经在常驻约束里了（${existing.id}）`);
+      .get(ownerId, content, tier) as { id: string; content: string } | undefined;
+    return row ?? null;
+  }
+
+  /** 这个主题上还活着的那条，没有就是 null。 */
+  private liveBySubject(
+    ownerId: string,
+    subject: string,
+    tier: MemoryTier,
+  ): { id: string; content: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, content FROM memory
+          WHERE owner_id = ? AND subject = ? AND tier = ?
+            AND is_archived = 0 AND valid_until IS NULL
+          LIMIT 1`,
+      )
+      .get(ownerId, subject, tier) as { id: string; content: string } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * 进常驻层之前的闸门：**满了就明说满了**。
+   *
+   * 选择抛错而不是"自动淘汰最旧的"：淘汰是无提示的删除，而常驻层里被删掉的那一条，
+   * 正是用户以为还在生效的那一条。让调用方把话说清楚，比悄悄换掉一条诚实。
+   *
+   * 内容重复不在这里管——`remember` 的通用去重已经先一步拦住了（同样的原话直接
+   * 返回已有那条），常驻层不重复实现第二套判断。
+   *
+   * `replaces` 是"这次会替换掉同主题上的旧条目"，净增为 0，所以不占新位置。
+   */
+  private admitStanding(ownerId: string, replaces: string | null = null): void {
+    if (replaces) return;
 
     const used = this.countStanding(ownerId);
     if (used >= MAX_STANDING) {
@@ -297,6 +410,7 @@ export class MemoryService {
         content: row.content,
         kind: row.kind,
         scopeType: row.scope_type,
+        volatility: row.volatility ?? 'slow',
         strength: row.strength,
         createdAt: row.created_at,
         lastRecalledAt: row.last_recalled_at,
@@ -363,6 +477,9 @@ function toSnippetRow(row: MemoryRow): MemorySnippet {
     scopeType: row.scope_type,
     scopeId: row.scope_id ?? null,
     tier: row.tier ?? 'long',
+    subject: row.subject ?? null,
+    supersededBy: row.superseded_by ?? null,
+    volatility: row.volatility ?? 'slow',
     strength: row.strength,
     createdAt: row.created_at,
     sourceType: row.source_type,
@@ -392,12 +509,16 @@ function toSnippet(
     scopeType: candidate.scopeType,
     scopeId: row?.scope_id ?? null,
     tier: row?.tier ?? 'long',
+    subject: row?.subject ?? null,
+    supersededBy: row?.superseded_by ?? null,
+    volatility: candidate.volatility ?? 'slow',
     // 衰减后的强度：界面上问「这条现在还结不结实」时，答案是衰减之后的值。
     strength: decayedStrength(
       candidate.strength,
       candidate.lastRecalledAt,
       candidate.createdAt,
       now,
+      halfLifeOf(candidate),
     ),
     createdAt: candidate.createdAt,
     sourceType: row?.source_type ?? 'manual',

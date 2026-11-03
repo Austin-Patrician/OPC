@@ -8,7 +8,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import { TaskRepository } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
 import type { FactService } from '../memory/factService';
-import type { MemoryService } from '../memory/memoryService';
+import type { MemoryKind, MemoryService } from '../memory/memoryService';
 import type { DecisionService } from '../models/decisionService';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { Router } from './router';
@@ -230,7 +230,10 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
    * 会读记忆的人是执行体（读自己的 id）。也就是说，记得这件事的库、和会去回忆的人，
    * 从来不是同一个。现在 Router 有了读的入口，写和读终于指向同一个 owner。
    */
-  const remember = async (text: string, options?: { standing?: boolean }) => {
+  const remember = async (
+    text: string,
+    options?: { standing?: boolean; kind?: string; subject?: string },
+  ) => {
     if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
     const content = text.trim();
     if (!content) return { ok: false, reason: '内容是空的' };
@@ -238,14 +241,17 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     let id: string;
     try {
       id = await deps.memory.remember({
-      // 挂在**这个人**名下，不是挂在 'router' 名下：一条「以后结论放前面」是关于他的，
-      // 执行体也得读得到。挂在自己名下的话，关于同一个人的偏好会被切成 N+1 份。
-      ownerId: USER_MEMORY_OWNER,
-      kind: 'preference',
-      content,
+        // 挂在**这个人**名下，不是挂在 'router' 名下：一条「以后结论放前面」是关于他的，
+        // 执行体也得读得到。挂在自己名下的话，关于同一个人的偏好会被切成 N+1 份。
+        ownerId: USER_MEMORY_OWNER,
+        kind: (options?.kind as MemoryKind | undefined) ?? 'preference',
+        content,
         scope: { type: 'personal' },
         sourceType: 'manual',
         tier,
+        // 有了 subject，改主意就是「用同一个名字再记一遍」，旧的自动留档——而不是
+        // 库里同时躺着两条互相矛盾的要求。
+        ...(options?.subject ? { subject: options.subject } : {}),
       });
     } catch (error) {
       // 常驻层满了、或者这条已经在里面了：把原因原样交回去，别让模型自己编一个。

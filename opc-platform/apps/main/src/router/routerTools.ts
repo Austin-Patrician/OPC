@@ -97,7 +97,7 @@ export interface RouterToolDeps {
    */
   remember(
     text: string,
-    options?: { standing?: boolean },
+    options?: { standing?: boolean; kind?: string; subject?: string },
   ): Promise<{ ok: boolean; id?: string; reason?: string }>;
 
   /** 撤掉一条记忆（用户说"以后别这样了"）。 */ 
@@ -311,9 +311,39 @@ export function createRouterTools(deps: RouterToolDeps) {
                 '常驻层位置有限（20 条），满了会被拒绝。',
             }),
           ),
+          subject: Type.Optional(
+            Type.String({
+              description:
+                '这条讲的是哪件事，用一个稳定的短名字（如 output.format、称呼、accent.color）。' +
+                '同一个名字上只留最新的一条，旧的自动留档——**改主意时用同一个名字再记一遍**，' +
+                '不要换成新名字，否则两条会同时存在、互相矛盾。',
+            }),
+          ),
+          kind: Type.Optional(
+            Type.Union(
+              [
+                'preference',
+                'constraint',
+                'format',
+                'workflow',
+                'person',
+                'term',
+                'fact',
+              ].map((value) => Type.Literal(value)),
+              {
+                description:
+                  '这条是哪一类。format / workflow 会被执行体也看到（写东西的规矩），' +
+                  'person / term 只在被问到的时候才有意义。默认 preference。',
+              },
+            ),
+          ),
         }),
         execute: async (args) => {
-          const result = await deps.remember(args.text, { standing: args.standing === true });
+          const result = await deps.remember(args.text, {
+            standing: args.standing === true,
+            ...(args.subject ? { subject: args.subject } : {}),
+            ...(args.kind ? { kind: args.kind } : {}),
+          });
           // id 放进 details 而不是正文：模型需要它去 recall，用户不需要在聊天里看到它。
           return result.ok
             ? ok(args.standing ? '记住了，以后都按这个来。' : '记住了。', { memoryId: result.id ?? null })

@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1653,7 +1653,33 @@ ALTER TABLE memory ADD COLUMN tier TEXT NOT NULL DEFAULT 'long'
 CREATE INDEX IF NOT EXISTS idx_memory_tier ON memory(tier, owner_id, created_at);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36];
+/**
+ * V37：记忆的**类型**、**主题**和**时间常数**。
+ *
+ * 三列都是为了让"这条和那条是不是同一件事"能由程序回答，而不是靠模型每次重新猜：
+ *
+ * - `subject`：规范化的主题键（`output.format`、`称呼`）。同一个 subject 上**只留一条
+ *   活着的**，由部分唯一索引焊死。没有它，一句「别写注释」被记三遍就是三条，之后
+ *   recall 时三条挤占五个名额里的三个。
+ * - `superseded_by`：被谁取代。旧行只写 `valid_until`，不删——「他以前要求过什么、
+ *   后来改成什么」本身就是信息。
+ * - `volatility`：时间常数。「他最近在做一个 Rust 项目」会过期，「他讨厌客套话」不会。
+ *   一条衰减曲线套在所有记忆上，必然要么让稳定的过早消失，要么让易变的变成陈词。
+ *
+ * 默认值让老库完全保持现在的行为：没有 subject 就不参与去重，`slow` 就是过去那条
+ * 30 天半衰期。
+ */
+const V37 = `
+ALTER TABLE memory ADD COLUMN subject TEXT;
+ALTER TABLE memory ADD COLUMN superseded_by TEXT;
+ALTER TABLE memory ADD COLUMN volatility TEXT NOT NULL DEFAULT 'slow'
+  CHECK (volatility IN ('stable','slow','session'));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_subject_live
+  ON memory(owner_id, subject, tier)
+  WHERE subject IS NOT NULL AND is_archived = 0 AND valid_until IS NULL;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,
