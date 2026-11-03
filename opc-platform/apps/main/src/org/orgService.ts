@@ -89,12 +89,12 @@ export class OrgService {
       .prepare(
         `SELECT e.id, e.name, e.role, e.level, e.status, e.model, e.model_ref, e.skills, e.persona, e.avatar,
                 e.tool_policy, e.hired_at, e.terminated_at, e.probation_ends_at,
-                (SELECT COALESCE(SUM(t.tokens_used), 0) FROM task t WHERE t.employee_id = e.id) AS tokens_used,
+                (SELECT COALESCE(SUM(t.tokens_used), 0) FROM task t WHERE t.owner_id = e.id) AS tokens_used,
                 p.title, p.department_id, p.reports_to_employee_id, p.is_head, p.is_acting_head, p.job_id,
-                (SELECT COUNT(*) FROM task t WHERE t.employee_id = e.id AND t.status IN ('open','running')) AS active_tasks,
-                (SELECT COUNT(*) FROM task t WHERE t.employee_id = e.id AND t.status IN ('accepted','delivered')) AS tasks_done,
+                (SELECT COUNT(*) FROM task t WHERE t.owner_id = e.id AND t.status IN ('open','running')) AS active_tasks,
+                (SELECT COUNT(*) FROM task t WHERE t.owner_id = e.id AND t.status IN ('accepted','delivered')) AS tasks_done,
                 (SELECT COALESCE(SUM(t.cost_usd), 0) FROM task t
-                  WHERE t.employee_id = e.id AND COALESCE(t.finished_at, t.created_at) >= CAST(strftime('%s','now','start of day') AS INTEGER) * 1000) AS cost_today
+                  WHERE t.owner_id = e.id AND COALESCE(t.finished_at, t.created_at) >= CAST(strftime('%s','now','start of day') AS INTEGER) * 1000) AS cost_today
          FROM employee e
          LEFT JOIN position p ON p.employee_id = e.id AND p.deleted_at IS NULL
          ORDER BY e.created_at`,
@@ -1732,7 +1732,7 @@ export class OrgService {
   fire = (employeeId: string): { cancelled: number } => {
     const now = Date.now();
     const tasks = this.db
-      .prepare("SELECT id FROM task WHERE employee_id = ? AND status IN ('open','running')")
+      .prepare("SELECT id FROM task WHERE owner_id = ? AND status IN ('open','running')")
       .all(employeeId) as { id: string }[];
 
     const seat = this.livePosition(employeeId);

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
-export type FactScopeType = 'org' | 'department' | 'project';
+export type FactScopeType = 'org' | 'department' | 'project' | 'thread';
 
 export interface OrgFact {
   id: string;

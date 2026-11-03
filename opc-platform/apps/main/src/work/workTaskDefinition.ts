@@ -64,6 +64,8 @@ export interface WorkTaskServices {
   /** Company/department facts that apply to this assignee. */
   recallFacts?: (task: {
     assigneeId: string;
+    /** 这条线自己的规定能一起召回。 */
+    threadId?: string;
   }) => Promise<{ statement: string; scopeType: string }[]>;
   /** Used when the primary brain throws (e.g. revoked key): degrade, don't fail. */
   fallbackBrain: TaskBrain;
@@ -149,7 +151,10 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
 
       if (services?.recallFacts) {
         try {
-          const facts = await services.recallFacts({ assigneeId: workTask.assigneeId });
+          const facts = await services.recallFacts({
+            assigneeId: workTask.assigneeId,
+            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
+          });
           if (facts.length > 0) {
             workTask.facts = facts;
             logStep(task.input.workTaskId, `注入 ${facts.length} 条公司事实`, {

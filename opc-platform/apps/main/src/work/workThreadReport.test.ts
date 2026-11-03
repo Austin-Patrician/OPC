@@ -47,22 +47,17 @@ beforeEach(() => {
   }
 
   org = new OrgService(db);
-  const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
-  assigneeId = org.hire({
-    name: '李雷',
-    role: '全栈工程师',
-    departmentId: department.id,
-    skills: ['Node.js'],
-  }).id;
+  threads = new ThreadRepository(db);
+  // 任务归属是一个**执行体**，不是一个人（§2.2）。
+  const home = threads.createThread({ title: '测试台', goal: '测试' });
+  assigneeId = threads.createWorker({ name: '李雷', threadId: home.id }).id;
 
   work = new WorkService({
     db,
     paths,
-    agents: [],
     upsertTaskCard: () => undefined,
     org,
   });
-  threads = new ThreadRepository(db);
 });
 
 afterEach(() => {

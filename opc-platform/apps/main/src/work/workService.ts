@@ -1,5 +1,4 @@
 import type {
-  Agent,
   TaskStatus,
   EmployeeToolPolicy,
   LinkType,
@@ -20,7 +19,6 @@ import type { Context } from '@earendil-works/chord/context';
 import { createRegistry, defineExtension } from '@earendil-works/pi-durable';
 import type { Conversation, Extension, Harness, Registry } from '@earendil-works/pi-durable';
 import crypto from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
@@ -68,7 +66,6 @@ import type { PiSkillHost } from '../skills/host';
 import { createSkillsExtension } from '../skills/extension';
 
 /** How many manager rework rounds a task may take before it is parked for the boss. */
-const MAX_REVIEW_ROUNDS = 2;
 
 /** Which work task each employee is executing right now (for tools that need it). */
 const runningTaskByEmployee = new Map<string, string>();
@@ -105,7 +102,6 @@ interface ToolSlot {
 export interface WorkServiceDeps {
   db: CompanyDatabase;
   paths: AppPaths;
-  agents: readonly Agent[];
   /** Injects / updates the task card in the conversation. */
   upsertTaskCard: (task: WorkTask) => void;
   modelConfig?: ModelConfigService;
@@ -158,7 +154,6 @@ export class WorkService {
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
     this.threads = new ThreadRepository(deps.db);
-    this.repository.seedEmployees(deps.agents);
 
     // One environment for the whole company: every tool call and acceptance
     // command resolves `node` / `python` through this service.
@@ -243,9 +238,7 @@ export class WorkService {
             .catch(() => undefined);
         }
 
-        if (passed && task?.isReview) this.applyManagerVerdict(taskId);
-        else if (passed && task) this.openManagerReview(task);
-        else if (!passed && task?.isReview && task.reviewOfTaskId) {
+        if (!passed && task?.isReview && task.reviewOfTaskId) {
           // The reviewer never produced a verdict: surface it instead of leaving the
           // reviewed task stuck in `review` forever.
           this.repository.setStatus(task.reviewOfTaskId, 'rejected', {
@@ -265,16 +258,11 @@ export class WorkService {
     setWorkTaskServices({
       recallMemories: this.deps.memory
         ? async (task) => {
-            const member = this.deps.org
-              ?.list()
-              .flatMap((department) => department.members)
-              .find((entry) => entry.id === task.assigneeId);
-            const departmentId = member?.departmentId;
+            // 两个作用域就够了：这条线自己的经验，和这个执行体自己的习惯。
+            // 「部门」那一层随着组织一起没了。
             const scopes = [
-              // 这条工作线自己的经验优先——它跟着线索走，换个人做也还在。
               ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
               { type: 'personal' as const },
-              ...(departmentId ? [{ type: 'department' as const, id: departmentId }] : []),
             ];
             const snippets = await this.deps.memory!.retrieve({
               employeeId: task.assigneeId,
@@ -291,13 +279,10 @@ export class WorkService {
         : undefined,
       recallFacts: this.deps.facts
         ? async (task) => {
-            const member = this.deps.org
-              ?.list()
-              .flatMap((department) => department.members)
-              .find((entry) => entry.id === task.assigneeId);
+            // 规定挂在**这条线**上，全局那一层还在（它讲的是这个工作台本身）。
             const scopes = [
               { type: 'org' as const },
-              ...(member?.departmentId ? [{ type: 'department' as const, id: member.departmentId }] : []),
+              ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
             ];
             return this.deps.facts!.current(scopes).map((fact) => ({
               statement: fact.statement,
@@ -574,124 +559,13 @@ export class WorkService {
     return { ok: true, task };
   };
 
-  /**
-   * Second-level acceptance: a system-passed deliverable goes to the assignee's
-   * manager, who files `verdict.json`. Without a manager the task lands directly
-   * on the boss. Review tasks themselves are never reviewed again (no recursion).
+  /*
+   * 这里原本是「二级验收」：系统验收过了，再交给这个人的经理看一遍 verdict.json。
+   *
+   * v2 里没有经理，这条链也就没有了。三层验收的边界写死在 docs/v2/01-core.md §9：
+   * ① Watchdog 判"还在不在往前走" ② 可执行闸门（退出码）③ 人的确认。
+   * 闸门过了就关单；闸门不存在或没过，就进注意力队列等人——中间不需要一个同事。
    */
-  private openManagerReview = (task: WorkTask): void => {
-    const org = this.deps.org;
-    if (!org || task.isReview) return;
-    // One sign-off per round, capped: a rework gets a fresh review, not a loop.
-    if (this.repository.listReviews(task.id).length >= MAX_REVIEW_ROUNDS) return;
-
-    const members = org.list().flatMap((department) => department.members);
-    const assignee = members.find((member) => member.id === task.assigneeId);
-    const managerId = assignee?.reportsToEmployeeId;
-    if (!managerId || managerId === task.assigneeId) return;
-    const manager = members.find((member) => member.id === managerId);
-    if (!manager || manager.status !== 'active') return;
-
-    const artifactList = task.artifacts.map((artifact) => artifact.relPath).join('、') || '（无）';
-    const created = (() => {
-      try {
-        return this.createTask({
-          title: `验收：${task.title}`,
-          brief: [
-            `你的下属 ${task.assigneeName} 交付了「${task.title}」。`,
-            `任务要求：${task.deliverableSpec}`,
-            `产物文件：${artifactList}`,
-            '',
-            '请判定这份交付是否达标。达标写 pass；不达标写 revise 并给出具体返工理由。',
-          ].join('\n'),
-          deliverableSpec: '在当前工作目录写 verdict.json：{"verdict":"pass"|"revise","reason":"说明"}',
-          assigneeId: managerId,
-          estTokens: Math.max(500, Math.round(task.estTokens / 3)),
-          acceptanceCommand: ['node', '{checks}/verify.mjs'],
-          acceptanceTemplate: 'review-verdict',
-          allowOverdraft: true,
-        });
-      } catch {
-        return null;
-      }
-    })();
-
-    if (!created || !created.ok) {
-      // The sign-off is a mandatory step: it may overdraw the budget, never skip.
-      this.repository.addStep(task.id, '负责人验收任务创建失败，任务留在 review 供人工处理');
-      return;
-    }
-
-    // Re-key the created task as the review of `task` (it was inserted as a plain task).
-    this.repository.markAsReview(created.task.id, task.id);
-    this.repository.setStatus(task.id, 'review');
-    this.emit(this.repository.getTask(task.id) as WorkTask);
-    this.runTask(created.task.id);
-  };
-
-  /** Applies the reviewer's verdict.json to the reviewed task. */
-  private applyManagerVerdict = (reviewTaskId: string): void => {
-    const review = this.repository.getTask(reviewTaskId);
-    const originalId = review?.reviewOfTaskId;
-    if (!review || !originalId) return;
-    const original = this.repository.getTask(originalId);
-    if (!original) return;
-
-    let verdict: 'pass' | 'revise' = 'pass';
-    let reason = '负责人验收通过';
-    try {
-      const raw = readFileSync(
-        path.join(this.deps.paths.workspaceDir, review.workspaceRelPath, 'verdict.json'),
-        'utf8',
-      );
-      const parsed = JSON.parse(raw) as { verdict?: string; reason?: string };
-      if (parsed.verdict === 'revise') {
-        verdict = 'revise';
-        reason = parsed.reason?.trim() || '负责人要求返工';
-      } else {
-        reason = parsed.reason?.trim() || reason;
-      }
-    } catch {
-      // A missing verdict.json is a broken review, not a pass: fail closed.
-      verdict = 'revise';
-      reason = '负责人没有提交 verdict.json';
-    }
-
-    this.repository.addAcceptance(
-      originalId,
-      {
-        verdict: verdict === 'pass' ? 'pass' : 'fail',
-        reason: `负责人验收：${reason}`,
-        evidence: { command: ['reviewer', reviewTaskId], exitCode: verdict === 'pass' ? 0 : 1, stdoutTail: reason, stderrTail: '', durationMs: 0 },
-      },
-      'manager',
-    );
-
-    if (verdict === 'pass') {
-      this.repository.setStatus(originalId, 'accepted', { finishedAt: Date.now(), error: null });
-      this.emit(this.repository.getTask(originalId) as WorkTask);
-      this.reportToThread(originalId);
-      return;
-    }
-
-    // Revise: send the work back to the assignee with the reviewer's reason. Two
-    // rounds max, so a reviewer that never relents cannot loop forever.
-    const rounds = this.repository.listReviews(originalId).length;
-    this.repository.addStep(originalId, `负责人要求返工（第 ${rounds} 轮）：${reason}`);
-    if (rounds >= MAX_REVIEW_ROUNDS) {
-      this.repository.setStatus(originalId, 'rejected', {
-        finishedAt: Date.now(),
-        error: `负责人要求返工（已 ${rounds} 轮）：${reason}`,
-      });
-      this.emit(this.repository.getTask(originalId) as WorkTask);
-      this.reportToThread(originalId);
-      return;
-    }
-
-    this.repository.setStatus(originalId, 'open', { finishedAt: null as never, error: null });
-    this.emit(this.repository.getTask(originalId) as WorkTask);
-    this.runTask(originalId);
-  };
 
   /**
    * Reasons a task must not start: no usable model, or an unfinished blocker.

@@ -94,7 +94,7 @@ export class MemoryService {
     this.db
       .prepare(
         `INSERT INTO employee_memory
-           (id, employee_id, kind, content, scope_type, scope_id, embedding, embedding_model,
+           (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
             source_type, source_id, valid_from, strength, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?)`,
       )
@@ -137,7 +137,7 @@ export class MemoryService {
       .prepare(
         `SELECT id, content, kind, scope_type, strength, created_at, last_recalled_at, recall_count, embedding
            FROM employee_memory
-          WHERE employee_id = ? AND is_archived = 0 AND valid_until IS NULL
+          WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
             ${scopeClause ? `AND (${scopeClause})` : ''}
           ORDER BY created_at DESC
           LIMIT 200`,
@@ -192,7 +192,7 @@ export class MemoryService {
       this.db
         .prepare(
           `SELECT id, content, kind, scope_type, strength, created_at, last_recalled_at, recall_count, embedding
-             FROM employee_memory WHERE employee_id = ? AND is_archived = 0
+             FROM employee_memory WHERE owner_id = ? AND is_archived = 0
             ORDER BY created_at DESC LIMIT ?`,
         )
         .all(employeeId, limit) as MemoryRow[]
@@ -207,7 +207,7 @@ export class MemoryService {
   countForEmployee = (employeeId: string): number =>
     (
       this.db
-        .prepare('SELECT COUNT(*) AS n FROM employee_memory WHERE employee_id = ? AND is_archived = 0')
+        .prepare('SELECT COUNT(*) AS n FROM employee_memory WHERE owner_id = ? AND is_archived = 0')
         .get(employeeId) as { n: number }
     ).n;
 }

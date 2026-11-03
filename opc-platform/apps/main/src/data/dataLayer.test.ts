@@ -532,20 +532,12 @@ describe('TaskRepository', () => {
     const org = new OrgService(db);
     const { manager, worker } = hireTeam(org);
     const repository = new TaskRepository(db);
-    repository.seedEmployees([
-      {
-        id: worker.id,
-        name: '李雷',
-        role: '全栈工程师',
-        level: 'P5',
-        departmentId: worker.departmentId,
-        model: '',
-        status: 'online',
-        skills: ['Node.js'],
-        briefMd: '用最小依赖实现',
-      },
-    ]);
-    return { org, manager, worker, repository };
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread({ title: '测试', goal: '测试' });
+    // 任务归属现在是执行体，不是人（§2.2）。
+    const executor = threads.createWorker({ name: '李雷', threadId: thread.id });
+
+    return { org, manager, worker, repository, executor };
   }
 
   function createTask(repository: TaskRepository, assigneeId: string, id = `task-${Math.random()}`) {
@@ -565,8 +557,8 @@ describe('TaskRepository', () => {
   }
 
   it('records an artifact with its hash and reads it back with the task', () => {
-    const { worker, repository } = setup();
-    const task = createTask(repository, worker.id);
+    const { executor, repository } = setup();
+    const task = createTask(repository, executor.id);
     const workspace = path.join(dir, 'workspace', task.workspaceRelPath);
     mkdirSync(workspace, { recursive: true });
     const file = path.join(workspace, 'server.js');
@@ -592,46 +584,18 @@ describe('TaskRepository', () => {
     expect(stored?.acceptance?.verdict).toBe('pass');
     expect(stored?.attempts).toBe(1);
     expect(stored?.steps.map((step) => step.text)).toEqual(['第 1 次尝试']);
-    expect(stored?.persona).toBe('用最小依赖实现');
-  });
-
-  it('reads the seat responsibilities live, next to the personal charter', () => {
-    const org = new OrgService(db);
-    const department = org.createDepartment({ name: '工程部' });
-    const job = org.createJob({
-      title: '测试工程师',
-      description: '每个交付都要有一条能失败的检查。',
-    });
-    const worker = org.hire({
-      name: '甲',
-      role: '工程师',
-      departmentId: department.id,
-      jobId: job.id,
-      persona: '先给结论，再给证据。',
-    });
-    const repository = new TaskRepository(db);
-    const task = createTask(repository, worker.id);
-
-    // The prompt needs both: the job says what this seat owes, the persona says how
-    // this particular person works. Neither is copied at hire time.
-    expect(task.jobDescription).toBe('每个交付都要有一条能失败的检查。');
-    expect(task.persona).toBe('先给结论，再给证据。');
-
-    // Live join: editing the template reaches the very next task load.
-    org.updateJob({ id: job.id, description: '只交付可复现的结果。' });
-    expect(repository.getTask(task.id)?.jobDescription).toBe('只交付可复现的结果。');
   });
 
   it('links a manager sign-off and counts it as a review', () => {
-    const { worker, manager, repository } = setup();
-    const task = createTask(repository, worker.id);
+    const { executor, repository } = setup();
+    const task = createTask(repository, executor.id);
     const reviewId = 'task-review';
     repository.createTask(
       {
         title: `验收：${task.title}`,
         brief: '判定是否达标',
         deliverableSpec: 'verdict.json',
-        assigneeId: manager.id,
+        assigneeId: executor.id,
         estTokens: 500,
         acceptanceCommand: ['node', '{checks}/verify.mjs'],
         acceptanceTemplate: 'review-verdict',
@@ -646,9 +610,9 @@ describe('TaskRepository', () => {
   });
 
   it('exposes exactly the tasks a restarted process must reconcile', () => {
-    const { worker, repository } = setup();
-    const open = createTask(repository, worker.id, 'task-open');
-    const running = createTask(repository, worker.id, 'task-running');
+    const { executor, repository } = setup();
+    const open = createTask(repository, executor.id, 'task-open');
+    const running = createTask(repository, executor.id, 'task-running');
     repository.setStatus(running.id, 'running', { startedAt: Date.now(), error: null });
 
     expect(repository.listPending().map((task) => task.id).sort()).toEqual(
@@ -657,12 +621,6 @@ describe('TaskRepository', () => {
     expect(repository.listRunning().map((task) => task.id)).toEqual([running.id]);
   });
 
-  it('refuses work for an employee who is no longer active', () => {
-    const { worker, org, repository } = setup();
-    org.fire(worker.id);
-
-    expect(() => createTask(repository, worker.id)).toThrow(/不在岗/);
-  });
 });
 
 describe('MemoryService', () => {
@@ -709,21 +667,11 @@ describe('task ↔ thread', () => {
     const org = new OrgService(db);
     const { worker } = hireTeam(org);
     const repository = new TaskRepository(db);
-    repository.seedEmployees([
-      {
-        id: worker.id,
-        name: '李雷',
-        role: '全栈工程师',
-        level: 'P5',
-        departmentId: worker.departmentId,
-        model: '',
-        status: 'online',
-        skills: ['Node.js'],
-        briefMd: '用最小依赖实现',
-      },
-    ]);
+
     const threads = new ThreadRepository(db);
-    return { worker, repository, threads };
+    const thread = threads.createThread({ title: '测试', goal: '测试' });
+    const executor = threads.createWorker({ name: '李雷', threadId: thread.id });
+    return { worker, repository, threads, executor };
   }
 
   function draft(assigneeId: string, threadId?: string) {
@@ -740,10 +688,10 @@ describe('task ↔ thread', () => {
   }
 
   it('keeps the thread a task was created for', () => {
-    const { worker, repository, threads } = setup();
+    const { executor, repository, threads } = setup();
     const thread = threads.createThread({ title: '整理 Q3 财报' });
     const task = repository.createTask(
-      draft(worker.id, thread.id),
+      draft(executor.id, thread.id),
       taskWorkspaceRelPath('task-t1'),
       'task-t1',
     );
@@ -752,9 +700,9 @@ describe('task ↔ thread', () => {
   });
 
   it('leaves threadId absent for work that never belonged to a goal', () => {
-    const { worker, repository } = setup();
+    const { executor, repository } = setup();
     const task = repository.createTask(
-      draft(worker.id),
+      draft(executor.id),
       taskWorkspaceRelPath('task-t2'),
       'task-t2',
     );
@@ -762,9 +710,9 @@ describe('task ↔ thread', () => {
   });
 
   it('nulls the link instead of blocking when a thread is deleted', () => {
-    const { worker, repository, threads } = setup();
+    const { executor, repository, threads } = setup();
     const thread = threads.createThread({ title: '临时线索' });
-    repository.createTask(draft(worker.id, thread.id), taskWorkspaceRelPath('task-t3'), 'task-t3');
+    repository.createTask(draft(executor.id, thread.id), taskWorkspaceRelPath('task-t3'), 'task-t3');
 
     db.prepare('DELETE FROM thread WHERE id = ?').run(thread.id);
 

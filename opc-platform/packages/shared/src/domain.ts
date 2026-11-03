@@ -177,9 +177,7 @@ export interface WorkTask {
   /** System-owned checker, run in the task workspace. */
   acceptanceCommand: string[];
   /** The assignee's charter, when it has one. */
-  persona?: string;
   /** The job's responsibilities, read live from `position → job` at task load. */
-  jobDescription?: string;
   /** Memories recalled for this run (L2 personal experience, L5 episodic). */
   memories?: { kind: string; content: string; scopeType: string }[];
   /** Current company/department facts (org_fact), most specific last. */

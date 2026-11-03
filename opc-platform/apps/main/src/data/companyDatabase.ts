@@ -34,6 +34,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   // After the steps: a fresh database only gets its `job` table inside V14, and the
   // reshape below has to see whatever shape that left behind.
   repairJobCatalogue(db);
+  retireOrgOwnership(db);
   return db;
 }
 
@@ -607,4 +608,151 @@ function ensureCompanyRow(db: CompanyDatabase): void {
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING`,
   ).run(COMPANY_ID, '我的公司', JSON.stringify(DEFAULT_COMPANY_SETTINGS), now, now);
+}
+
+
+/**
+ * 老库里的任务归属于一个人，新库里归属于一个执行体。
+ *
+ * `task.employee_id → owner_id`、`employee_memory.employee_id → owner_id`，
+ * 两张表都重建一次：列名改掉，指向 `employee` 的外键一并去掉——那个表要没了。
+ * 手法和上面几个 repair 一样（外键关掉、迁移事务外、幂等），因为 SQLite 改不了列名
+ * 与约束。
+ *
+ * 值的语义在重建时已经变了：`owner_id` 里存的是 worker id。老库里的行存的是
+ * employee id，按它查不到 worker——那些行会显示"未知执行体"，但不会让升级失败。
+ * 这是有意的：宁可让旧数据显示不全，也不要在迁移里猜一个 worker 出来。
+ */
+/** 任务表的新形状：归属是执行体，没有指向 employee / project_group 的外键。 */
+const TASK_WITH_OWNER = `
+CREATE TABLE task_rebuild (
+  id                  TEXT PRIMARY KEY,
+  title               TEXT NOT NULL,
+  brief               TEXT NOT NULL DEFAULT '',
+  deliverable_spec    TEXT NOT NULL DEFAULT '',
+  owner_id            TEXT NOT NULL,
+  owner_name          TEXT NOT NULL DEFAULT '',
+  parent_task_id      TEXT,
+  review_of_task_id   TEXT,
+  is_review           INTEGER NOT NULL DEFAULT 0,
+  depth               INTEGER NOT NULL DEFAULT 0,
+  est_tokens          INTEGER NOT NULL DEFAULT 0,
+  acceptance_command  TEXT NOT NULL DEFAULT '[]',
+  acceptance_template TEXT NOT NULL DEFAULT 'http-ok'
+                      CHECK (acceptance_template IN ('http-ok','node-test','image-200','review-verdict')),
+  status              TEXT NOT NULL DEFAULT 'open'
+                      CHECK (status IN ('open','running','review','accepted','delivered',
+                                        'rejected','failed','cancelled')),
+  workspace_rel_path  TEXT NOT NULL,
+  durable_task_id     TEXT,
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  tokens_used         INTEGER NOT NULL DEFAULT 0,
+  cost_usd            REAL NOT NULL DEFAULT 0,
+  error               TEXT,
+  started_at          INTEGER,
+  finished_at         INTEGER,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  issue_key           TEXT,
+  priority            TEXT,
+  labels              TEXT NOT NULL DEFAULT '[]',
+  due_at              INTEGER,
+  thread_id           TEXT REFERENCES thread(id) ON DELETE SET NULL,
+  worker_id           TEXT REFERENCES worker(id) ON DELETE SET NULL,
+  -- 指向 task 而不是 task_rebuild：建好之后这张表会被改名成 task，届时自引用成立。
+  FOREIGN KEY (parent_task_id) REFERENCES task(id),
+  FOREIGN KEY (review_of_task_id) REFERENCES task(id)
+)`;
+
+export function retireOrgOwnership(db: CompanyDatabase): void {
+  const columns = (table: string): string[] => {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    return rows.map((row) => row.name);
+  };
+
+  const taskColumns = columns('task');
+  if (taskColumns.includes('employee_id')) {
+    const indexes = (
+      db
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'task' AND sql IS NOT NULL")
+        .all() as { name: string; sql: string }[]
+    ).filter(
+      // 指向已被删掉那一列（project_group）的索引不再有意义，重建表时一起丢掉。
+      (index) => !/^sqlite_autoindex/.test(index.name) && !/project_group_id/.test(index.sql),
+    );
+
+    const carried = [
+      'id', 'title', 'brief', 'deliverable_spec', 'parent_task_id', 'review_of_task_id',
+      'is_review', 'depth', 'est_tokens', 'acceptance_command', 'acceptance_template',
+      'status', 'workspace_rel_path', 'durable_task_id', 'attempts', 'tokens_used',
+      'cost_usd', 'error', 'started_at', 'finished_at', 'created_at', 'updated_at',
+      'issue_key', 'priority', 'labels', 'due_at', 'thread_id', 'worker_id',
+    ].filter((name) => taskColumns.includes(name));
+    const extra = carried.join(', ');
+
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.exec('BEGIN');
+      db.exec(TASK_WITH_OWNER);
+      db.exec(
+        `INSERT INTO task_rebuild (owner_id, owner_name, ${extra})
+         SELECT employee_id, employee_name, ${extra} FROM task`,
+      );
+      db.exec('DROP TABLE task');
+      db.exec('ALTER TABLE task_rebuild RENAME TO task');
+      for (const index of indexes) db.exec(index.sql.replace(/\bemployee_id\b/g, 'owner_id'));
+      db.exec('DROP INDEX IF EXISTS idx_task_employee');
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw new Error(`重建 task 表以改用 owner_id 失败：${String(error)}`, { cause: error });
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+  }
+
+  if (columns('employee_memory').includes('employee_id')) {
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.exec('BEGIN');
+      db.exec(`
+        CREATE TABLE employee_memory_rebuild (
+          id               TEXT PRIMARY KEY,
+          owner_id         TEXT NOT NULL,
+          kind             TEXT NOT NULL,
+          content          TEXT NOT NULL,
+          scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','org','department','project','thread')),
+          scope_id         TEXT,
+          embedding        BLOB,
+          embedding_model  TEXT,
+          source_type      TEXT NOT NULL CHECK (source_type IN ('task','conversation','consolidation','manual')),
+          source_id        TEXT,
+          valid_from       INTEGER NOT NULL,
+          valid_until      INTEGER,
+          strength         REAL NOT NULL DEFAULT 1.0,
+          recall_count     INTEGER NOT NULL DEFAULT 0,
+          last_recalled_at INTEGER,
+          is_archived      INTEGER NOT NULL DEFAULT 0,
+          created_at       INTEGER NOT NULL,
+          updated_at       INTEGER NOT NULL
+        );
+        INSERT INTO employee_memory_rebuild
+          SELECT id, employee_id, kind, content, scope_type, scope_id, embedding, embedding_model,
+                 source_type, source_id, valid_from, valid_until, strength, recall_count,
+                 last_recalled_at, is_archived, created_at, updated_at
+            FROM employee_memory;
+        DROP TABLE employee_memory;
+        ALTER TABLE employee_memory_rebuild RENAME TO employee_memory;
+        CREATE INDEX IF NOT EXISTS idx_memory_scope ON employee_memory(owner_id, scope_type, scope_id);
+        CREATE INDEX IF NOT EXISTS idx_memory_thread ON employee_memory(scope_type, scope_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memory_recent ON employee_memory(owner_id, created_at DESC);
+      `);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw new Error(`重建 employee_memory 表以改用 owner_id 失败：${String(error)}`, { cause: error });
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+  }
 }

@@ -21,7 +21,7 @@ import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
-import type { Agent, SubtaskDraft, WorkThread } from '@opc/shared/domain';
+import type { SubtaskDraft, WorkThread } from '@opc/shared/domain';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -264,8 +264,6 @@ async function bootstrap(): Promise<void> {
 
   chat = new ChatService({
     db,
-    agents: agentsFromOrg(org),
-    departments: chatDepartmentsFromOrg(org),
     conversations: [],
   });
 
@@ -376,7 +374,6 @@ async function bootstrap(): Promise<void> {
   work = new WorkService({
     db,
     paths: appPaths,
-    agents: agentsFromOrg(org),
     upsertTaskCard: (task) => chat?.upsertTaskCard(task),
     modelConfig,
     images: imageService,
@@ -657,7 +654,6 @@ if (!hasLock) {
           const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         modelConfig,
         org,
@@ -797,7 +793,6 @@ if (!hasLock) {
       const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         org,
       });
@@ -854,7 +849,6 @@ if (!hasLock) {
       const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         org,
       });
@@ -972,7 +966,6 @@ if (!hasLock) {
       const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         org,
         memory,
@@ -1015,8 +1008,6 @@ if (!hasLock) {
 
       const chatProbe = new ChatService({
         db,
-        agents: agentsFromOrg(org),
-        departments: chatDepartmentsFromOrg(org),
         conversations: [],
       });
       // Deterministic summariser stand-in; the real one is models.complete.
@@ -1169,7 +1160,6 @@ if (!hasLock) {
       const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(org),
         upsertTaskCard: () => undefined,
         org,
         memory,
@@ -1303,8 +1293,6 @@ if (!hasLock) {
       const departments = org.list();
       const employees = departments.flatMap((department) => department.members);
       const chat = new ChatService({
-        agents: agentsFromOrg(org),
-        departments: chatDepartmentsFromOrg(org),
         conversations: [],
       });
       const snapshot = chat.getSnapshot();
@@ -1379,17 +1367,6 @@ if (!hasLock) {
       const work = new WorkService({
         db,
         paths: appPaths,
-        agents: [manager, worker].map((member): Agent => ({
-          id: member.id,
-          name: member.name,
-          role: member.role,
-          level: member.level,
-          model: '',
-          departmentId: dept.id,
-          status: 'online' as Agent['status'],
-          skills: [] as string[],
-          briefMd: '',
-        })),
         upsertTaskCard: () => undefined,
         org,
       });
@@ -1461,7 +1438,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
         org,
       });
@@ -1541,7 +1517,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
       });
       const org = new OrgService(db);
@@ -1630,7 +1605,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
         modelConfig,
         images,
@@ -1686,7 +1660,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
       });
       db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
@@ -1711,7 +1684,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
       });
       const before = work.listTasks().filter((task) => task.status === 'running').length;
@@ -1781,7 +1753,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
         modelConfig,
       });
@@ -1827,7 +1798,6 @@ if (!hasLock) {
         const work = new WorkService({
         db,
         paths: appPaths,
-        agents: agentsFromOrg(probeOrg),
         upsertTaskCard: () => undefined,
       });
       // Probes must be deterministic: start from an empty ledger/reservation state.

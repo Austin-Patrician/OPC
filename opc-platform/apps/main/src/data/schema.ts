@@ -180,10 +180,11 @@ CREATE TABLE IF NOT EXISTS task (
   brief               TEXT NOT NULL DEFAULT '',
   -- What must exist when the task is done, in plain language (§9.3).
   deliverable_spec    TEXT NOT NULL DEFAULT '',
-  employee_id         TEXT NOT NULL,
-  -- Denormalised on purpose: a task card must still render after its assignee is
-  -- terminated and their position is gone.
-  employee_name       TEXT NOT NULL DEFAULT '',
+  -- 谁来干：一个执行体。§2.2 之后任务属于 worker，不属于某个人。
+  owner_id            TEXT NOT NULL,
+  -- Denormalised on purpose: a task card must still render after its worker is
+  -- retired and gone from the table.
+  owner_name          TEXT NOT NULL DEFAULT '',
   parent_task_id      TEXT,
   -- Set when this task *is* the manager's sign-off of another task.
   review_of_task_id   TEXT,
@@ -208,11 +209,10 @@ CREATE TABLE IF NOT EXISTS task (
   finished_at         INTEGER,
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL,
-  FOREIGN KEY (employee_id) REFERENCES employee(id),
   FOREIGN KEY (parent_task_id) REFERENCES task(id),
   FOREIGN KEY (review_of_task_id) REFERENCES task(id)
 );
-CREATE INDEX IF NOT EXISTS idx_task_employee ON task(employee_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_owner ON task(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_task_status ON task(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_parent ON task(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_task_review_of ON task(review_of_task_id);
@@ -306,7 +306,8 @@ CREATE INDEX IF NOT EXISTS idx_ledger_task ON budget_ledger(task_id);
 -- filter instead of a rewrite (§6.2, R5).
 CREATE TABLE IF NOT EXISTS employee_memory (
   id               TEXT PRIMARY KEY,
-  employee_id      TEXT NOT NULL,
+  -- 记忆的归属：现在是一个执行体（换执行体仍然能读到自己那条线的经验）。
+  owner_id         TEXT NOT NULL,
   kind             TEXT NOT NULL,
   content          TEXT NOT NULL,
   scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','org','department','project','thread')),
@@ -324,19 +325,18 @@ CREATE TABLE IF NOT EXISTS employee_memory (
   last_recalled_at INTEGER,
   is_archived      INTEGER NOT NULL DEFAULT 0,
   created_at       INTEGER NOT NULL,
-  updated_at       INTEGER NOT NULL,
-  FOREIGN KEY (employee_id) REFERENCES employee(id)
+  updated_at       INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_memory_scope ON employee_memory(employee_id, scope_type, scope_id);
+CREATE INDEX IF NOT EXISTS idx_memory_scope ON employee_memory(owner_id, scope_type, scope_id);
 CREATE INDEX IF NOT EXISTS idx_memory_thread ON employee_memory(scope_type, scope_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_memory_recent ON employee_memory(employee_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_recent ON employee_memory(owner_id, created_at DESC);
 
 -- Shared facts (org / department / project). Not personal: everyone scoped to the
 -- same project sees the same rows.
 CREATE TABLE IF NOT EXISTS org_fact (
   id           TEXT PRIMARY KEY,
   company_id   TEXT NOT NULL,
-  scope_type   TEXT NOT NULL CHECK (scope_type IN ('org','department','project')),
+  scope_type   TEXT NOT NULL CHECK (scope_type IN ('org','department','project','thread')),
   scope_id     TEXT NOT NULL DEFAULT '',
   subject      TEXT NOT NULL,
   predicate    TEXT NOT NULL,

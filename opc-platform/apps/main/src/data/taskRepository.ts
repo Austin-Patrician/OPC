@@ -1,5 +1,4 @@
 import type {
-  Agent,
   AcceptanceTemplate,
   IssueLink,
   LinkType,
@@ -61,8 +60,8 @@ interface TaskRow {
   title: string;
   brief: string;
   deliverable_spec: string;
-  employee_id: string;
-  employee_name: string;
+  owner_id: string;
+  owner_name: string;
   parent_task_id: string | null;
   project_group_id: string | null;
   thread_id: string | null;
@@ -88,9 +87,6 @@ interface TaskRow {
   created_at: number;
   updated_at: number;
   child_count: number;
-  persona: string | null;
-  /** The seat's responsibilities, read live from `position → job`. */
-  job_description: string | null;
 }
 
 /**
@@ -117,59 +113,14 @@ export class TaskRepository {
   constructor(private readonly db: CompanyDatabase) {}
 
   /**
-   * Idempotent employee projection: the org service owns hiring, but chat and the
-   * work loop need every agent to have a row (and a budget) before they can hold a
-   * task. Existing rows keep their status — a terminated employee must not come
-   * back to life just because the UI asked for a chat list.
+   * `OPC-12`：工单号的序号。
+   *
+   * 前缀以前取自部门代码（"活儿归哪儿"）。组织没了，前缀固定成 `OPC`——单机只有
+   * 一个工作台，用不着靠前缀区分归属；序号仍然在 insert 的同一个写里取，
+   * 两个任务拿不到同一个号。
    */
-  seedEmployees = (agents: readonly Agent[]): void => {
-    const now = Date.now();
-    const upsert = this.statement(
-      `INSERT INTO employee (id, name, role, level, department_id, model, skills, persona, avatar,
-                             status, hired_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 'active', ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         role = excluded.role,
-         level = excluded.level,
-         department_id = excluded.department_id,
-         model = excluded.model,
-         skills = excluded.skills,
-         persona = excluded.persona,
-         updated_at = excluded.updated_at`,
-    );
-
-    const run = this.db.transaction(() => {
-      for (const agent of agents) {
-        upsert.run(
-          agent.id,
-          agent.name,
-          agent.role,
-          agent.level,
-          agent.departmentId || null,
-          agent.model,
-          JSON.stringify(agent.skills),
-          agent.briefMd || '',
-          now,
-          now,
-          now,
-        );
-      }
-    });
-    run();
-  };
-
-  /**
-   * `ENG-12`: prefix from the assignee's department code so a key says where the
-   * work belongs; the sequence is per prefix. Allocation happens inside the same
-   * write as the insert, so two tasks cannot take the same key.
-   */
-  private nextIssueKey(employeeId: string): string {
-    const department = this.statement(
-      `SELECT d.code AS code FROM position p JOIN department d ON d.id = p.department_id
-        WHERE p.employee_id = ? AND p.deleted_at IS NULL`,
-    ).get(employeeId) as { code: string } | undefined;
-    const prefix = (department?.code ?? 'OPC').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || 'OPC';
+  private nextIssueKey(): string {
+    const prefix = 'OPC';
     const last = this.statement(
       "SELECT issue_key FROM task WHERE issue_key LIKE ? ORDER BY LENGTH(issue_key) DESC, issue_key DESC LIMIT 1",
     ).get(`${prefix}-%`) as { issue_key: string } | undefined;
@@ -245,13 +196,13 @@ export class TaskRepository {
   /** One-time backfill for rows that predate keys; idempotent. */
   ensureIssueKeys = (): number => {
     const rows = this.db
-      .prepare('SELECT id, employee_id FROM task WHERE issue_key IS NULL ORDER BY created_at')
-      .all() as { id: string; employee_id: string }[];
+      .prepare('SELECT id, owner_id FROM task WHERE issue_key IS NULL ORDER BY created_at')
+      .all() as { id: string; owner_id: string }[];
     if (rows.length === 0) return 0;
 
     const update = this.db.prepare('UPDATE task SET issue_key = ? WHERE id = ?');
     this.db.transaction(() => {
-      for (const row of rows) update.run(this.nextIssueKey(row.employee_id), row.id);
+      for (const row of rows) update.run(this.nextIssueKey(), row.id);
     })();
     return rows.length;
   };
@@ -262,29 +213,28 @@ export class TaskRepository {
     taskId: string,
     placement?: TaskTreePlacement,
   ): WorkTask => {
-    const assignee = this.statement(
-      "SELECT id, name FROM employee WHERE id = ? AND status = 'active'",
-    ).get(draft.assigneeId) as { id: string; name: string } | undefined;
-    // A structured refusal beats a foreign-key error: the caller turns this into
-    // ASSIGNEE_UNAVAILABLE and releases the reservation it took.
-    if (!assignee) throw new Error(`员工不在岗或不存在：${draft.assigneeId}`);
+    // 谁来干：现在是一个执行体，不是一个人。名字随执行体一起记下来，
+    // 卡片在 worker 被退休之后仍然能渲染（denormalised on purpose）。
+    const owner = this.statement('SELECT id, name FROM worker WHERE id = ?').get(draft.assigneeId) as
+      | { id: string; name: string }
+      | undefined;
+    if (!owner) throw new Error(`执行体不存在：${draft.assigneeId}`);
 
     const now = Date.now();
     this.statement(
-      `INSERT INTO task (id, title, brief, deliverable_spec, employee_id, employee_name,
-                         parent_task_id, project_group_id, thread_id, worker_id, review_of_task_id, is_review, depth, est_tokens,
+      `INSERT INTO task (id, title, brief, deliverable_spec, owner_id, owner_name,
+                         parent_task_id, thread_id, worker_id, review_of_task_id, is_review, depth, est_tokens,
                          acceptance_command, acceptance_template, status, workspace_rel_path,
                          attempts, tokens_used, cost_usd, issue_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
     ).run(
       taskId,
       draft.title,
       draft.brief,
       draft.deliverableSpec,
-      assignee.id,
-      assignee.name,
+      owner.id,
+      owner.name,
       placement?.parentTaskId ?? null,
-      draft.projectGroupId ?? null,
       draft.threadId ?? null,
       draft.workerId ?? null,
       placement?.depth ?? 0,
@@ -292,7 +242,7 @@ export class TaskRepository {
       JSON.stringify(draft.acceptanceCommand),
       draft.acceptanceTemplate,
       workspaceRelPath,
-      this.nextIssueKey(assignee.id),
+      this.nextIssueKey(),
       now,
       now,
     );
@@ -317,11 +267,7 @@ export class TaskRepository {
   getTask = (taskId: string): WorkTask | undefined => {
     const row = this.statement(
       `SELECT t.*,
-              (SELECT COUNT(*) FROM task c WHERE c.parent_task_id = t.id) AS child_count,
-              (SELECT e.persona FROM employee e WHERE e.id = t.employee_id) AS persona,
-              (SELECT j.description FROM position p JOIN job j ON j.id = p.job_id
-                WHERE p.employee_id = t.employee_id AND p.deleted_at IS NULL
-                LIMIT 1) AS job_description
+              (SELECT COUNT(*) FROM task c WHERE c.parent_task_id = t.id) AS child_count
          FROM task t WHERE t.id = ?`,
     ).get(taskId) as TaskRow | undefined;
     if (!row) return undefined;
@@ -346,8 +292,8 @@ export class TaskRepository {
       title: row.title,
       brief: row.brief,
       deliverableSpec: row.deliverable_spec,
-      assigneeId: row.employee_id,
-      assigneeName: row.employee_name,
+      assigneeId: row.owner_id,
+      assigneeName: row.owner_name,
       issueKey: row.issue_key ?? undefined,
       priority: (row.priority as WorkTask['priority']) ?? 'P2',
       blockedBy: this.linksOf(row.id),
@@ -364,8 +310,6 @@ export class TaskRepository {
       estTokens: row.est_tokens,
       acceptanceCommand: parseJson<string[]>(row.acceptance_command, []),
       acceptanceTemplate: row.acceptance_template as AcceptanceTemplate,
-      ...(row.persona ? { persona: row.persona } : {}),
-      ...(row.job_description ? { jobDescription: row.job_description } : {}),
       status: row.status as TaskStatus,
       workspaceRelPath: row.workspace_rel_path,
       createdAt: row.created_at,

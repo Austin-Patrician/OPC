@@ -145,16 +145,6 @@ function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
     for (const memory of task.memories) lines.push(`- ${memory.content}`);
   }
 
-  // 岗位职责 comes from the job template (shared by everyone in the seat); persona is
-  // how this particular person works on top of it. The job part is read live, so
-  // editing the template applies to the next task instead of the next hire.
-  const charter = [task.jobDescription, task.persona]
-    .map((part) => part?.trim())
-    .filter((part): part is string => Boolean(part));
-  if (charter.length > 0) {
-    lines.unshift(`你的岗位职责（来自组织档案，必须遵守）：${charter.join('\n')}`, '');
-  }
-
   if (feedback) {
     lines.push(
       '',

@@ -41,9 +41,16 @@ interface Speaker {
 
 const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
 
+/**
+ * v2 的聊天只有一条会话，对面是 Router。
+ *
+ * `agents` / `departments` 是 v1 的（"和谁聊""在哪个部门群"）。它们现在是可选的、
+ * 且没有人会填：留着是因为 `ChatSnapshot` 仍要一个形状，不是因为还有人在用。
+ * 等快照自己也瘦下来，这两个字段就删了。
+ */
 export interface ChatServiceSeed {
-  agents: Agent[];
-  departments: ChatSnapshot['departments'];
+  agents?: Agent[];
+  departments?: ChatSnapshot['departments'];
   conversations: Conversation[];
 }
 
@@ -84,8 +91,8 @@ export class ChatService {
   constructor(seed: ChatServiceSeed & { db?: CompanyDatabase }) {
     this.db = seed.db;
     this.snapshot = {
-      agents: seed.agents,
-      departments: seed.departments,
+      agents: seed.agents ?? [],
+      departments: seed.departments ?? [],
       conversations: this.db ? this.loadConversations(seed.conversations) : seed.conversations,
       typingByConversation: {},
     };

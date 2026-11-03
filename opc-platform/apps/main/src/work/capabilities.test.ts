@@ -57,7 +57,6 @@ function workWith(org: OrgService, ocr?: OcrEngine, decisions?: DecisionService)
   return new WorkService({
     db,
     paths,
-    agents: [],
     upsertTaskCard: () => undefined,
     org,
     ...(ocr ? { ocr } : {}),
