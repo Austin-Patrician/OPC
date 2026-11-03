@@ -143,7 +143,7 @@
       "billing": "Billing",
       "network": "Network & proxy",
       "runtime": "Runtimes",
-      "triage": "What may interrupt me"
+      "triage": "Event routing"
     },
     "llm": {
       "desc": "Providers and models come from pi's built-in catalog; the default model and thinking level apply to the runtime.",
@@ -565,14 +565,14 @@
       "bundledEmpty": "No bundled engines"
     },
     "triage": {
-      "desc": "Things arrive from outside in two passes. The first is free and only blocks the obvious fakes. The second costs money and lets the assistant take an actual look. What you tune here is how tight each pass is — never whether work gets lost.",
-      "fastTitle": "First pass: the doorkeeper (free)",
-      "fastDesc": "It blocks only three obvious fakes: something the assistant just wrote itself (an echo), a message with nothing in it, and the same thing arriving again within ten minutes. Everything else goes through — when unsure it lets things in, because you would never hear about something wrongly blocked, while letting one extra in only costs a few tokens.",
-      "mode": "How it filters",
-      "fastNoise": "Only the obvious fakes",
-      "fastAllowlist": "Only my checked sources",
-      "sources": "Which sources",
-      "sourcesHint": "Sources you leave unchecked are blocked silently, with no warning anywhere. GitHub is not checked by default — check it if you use it.",
+      "desc": "Incoming events pass two stages. The first applies fixed rules and makes no model calls; the second is an optional semantic pre-filter that may call a classification model. Both settings affect cost and latency only — neither drops events silently.",
+      "fastTitle": "Rule filter (no model call)",
+      "fastDesc": "Filters only events that are provably empty or carry no new information. The rules are fixed and involve no model: events produced by the system itself, events with an empty body, and events repeated within a 60-second window (human messages are never de-duplicated). Everything else passes.",
+      "mode": "Mode",
+      "fastNoise": "Empty and repeats only",
+      "fastAllowlist": "Listed sources only",
+      "sources": "Allowed sources",
+      "sourcesHint": "Unchecked sources are dropped silently, with no notice in the interface. GitHub is unchecked by default; check it when the GitHub trigger is in use.",
       "source": {
         "im": "Chat",
         "folder": "Folder",
@@ -580,34 +580,34 @@
         "calendar": "Calendar",
         "github": "GitHub"
       },
-      "semanticTitle": "Second pass: who takes a look (costs money)",
-      "semanticDesc": "What the doorkeeper let through arrives here. The question is whether it is worth an actual look.",
-      "semantic": "Who screens",
-      "semanticRouter": "Straight to the assistant",
-      "semanticDecision": "A cheap helper scans first",
-      "threshold": "How bold the helper is",
-      "thresholdHint": "It scores every item for “this is junk”. Aggressive = throws it away at a modest score (cheapest, most likely to drop something real); cautious = only when very sure (rarely wrong, barely saves anything).",
-      "threshold05": "Aggressive",
+      "semanticTitle": "Semantic pre-filter (model call)",
+      "semanticDesc": "Decides, for events that passed the rule filter, whether they are worth the assistant's attention.",
+      "semantic": "Screening",
+      "semanticRouter": "Assistant decides",
+      "semanticDecision": "Classification model first",
+      "threshold": "Drop threshold",
+      "thresholdHint": "The classification model scores how likely each event is noise; the event is dropped once that score reaches the threshold. A lower threshold costs less and is more likely to be wrong; a higher one is more conservative, with smaller savings. The three options are 0.5 / 0.7 / 0.9.",
+      "threshold05": "Lower cost",
       "threshold07": "Default",
-      "threshold09": "Cautious",
-      "decisionHint": "The helper needs a cheap model, configured under Settings → Models → Decision. Without one this step is skipped and everything still reaches the assistant — nothing is lost.",
-      "prompt": "Tell the helper what counts as junk",
-      "promptHint": "You write this. Everyone cares about different things: if you ship all day, “tests passed” is noise; if you live in the code, it is news. Clearing it falls back to the default.",
-      "footnote": "How to choose: leave it alone at first. Once volume grows, switch to the cheap helper and give it a cheap model. If something you cared about got dropped, go cautious or go back to letting the assistant look. Nothing that was dropped is deleted — there is just no page to browse it yet."
+      "threshold09": "Conservative",
+      "decisionHint": "The classification model is the one configured under Settings → Models → Decision. When it is not configured this stage is skipped and every event goes to the assistant.",
+      "prompt": "Decision criteria",
+      "promptHint": "The criteria given to the classification model. What counts as noise differs by workflow (CI results are noise in one setting and news in another), so this is editable. Leaving it empty falls back to the default criteria.",
+      "footnote": "Both stages fail open: a rule that does not match, a missing model, a failed call or a missing answer all let the event continue upward. These settings therefore change cost, not whether an event is handled. Dropped events remain in the database and are reachable by event id; there is no list view for them yet."
     },
     "trigger": {
-      "title": "Where messages come in",
-      "desc": "Let outside platforms push messages in. Only requests with a matching signature get through — anything without a secret is refused.",
+      "title": "Event sources",
+      "desc": "Events pushed in by external platforms. Requests must pass signature verification; a source without a configured secret is rejected.",
       "github": "GitHub",
       "feishu": "Feishu",
       "dingtalk": "DingTalk",
       "secret": "Secret",
-      "githubHint": "Use the same secret in the repo's Settings → Webhooks. You will get: new pull requests, comments on them, issues, pushes, and test results.",
-      "feishuHint": "The Encrypt Key from your Feishu event subscription. A direct message never starts a line (that is you talking to the assistant); only group topics do.",
-      "dingtalkHint": "The signing secret of your DingTalk bot. Group messages join a line per conversation; direct messages go to the assistant.",
-      "configured": "Set",
-      "notConfigured": "No secret (this source is refused)",
-      "portHint": "The address is local-only; to be reachable from outside you need a tunnel in front of it. A port change needs a restart."
+      "githubHint": "The GitHub webhook Secret; must match the value in the repository's Settings → Webhooks. Subscribed events: pull_request, issues, issue_comment, push, check_run. ping is a handshake and produces no event.",
+      "feishuHint": "The Encrypt Key of the Feishu event subscription. Direct messages do not open a line (they are a direct conversation); only group topics do.",
+      "dingtalkHint": "The DingTalk bot signing secret. Group messages join one line per conversation; direct messages are left to the assistant.",
+      "configured": "Configured",
+      "notConfigured": "Not configured (requests from this source are rejected)",
+      "portHint": "The listener binds to localhost only; receiving internet pushes requires a reverse proxy or tunnel. A port change takes effect after a restart."
     }
   },
   "notFound": {
