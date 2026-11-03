@@ -126,6 +126,56 @@ describe('a task dispatched without a line of work', () => {
 
 
 /**
+ * 一个执行体同时只跑一个任务。
+ *
+ * 不是排序偏好，是正确性：执行体的 harness 背后是一份 sqlite 会话，两个 run 并发写
+ * 同一份库会把会话毒化，之后它的每一次运行都失败。直通（§3.2）把派活从"人打一次字"
+ * 变成"一来一串事件"，这条就从"偶尔踩到"变成"每天都会踩到"。
+ */
+describe('一个执行体同时只跑一个任务', () => {
+  function unsifted(title: string) {
+    const thread = threads.createThread({ title });
+    const created = work.createTask({
+      title,
+      brief: title,
+      deliverableSpec: title,
+      assigneeId,
+      estTokens: 2_000,
+      acceptanceCommand: [...UNVERIFIED_GATE],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return created.task;
+  }
+
+  it('第二个任务排在第一个之后，不是同时开跑', async () => {
+    const first = unsifted('第一件');
+    const second = unsifted('第二件');
+
+    work.runTask(first.id);
+    work.runTask(second.id);
+
+    // 一眼就能看出排上了：一个在跑，一个在等。
+    expect(work.queueSnapshot(assigneeId)).toEqual({ running: first.id, waiting: 1 });
+
+    for (let i = 0; i < 200; i += 1) {
+      const a = new TaskRepository(db).getTask(first.id);
+      const b = new TaskRepository(db).getTask(second.id);
+      if (a?.finishedAt && b?.finishedAt) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const a = new TaskRepository(db).getTask(first.id)!;
+    const b = new TaskRepository(db).getTask(second.id)!;
+    expect(a.finishedAt).toBeGreaterThan(0);
+    // 串行：第二个的开始时间不早于第一个的结束时间。
+    expect(b.startedAt).toBeGreaterThanOrEqual(a.finishedAt!);
+    expect(work.queueSnapshot(assigneeId).running).toBeNull();
+  });
+});
+
+/**
  * steering 层：你在队列上的两个动作。
  *
  * 这是系统唯一一处「人判定对不对」的入口——没有可执行闸门的活，系统自己

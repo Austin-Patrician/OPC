@@ -37,6 +37,7 @@ import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
+import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
@@ -144,6 +145,8 @@ export class WorkService {
   private readonly reportedThreads = new Map<string, TaskStatus>();
   /** Threads already warned about their ceiling; the warning is not a metronome. */
   private readonly warnedThreads = new Set<string>();
+  /** 一个执行体一条队：同一执行体的任务串行跑（`ownerQueue.ts`）。 */
+  private readonly queue: OwnerQueue;
   private readonly runtime: RuntimeService;
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
@@ -304,6 +307,30 @@ export class WorkService {
       },
       network: this.deps.network,
       runtime: this.runtime,
+    });
+
+    /**
+     * 一个执行体一条队（`ownerQueue.ts`）。
+     *
+     * 入队时**不**判 `refuseToStart`：它查的是"有没有模型、前置任务完成没有"，
+     * 而排队本身可能要等上几分钟，等轮到自己时那个前置可能已经跑完了。判在开跑
+     * 那一瞬间才对。
+     */
+    this.queue = new OwnerQueue({
+      run: (taskId) => {
+        if (this.refuseToStart(taskId)) return Promise.resolve();
+        const task = this.repository.getTask(taskId);
+        if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
+        return this.runner.run(taskId);
+      },
+      onError: (taskId, error) => {
+        this.repository.addStep(
+          taskId,
+          `启动失败：${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
+        console.error('task run failed', error);
+      },
     });
   }
 
@@ -645,40 +672,36 @@ export class WorkService {
   }
 
   /**
-   * 同一个任务只能有一个 run 在跑。
+   * 这个任务是不是已经有 run 在跑（或排在队里）。
    *
-   * 这不是优化而是正确性：pi 的 Session 是单写者，同一执行体的两个 run 并发写同一个
-   * sqlite 会直接 `Session failed after a storage error`，并把这个执行体的 harness 毒化。
-   * 触发路径很常见：负责人验收任务由 `openManagerReview` 自己启动，UI/探针再点一次。
+   * 判的是队列而不是单个字段：同一个执行体的两个任务必须**串行**，而一个字段只能
+   * 记住其中一个。原因见 `ownerQueue.ts`——并发写同一个 sqlite 会话会把 harness 毒化。
    */
   private isRunning(taskId: string): boolean {
-    for (const running of runningTaskByEmployee.values()) {
-      if (running === taskId) return true;
-    }
-    return this.repository.getTask(taskId)?.status === 'running';
+    return this.queue.isRunning(taskId) || this.repository.getTask(taskId)?.status === 'running';
+  }
+
+  /** 这个执行体现在跑着什么，还有几个在等。界面用它说"忙"。 */
+  queueSnapshot(ownerId: string): { running: string | null; waiting: number } {
+    return {
+      running: this.queue.activeTask(ownerId) ?? null,
+      waiting: this.queue.waitingFor(ownerId).length,
+    };
   }
 
   /** Fire-and-forget: the UI follows `subscribe()`. */
   runTask = (taskId: string): void => {
-    if (this.isRunning(taskId)) return;
-    if (this.refuseToStart(taskId)) return;
     const task = this.repository.getTask(taskId);
-    if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
-    void this.runner.run(taskId).catch((error) => {
-      this.repository.addStep(taskId, `启动失败：${error instanceof Error ? error.message : String(error)}`);
-      this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
-      console.error('task run failed', error);
-    });
+    if (!task) return;
+    if (this.isRunning(taskId)) return;
+    this.queue.enqueue(task.assigneeId, taskId);
   };
 
   runTaskAndWait = async (taskId: string): Promise<WorkTask> => {
-    if (this.isRunning(taskId)) return this.repository.getTask(taskId) as WorkTask;
-    if (this.refuseToStart(taskId)) return this.repository.getTask(taskId) as WorkTask;
-    const task = this.repository.getTask(taskId);
-    if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
-    return this.runner.run(taskId).finally(() => {
-      if (task) runningTaskByEmployee.delete(task.assigneeId);
-    });
+    const task = this.repository.getTask(taskId) as WorkTask;
+    if (this.isRunning(taskId)) return task;
+    await this.queue.enqueueAndWait(task.assigneeId, taskId);
+    return this.repository.getTask(taskId) as WorkTask;
   };
 
   subscribe = (listener: (task: WorkTask) => void): (() => void) => {
