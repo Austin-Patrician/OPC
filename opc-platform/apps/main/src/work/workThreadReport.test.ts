@@ -7,6 +7,7 @@ import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDataba
 import { ThreadRepository } from '../data/threadRepository';
 import { TaskRepository } from '../data/taskRepository';
 import { UNVERIFIED_GATE } from './acceptanceGate';
+import { SignalStore } from '../memory/signals';
 import { WorkService } from './workService';
 
 /**
@@ -233,6 +234,36 @@ describe('user steering', () => {
       const current = new TaskRepository(db).getTask(latest.id);
       if (current) latest.status = current.status;
     }
+  });
+
+  it('把「重做」的理由收进偏好收集箱——这句话以前被拼进 brief 就冲掉了', async () => {
+    const { thread } = await needsJudgement();
+    work.decideThread(thread.id, 'rework', '图表要标上单位，单位写在轴标题里');
+
+    const pending = new SignalStore(db).pending();
+    expect(pending.map((signal) => signal.origin)).toEqual(['rework']);
+    expect(pending[0]?.text).toBe('图表要标上单位，单位写在轴标题里');
+    expect(pending[0]?.threadId).toBe(thread.id);
+  });
+
+  it('把「中途改方向」也收进去——和返工理由是同一类证据', () => {
+    const thread = threads.createThread({ title: '写周报', goal: '写周报' });
+    const created = work.createTask({
+      title: '写周报',
+      brief: '整理本周进展',
+      deliverableSpec: '一页',
+      assigneeId,
+      estTokens: 1_000,
+      acceptanceCommand: [...UNVERIFIED_GATE],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+
+    void work.steerThread(thread.id, '周报改成三段，别用编号列表');
+
+    const pending = new SignalStore(db).pending();
+    expect(pending.map((signal) => signal.origin)).toEqual(['steering']);
   });
 
   it('refuses to rework a line that has no task at all', () => {

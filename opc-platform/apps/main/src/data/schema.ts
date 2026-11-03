@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1679,7 +1679,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_subject_live
   WHERE subject IS NOT NULL AND is_archived = 0 AND valid_until IS NULL;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37];
+/**
+ * V38：**免费的偏好信号**。
+ *
+ * 用户表达偏好最可靠的方式不是聊天里随口一句，是**他让活儿返工时的理由**：
+ * 「图表要标上单位」「结论放前面」。那是他明确说"这版不对，应该是 X"——比任何
+ * 语气猜测都干净。第二个同样可靠的信号是 `steer_line`：他中途改方向时写的那句话。
+ *
+ * 这两个信号一直在库里（返工理由被拼进下一版任务的 brief，半路被稀释掉；改方向
+ * 存在 `task.steering`），**从来没有人把它们当成偏好证据**。
+ *
+ * 现在先原样收下来，处理是后置的、批量的、可能失败的——所以它必须自己是一张表：
+ *
+ * - 收（`record`）是同步的、幂等的，发生在用户点下"重做"的那一刻，不能失败；
+ * - 处理（抽取）是异步的，一次可能处理 0 条、N 条，也可能整个失败。
+ *
+ * `processed_at` 是唯一的进度标记。抽取失败时它保持 NULL，下一轮重来——**宁可多问
+ * 一遍，不可漏掉一次**（和事件队列同一条规矩）。
+ */
+const V38 = `
+CREATE TABLE IF NOT EXISTS memory_signal (
+  id           TEXT PRIMARY KEY,
+  origin       TEXT NOT NULL CHECK (origin IN ('rework','steering')),
+  thread_id    TEXT,
+  text         TEXT NOT NULL,
+  at           INTEGER NOT NULL,
+  processed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_memory_signal_pending ON memory_signal(processed_at, at);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

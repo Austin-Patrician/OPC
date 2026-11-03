@@ -8,7 +8,9 @@ import { USER_MEMORY_OWNER } from './memory/owners';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
 import { ConsolidationRunStore } from './memory/consolidationRun';
+import { createMemoryExtraction, type MemoryExtractor } from './memory/extraction';
 import { MemoryService } from './memory/memoryService';
+import { SignalStore } from './memory/signals';
 import { FactService } from './memory/factService';
 import { resetCompany } from './seed/resetCompany';
 import { openCompanyDatabase, type CompanyDatabase } from './data/companyDatabase';
@@ -356,6 +358,55 @@ async function bootstrap(): Promise<void> {
   const speechService = new SpeechService(modelConfig, networkClient);
   const decisionService = new DecisionService(modelConfig);
 
+  /**
+   * 偏好抽取：把「返工理由」和「改方向」变成记忆。
+   *
+   * 后置、批量、可失败。它看的是用户**明确说出来的**要求，不是他说话的语气——
+   * 「图表要标上单位」是判定，「嗯……还行吧」不是。
+   *
+   * 格式是五行一段的朴素文本，和归档巩固用的是同一套办法（`models.complete` 而不是
+   * 另造一个结构化协议）：这里要的是"模型把话讲清楚"，不是"把 JSON 解析对"。
+   * 解析失败的一行就丢掉，不要为了填满结构去猜。
+   */
+  const extractPreferences: MemoryExtractor = async (signals) => {
+    const defaults = modelConfig.getDefaults().llm;
+    if (!defaults) throw new Error('未配置默认 LLM 模型');
+    const models = await modelConfig.runtime.createModels();
+    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
+    if (!model) throw new Error('找不到模型');
+
+    const transcript = signals
+      .map((signal) => `[${signal.origin === 'rework' ? '让我重做' : '中途改方向'}] ${signal.text}`)
+      .join('\n');
+    const answer = await models.complete(model, {
+      systemPrompt: [
+        '下面是一个人让助手重做、或中途改变方向时说的话。',
+        '把里面**明确表达出来、以后仍然成立**的要求提炼成条目。每条一行，五段用 | 分隔：',
+        '类型|主题|时效|范围|内容',
+        '- 类型：preference / constraint / format / workflow / person / term / fact',
+        '- 主题：这条讲的是哪件事，用一个稳定的短英文名（如 reply.length、chart.units）；说不清就写 -',
+        '- 时效：stable（一直有效）/ slow（多数偏好）/ session（只这阵子有效）',
+        '- 范围：person（关于这个人）/ thread（只关于这一单）',
+        '- 内容：一句可执行的话，不要写"他好像""可能"。',
+        '只提炼他明确说过的，不要推测。一次性的意见（"这版先这样"）不算。没有值得记的就一行都不输出。',
+      ].join('\n'),
+      messages: [{ role: 'user', content: [{ type: 'text', text: transcript }] }],
+    } as never);
+
+    const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join('');
+    return parseExtracted(text);
+  };
+
+  const preferenceExtraction = createMemoryExtraction({
+    signals: new SignalStore(db),
+    memory,
+    extract: extractPreferences,
+  });
+
+
   // One runtime service for the whole process: employees, acceptance scripts and
   // the settings page must see exactly the same interpreters. The app-owned
   // `<userData>/runtimes` directory is where the PATH shims live.
@@ -667,6 +718,24 @@ async function bootstrap(): Promise<void> {
       clearInterval(tick);
       watcher.stop();
     });
+
+    /**
+     * 偏好抽取排在后台：用户点完「重做」要立刻看到活重新跑起来，不能等一次模型调用。
+     * 五分钟一次，顺带把"上次没配模型时积下的"一起处理掉。
+     */
+    const runExtraction = (): void => {
+      void preferenceExtraction.run().then(
+        (result) => {
+          if (result.written > 0) console.warn('[memory] 从返工/改方向里抽出', result.written, '条偏好');
+          else if (result.skipped) console.warn('[memory] 本轮没抽：', result.skipped);
+        },
+        (error: unknown) => console.error('[memory] 抽取失败，信号留着下一轮再试', error),
+      );
+    };
+    runExtraction();
+    const extractionTimer = setInterval(runExtraction, 5 * 60_000);
+    extractionTimer.unref?.();
+    app.on('before-quit', () => clearInterval(extractionTimer));
 
     // 进展监督（三层验收的第 ① 层）：判的是「还在不在往前走」，不是「做得对不对」。
     // 只做程序层，不花 token：超时、长时间无新步骤、原地重复同一句。
@@ -1985,4 +2054,42 @@ if (!hasLock) {
     void work?.dispose();
     work = null;
   });
+}
+
+/**
+ * 解析抽取结果。
+ *
+ * 解析失败的一行直接丢——宁可少记一条，也不要把半句话猜成一条偏好。
+ */
+function parseExtracted(text: string): {
+  kind: 'preference' | 'constraint' | 'format' | 'workflow' | 'person' | 'term' | 'fact';
+  subject: string | null;
+  volatility: 'stable' | 'slow' | 'session';
+  scope: 'person' | 'thread';
+  content: string;
+}[] {
+  const kinds = ['preference', 'constraint', 'format', 'workflow', 'person', 'term', 'fact'] as const;
+  const volatilities = ['stable', 'slow', 'session'] as const;
+
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('|'))
+    .map((line) => {
+      const [rawKind, rawSubject, rawVolatility, rawScope, ...rest] = line.split('|');
+      const content = rest.join('|').trim();
+      if (content.length === 0) return null;
+      const kind = kinds.find((value) => value === rawKind?.trim().toLowerCase()) ?? 'preference';
+      const volatility =
+        volatilities.find((value) => value === rawVolatility?.trim().toLowerCase()) ?? 'slow';
+      const subject = rawSubject?.trim();
+      return {
+        kind,
+        subject: !subject || subject === '-' ? null : subject,
+        volatility,
+        scope: rawScope?.trim().toLowerCase() === 'thread' ? ('thread' as const) : ('person' as const),
+        content,
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 }

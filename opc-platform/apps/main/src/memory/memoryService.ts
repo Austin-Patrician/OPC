@@ -450,12 +450,20 @@ export class MemoryService {
     tx();
   };
 
+  /**
+   * 这个归属下**当前有效**的记忆。
+   *
+   * 被取代的（`superseded_by` 有值）不算：它们还在库里、还能按 id 取回，但不该出现在
+   * "它现在记得什么"的答案里。以前这里没过滤，于是同一条规矩改过两次就有三条并列——
+   * 那个列表既读不出结论，也会让界面把历史当现状。
+   */
   listForOwner = (ownerId: string, limit = 50): MemorySnippet[] =>
     (
       this.db
         .prepare(
           `SELECT ${SNIPPET_COLUMNS}
-             FROM memory WHERE owner_id = ? AND is_archived = 0
+             FROM memory
+            WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
             ORDER BY created_at DESC LIMIT ?`,
         )
         .all(ownerId, limit) as MemoryRow[]

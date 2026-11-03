@@ -41,6 +41,7 @@ import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
 import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
+import { SignalStore } from '../memory/signals';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
@@ -152,6 +153,14 @@ export class WorkService {
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
   /**
+   * 偏好信号的收集箱。
+   *
+   * 返工理由和改方向的 note 是**用户表达偏好最强的两个时刻**，以前都被冲掉了：
+   * 前者被拼进下一版任务的 brief，后者只影响那一次重试。收下来是为了让后置的抽取
+   * 管线（`memory/extraction.ts`）有机会把它们变成记忆。
+   */
+  private readonly signals: SignalStore;
+  /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
    * 会话只有 brain 自己认识。
@@ -161,6 +170,7 @@ export class WorkService {
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
     this.threads = new ThreadRepository(deps.db);
+    this.signals = new SignalStore(deps.db);
 
     // One environment for the whole company: every tool call and acceptance
     // command resolves `node` / `python` through this service.
@@ -451,6 +461,9 @@ export class WorkService {
       return { ok: false, reason, live: 0, queued: 0 };
     }
 
+    // 中途改方向同样是"原来的方向错了"的直接证据——和返工理由一起进收集箱。
+    this.signals.record({ origin: 'steering', threadId, text });
+
     let live = 0;
     for (const task of open) {
       this.repository.addSteering(task.id, text);
@@ -503,6 +516,10 @@ export class WorkService {
       threadId,
     });
     if (!created.ok) return { ok: false, error: created.error.message };
+
+    // 收集器要立刻收下，不能等：这句话就是"这版不对，应该是 X"，是整条链路上最干净的
+    // 偏好证据。处理是后置的（抽取管线），收是同步的。
+    this.signals.record({ origin: 'rework', threadId, text });
 
     this.threads.setState(threadId, 'running');
     this.runTask(created.task.id);
