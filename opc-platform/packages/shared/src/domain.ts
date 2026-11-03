@@ -191,6 +191,13 @@ export interface WorkTask {
    */
   standing?: { content: string }[];
   /**
+   * 做事规矩：用户要求过的格式与流程（`format` / `workflow`）。
+   *
+   * 和 `memories` 分开：那些是"按相关度想起来的相关经验"，是建议；这一组是**对输出的
+   * 约束**，不参与相关度筛选，必须遵守。
+   */
+  procedural?: { kind: string; content: string }[];
+  /**
    * 你中途改的方向。
    *
    * 和 `brief` 分开存，因为它们是两种东西：`brief` 是派活时说的话，`steering` 是

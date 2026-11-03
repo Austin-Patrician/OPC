@@ -198,6 +198,13 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     for (const rule of task.standing) lines.push(`- ${rule.content}`);
   }
 
+  // 用户要求过的格式与流程。它排在"相关经验"之前、"工作台的规定"之后：这是他对**输出**
+  // 的要求，比我们默认的习惯优先。
+  if (task.procedural && task.procedural.length > 0) {
+    lines.push('', '用户要求过的做事规矩（必须遵守）：');
+    for (const rule of task.procedural) lines.push(`- ${rule.content}`);
+  }
+
   if (task.facts && task.facts.length > 0) {
     lines.push('', '工作台的规定（必须遵守，优先级高于你的习惯）：');
     for (const fact of task.facts) lines.push(`- ${fact.statement}`);

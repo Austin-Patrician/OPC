@@ -69,6 +69,17 @@ export interface WorkTaskServices {
    * "每一轮原样在场"。混在一起，用户说过的那条禁令就会因为本轮不相关而消失。
    */
   recallStanding?: (task: { assigneeId: string }) => Promise<{ content: string }[]>;
+  /**
+   * 做事规矩（`format` / `workflow`）。
+   *
+   * 单独一个口子，不塞进 `recallMemories`：那个是"按相关度挑几条经验"，这个是"每次
+   * 都要遵守的约束"。混在一起，用户的格式要求就会因为本轮字面不相关而消失——而那正是
+   * 他重复说过三次的事。
+   */
+  recallProcedural?: (task: {
+    assigneeId: string;
+    threadId?: string;
+  }) => Promise<{ kind: string; content: string }[]>;
   recallFacts?: (task: {
     assigneeId: string;
     /** 这条线自己的规定能一起召回。 */
@@ -171,6 +182,29 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
           logStep(
             task.input.workTaskId,
             `常驻约束读取失败（${error instanceof Error ? error.message : String(error)}）`,
+            { repository, recordDurableStep, onTaskChanged },
+          );
+        }
+      }
+
+      if (services?.recallProcedural) {
+        try {
+          const procedural = await services.recallProcedural({
+            assigneeId: workTask.assigneeId,
+            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
+          });
+          if (procedural.length > 0) {
+            workTask.procedural = procedural;
+            logStep(task.input.workTaskId, `注入 ${procedural.length} 条做事规矩`, {
+              repository,
+              recordDurableStep,
+              onTaskChanged,
+            });
+          }
+        } catch (error) {
+          logStep(
+            task.input.workTaskId,
+            `做事规矩读取失败（${error instanceof Error ? error.message : String(error)}）`,
             { repository, recordDurableStep, onTaskChanged },
           );
         }

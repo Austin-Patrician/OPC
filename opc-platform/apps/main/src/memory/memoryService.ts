@@ -72,6 +72,14 @@ export const MAX_STANDING = 20;
  */
 export const PROMOTE_AFTER = 3;
 
+/**
+ * 程序性记忆（`format` / `workflow`）每次注入的上限。
+ *
+ * 它不参与相关度竞赛——**格式要求凭什么"这次不相关"**。「代码里不要写注释」和任何一次
+ * 写代码都相关，靠检索捞它基本捞不到（它和任务标题字面上几乎不重叠）。
+ */
+export const MAX_PROCEDURAL = 12;
+
 export interface MemoryServiceOptions {
   /** 一条记忆升进常驻层时通知外面（组合根用它去说话）。 */
   onPromoted?: (memory: { id: string; content: string; observations: number }) => void;
@@ -355,6 +363,34 @@ export class MemoryService {
   };
 
   /**
+   * 做事规矩：`format` / `workflow` 那两类。
+   *
+   * 它们和别的记忆不是一回事：**别的记忆是"可能有用的事实"，它们是"对输出的约束"**。
+   * 约束不该按相关度筛——一条「结论放前面」在任何一次产出里都成立。所以这条通道不看
+   * 相关度、不看衰减，按记下的先后原样给出（顺序稳定 → 吃得到提示词缓存）。
+   *
+   * 排除 `standing`：已经升进常驻层的那条走常驻通道，两个通道各说一遍只会让模型以为
+   * 是两条要求。
+   */
+  procedural = (ownerIds: readonly string[], limit = MAX_PROCEDURAL): MemorySnippet[] => {
+    if (ownerIds.length === 0) return [];
+    const placeholders = ownerIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT ${SNIPPET_COLUMNS}
+           FROM memory
+          WHERE owner_id IN (${placeholders})
+            AND kind IN ('format','workflow')
+            AND tier = 'long'
+            AND is_archived = 0 AND valid_until IS NULL
+          ORDER BY created_at ASC, rowid ASC
+          LIMIT ?`,
+      )
+      .all(...ownerIds, limit) as MemoryRow[];
+    return rows.map(toSnippetRow);
+  };
+
+  /**
    * 当前有效的全部记忆，常驻的排在最前。
    *
    * 「它记得什么」这个问题的答案必须是一份清单，而不是两套接口：用户不关心我们要靠
@@ -366,7 +402,7 @@ export class MemoryService {
         `SELECT ${SNIPPET_COLUMNS}
            FROM memory
           WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
-          ORDER BY CASE tier WHEN 'standing' THEN 0 ELSE 1 END, created_at DESC
+          ORDER BY CASE tier WHEN 'standing' THEN 0 ELSE 1 END, created_at DESC, rowid ASC
           LIMIT ?`,
       )
       .all(ownerId, limit) as MemoryRow[];
@@ -448,6 +484,10 @@ export class MemoryService {
    *
    * 按创建时间正序而不是倒序：这个列表会出现在每一轮的输入里，顺序稳定才能吃到
    * provider 的提示词缓存，也让"上一轮和这一轮的区别"一眼看得出来。
+   *
+   * 次级键用 `rowid`（插入顺序）而不是 `id`（随机的 uuid）：同一毫秒里写进去的两条会
+   * 撞 `created_at`，没有稳定的次级键，提示词里的顺序每轮都可能变——**缓存全废，而且
+   * 看起来像模型抽风**。
    */
   standing = (ownerId: string): MemorySnippet[] => {
     const rows = this.db
@@ -455,7 +495,7 @@ export class MemoryService {
         `SELECT ${SNIPPET_COLUMNS}
            FROM memory
           WHERE owner_id = ? AND tier = 'standing' AND is_archived = 0 AND valid_until IS NULL
-          ORDER BY created_at ASC
+          ORDER BY created_at ASC, rowid ASC
           LIMIT ${MAX_STANDING}`,
       )
       .all(ownerId) as MemoryRow[];

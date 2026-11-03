@@ -291,12 +291,31 @@ export class WorkService {
               scopes,
               limit: 5,
             });
-            return snippets.map((snippet) => ({
-              kind: snippet.kind,
-              content: snippet.content,
-              scopeType: snippet.scopeType,
-            }));
+            // 做事规矩走自己那条通道（`recallProcedural`），这里滤掉——同一条要求
+            // 在提示词里出现两遍，模型会当成两条。
+            return snippets
+              .filter((snippet) => snippet.kind !== 'format' && snippet.kind !== 'workflow')
+              .map((snippet) => ({
+                kind: snippet.kind,
+                content: snippet.content,
+                scopeType: snippet.scopeType,
+              }));
           }
+        : undefined,
+      /**
+       * 做事规矩：`format` / `workflow` 那两类记忆。
+       *
+       * 这条通道不看相关度、不看衰减——**约束不应该按相关度筛**。「结论放前面」在任何
+       * 一次产出里都成立，而它和任务标题字面上几乎不重叠，靠检索基本捞不到。学习回路
+       * 断的就是这一跳：记忆存下来了，执行体的提示词里没有它，于是第四次还在犯。
+       */
+      recallProcedural: this.deps.memory
+        ? async (task) =>
+            this.deps.memory!
+              .procedural(
+                recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
+              )
+              .map((item) => ({ kind: item.kind, content: item.content }))
         : undefined,
       // 常驻约束：和谁在干活无关，它讲的是"这个人要求过什么"。
       recallStanding: this.deps.memory

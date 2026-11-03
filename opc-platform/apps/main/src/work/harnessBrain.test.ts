@@ -66,6 +66,46 @@ describe('执行体看到的提示词', () => {
     expect(prompt).toContain('以这里为准');
   });
 
+  /**
+   * 做事规矩（P5）：用户要求过的格式与流程。
+   *
+   * 它和"相关经验"必须分两段写——经验是**建议**（"可直接使用"），规矩是**约束**
+   * （"必须遵守"）。当初就是因为混在一起、语气是建议，模型执行起来打了折。
+   */
+  it('做事规矩单独一段，口气是"必须遵守"，不是"可以参考"', () => {
+    const prompt = buildPrompt(
+      task({ procedural: [{ kind: 'format', content: '代码里不要写注释' }] }),
+    );
+
+    expect(prompt).toContain('用户要求过的做事规矩（必须遵守）');
+    expect(prompt).toContain('- 代码里不要写注释');
+    // 不能混进"相关经验"那一段。
+    const ruleAt = prompt.indexOf('用户要求过的做事规矩');
+    const memoryAt = prompt.indexOf('你想起的相关经验');
+    expect(memoryAt).toBe(-1);
+    expect(ruleAt).toBeGreaterThan(-1);
+  });
+
+  it('顺序：改过的方向 > 常驻约束 > 做事规矩 > 工作台的规定', () => {
+    const prompt = buildPrompt(
+      task({
+        steering: [{ note: '改成 8080', at: 1 }],
+        standing: [{ content: '称呼用「你」' }],
+        procedural: [{ kind: 'format', content: '结论放最前面' }],
+        facts: [{ statement: '交付必须带 README', scopeType: 'global' }],
+      }),
+    );
+
+    const at = (needle: string) => prompt.indexOf(needle);
+    expect(at('用户在做这件事的过程中改了方向')).toBeLessThan(at('用户要求过、一直有效'));
+    expect(at('用户要求过、一直有效')).toBeLessThan(at('用户要求过的做事规矩'));
+    expect(at('用户要求过的做事规矩')).toBeLessThan(at('工作台的规定'));
+  });
+
+  it('没有做事规矩时不留空标题', () => {
+    expect(buildPrompt(task())).not.toContain('做事规矩');
+  });
+
   it('改过两次就两条都在，按说的顺序', () => {
     const prompt = buildPrompt(
       task({

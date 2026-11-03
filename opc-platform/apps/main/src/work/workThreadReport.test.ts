@@ -7,6 +7,8 @@ import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDataba
 import { ThreadRepository } from '../data/threadRepository';
 import { TaskRepository } from '../data/taskRepository';
 import { UNVERIFIED_GATE } from './acceptanceGate';
+import { MemoryService } from '../memory/memoryService';
+import { USER_MEMORY_OWNER } from '../memory/owners';
 import { SignalStore } from '../memory/signals';
 import { WorkService } from './workService';
 
@@ -27,6 +29,7 @@ let paths: AppPaths;
 let work: WorkService;
 let threads: ThreadRepository;
 let assigneeId: string;
+let memory: MemoryService;
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'opc-thread-report-'));
@@ -50,10 +53,12 @@ beforeEach(() => {
   const home = threads.createThread({ title: '测试台', goal: '测试' });
   assigneeId = threads.createWorker({ name: '李雷', threadId: home.id }).id;
 
+  memory = new MemoryService(db);
   work = new WorkService({
     db,
     paths,
     upsertTaskCard: () => undefined,
+    memory,
   });
 });
 
@@ -234,6 +239,32 @@ describe('user steering', () => {
       const current = new TaskRepository(db).getTask(latest.id);
       if (current) latest.status = current.status;
     }
+  });
+
+  /**
+   * 学习回路闭合：用户的要求真的改变了执行体看到的提示词。
+   *
+   * 这条是 P5 的全部意义。以前格式要求只存在记忆里，执行体按相关度捞经验——而
+   * 「代码里不要写注释」和任务标题字面上几乎不重叠，捞不到，于是第四次还在犯。
+   */
+  it('用户要求过的做事规矩，会出现在执行体的提示词里', async () => {
+    // 故意让它的字面和任务标题高度重合：如果它走"相关度"那一路，这次一定会被捞到。
+    await memory.remember({
+      ownerId: USER_MEMORY_OWNER,
+      kind: 'format',
+      content: '健康检查服务里不要写注释',
+      scope: { type: 'personal' },
+      sourceType: 'manual',
+      subject: 'code.comments',
+    });
+
+    const { task } = await runOne();
+    const steps = task.steps.map((step) => step.text);
+
+    // 走的是"做事规矩"那条通道。
+    expect(steps).toContain('注入 1 条做事规矩');
+    // 而且**只走这一条**：同一条要求既当规矩又当经验，模型会当成两条。
+    expect(steps.some((text) => /^注入 \d+ 条记忆$/.test(text))).toBe(false);
   });
 
   it('把「重做」的理由收进偏好收集箱——这句话以前被拼进 brief 就冲掉了', async () => {
