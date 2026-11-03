@@ -51,6 +51,11 @@ import { createOcrToolExtension } from './ocrTool';
 import { createSpeechToolExtension } from './speechTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
 import { buildRecords, type RecordSource } from './records';
+import { ensureDir, listWorkspaceFiles } from './workspace';
+import { createInvestigateToolExtension } from './investigateTool';
+import { buildSubagentPrompt, readAnswerFile, type SubagentAnswer } from './subagent';
+import { priceUsage } from './usage';
+import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import { createRecallToolExtension, type RecallOutcome } from './recallTool';
 import { bodyOf } from '../router/triage';
 import { recallView } from '../router/inline';
@@ -986,6 +991,27 @@ export class WorkService {
       }),
     });
 
+    // 子代理（原文 §2.2）：把一段思考交给一个干净的上下文。
+    // 没有模型就不装——它自己也跑不起来，装了只会让模型第一次调用就撞墙。
+    slots.push(
+      this.modelBrain
+        ? {
+            name: 'opc.investigate',
+            essential: false,
+            available: true,
+            extension: createInvestigateToolExtension({
+              taskId: () => currentTaskIdFor(personId),
+              run: (input) => this.runSubagent(input),
+              log: (taskId, text) => {
+                this.repository.addStep(taskId, text);
+                const task = this.repository.getTask(taskId);
+                if (task) this.emit(task);
+              },
+            }),
+          }
+        : { name: 'opc.investigate', essential: false, available: false, reason: 'no-llm' },
+    );
+
     // 拆解的前提是"还有别的执行体可派"。只有一个时工具根本不装；
     // 有两个以上时，谁都可以把活交给别人——这里已经没有汇报线了。
     const assignable = this.assignableTo(subject.id);
@@ -1176,14 +1202,17 @@ export class WorkService {
 
   /** 关掉一个执行体的运行时。注册表在开库时固定，改工具集必须重开。 */
   private async evictRuntime(workerId: string): Promise<void> {
-    const entry = this.harnesses.get(workerId);
-    if (!entry) return;
-    this.harnesses.delete(workerId);
-    const context = await getBackgroundContext();
-    try {
-      await entry.harness.close(context);
-    } catch (error) {
-      console.warn('关闭执行体 harness 失败（栈已变更）', error);
+    // 子代理那一份也要关：注册表在开库时固定，留着它 = 换掉的工具集对子代理不生效。
+    for (const key of [workerId, `${workerId}--sub`]) {
+      const entry = this.harnesses.get(key);
+      if (!entry) continue;
+      this.harnesses.delete(key);
+      const context = await getBackgroundContext();
+      try {
+        await entry.harness.close(context);
+      } catch (error) {
+        console.warn('关闭执行体 harness 失败（栈已变更）', error);
+      }
     }
   }
 
@@ -1203,6 +1232,131 @@ export class WorkService {
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
+  }
+
+  /**
+   * 子代理真的跑一次（原文 §2.2）。
+   *
+   * 三件事决定了它的形状：
+   *
+   * 1. **它有自己的会话、自己的上下文**，但**共用父执行体的 harness**（也就是同一份
+   *    registry）：它是这个人派出去的手，不是另一个人。
+   * 2. **它的 cwd 是临时目录，沙箱只放行那一个可写根**。父任务的工作目录对它只读——
+   *    这一条不靠提示词，靠沙箱：验收只认父目录里的产物，子代理要是能往里写，父就失去
+   *    了"我交出的是什么"的确定性。
+   * 3. **账记在父任务上**。账目里不该出现"没有任务的支出"，否则线级预算说不清"这件事
+   *    值不值"。
+   */
+  private async runSubagent(request: {
+    taskId: string;
+    question: string;
+    expects: string;
+  }): Promise<SubagentAnswer> {
+    const task = this.repository.getTask(request.taskId);
+    if (!task) throw new Error('父任务不见了');
+    if (!this.deps.modelConfig) throw new Error('没有配置模型');
+
+    const identity = runtimeIdentityFor(task);
+    const model = resolveWorkerModelRef({
+      worker: this.threads.getWorker(identity.runtimeKey),
+      modelConfig: this.deps.modelConfig,
+    });
+    if (!model) throw new Error('执行体没有可用的模型');
+
+    const workspaceDir = path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath);
+    const scratchDir = path.join(
+      this.deps.paths.userData,
+      'scratch',
+      task.id,
+      `sub-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    ensureDir(scratchDir);
+
+    const { harness } = await this.harnessFor(identity, { storageSuffix: '--sub' });
+    const ctx = await getBackgroundContext();
+    const before = await harness.usage(ctx);
+
+    const conversation = await harness.createConversation(
+      {
+        ownership: { kind: 'ownerless' },
+        agent: {
+          model: { provider: model.providerId, modelId: model.modelId },
+          thinkingLevel: (this.deps.modelConfig.getThinking() ?? 'medium') as never,
+          // 它的世界只有临时目录——父目录它是"读得到的客人"，不是住户。
+          cwd: scratchDir,
+        },
+      },
+      ctx,
+    );
+    // 沙箱只放行一个可写根。父任务的工作目录不在里面，所以"写不进去"是执行出来的，
+    // 不是叮嘱出来的（读仍然放行）。
+    registerSandboxWorkspace(conversation.id, scratchDir);
+
+    const submission = await conversation.submit(
+      {
+        type: 'input',
+        content: buildSubagentPrompt({
+          ...request,
+          deliverableSpec: task.deliverableSpec,
+          workspaceDir,
+          scratchDir,
+          constraints: this.constraintsFor(task),
+        }),
+      },
+      ctx,
+    );
+    const settled = await submission.wait(ctx);
+
+    const after = await harness.usage(ctx);
+    const price = this.pricingFor(model);
+    const { tokens, costUsd } = priceUsage(before, after, price);
+    if (tokens > 0) this.repository.addTokens(task.id, tokens);
+    if (costUsd > 0) this.repository.addCost(task.id, costUsd);
+
+    if (settled.status !== 'done') throw new Error(`子代理未完成（${settled.status}）`);
+
+    return {
+      answer: readAnswerFile(scratchDir),
+      written: listWorkspaceFiles(scratchDir).map((file) => file.relPath),
+      tokens,
+      costUsd,
+    };
+  }
+
+  /**
+   * 子代理要继承的**约束**（不是历史）。
+   *
+   * 用户对输出的要求对子输出同样成立，所以常驻约束、做事规矩、工作台规定都带上；
+   * 父的对话历史一概不给——隔离正是它有价值的原因。
+   */
+  private constraintsFor(task: WorkTask): string[] {
+    const memory = this.deps.memory;
+    const rules: string[] = [];
+    if (memory) {
+      for (const rule of memory.standing(USER_MEMORY_OWNER)) rules.push(rule.content);
+      for (const rule of memory.procedural(
+        recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
+      )) {
+        rules.push(rule.content);
+      }
+    }
+    if (this.deps.facts) {
+      const scopes = [
+        { type: 'global' as const },
+        ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
+      ];
+      for (const fact of this.deps.facts.current(scopes)) rules.push(fact.statement);
+    }
+    return rules;
+  }
+
+  private pricingFor(model: { providerId: string; modelId: string }): {
+    inputUsdPerM: number;
+    outputUsdPerM: number;
+  } {
+    const provider = this.deps.modelConfig?.listProviders().find((entry) => entry.id === model.providerId);
+    const found = provider?.models.find((entry) => entry.id === model.modelId);
+    return { inputUsdPerM: found?.inputUsdPerM ?? 0, outputUsdPerM: found?.outputUsdPerM ?? 0 };
   }
 
   /**
@@ -1407,8 +1561,16 @@ export class WorkService {
    * the tool registry and model. They are the same value until a task carries a
    * worker id, which is why old data keeps its existing `agents/<employee>.sqlite`.
    */
-  private async harnessFor(identity: RuntimeIdentity): Promise<EmployeeHarness> {
-    const cached = this.harnesses.get(identity.runtimeKey);
+  private async harnessFor(
+    identity: RuntimeIdentity,
+    options: { storageSuffix?: string } = {},
+  ): Promise<EmployeeHarness> {
+    // 子代理用**另一份存储**（`<workerId>--sub.sqlite`），但共用同一个主体：
+    // 同一套工具、同一个模型。分开存储的理由有两条，都不是洁癖——
+    // ① 上下文隔离是子代理存在的意义，共用一个会话库等于没隔离；
+    // ② 工具调用在等另一轮 generation 时，同一个 harness 里的调度顺序是不确定的。
+    const cacheKey = `${identity.runtimeKey}${options.storageSuffix ?? ''}`;
+    const cached = this.harnesses.get(cacheKey);
     if (cached) return cached;
 
     const { Harness } = await import('@earendil-works/pi-durable');
@@ -1416,7 +1578,7 @@ export class WorkService {
     const { NodeExecutionEnv } = await import('@earendil-works/pi-durable/env/node');
 
     const context = await getBackgroundContext();
-    const storagePath = path.join(this.deps.paths.agentsDir, `${identity.runtimeKey}.sqlite`);
+    const storagePath = path.join(this.deps.paths.agentsDir, `${cacheKey}.sqlite`);
 
     const subject = this.subjectFor(identity);
     const registry = await this.buildRegistry(subject);
@@ -1454,7 +1616,7 @@ export class WorkService {
     );
     const root = await harness.root(context);
     const entry = { harness, root, ownerId: identity.ownerId };
-    this.harnesses.set(identity.runtimeKey, entry);
+    this.harnesses.set(cacheKey, entry);
     return entry;
   }
 }

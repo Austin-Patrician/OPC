@@ -2,13 +2,10 @@ import type { WorkTask } from '@opc/shared/domain';
 import type { Context } from '@earendil-works/chord/context';
 import type { ModelRef } from '@opc/shared/domain';
 import type { Harness, Conversation } from '@earendil-works/pi-durable';
-
-interface UsageLike {
-  models?: Record<string, { input: number; output: number; cost?: { total?: number } }>;
-}
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
+import { priceUsage } from './usage';
 
 export interface HarnessBrainDeps {
   /** The runtime this task runs in (keyed by worker, not by person). */
@@ -133,19 +130,9 @@ export class HarnessBrain implements TaskBrain {
       const settled = await submission.wait(ctx);
 
       const after = await harness.usage(ctx);
-      // pi reports tokens; money is our own arithmetic against the configured price,
-      // so a provider without a pricing table still yields a predictable 0.
-      const delta = diffUsage(before, after);
-      const spent = delta.input + delta.output;
-      const price = this.deps.price(model);
-      // pi already applies cache rates and context tiers; only fall back to plain
-      // arithmetic when it reports no cost (e.g. a provider without prices).
-      const piCost = diffCost(before, after);
-      const costUsd =
-        piCost > 0
-          ? piCost
-          : (delta.input / 1_000_000) * price.inputUsdPerM +
-            (delta.output / 1_000_000) * price.outputUsdPerM;
+      // pi 报过钱就用它的（它知道缓存价与分档价），没报才按配置的单价算——所以没有
+      // 价目表的 provider 也能得到一个可预期的 0。
+      const { tokens: spent, costUsd } = priceUsage(before, after, this.deps.price(model));
       if (spent > 0 || costUsd > 0) {
         reportUsage?.({ input: 0, output: 0, total: spent, costUsd });
         log(
@@ -241,25 +228,4 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
   }
 
   return lines.join('\n');
-}
-
-/** Harness usage is cumulative per provider/model; charge only the delta. */
-function diffCost(before: UsageLike, after: UsageLike): number {
-  const sum = (usage: UsageLike) =>
-    Object.values(usage.models ?? {}).reduce((total, entry) => total + (entry.cost?.total ?? 0), 0);
-  return Math.max(0, sum(after) - sum(before));
-}
-
-function diffUsage(before: UsageLike, after: UsageLike): { input: number; output: number } {
-  const sum = (usage: UsageLike) =>
-    Object.values(usage.models ?? {}).reduce(
-      (total, entry) => ({ input: total.input + entry.input, output: total.output + entry.output }),
-      { input: 0, output: 0 },
-    );
-  const from = sum(before);
-  const to = sum(after);
-  return {
-    input: Math.max(0, to.input - from.input),
-    output: Math.max(0, to.output - from.output),
-  };
 }
