@@ -1,5 +1,6 @@
 import type { DecisionQuestion, TriggerEvent } from '@opc/shared/domain';
 import type { DecisionService } from '../models/decisionService';
+import { spillText } from './inline';
 import { bodyOf } from './triage';
 
 /**
@@ -50,7 +51,8 @@ export interface DecisionGateDeps {
 }
 
 const DEFAULT_CHUNK = 10;
-const INLINE = 300;
+/** 分类看的正文上限。比 Router 的每条预算小：判"是不是噪声"不需要读全。 */
+const CLASSIFY_INLINE = 300;
 
 export function createDecisionGate(deps: DecisionGateDeps): SemanticScreener {
   const chunkSize = deps.chunkSize ?? DEFAULT_CHUNK;
@@ -131,9 +133,13 @@ function describe(chunk: readonly TriggerEvent[], policy: string): string {
     '',
   ];
   chunk.forEach((event, index) => {
-    const body = bodyOf(event.payload).slice(0, INLINE);
+    // 用同一个 spillText：分类看到的与 Router 看到的必须是同一段东西，
+    // 否则两层的判断会对不上（"去重看的是 path、注入看的是 text"那种）。
+    const body = bodyOf(event.payload);
     lines.push(`[${index}] ${event.source}/${event.kind}`);
-    if (body) lines.push(`    ${body.replace(/\n/g, ' ')}`);
+    if (body) {
+      lines.push(`    ${spillText(body, `recall ${event.id}`, CLASSIFY_INLINE).replace(/\n/g, ' ')}`);
+    }
   });
   return lines.join('\n');
 }

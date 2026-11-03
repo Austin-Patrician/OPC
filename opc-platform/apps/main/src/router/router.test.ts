@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
-import { Router, composeInput, spill, threadKeyOf, type RouterDeps } from './router';
+import { Router, composeInput, threadKeyOf, type RouterDeps } from './router';
+import { DEFAULT_INLINE_BUDGET, spillText } from './inline';
 import type { SemanticScreenResult, SemanticScreener } from './semanticGate';
 
 /**
@@ -256,12 +257,37 @@ describe('语义门（§3.1 Slow Path 的前半）', () => {
 });
 
 describe('上下文打包（Inline & Spill）', () => {
-  it('短内容全放进去，长内容截断并留 recall 入口', () => {
-    expect(spill('短', 'recall x')).toBe('短');
+  it('短内容全放进去，长内容给摘要并留 recall 入口', () => {
+    expect(spillText('短', 'recall x', 600)).toBe('短');
     const long = '整'.repeat(2_000);
-    const packed = spill(long, 'recall evt-1');
+    const packed = spillText(long, 'recall evt-1', 600);
     expect(packed.length).toBeLessThan(long.length);
     expect(packed).toContain('recall evt-1');
+  });
+
+  /**
+   * 这条是**性能断言**，不是格式断言：一次输入的成本必须由预算封顶，而不是由
+   * "这一轮恰好来了多少条 × 每条多少字"决定。没有它，40 条长事件能悄悄吃掉 24k 字符。
+   */
+  it('四十条长事件合起来也不超过预算', () => {
+    const body = '这是一段很长的正文。\n'.repeat(400);
+    const events = Array.from({ length: 40 }, (_, index) => ({
+      id: `evt-${index}`,
+      source: 'folder' as const,
+      kind: 'file',
+      payload: { text: body },
+      threadId: null,
+      triage: 'pending' as const,
+      createdAt: 0,
+      triagedAt: null,
+    }));
+
+    const text = composeInput(events, []);
+    // 正文部分被压在预算内；其余是 id、标题、指令这些固定开销。
+    const overhead = 6_000;
+    expect(text.length).toBeLessThan(DEFAULT_INLINE_BUDGET.total + overhead);
+    // 每条仍然留得住"去哪读全的"。
+    expect(text).toContain('recall evt-39');
   });
 
   it('事件带 id 与并线键，模型才能顺着引用往下跳', () => {
@@ -301,7 +327,8 @@ describe('上下文打包（Inline & Spill）', () => {
       ],
       [],
     );
-    expect(text.length).toBeLessThan(1_200);
+    // 单条也不许超过 ceiling（1200 字正文）+ 规模尾巴。
+    expect(text.length).toBeLessThan(1_600);
     expect(text).toContain('recall evt-2');
   });
 

@@ -1,6 +1,7 @@
 import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { SemanticScreener } from './semanticGate';
+import { DEFAULT_INLINE_BUDGET, perItemBudget, spillText, type InlineBudget } from './inline';
 import { isValidThreadKey } from './threadKey';
 import { bodyOf } from './triage';
 
@@ -104,8 +105,6 @@ export interface TickReport {
 }
 
 const DEFAULT_BATCH = 40;
-/** Inline & Spill 的长度上限：超过就截断并留一个 recall 入口（§3.3）。 */
-const INLINE_LIMIT = 600;
 
 export class Router {
   private readonly batchSize: number;
@@ -239,12 +238,15 @@ export function composeInput(
   events: readonly TriggerEvent[],
   reports: readonly WorkReport[],
   rules: readonly string[] = [],
+  budget: InlineBudget = DEFAULT_INLINE_BUDGET,
 ): string {
   const lines: string[] = [];
+  // 预算按"要内联的对象数"分摊，不是每条一个定值：3 条时给足，40 条时压低。
+  const perItem = perItemBudget(budget, events.length + reports.length);
 
   if (rules.length > 0) {
     lines.push(`## 工作台的规矩（${rules.length}，长期有效）`);
-    for (const rule of rules) lines.push(`- ${rule}`);
+    for (const rule of rules) lines.push(`- ${spillText(rule, 'list_lines', budget.ceiling)}`);
     lines.push('');
   }
 
@@ -256,7 +258,7 @@ export function composeInput(
         `- ${event.id} · ${event.source}/${event.kind}` + (key ? ` · 并线键 ${key}` : ''),
       );
       const body = bodyOf(event.payload);
-      if (body) lines.push(indent(spill(body, `recall ${event.id}`)));
+      if (body) lines.push(indent(spillText(body, `recall ${event.id}`, perItem)));
     }
   }
 
@@ -265,7 +267,9 @@ export function composeInput(
     lines.push(`## 执行体汇报（${reports.length}，都还没告诉用户）`);
     for (const report of reports) {
       lines.push(`- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.title}`);
-      if (report.body.trim()) lines.push(indent(spill(report.body, `recall ${report.id}`)));
+      if (report.body.trim()) {
+        lines.push(indent(spillText(report.body, `recall ${report.id}`, perItem)));
+      }
     }
   }
 
@@ -276,13 +280,6 @@ export function composeInput(
   );
 
   return lines.join('\n');
-}
-
-/** Inline & Spill：短的全放，长的截断并留一个按需读取的入口。 */
-export function spill(text: string, hint: string): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= INLINE_LIMIT) return trimmed;
-  return `${trimmed.slice(0, INLINE_LIMIT)}…（已截断，全文用 ${hint}）`;
 }
 
 function indent(text: string): string {

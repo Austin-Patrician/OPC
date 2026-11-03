@@ -1,5 +1,6 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
+import { recallView } from './inline';
 
 /**
  * Router 的工具带。
@@ -189,11 +190,16 @@ export function createRouterTools(deps: RouterToolDeps) {
         description:
           '按 id 取回一个对象的压缩视图：工作线、执行体、任务、事件、汇报都可以。' +
           '返回里会带上下一个可跳的 id（关联的任务、同线的汇报、执行体），' +
-          '需要更细就继续 recall 那个 id。',
+          '需要更细就继续 recall 那个 id。' +
+          '内容长的时候只回一页，末尾会告诉你还有几页、下一段怎么取——' +
+          '把全文一次倒进上下文，等于把 Inline & Spill 做的预算白扔掉。',
         parameters: Type.Object({
           id: Type.String({ description: 'thread / worker / task / event / report 的 id' }),
+          page: Type.Optional(
+            Type.Number({ description: '第几段（从 1 开始）。上一页的末尾会告诉你下一页是几。' }),
+          ),
         }),
-        execute: async (args) => ok(deps.recall(args.id)),
+        execute: async (args) => ok(recallView(deps.recall(args.id), args.id, args.page ?? 1)),
       }),
 
       defineTool({
