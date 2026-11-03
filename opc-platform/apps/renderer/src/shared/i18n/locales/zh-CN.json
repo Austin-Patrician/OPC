@@ -24,15 +24,14 @@
     "searchPlaceholder": "搜索会话…"
   },
   "titleBar": {
-    "orgPill": "HR 组织架构（{{departments}} 部门 · {{agents}} 名 Agent）",
-    "hire": "聘用 Agent 员工",
-    "bossName": "你的称呼",
-    "bossNamePlaceholder": "输入你的称呼…",
-    "renameBoss": "点击修改称呼",
+    "hire": "聘用 Agent 执行体",
+    "userName": "你的称呼",
+    "userNamePlaceholder": "输入你的称呼…",
+    "renameUser": "点击修改称呼",
     "profile": "我的名片",
     "fields": {
       "name": "名称",
-      "company": "所属公司",
+      "company": "工作台",
       "role": "职位"
     },
     "founderRole": "创始人"
@@ -43,9 +42,9 @@
       "escalated": "已升级"
     },
     "members": "{{count}} 人",
-    "mention": "提及员工",
+    "mention": "提及执行体",
     "mentionAll": "@全体成员",
-    "mentionHint": "@ 提及会话内的 Agent 员工指派任务",
+    "mentionHint": "@ 提及会话内的 Agent 执行体指派任务",
     "quickPrompts": "常用指令模板",
     "quickPromptsHint": "快捷指令",
     "inputPlaceholder": "发消息…（Enter 发送，Shift+Enter 换行）",
@@ -107,7 +106,7 @@
     "language.en-US": "English",
     "reset": "恢复默认外观",
     "preview": "预览",
-    "previewText": "老板，今日 3 个交付物已通过验收。",
+    "previewText": "今天有 3 个交付物通过了验收。",
     "about": {
       "runtime": "运行时",
       "appVersion": "应用版本",
@@ -140,10 +139,11 @@
     "page": {
       "appearance": "外观与语言",
       "compaction": "工作区与压缩",
-      "company": "公司与称呼",
+      "company": "工作台与称呼",
       "billing": "计费",
       "network": "网络与代理",
-      "runtime": "运行时"
+      "runtime": "运行时",
+      "triage": "调度"
     },
     "llm": {
       "desc": "Provider 与模型目录取自 pi 内置目录（@earendil-works/pi-ai），默认模型与思考强度对应运行时。",
@@ -389,11 +389,11 @@
       "loggedOut": "已退出登录"
     },
     "facts": {
-      "title": "公司事实",
-      "desc": "写在这里的规定会进入每位员工的提示词；同一主题再写会替换旧值（历史保留）。",
-      "empty": "还没有公司级事实。",
-      "subject": "主题，如 Q4目标",
-      "object": "内容，如 先做留存",
+      "title": "工作台的规矩",
+      "desc": "写在这里的规定会进入每个执行体的提示词；同一主题再写会替换旧值（历史保留）。",
+      "empty": "还没有定过任何规矩。",
+      "subject": "主题，如 交付规范",
+      "object": "内容，如 必须带 README",
       "save": "保存"
     },
     "runs": {
@@ -403,24 +403,20 @@
       "created": "写入 {{count}} 条记忆（处理 {{episodes}} 条对话）"
     },
     "company": {
-      "title": "公司资料",
-      "description": "名称、Logo、方向与称呼都保存在本机数据库；改完点右上角「保存」才会同步到标题栏与名片。",
-      "name": "公司名称",
+      "title": "工作台",
+      "description": "名称、配色与你的称呼都保存在本机数据库；改完点右上角「保存」才会同步到标题栏与名片。",
+      "name": "工作台名称",
       "nameHint": "显示在标题栏与名片上",
-      "boss": "你的称呼",
-      "bossHint": "标题栏里显示的名字，也是 Agent 称呼你的方式",
-      "industry": "主营方向",
-      "vision": "一句话愿景",
-      "visionPlaceholder": "例如：用 AI Agent 打造爆款内容工厂",
+      "userHint": "标题栏里显示的名字，也是 Agent 称呼你的方式",
       "brand": "品牌色",
-      "brandTitle": "公司品牌",
-      "brandDesc": "Logo、名称与视觉风格，决定标题栏和名片的样子。",
-      "logo": "公司 Logo",
+      "brandTitle": "外观",
+      "brandDesc": "名称、配色与视觉风格，决定标题栏和名片的样子。",
+      "logo": "工作台 Logo",
       "logoHint": "支持 PNG / JPG / WebP / GIF / SVG，建议方形，不超过 500 KB",
-      "bossTitle": "你的资料",
-      "bossDesc": "Agent 在对话与任务里怎么称呼你。",
-      "bossAvatar": "你的头像",
-      "bossAvatarHint": "显示在标题栏；不上传时使用称呼的首字母",
+      "userTitle": "你的资料",
+      "userDesc": "Agent 在对话与任务里怎么称呼你。",
+      "userAvatar": "你的头像",
+      "userAvatarHint": "显示在标题栏；不上传时使用称呼的首字母",
       "imageUpload": "上传图片",
       "imageReplace": "更换图片",
       "imageRemove": "移除",
@@ -430,10 +426,14 @@
       "unsaved": "未保存",
       "saved": "已保存",
       "discard": "撤销更改",
-      "budget": "公司月度额度",
-      "budgetHint": "公司层预算，超出即硬停；在预算中心可看到实时用量",
+      "budget": "月度额度",
+      "budgetHint": "工作台预算，超出即硬停；在预算中心可看到实时用量",
       "openBudget": "前往预算中心",
-      "loading": "正在读取公司资料…"
+      "loading": "正在读取工作台…",
+      "user": "你的称呼",
+      "goalPlaceholder": "例如：把手上的内容工作交给助手",
+      "goal": "一句话目标",
+      "domain": "你在做什么"
     },
     "billing": {
       "desc": "定价与展示口径。账本永远以美元记录，汇率只影响页面上显示的人民币金额。",
@@ -518,8 +518,8 @@
       "unavailable": "当前环境无法读取代理设置"
     },
     "runtime": {
-      "desc": "所有员工共用一套基础环境：工作区里的命令和验收脚本都通过这里的解释器执行。Node 与 Python 同时生效，不需要按员工切换。",
-      "globalNote": "这是公司级设置：修改后下一次工具调用即生效，已在运行的任务不会中断。",
+      "desc": "所有执行体共用一套基础环境：工作区里的命令和验收脚本都通过这里的解释器执行。Node 与 Python 同时生效，不需要按执行体切换。",
+      "globalNote": "这是工作台级设置：修改后下一次工具调用即生效，已在运行的任务不会中断。",
       "nodeTitle": "Node 运行环境",
       "nodeDesc": "默认优先使用系统 Node；系统没有安装时才用 Electron 内置的 Node 兜底。",
       "pythonTitle": "Python 运行环境",
@@ -553,7 +553,7 @@
       "ocrTitle": "文字识别（OCR）",
       "ocrDesc": "把图片里的文字读给模型；模型和识别都在本机运行，图片不会上传。",
       "ocrEnable": "启用文字识别",
-      "ocrEnableHint": "随应用分发，不需要安装；关闭后所有员工都不会获得 ocr_image 工具。",
+      "ocrEnableHint": "随应用分发，不需要安装；关闭后所有执行体都不会获得 ocr_image 工具。",
       "ocrOn": "已开启",
       "ocrOff": "已关闭",
       "ocrUnavailable": "不可用",
@@ -561,7 +561,37 @@
       "ocrDetail": "输出粒度",
       "ocrDetailHint": "整段文本按阅读顺序拼成段落，适合理解内容；逐行会保留每行的位置和置信度，适合表格与表单。",
       "ocrDetailText": "整段文本",
-      "ocrDetailLines": "逐行"
+      "ocrDetailLines": "逐行",
+      "bundledEmpty": "没有随应用内置的引擎"
+    },
+    "triage": {
+      "desc": "决定什么值得惊动助手：哪些事件直接忽略，哪些交给模型判断。",
+      "fastTitle": "程序层",
+      "fastDesc": "不花 token 的那一层。它只挡\"确定不是活\"的东西：自己写出来的回环、没有内容的通知、一分钟内重复的同一件事。",
+      "mode": "策略",
+      "fastNoise": "只挡噪声",
+      "fastAllowlist": "只放行下列来源",
+      "sources": "来源",
+      "sourcesHint": "名单外的来源永远不会到达助手——新接一个来源时要记得在这里登记。",
+      "source": {
+        "im": "聊天",
+        "folder": "文件夹",
+        "manual": "注意力队列",
+        "calendar": "日历",
+        "github": "GitHub"
+      },
+      "semanticTitle": "语义层",
+      "semanticDesc": "要花 token 的那一层。它只回答一个问题：这件事值不值得占用助手的上下文。",
+      "semantic": "由谁先看",
+      "semanticRouter": "助手自己判",
+      "semanticDecision": "先过分类器",
+      "threshold": "判噪阈值",
+      "thresholdHint": "概率超过这条线就丢掉。调高更保守（可能多花 token），调低更省（可能多问一次）。",
+      "threshold05": "积极",
+      "threshold07": "默认",
+      "threshold09": "保守",
+      "decisionHint": "分类器用的是 设置 → 模型 → Decision 里配的那个模型。没配时这一层自动关掉，事件全部交给助手——不会丢。",
+      "footnote": "两层的失败方向都是\"往上交\"：判不动、模型没配、调用失败，一律放行。这里调的是花多少钱，不是活会不会丢。"
     }
   },
   "notFound": {
@@ -583,11 +613,11 @@
     "dispatch": "派活",
     "submit": "派发并执行",
     "running": "执行中…",
-    "assignee": "负责人",
+    "assignee": "执行体",
     "estTokens": "预估 {{tokens}} tokens",
     "deliverable": "交付物",
     "acceptance": "验收口径（系统固定）",
-    "acceptanceHint": "验收脚本由系统写入 checks/ 目录，员工无法修改；执行环境是任务工作区。",
+    "acceptanceHint": "验收脚本由系统写入 checks/ 目录，执行体无法修改；执行环境是任务工作区。",
     "evidence": "验收证据",
     "exitCode": "退出码 {{code}}",
     "status": {
@@ -596,7 +626,7 @@
       "accepted": "已验收",
       "rejected": "未通过",
       "failed": "失败",
-      "review": "待负责人验收",
+      "review": "等系统验收",
       "delivered": "已交付",
       "cancelled": "已取消"
     },
@@ -604,10 +634,8 @@
       "title": "任务标题",
       "brief": "任务说明",
       "deliverable": "交付物（必填）",
-      "assignee": "指派给",
-      "tokens": "预估 tokens",
-      "project": "记在哪个项目",
-      "noProject": "不记项目（只扣人/部门/公司）"
+      "assignee": "交给",
+      "tokens": "预估 tokens"
     },
     "placeholder": {
       "title": "要做什么，一句话说清",
@@ -625,9 +653,9 @@
     "subtasks": "{{count}} 个子任务",
     "subtasksDone": "已完成",
     "subtasksEmpty": "暂无子任务",
-    "bossApprove": "终审通过",
-    "bossReject": "否决",
-    "bossVerdict": "老板终审"
+    "userApprove": "通过",
+    "userReject": "否决",
+    "userVerdict": "你的终审"
   },
   "models": {
     "defaultLlm": "默认 LLM",
@@ -654,66 +682,31 @@
     },
     "capability": {
       "chat": "LLM（文本）",
-      "chatHint": "用于 Agent 员工拆解任务、写交付物；选中即设为默认大脑。",
+      "chatHint": "用于 Agent 执行体拆解任务、写交付物；选中即设为默认大脑。",
       "image": "Image（图片）",
       "imageHint": "pi 的 image 模型类型；选为默认后用于交付视觉产物。",
       "video": "Video（视频）",
       "videoHint": "pi 目前没有视频模型类型或生成接口（只有 chat / image / classifier），所以这里不放假入口。等 pi 支持后再接。"
     }
   },
-  "wizard": {
-    "title": "自定义招募 Agent 员工",
-    "name": "姓名",
-    "role": "职位名称",
-    "roleHint": "没有岗位时手填，例如：后端工程师",
-    "department": "归属部门",
-    "reportsTo": "汇报对象",
-    "noManager": "不指定（直属老板）",
-    "job": "岗位",
-    "jobNone": "不占岗位（自由职位）",
-    "jobHint": "岗位是全公司的职务；选中后自动带出职责、技能和默认模型。",
-    "jobNoneOpen": "公司还没有岗位；先到「组织架构 → 岗位」建一个。",
-    "probation": "试用期（天）",
-    "probationHint": "留空 = 直接按正式员工入职",
-    "probationDays": "{{count}} 天",
-    "probationNone": "无试用期",
-    "reportingHint": "汇报线决定任务拆解权限：负责人可以把任务拆给直接下属。",
-    "skills": "技能标签（默认继承岗位）",
-    "skillHint": "输入后回车添加，例如：Node.js",
-    "skillsTagsHint": "标签只用于人才市场与搜索；入职后可在员工档案的「底层模型与技能」里配置它真正可用的工具。",
-    "addSkill": "添加技能",
-    "persona": "个人补充要求（写入系统提示词）",
-    "personaHint": "岗位职责来自岗位定义；这里写这名 Agent 自己的做法与偏好。",
-    "inheritModel": "继承默认模型",
-    "modelHint": "留空则继承公司默认；选定后从第一条任务起就使用该模型。",
-    "back": "上一步",
-    "next": "下一步",
-    "submit": "确认招募",
-    "step": {
-      "identity": "身份",
-      "reporting": "汇报线",
-      "capability": "能力",
-      "confirm": "确认"
-    },
-    "inheritedFromJob": "这些值从岗位「{{title}}」带出；改动只影响这一次招聘，不会改岗位定义。",
-    "jobSeatUnplanned": "未设编制",
-    "jobSeatLeft": "这个部门还剩 {{count}} 个编制"
-  },
   "issues": {
     "title": "工作项",
     "all": "全部",
     "summary": "进行中 {{doing}} · 待你终审 {{review}} · 卡住 {{stuck}}",
-    "assignee": "负责人",
-    "allAssignees": "所有负责人",
+    "assignee": "执行体",
+    "allAssignees": "全部执行体",
     "search": "搜索 KEY / 标题 / 描述",
     "group": {
       "todo": "待办",
       "doing": "进行中",
       "review": "待验收",
       "done": "已验收",
-      "blocked": "需要处理"
+      "blocked": "需要处理",
+      "system-review": "系统验收",
+      "user-review": "待你确认",
+      "delivered": "已交付"
     },
-    "empty": "还没有工作项。在 IM 里给员工派第一个任务，它会带着 KEY 出现在这里。",
+    "empty": "还没有工作项。在 IM 里给执行体派第一个任务，它会带着 KEY 出现在这里。",
     "reviewTask": "验收任务",
     "attempts": "第 {{count}} 次",
     "brief": "任务说明",
@@ -763,7 +756,7 @@
   },
   "capabilities": {
     "title": "技能与工具",
-    "subtitle": "这里列出每个 Agent 在当前配置下、新开工作会话时真正装进运行时的扩展与工具——不是一份手写文档，而是直接读取注册表。模型、图像、语音或汇报关系一变，刷新后清单就跟着变。",
+    "subtitle": "这里列出每个执行体在当前配置下、新开工作线时真正装进运行时的扩展与工具——不是一份手写文档，而是直接读取注册表。模型、图像或语音能力一变，刷新后清单就跟着变。",
     "refresh": "刷新",
     "readAt": "读取于 {{time}}",
     "unknownExtension": "未登记的扩展，能力以工具清单为准。",
@@ -775,8 +768,8 @@
     },
     "toolsTab": {
       "title": "可调用工具",
-      "description": "共 {{count}} 个工具，按提供它的扩展分组；右侧数字是能调用它的 Agent 人数。",
-      "agents": "{{count}} 人"
+      "description": "共 {{count}} 个工具，按提供它的扩展分组；右侧数字是能调用它的执行体数。",
+      "agents": "{{count}} 个"
     },
     "mcp": {
       "title": "MCP 服务器",
@@ -786,7 +779,7 @@
       "needsTitle": "要接上它，至少需要",
       "needClient": "一个 stdio / SSE 客户端，按配置启动进程或连接端点，并处理重连与退出",
       "needTools": "把 MCP 的 tools 翻译成 pi-durable 的工具，名字加前缀，避免和内置工具撞名",
-      "needPolicy": "沿用现有的信任与员工级开关——MCP 服务器同样能读写本机数据"
+      "needPolicy": "沿用现有的信任与执行体级开关——MCP 服务器同样能读写本机数据"
     },
     "external": {
       "title": "本机 Pi 扩展",
@@ -809,7 +802,7 @@
       "trustBody": "这是一个普通 JavaScript 扩展，不是沙箱插件。启用后它会在主进程里运行，权限和 OPC 本身相同。",
       "trustRisk": {
         "code": "可以执行任意代码，包括启动时",
-        "data": "可以读取公司数据库、工作区、API Key 与会话历史",
+        "data": "可以读取工作台数据库、工作区、API Key 与会话历史",
         "network": "可以自行发起网络请求"
       },
       "trustConfirm": "信任并启用"
@@ -824,8 +817,8 @@
       "files": "{{count}} 个文件"
     },
     "extensionsTitle": "内置扩展",
-    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的 Agent 人数。具体工具在「工具」页。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有下属时，对应工具不会出现。",
-    "extensionAgents": "{{count}} 名 Agent",
+    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的执行体数。具体工具在「工具」页。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有其他执行体时，对应工具不会出现。",
+    "extensionAgents": "{{count}} 个执行体",
     "extensionToolCount": "{{count}} 个工具",
     "extensionNoTools": "无工具",
     "counts": {
@@ -834,12 +827,22 @@
       "sections": "{{count}} 段提示词"
     },
     "deferred": "按需加载",
-    "agentTitle": "按 Agent 查看",
-    "agentHint": "展开一个人，看他自己的注册表里装了什么。档案技能标签只用于展示，不会进入提示词。",
+    "templates": {
+      "research": "调研",
+      "code": "编码",
+      "ops": "运维"
+    },
+    "statuses": {
+      "idle": "待命",
+      "running": "执行中",
+      "retired": "已退休"
+    },
+    "agentTitle": "按执行体查看",
+    "agentHint": "展开一个执行体，看它自己的注册表里装了什么。技能标签只用于展示，不会进入提示词。",
     "agentExtensions": "{{count}} 个扩展",
     "agentTools": "{{count}} 个工具",
     "agentExtensionsLabel": "扩展",
-    "agentSkillsLabel": "档案技能（仅展示）",
+    "agentSkillsLabel": "技能（仅展示）",
     "agentToolsLabel": "可调用工具",
     "tools": {
       "read": "读取工作区里的文件。",
@@ -851,14 +854,11 @@
       "text_to_speech": "把文本合成为音频文件。",
       "ocr_image": "识别图片里的文字。",
       "remember": "为未来的自己保存一条长期经验。",
-      "send_direct_message": "给同事发消息。",
-      "ack_message": "把同事的消息标记为已读。",
-      "decompose_task": "把任务拆成子任务交给直接下属。",
+      "decompose_task": "把任务拆成子任务交给其他执行体。",
       "decide": "对一段材料做有边界的判断，返回标签、分数或概率。"
     },
-    "head": "负责人",
-    "noSkills": "未填写标签",
-    "empty": "还没有在岗 Agent。",
+    "noSkills": "未设置技能",
+    "empty": "还没有执行体。",
     "loadError": "读取能力清单失败：{{message}}",
     "extensions": {
       "work": {
@@ -899,7 +899,7 @@
       },
       "decompose": {
         "title": "任务拆分",
-        "description": "把大任务拆成子任务交给下属；只有带汇报线的管理者才会安装。"
+        "description": "把大任务拆成子任务交给其他执行体；工作台里只有自己一个人时不安装。"
       },
       "decision": {
         "title": "结构化决策",
@@ -918,7 +918,6 @@
     "laterConfig": "稍后配置",
     "next": "下一步",
     "finish": "进入工作台",
-    "hireAndContinue": "聘用 {{count}} 名并继续",
     "backHome": "返回首页",
     "back": "上一步",
     "backToEdit": "返回修改",
@@ -926,41 +925,40 @@
     "step": {
       "general": "通用偏好",
       "model": "模型引擎",
-      "company": "公司名片",
-      "team": "组建团队",
+      "company": "工作台名片",
       "done": "完成"
     },
     "welcome": {
       "brandTagline": "AI Agent 协作工作台",
       "badgeTitle": "OPC Workspace",
-      "badgeSub": "原生一人公司 AI 团队操作系统",
-      "titleLead": "一个人，",
-      "titleAccent": "就是一家公司。",
-      "subtitleLead": "招募各有所长的 AI Agent 员工，在熟悉的 IM 群聊里派单、协同与沉淀",
-      "subtitleTail": "。只需几步轻巧设定，立即开启你的一人公司。",
+      "badgeSub": "一个常驻的 AI 助手，接住你丢进来的每件事",
+      "titleLead": "你只管说，",
+      "titleAccent": "剩下的它来做。",
+      "subtitleLead": "丢一个目标进来，执行体自己开工；验收、汇报、记忆都留在同一条工作线上",
+      "subtitleTail": "。几步轻巧设定，它就开始替你干活。",
       "start": "开始配置",
       "skipToWorkspace": "直接进入工作台",
       "pressPrefix": "按",
       "pressSuffix": "开始 · 所有选项随时可在「设置」中调整",
-      "marketTitle": "人才市场 · 即招即用",
-      "marketUnit": "{{count}} 位候选",
-      "marketEmpty": "还没有导入 Agent 包。下一步可以直接导入并聘用。",
-      "briefAutoLoad": "入职自动加载 brief.md",
-      "ready": "就绪",
-      "windowDept": "部门协同群",
-      "windowOnDuty": "{{count}} 名 Agent 在岗",
-      "founderMsg": "@全体 按最新",
+      "windowWorkspace": "工作台",
+      "windowOnDuty": "{{count}} 个执行体在岗",
+      "founderMsg": "按最新",
       "founderMsgTail": "里的规范，先把本周的第一件交付物做出来。",
-      "agentReady": "已就位，brief.md 已加载",
-      "waitingDispatch": "{{name}} 已加入{{department}} · 等待派单",
+      "agentReady": "已就位，等待目标",
+      "waitingDispatch": "{{name}} · {{template}} · 等待派单",
       "engineTitle": "pi 多模型引擎",
       "engineAvailable": "{{count}} 家可接入",
-      "statDepartments": "预置部门",
-      "statAgents": "在编 Agent",
+      "template": {
+        "research": "调研",
+        "code": "编码",
+        "ops": "运维"
+      },
+      "statWorkers": "执行体",
+      "statSkills": "技能",
       "statConfigured": "已配厂商",
-      "capIm": "IM 群聊派单协同",
-      "capBrief": "brief.md 规范自动传承",
-      "capModel": "按岗位灵活切换底层模型"
+      "capIm": "一对一 IM 派单",
+      "capBrief": "工作线保留完整上下文",
+      "capModel": "每个执行体独立选模型"
     },
     "general": {
       "eyebrow": "通用偏好",
@@ -978,7 +976,7 @@
     "model": {
       "eyebrow": "模型引擎",
       "title": "为团队接入 AI 大脑",
-      "description": "Agent 员工通过 pi 引擎调用模型。选一家服务商、填入凭据并指定默认模型；暂时没有密钥也可以稍后配置。",
+      "description": "Agent 执行体通过 pi 引擎调用模型。选一家服务商、填入凭据并指定默认模型；暂时没有密钥也可以稍后配置。",
       "currentDefault": "当前默认",
       "autoPick": "未指定",
       "providers": "选择服务商",
@@ -1004,89 +1002,52 @@
       }
     },
     "company": {
-      "eyebrow": "公司名片",
-      "title": "给你的公司一个身份",
-      "description": "名称与品牌色会显示在标题栏和名片上；月度额度是公司层预算，任何一次派活都要先过这道闸。",
-      "nameLabel": "公司名称",
+      "eyebrow": "工作台名片",
+      "title": "给这个工作台一个名字",
+      "description": "名称与品牌色会显示在标题栏和名片上；执行体是真正干活的一方，目标丢进来它就开工。",
+      "nameLabel": "工作台名称",
       "namePlaceholder": "例如：星河内容工作室",
-      "visionLabel": "一句话愿景",
       "optional": "选填",
-      "visionPlaceholder": "例如：用 AI Agent 打造爆款内容工厂",
       "colorTitle": "品牌色",
-      "budgetTitle": "公司月度额度",
+      "budgetTitle": "月度额度",
       "budgetHint": "超出额度即硬停，所有派活都会被拒绝",
       "budgetLabel": "每月 token 额度",
       "budgetSave": "保存",
       "budgetSaved": "额度已保存。",
       "budgetInvalid": "额度需要是大于 0 的整数。",
       "budgetUsage": "已用 {{used}} / {{limit}}",
-      "budgetScope": "公司层预算 · 每月自动重置",
-      "cardVisionPlaceholder": "一句话描述你的愿景",
-      "cardOrg": "{{departments}} 个部门 · {{agents}} 位 Agent",
+      "budgetScope": "工作台预算 · 每月自动重置",
+      "cardWorkers": "{{count}} 位执行体",
       "cardHint": "实时预览 · 移动鼠标查看质感",
-      "budgetMissing": "公司预算行在第一次招聘或派活时自动创建。",
-      "bossLabel": "你的称呼",
-      "bossPlaceholder": "例如：阿星",
-      "bossHint": "显示在标题栏，Agent 也按这个称呼理解你",
-      "industryTitle": "主营方向",
-      "cardIndustryEmpty": "未选择方向"
-    },
-    "team": {
-      "eyebrow": "组建团队",
-      "title": "从人才市场聘用首批 Agent",
-      "description": "公司已有 {{agents}} 名 Agent 员工、{{departments}} 个部门。导入 Agent 包后挑选新成员，他们入职即加入部门群并加载 brief.md。",
-      "selectedCount": "已选 {{count}} 名",
-      "emptyTitle": "人才市场还没有候选人",
-      "emptyDescription": "导入一个 Agent 包（.json）即可挑选并聘用；也可以先跳过，稍后在人才市场里随时招聘。",
-      "importPackage": "导入 Agent 包",
-      "importing": "导入中…",
-      "existingTeam": "{{departments}} 个部门 · {{agents}} 名在编",
-      "quickTeam": "快速组队",
-      "selectAll": "全选",
-      "clear": "清空",
-      "department": "入职部门",
-      "departmentFor": "{{name}} 的入职部门",
-      "hiredIn": "已入职 · {{department}}",
-      "descriptionEmpty": "公司还是空的。先建一个部门，再从人才市场导入并聘用 Agent —— 他们入职即加入部门群并加载 brief.md。",
-      "firstDepartment": "先建第一个部门",
-      "firstDepartmentHint": "聘用 Agent 需要一个部门作为落脚点，之后可在组织架构里调整。",
-      "firstDepartmentPlaceholder": "例如：内容部",
-      "create": "创建",
-      "creating": "创建中…",
-      "needDepartmentFirst": "先在上面建一个部门，Agent 才有地方入职。"
+      "budgetMissing": "工作台预算行在第一次招聘或派活时自动创建。",
+      "userLabel": "你的称呼",
+      "userPlaceholder": "例如：阿星",
+      "userHint": "显示在标题栏，Agent 也按这个称呼理解你",
+      "goalLabel": "一句话愿景",
+      "goalPlaceholder": "例如：把手上的内容工作交给助手",
+      "cardGoalPlaceholder": "一句话说说你在做什么",
+      "domainTitle": "你在做什么",
+      "cardDomainEmpty": "未选择方向"
     },
     "done": {
       "title": "「{{name}}」已准备就绪",
-      "subtitle": "配置都已写入本机，进入工作台给第一位 Agent 派活吧。",
-      "company": "公司",
+      "subtitle": "配置都已写入本机，进入工作台给执行体丢第一个目标吧。",
+      "company": "工作台",
       "model": "默认模型",
-      "team": "团队",
-      "budgetLine": "月度额度 {{limit}} tokens",
+      "team": "执行体",
       "autoPick": "由 pi 自动选择",
       "modelLine": "{{provider}} · 思考 {{thinking}}",
       "modelFallback": "可随时在设置中指定",
-      "agentsTotal": "共 {{count}} 名 Agent",
-      "newHires": "本次新聘 {{count}} 名",
-      "noNewHires": "本次未新聘员工",
-      "actionChat": "给 Agent 派发第一单任务",
-      "actionChatSub": "在 IM 里私聊员工，或 @ 部门群协同",
-      "actionOrg": "查看组织架构",
-      "actionOrgSub": "调整部门、编制与 brief.md",
+      "workersTotal": "共 {{count}} 个执行体",
+      "actionChat": "派发第一单任务",
+      "actionChatSub": "把目标丢给执行体，它会自己开线、执行并汇报",
       "actionSettings": "完善模型与凭据",
       "actionSettingsSub": "配置更多服务商、图像模型与自检"
     }
   },
   "company": {
-    "fallbackName": "我的一人公司",
-    "bossFallback": "老板",
-    "industry": {
-      "content": "短视频与内容",
-      "ecommerce": "电商与带货",
-      "software": "软件与 AI 产品",
-      "knowledge": "知识付费",
-      "consulting": "咨询与服务",
-      "other": "其他"
-    },
+    "fallbackName": "我的工作台",
+    "userFallback": "我",
     "color": {
       "ocean": "深海蓝",
       "violet": "星云紫",
@@ -1094,6 +1055,14 @@
       "sunset": "日落橙",
       "forest": "森林绿",
       "graphite": "石墨黑"
+    },
+    "domain": {
+      "content": "短视频与内容",
+      "ecommerce": "电商与带货",
+      "software": "软件与 AI 产品",
+      "knowledge": "知识付费",
+      "consulting": "咨询与服务",
+      "other": "其他"
     }
   },
   "attention": {

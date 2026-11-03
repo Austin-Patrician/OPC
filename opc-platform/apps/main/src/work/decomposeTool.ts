@@ -4,7 +4,7 @@ import type { SubtaskDraft, TaskError, WorkTask } from '@opc/shared/domain';
 
 export interface DecomposeToolDeps {
   requesterId: string;
-  /** Resolved per call: the harness is cached per employee, tasks are not. */
+  /** Resolved per call: the harness is cached per executor, tasks are not. */
   parentTaskId: () => string | undefined;
   decompose: (
     parentTaskId: string,
@@ -14,11 +14,11 @@ export interface DecomposeToolDeps {
 }
 
 /**
- * `decompose_task`: how a manager hands work down.
+ * `decompose_task`: how one executor hands part of the work to another.
  *
  * The tool only proposes; the host enforces depth, fan-out, budget conservation
- * and the reporting line, then creates ordinary child tasks (same loop,
- * acceptance and budget as boss-dispatched work).
+ * and "not yourself", then creates ordinary child tasks (same loop, acceptance
+ * and budget as user-dispatched work).
  */
 export function createDecomposeToolExtension(deps: DecomposeToolDeps) {
   return defineExtension({
@@ -27,7 +27,7 @@ export function createDecomposeToolExtension(deps: DecomposeToolDeps) {
       defineTool({
         name: 'decompose_task',
         description:
-          'Split your task into subtasks assigned to your direct reports. Each subtask needs a deliverable and an estimated token budget that fits inside your task.',
+          'Split your task into subtasks assigned to other executors in this company. Each subtask needs a deliverable and an estimated token budget that fits inside your task.',
         parameters: Type.Object({
           subtasks: Type.Array(
             Type.Object({

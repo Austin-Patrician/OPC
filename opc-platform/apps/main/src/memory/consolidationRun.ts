@@ -3,7 +3,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 
 export interface ConsolidationRun {
   id: string;
-  employeeId: string;
+  ownerId: string;
   conversationIds: string[];
   episodeCount: number;
   memoriesCreated: number;
@@ -26,15 +26,15 @@ export interface ConsolidationRun {
 export class ConsolidationRunStore {
   constructor(private readonly db: CompanyDatabase) {}
 
-  start = (input: { employeeId: string; conversationIds: string[]; episodeCount: number }): string => {
+  start = (input: { ownerId: string; conversationIds: string[]; episodeCount: number }): string => {
     const id = `run-${crypto.randomUUID()}`;
     this.db
       .prepare(
         `INSERT INTO consolidation_run
-           (id, employee_id, source_conversation_ids, episode_count, status, started_at)
+           (id, owner_id, source_conversation_ids, episode_count, status, started_at)
          VALUES (?, ?, ?, ?, 'running', ?)`,
       )
-      .run(id, input.employeeId, JSON.stringify(input.conversationIds), input.episodeCount, Date.now());
+      .run(id, input.ownerId, JSON.stringify(input.conversationIds), input.episodeCount, Date.now());
     return id;
   };
 
@@ -68,15 +68,15 @@ export class ConsolidationRunStore {
       );
   };
 
-  list = (limit = 20, employeeId?: string): ConsolidationRun[] => {
+  list = (limit = 20, ownerId?: string): ConsolidationRun[] => {
     const rows = this.db
       .prepare(
-        `SELECT * FROM consolidation_run ${employeeId ? 'WHERE employee_id = ?' : ''}
+        `SELECT * FROM consolidation_run ${ownerId ? 'WHERE owner_id = ?' : ''}
           ORDER BY started_at DESC LIMIT ?`,
       )
-      .all(...(employeeId ? [employeeId, limit] : [limit])) as {
+      .all(...(ownerId ? [ownerId, limit] : [limit])) as {
       id: string;
-      employee_id: string;
+      owner_id: string;
       source_conversation_ids: string;
       episode_count: number;
       memories_created: number;
@@ -91,7 +91,7 @@ export class ConsolidationRunStore {
 
     return rows.map((row) => ({
       id: row.id,
-      employeeId: row.employee_id,
+      ownerId: row.owner_id,
       conversationIds: JSON.parse(row.source_conversation_ids || '[]') as string[],
       episodeCount: row.episode_count,
       memoriesCreated: row.memories_created,

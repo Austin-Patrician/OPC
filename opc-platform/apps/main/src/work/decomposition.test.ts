@@ -8,7 +8,7 @@ import { DEFAULT_DECOMPOSE_LIMITS, validateDecomposition, type DecomposeContext 
  * 这些规则刻意写在代码里而不是提示词里：一个把任务拆成 20 份、或拆到第 10 层的
  * 模型，需要拿到一条结构化的拒绝，而不是"再试一次"。
  *
- * v2 之后，「谁能接活」不再看汇报线——公司里除了自己都可以。所以这里剩下的是
+ * v2 之后，「谁能接活」不再看汇报线——除了自己都可以。所以这里剩下的是
  * 深度、扇出、预算，以及"别把活派回给自己"。
  */
 function parent(overrides: Partial<WorkTask> = {}): WorkTask {

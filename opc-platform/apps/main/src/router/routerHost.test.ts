@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { DEFAULT_TRIAGE_POLICY, type TriagePolicy } from '@opc/shared/domain';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
@@ -30,10 +31,12 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
+  // 已知的 Windows 环境问题：harness 打开的那个 sqlite 句柄在本进程内不会释放，
+  // 所以这两个用到会话的用例在收尾时会 EBUSY。与 HEAD 上其它四个文件同一个原因。
   rmSync(dir, { recursive: true, force: true });
 });
 
-function host() {
+function host(policy: TriagePolicy = DEFAULT_TRIAGE_POLICY) {
   return createRouterHost({
     db,
     agentsDir: dir,
@@ -42,21 +45,29 @@ function host() {
     context: async () => BACKGROUND_CONTEXT,
     openLine: () => ({ ok: true, threadId: 'th-1', workerId: 'w-1', taskId: 'task-1' }),
     reply: () => undefined,
+    policy: () => policy,
   });
 }
 
 describe('Router 装起来能跑', () => {
-  it('空队列不碰 harness，一个 token 都不花', () => {
+  it('空队列不碰 harness，一个 token 都不花', async () => {
     const router = host();
-    const report = router.tick();
-    expect(report).toEqual({ dropped: 0, passthrough: 0, routed: 0, reports: 0, failed: 0 });
+    const report = await router.tick();
+    expect(report).toEqual({
+      dropped: 0,
+      gated: 0,
+      passthrough: 0,
+      routed: 0,
+      reports: 0,
+      failed: 0,
+    });
   });
 
   it('一条事件走完全程：队列 → 会话 → 落盘，不会卡死', async () => {
     const router = host();
-    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text: '在吗' } });
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
 
-    const report = router.tick();
+    const report = await router.tick();
     expect(report.routed).toBe(1);
 
     // 没有模型，这一轮会失败；但必须在有限时间内结束，而不是挂在那里。
@@ -66,12 +77,37 @@ describe('Router 装起来能跑', () => {
 
   it('会话失败之后调度循环还活着，事件也已经在队列外', async () => {
     const router = host();
-    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text: '在吗' } });
-    router.tick();
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+    await router.tick();
     await router.settle();
 
     // 下一轮不该把同一条事件再交一次（routed ≠ pending）。
-    const again = router.tick();
+    const again = await router.tick();
     expect(again.routed).toBe(0);
+  }, 30_000);
+
+  it('程序层跟着策略走：名单模式挡住没登记的来源', async () => {
+    const router = host({
+      fastPath: 'allowlist',
+      sources: ['folder'],
+      semantic: 'router',
+      noiseThreshold: 0.7,
+    });
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+    threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/a.md' } });
+
+    const report = await router.tick();
+    expect(report.dropped).toBe(1);
+    expect(report.routed).toBe(1);
+  }, 30_000);
+
+  it('同一个环境事件在一分钟内来两次，第二次是噪声', async () => {
+    const router = host();
+    threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/same.md' } });
+    threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/same.md' } });
+
+    const report = await router.tick();
+    expect(report.dropped).toBe(1);
+    expect(report.routed).toBe(1);
   }, 30_000);
 });

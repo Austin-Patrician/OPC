@@ -69,7 +69,7 @@ export function validateDecomposition(ctx: DecomposeContext): TaskError | null {
   if (outsider) {
     return {
       code: 'DECOMPOSE_NOT_ASSIGNABLE',
-      message: `公司里没有这个人可以接活：${outsider.assigneeId}`,
+      message: `没有别的执行体可以接这个活：${outsider.assigneeId}`,
     };
   }
 

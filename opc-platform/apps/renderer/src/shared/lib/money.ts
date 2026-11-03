@@ -3,7 +3,7 @@ import { DEFAULT_BILLING_SETTINGS, type BillingSettings } from '@opc/shared/doma
 /**
  * Display-side money formatting.
  *
- * The ledger stores USD only; CNY is a render-time multiplication by the boss's
+ * The ledger stores USD only; CNY is a render-time multiplication by the your
  * manual rate (docs/ai-billing.md §5.4). Keeping this in one pure function is the
  * point: a report that formats money itself will eventually disagree with the
  * rest of the app about the rate.

@@ -4,15 +4,17 @@ import { rankMemories, type MemoryCandidate } from './memoryScore';
 
 export interface MemoryScope {
   /**
-   * v2 之后主作用域是 `thread`：一条工作线的经验跟着这条线走，而不跟着某个人走。
-   * 其余几种是迁移期保留的——`personal` 仍用来记"这个人自己的习惯"。
+   * 只有两层：`thread`（这条工作线的经验）和 `personal`（你自己的习惯）。
+   *
+   * 曾经还有 `org` / `department` / `project` 三层——它们对应的工作台里的组织早就
+   * 不存在了，V33 把库里的旧值收敛到了 `personal`。
    */
-  type: 'personal' | 'org' | 'department' | 'project' | 'thread';
+  type: 'personal' | 'thread';
   id?: string;
 }
 
 export interface RememberInput {
-  employeeId: string;
+  ownerId: string;
   kind: MemoryCandidate['kind'] | 'preference' | 'summary';
   content: string;
   scope: MemoryScope;
@@ -63,14 +65,13 @@ const toFloats = (buffer: Buffer | null): Float32Array | undefined => {
 };
 
 /**
- * Memory: write once, retrieve by relevance, let recall keep it alive.
+ * 记忆：写一次，按相关度召回，每次用到就变结实一点。
  *
- * Design decisions worth keeping:
- * - scope is stored explicitly, so project isolation later is a filter, not a rewrite;
- * - embeddings are optional: without an embedding provider the same ranking runs
- *   lexically (plus CJK bigrams), so the feature never blocks on configuration;
- * - decay is computed at read time from stored strength + last recall, so there is
- *   no background job to schedule, and a long-closed app does not lose data.
+ * 值得留下的几个决定：
+ * - 作用域是显式存下来的，所以"只在这条线里算数"是一个过滤，而不是一次重写；
+ * - 向量是可选的：没有 embedding provider 时同一套排序按字面跑（含中文 bigram），
+ *   所以这个功能永远不会卡在配置上；
+ * - 衰减在读取时由 strength + 上次召回算出，没有后台任务，也不会因为长期不开而丢数据。
  */
 export class MemoryService {
   /** Injected when an embedding model is configured (kept optional on purpose). */
@@ -93,14 +94,14 @@ export class MemoryService {
 
     this.db
       .prepare(
-        `INSERT INTO employee_memory
+        `INSERT INTO memory
            (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
             source_type, source_id, valid_from, strength, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?)`,
       )
       .run(
         id,
-        input.employeeId,
+        input.ownerId,
         input.kind,
         input.content.trim(),
         input.scope.type,
@@ -116,9 +117,9 @@ export class MemoryService {
     return id;
   };
 
-  /** Retrieves the top memories for a query within the employee's allowed scopes. */
+  /** Retrieves the top memories for a query within the owner's allowed scopes. */
   retrieve = async (input: {
-    employeeId: string;
+    ownerId: string;
     query: string;
     scopes: MemoryScope[];
     limit?: number;
@@ -128,7 +129,7 @@ export class MemoryService {
     const scopeClause = input.scopes
       .map(() => '(scope_type = ? AND (scope_id IS ? OR scope_id = ?))')
       .join(' OR ');
-    const params: unknown[] = [input.employeeId];
+    const params: unknown[] = [input.ownerId];
     for (const scope of input.scopes) {
       params.push(scope.type, scope.id ?? null, scope.id ?? null);
     }
@@ -136,7 +137,7 @@ export class MemoryService {
     const rows = this.db
       .prepare(
         `SELECT id, content, kind, scope_type, strength, created_at, last_recalled_at, recall_count, embedding
-           FROM employee_memory
+           FROM memory
           WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
             ${scopeClause ? `AND (${scopeClause})` : ''}
           ORDER BY created_at DESC
@@ -174,7 +175,7 @@ export class MemoryService {
   /** Recall strengthens a memory: the decay clock restarts and strength ticks up. */
   private recordRecall = (ids: string[], now: number): void => {
     const statement = this.db.prepare(
-      `UPDATE employee_memory
+      `UPDATE memory
           SET recall_count = recall_count + 1,
               last_recalled_at = ?,
               strength = MIN(1.5, strength * 1.05),
@@ -187,15 +188,15 @@ export class MemoryService {
     tx();
   };
 
-  listForEmployee = (employeeId: string, limit = 50): MemorySnippet[] =>
+  listForOwner = (ownerId: string, limit = 50): MemorySnippet[] =>
     (
       this.db
         .prepare(
           `SELECT id, content, kind, scope_type, strength, created_at, last_recalled_at, recall_count, embedding
-             FROM employee_memory WHERE owner_id = ? AND is_archived = 0
+             FROM memory WHERE owner_id = ? AND is_archived = 0
             ORDER BY created_at DESC LIMIT ?`,
         )
-        .all(employeeId, limit) as MemoryRow[]
+        .all(ownerId, limit) as MemoryRow[]
     ).map((row) => ({
       id: row.id,
       kind: row.kind,
@@ -204,10 +205,10 @@ export class MemoryService {
       score: row.strength,
     }));
 
-  countForEmployee = (employeeId: string): number =>
+  countForOwner = (ownerId: string): number =>
     (
       this.db
-        .prepare('SELECT COUNT(*) AS n FROM employee_memory WHERE owner_id = ? AND is_archived = 0')
-        .get(employeeId) as { n: number }
+        .prepare('SELECT COUNT(*) AS n FROM memory WHERE owner_id = ? AND is_archived = 0')
+        .get(ownerId) as { n: number }
     ).n;
 }

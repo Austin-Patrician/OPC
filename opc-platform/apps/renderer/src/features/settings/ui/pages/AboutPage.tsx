@@ -47,7 +47,7 @@ export function AboutPage() {
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-bold text-ink">OPC 一人公司</h3>
+              <h3 className="text-lg font-bold text-ink">OPC 工作台</h3>
               <span className="flex h-5 items-center rounded-md bg-surface-muted px-1.5 font-mono text-xs text-ink-tertiary">
                 v{info?.version ?? '…'}
               </span>

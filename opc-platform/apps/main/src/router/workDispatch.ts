@@ -37,7 +37,7 @@ export interface LineOpenerDeps {
     threadId: string;
     template: WorkerTemplate;
     hint: string;
-  }) => { employeeId: string; workerId: string } | null;
+  }) => { ownerId: string; workerId: string } | null;
   estTokens?: number;
 }
 
@@ -46,6 +46,14 @@ export interface OpenLineInput {
   title?: string;
   threadKey?: string | null;
   template?: WorkerTemplate;
+  /**
+   * 钉住一个已经在这条线上的执行体：直通（§3.2 Fast Path）走这条。
+   *
+   * 直通的含义是"归属已经确定"，所以不许再挑一次人——按目标重新 `pickWorker`
+   * 会从全库重新选，选出来的可能不是盯这条线的那位，于是同一个话题会被两个
+   * 互相不知道对方存在的执行体各干一半。找不到这个人就退回正常挑人。
+   */
+  workerId?: string;
   /** 可执行的验收命令；没有就诚实地说"验不了"。 */
   acceptance?: readonly string[];
 }
@@ -61,7 +69,7 @@ export function createLineOpener(deps: LineOpenerDeps) {
     const goal = input.goal.trim();
     if (!goal) return { ok: false, reason: '目标为空，不知道该做什么' };
 
-    // 同一个环境身份上已经有线，就并进去，不开第二条：老板在同一个话题里连说
+    // 同一个环境身份上已经有线，就并进去，不开第二条：你在同一个话题里连说
     // 三句话，应该是同一条线的三段上下文，而不是三件互相不知道对方存在的事。
     const existing = input.threadKey ? deps.threads.threadByKey(input.threadKey) : null;
     const thread =
@@ -73,11 +81,17 @@ export function createLineOpener(deps: LineOpenerDeps) {
       });
 
     const template = input.template ?? inferTemplate(`${thread.title} ${goal}`);
-    const picked = deps.resolveWorker({
-      threadId: thread.id,
-      template,
-      hint: `${thread.title} ${goal}`,
-    });
+    // 归属已定的事件（直通）必须还给同一个执行体：`workerId` 存在就沿用它，
+    // 不再按目标挑人。它不在这条线上时（线被重建过）才退回正常挑人。
+    const pinned = input.workerId ? deps.threads.getWorker(input.workerId) : null;
+    const picked =
+      pinned && pinned.threadId === thread.id
+        ? { ownerId: pinned.ownerId ?? pinned.id, workerId: pinned.id }
+        : deps.resolveWorker({
+            threadId: thread.id,
+            template,
+            hint: `${thread.title} ${goal}`,
+          });
     if (!picked) {
       return { ok: false, reason: '没有可用的执行体：先在 设置 → 模型 里配一个能跑的模型' };
     }
@@ -93,7 +107,7 @@ export function createLineOpener(deps: LineOpenerDeps) {
       title: thread.title,
       brief: goal,
       deliverableSpec: goal,
-      assigneeId: picked.employeeId,
+      assigneeId: picked.ownerId,
       workerId: picked.workerId,
       estTokens: deps.estTokens ?? DEFAULT_EST_TOKENS,
       // 没有闸门就说没有闸门：跑还是会跑，但结论只能是"需要人看一眼"，

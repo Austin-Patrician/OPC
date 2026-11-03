@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
-import { OrgService } from '../org/orgService';
+import { ThreadRepository } from '../data/threadRepository';
 import { MemoryService } from './memoryService';
 
 /**
@@ -15,14 +15,13 @@ import { MemoryService } from './memoryService';
 let dir: string;
 let db: CompanyDatabase;
 let memory: MemoryService;
-let employeeId: string;
+let ownerId: string;
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'opc-memory-'));
   db = openCompanyDatabase(path.join(dir, 'company.db'));
-  const org = new OrgService(db);
-  const department = org.createDepartment({ name: '工程部', code: 'EN-01' });
-  employeeId = org.hire({ name: '李雷', role: '工程师', departmentId: department.id }).id;
+  // 记忆按执行体隔离；v2 里执行体就是 worker 行。
+  ownerId = new ThreadRepository(db).createWorker({ name: '李雷', template: 'code' }).id;
   memory = new MemoryService(db);
 });
 
@@ -34,7 +33,7 @@ afterEach(() => {
 describe('thread-scoped memory', () => {
   it('keeps one line of work\'s lessons out of another', async () => {
     await memory.remember({
-      employeeId,
+      ownerId,
       kind: 'experience',
       content: '这份财报的表格要用千分位',
       scope: { type: 'thread', id: 'th-1' },
@@ -42,12 +41,12 @@ describe('thread-scoped memory', () => {
     });
 
     const here = await memory.retrieve({
-      employeeId,
+      ownerId,
       query: '财报 表格',
       scopes: [{ type: 'thread', id: 'th-1' }],
     });
     const elsewhere = await memory.retrieve({
-      employeeId,
+      ownerId,
       query: '财报 表格',
       scopes: [{ type: 'thread', id: 'th-2' }],
     });
@@ -58,7 +57,7 @@ describe('thread-scoped memory', () => {
 
   it('still honours the older personal scope, which now means "my own habit"', async () => {
     await memory.remember({
-      employeeId,
+      ownerId,
       kind: 'preference',
       content: '先给结论再给证据',
       scope: { type: 'personal' },
@@ -66,7 +65,7 @@ describe('thread-scoped memory', () => {
     });
 
     const found = await memory.retrieve({
-      employeeId,
+      ownerId,
       query: '结论 证据',
       scopes: [{ type: 'personal' }],
     });
@@ -75,14 +74,14 @@ describe('thread-scoped memory', () => {
 
   it('lets one query span the thread and the person at once', async () => {
     await memory.remember({
-      employeeId,
+      ownerId,
       kind: 'experience',
       content: '这条线要先读附录',
       scope: { type: 'thread', id: 'th-1' },
       sourceType: 'task',
     });
     await memory.remember({
-      employeeId,
+      ownerId,
       kind: 'preference',
       content: '表格一律用千分位',
       scope: { type: 'personal' },
@@ -90,7 +89,7 @@ describe('thread-scoped memory', () => {
     });
 
     const both = await memory.retrieve({
-      employeeId,
+      ownerId,
       query: '千分位 附录',
       scopes: [{ type: 'thread', id: 'th-1' }, { type: 'personal' }],
     });

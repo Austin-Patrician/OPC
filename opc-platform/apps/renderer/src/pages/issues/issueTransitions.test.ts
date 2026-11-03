@@ -11,7 +11,7 @@ describe('issue board drops', () => {
     expect(decideDrop('failed', 'doing').action).toEqual({ kind: 'run' });
   });
 
-  it('lets the boss sign off an accepted task', () => {
+  it('lets you sign off an accepted task', () => {
     expect(decideDrop('accepted', 'delivered')).toEqual({
       allowed: true,
       action: { kind: 'approve' },
@@ -19,16 +19,16 @@ describe('issue board drops', () => {
   });
 
   it('never lets a drop impersonate the manager or the system', () => {
-    expect(decideDrop('running', 'manager-review').allowed).toBe(false);
-    expect(decideDrop('open', 'manager-review').allowed).toBe(false);
-    expect(decideDrop('review', 'boss-review').allowed).toBe(false);
-    expect(decideDrop('running', 'boss-review').allowed).toBe(false);
+    expect(decideDrop('running', 'system-review').allowed).toBe(false);
+    expect(decideDrop('open', 'system-review').allowed).toBe(false);
+    expect(decideDrop('review', 'user-review').allowed).toBe(false);
+    expect(decideDrop('running', 'user-review').allowed).toBe(false);
   });
 
   it('refuses silly moves with a readable reason', () => {
     expect(decideDrop('running', 'doing').allowed).toBe(false);
     expect(decideDrop('delivered', 'delivered').reason).toContain('同一列');
-    expect(decideDrop('delivered', 'boss-review').allowed).toBe(false);
+    expect(decideDrop('delivered', 'user-review').allowed).toBe(false);
     expect(decideDrop('running', 'todo').allowed).toBe(false);
     ['accepted', 'open', 'running'].forEach((status) => {
       expect(decideDrop(status as never, 'blocked').allowed).toBe(false);

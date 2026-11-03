@@ -5,7 +5,7 @@ import type { ProxyConfig, ProxyConfigInput, ProxyMode, ProxyProtocol } from '@o
  * and what a pasted server string means. Nothing here touches Electron, so the
  * rules are unit-testable without launching a window.
  *
- * The stored config is the boss's intent; the three shapes below are the three
+ * The stored config is your intent; the three shapes below are the three
  * places that intent has to be expressed:
  *
  * | consumer            | shape                                   |
@@ -184,7 +184,7 @@ export function proxyUrl(config: Pick<ProxyConfig, 'protocol' | 'host' | 'port'>
  *
  * `null` means "remove the key": a SOCKS5 proxy cannot be expressed as
  * `HTTP_PROXY`, and leaving an inherited HTTP proxy in place would route children
- * somewhere the boss did not choose.
+ * somewhere you did not choose.
  */
 export function proxyEnvironment(config: ResolvedProxy): Record<string, string | null> {
   const url = proxyUrl(config);

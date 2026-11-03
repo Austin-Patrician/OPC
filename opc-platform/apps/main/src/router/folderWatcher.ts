@@ -2,7 +2,7 @@ import { readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /**
- * The first real Trigger source: a folder the boss drops files into.
+ * The first real Trigger source: a folder you drops files into.
  *
  * Chosen because it needs no credentials, works offline, and produces the moment
  * the whole product is about — something arrived and nobody asked. Calendar and

@@ -8,7 +8,7 @@ import { DispatchTaskDialog, type DispatchDraft } from '@/features/task/ui/Dispa
 /**
  * 对话页。
  *
- * 这里曾经是「左边会话列表 + 右边聊天」。v2 之后没有列表了：老板始终只在和
+ * 这里曾经是「左边会话列表 + 右边聊天」。v2 之后没有列表了：你始终只在和
  * 一个助手说话（Super-agent 的连续感），事情在注意力队列里，过程在这条会话里。
  */
 export function ChatPage() {
@@ -22,7 +22,7 @@ export function ChatPage() {
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
   const [resolving, setResolving] = useState(false);
 
-  // 没有会话就建一条：老板不该先"选一个对象"才能说话。
+  // 没有会话就建一条：你不该先"选一个对象"才能说话。
   useEffect(() => {
     if (active || resolving) return;
     if (!window.opc?.chat.ensureAssistant) return;

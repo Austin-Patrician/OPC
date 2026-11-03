@@ -16,7 +16,7 @@ import { isUnverified } from './acceptanceGate';
 export interface ThreadOutcome {
   /** The line of work's new state. */
   state: ThreadState;
-  /** What the boss is told, if anything. */
+  /** What you is told, if anything. */
   report: { level: AttentionLevel; title: string; body: string } | null;
 }
 
@@ -41,14 +41,14 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
         };
       }
       // The expected ending. It is recorded (level `silent` keeps it out of the
-      // queue) so the thread keeps a history the boss can read later.
+      // queue) so the thread keeps a history you can read later.
       return {
         state: 'done',
         report: { level: 'silent', title: task.title, body: summarise(task) },
       };
 
     case 'delivered':
-      // Only reachable through the boss's own sign-off (`bossDecision`), so asking
+      // Only reachable through the your own sign-off (`userDecision`), so asking
       // again would be asking the same person the same question twice.
       return {
         state: 'done',
@@ -76,8 +76,8 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
       };
 
     case 'review':
-      // A manager is looking at it. The boss hears about it when the verdict is
-      // in, not while it is pending — otherwise sign-off costs the boss a glance
+      // A manager is looking at it. You hears about it when the verdict is
+      // in, not while it is pending — otherwise sign-off costs you a glance
       // per round instead of one per task.
       return { state: 'waiting', report: null };
 

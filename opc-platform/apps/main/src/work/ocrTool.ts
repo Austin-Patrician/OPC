@@ -94,7 +94,7 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
 }
 
 /**
- * The boss's setting is the default; the model may still ask for the other shape
+ * The your setting is the default; the model may still ask for the other shape
  * for one call (a table needs coordinates even when the company reads prose).
  */
 function resolveDetail(asked: string | undefined, preferred: OcrDetail | undefined): OcrDetail {

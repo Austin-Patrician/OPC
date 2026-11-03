@@ -54,7 +54,7 @@ export function resolveOcrAssetsDir(input: {
  *
  * Deliberately the cheap check (existence + size): this runs on every
  * `ocr_image` call. Hashing the models belongs to the settings page, which is
- * where a boss can actually see that something is wrong.
+ * where a user can actually see that something is wrong.
  */
 export function assertOcrAssets(root: string): void {
   const report = inspectOcrAssets(root);

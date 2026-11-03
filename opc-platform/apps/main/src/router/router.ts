@@ -1,5 +1,7 @@
 import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
+import type { SemanticScreener } from './semanticGate';
+import { bodyOf } from './triage';
 
 /**
  * 调度循环。
@@ -19,6 +21,10 @@ import type { ThreadRepository } from '../data/threadRepository';
  * 语义层（"这件事值不值得做"）由 Router 会话判断，于是这个循环里没有 `judge`。
  * 原来那个"一次调用判一批 accept/reject"的注入点是照抄文章批处理的样子搭的骨架，
  * 现在模型真的在了，骨架该拆了。
+ *
+ * 唯一会花 token 的地方是 `semantic`：一个可选的**前置门**（分类器），它只回答
+ * "这批里哪些不值得占用 Router 的上下文"。开不开是设置里的事（`TriagePolicy`），
+ * 关掉就是"全部交给 Router 自己判"——两种都能跑，区别只是花多少钱。
  */
 
 export type PrefilterVerdict = 'keep' | 'drop';
@@ -39,6 +45,13 @@ export interface RouterDeps {
   threads: ThreadRepository;
   /** 程序层。默认全留，配错了会很明显（每一条都进模型）。 */
   prefilter?: (event: TriggerEvent) => PrefilterVerdict;
+  /**
+   * 语义层的前置门（可选的分类器）。不传 = 不经过任何门，全部交给 Router 判。
+   *
+   * 它是 `async` 的：这里允许一次网络往返，因为省下来的正是 Router 那一轮推理。
+   * 门失败时约定返回"全部放行"，所以这条路径不会丢事件。
+   */
+  semantic?: SemanticScreener;
   /** 未订阅 → Slow Path：交给 Router 会话判断。 */
   deliver: (text: string) => void;
   /**
@@ -48,6 +61,8 @@ export interface RouterDeps {
    * 是优化而不是正确性。
    */
   passthrough?: (intent: Intent) => void;
+  /** 工作台长期有效的规矩（`fact` 的 global 那几条），每轮带进上下文。 */
+  rules?: () => readonly string[];
   /** 一轮最多看多少条事件。 */
   batchSize?: number;
   now?: () => number;
@@ -56,6 +71,11 @@ export interface RouterDeps {
 export interface TickReport {
   /** 程序层丢掉、没花一个 token 的。 */
   dropped: number;
+  /**
+   * 语义层（分类器）判掉噪声的。和 `dropped` 分开计数：一个是"没花 token 就确定"
+   * 的，一个是"花了一点 token 才确定"的，混在一起就看不出去噪到底靠的是哪一层。
+   */
+  gated: number;
   /** 直通给订阅者的（没花 Router 一个 token）。 */
   passthrough: number;
   /** 交给 Router 会话的事件数。 */
@@ -82,12 +102,22 @@ export class Router {
    *
    * 任何一步抛异常，那条事件就留在 `pending`：静默丢工作比慢一轮糟得多，
    * 而队列是"它确实来过"的唯一证据。
+   *
+   * `async` 只有一个原因：语义门是一次模型调用。程序层、直通、攒批仍然是同步的，
+   * 所以"没有开语义门"的配置下这一轮只是多了一个 await 一个立即 resolve 的 Promise。
    */
-  tick = (): TickReport => {
-    const report: TickReport = { dropped: 0, passthrough: 0, routed: 0, reports: 0, failed: 0 };
+  tick = async (): Promise<TickReport> => {
+    const report: TickReport = {
+      dropped: 0,
+      gated: 0,
+      passthrough: 0,
+      routed: 0,
+      reports: 0,
+      failed: 0,
+    };
 
     const pending = this.deps.threads.listPendingEvents(this.batchSize);
-    const slow: TriggerEvent[] = [];
+    let slow: TriggerEvent[] = [];
 
     for (const event of pending) {
       try {
@@ -113,6 +143,22 @@ export class Router {
       }
     }
 
+    // 语义门：只判"值得占用 Router 上下文吗"，判完还是交给 Router 做决定。
+    if (slow.length > 0 && this.deps.semantic) {
+      try {
+        const screened = await this.deps.semantic(slow);
+        for (const event of screened.dropped) {
+          this.deps.threads.triageEvent(event.id, 'dropped');
+          report.gated += 1;
+        }
+        if (screened.error) console.warn('[router] 语义门没判成，这批全部放行', screened.error);
+        slow = screened.keep;
+      } catch (error) {
+        // 门自己炸了：当作没开，全部放行。
+        console.warn('[router] 语义门异常，这批全部放行', error);
+      }
+    }
+
     // 汇报不需要经过 Router 判断——它是既成事实，只需要被讲出去。
     const reports = this.deps.threads.listUnannouncedReports(20);
     report.reports = reports.length;
@@ -127,7 +173,7 @@ export class Router {
     report.routed = slow.length;
 
     try {
-      this.deps.deliver(composeInput(slow, reports));
+      this.deps.deliver(composeInput(slow, reports, this.deps.rules?.() ?? []));
     } catch (error) {
       // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
       this.deps.threads.resetTriage(slow.map((event) => event.id));
@@ -141,7 +187,14 @@ export class Router {
     return report;
   };
 
-  /** 这条事件是不是已经有主了。 */
+  /**
+   * 这条事件是不是已经有主了。
+   *
+   * 取订阅者里的**第一个**：一条线一个主执行体。`subscription` 表本身是
+   * `(thread_id, worker_id)` 多对多，但那个多对多的意思是"一个执行体可以盯多条线"，
+   * 不是"一条线找一堆人抢同一份活"——真让多个执行体同时接手，等于把一条线拆成
+   * 互不知情的几份。要改这个口径，得先有"一条线内部怎么分工"的设计。
+   */
   private intentFor(event: TriggerEvent): Intent | null {
     const key = threadKeyOf(event);
     if (!key) return null;
@@ -160,12 +213,23 @@ export class Router {
  *
  * 每个对象都带 id 并内联了相邻对象的 id，这样模型可以顺着引用图往下跳
  * （§3.3 链式召回）——它不需要一开始就把全文装进窗口。
+ *
+ * `rules` 是工作台长期有效的规矩（`fact` 的 global 那几条）。放在输入里而不是稳定
+ * 前缀里：前缀要稳定才能吃到 provider 的提示词缓存，而规矩是会变的。它通常只有
+ * 几条，每轮带上比让模型为此多调一次工具便宜。
  */
 export function composeInput(
   events: readonly TriggerEvent[],
   reports: readonly WorkReport[],
+  rules: readonly string[] = [],
 ): string {
   const lines: string[] = [];
+
+  if (rules.length > 0) {
+    lines.push(`## 工作台的规矩（${rules.length}，长期有效）`);
+    for (const rule of rules) lines.push(`- ${rule}`);
+    lines.push('');
+  }
 
   if (events.length > 0) {
     lines.push(`## 新事件（${events.length}）`);
@@ -181,7 +245,7 @@ export function composeInput(
 
   if (reports.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push(`## 执行体汇报（${reports.length}，都还没告诉老板）`);
+    lines.push(`## 执行体汇报（${reports.length}，都还没告诉用户）`);
     for (const report of reports) {
       lines.push(`- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.title}`);
       if (report.body.trim()) lines.push(indent(spill(report.body, `recall ${report.id}`)));
@@ -190,22 +254,11 @@ export function composeInput(
 
   lines.push('');
   lines.push(
-    '判断：这些里有哪些需要老板知道？哪些该派活（open_line_of_work）？' +
-      '哪些直接不管？要说话就调用 reply_to_boss——不调用它，老板听不到你。',
+    '判断：这些里有哪些需要用户知道？哪些该派活（open_line_of_work）？' +
+      '哪些直接不管？要说话就调用 reply_to_user——不调用它，用户听不到你。',
   );
 
   return lines.join('\n');
-}
-
-/** 事件里最像"内容"的那个字段。适配器约定：`text` / `goal` / `path`。 */
-function bodyOf(payload: Record<string, unknown>): string {
-  for (const field of ['text', 'goal', 'path', 'summary', 'brief'] as const) {
-    const value = payload[field];
-    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
-  }
-  const keys = Object.keys(payload).filter((key) => key !== 'threadKey');
-  if (keys.length === 0) return '';
-  return JSON.stringify(Object.fromEntries(keys.map((key) => [key, payload[key]])));
 }
 
 /** Inline & Spill：短的全放，长的截断并留一个按需读取的入口。 */

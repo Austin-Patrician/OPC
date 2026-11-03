@@ -24,15 +24,14 @@
     "searchPlaceholder": "Search chats…"
   },
   "titleBar": {
-    "orgPill": "Org chart ({{departments}} depts · {{agents}} agents)",
     "hire": "Hire an agent",
-    "bossName": "Your name",
-    "bossNamePlaceholder": "What should we call you?",
-    "renameBoss": "Click to rename",
+    "userName": "Your name",
+    "userNamePlaceholder": "What should we call you?",
+    "renameUser": "Click to rename",
     "profile": "My card",
     "fields": {
       "name": "Name",
-      "company": "Company",
+      "company": "Workspace",
       "role": "Role"
     },
     "founderRole": "Founder"
@@ -107,7 +106,7 @@
     "language.en-US": "English",
     "reset": "Reset appearance",
     "preview": "Preview",
-    "previewText": "Boss, 3 deliverables passed acceptance today.",
+    "previewText": "3 deliverables passed acceptance today.",
     "about": {
       "runtime": "Runtime",
       "appVersion": "App version",
@@ -140,10 +139,11 @@
     "page": {
       "appearance": "Appearance & language",
       "compaction": "Workspace & compaction",
-      "company": "Company & profile",
+      "company": "Workspace & you",
       "billing": "Billing",
       "network": "Network & proxy",
-      "runtime": "Runtimes"
+      "runtime": "Runtimes",
+      "triage": "Routing"
     },
     "llm": {
       "desc": "Providers and models come from pi's built-in catalog; the default model and thinking level apply to the runtime.",
@@ -389,11 +389,11 @@
       "loggedOut": "Signed out"
     },
     "facts": {
-      "title": "Company facts",
-      "desc": "Facts written here enter every employee's prompt; writing the same subject supersedes the old value (history kept).",
-      "empty": "No company facts yet.",
-      "subject": "Subject, e.g. Q4 goal",
-      "object": "Value, e.g. retention first",
+      "title": "Workspace rules",
+      "desc": "Rules written here enter every executor's prompt; the same subject supersedes the old value (history kept).",
+      "empty": "No rules yet.",
+      "subject": "Subject, e.g. delivery standard",
+      "object": "Value, e.g. always include a README",
       "save": "Save"
     },
     "runs": {
@@ -403,24 +403,20 @@
       "created": "{{count}} memories from {{episodes}} messages"
     },
     "company": {
-      "title": "Company profile",
-      "description": "Name, logo, industry and how you are addressed live in the local database; press Save to sync the title bar and card.",
-      "name": "Company name",
+      "title": "Workspace",
+      "description": "Name, colours and how you are addressed live in the local database; press Save to sync the title bar and card.",
+      "name": "Workspace name",
       "nameHint": "Shown in the title bar and on the card",
-      "boss": "What to call you",
-      "bossHint": "The name in the title bar, and how agents address you",
-      "industry": "Industry",
-      "vision": "One-line vision",
-      "visionPlaceholder": "e.g. An AI agent content factory",
+      "userHint": "The name in the title bar, and how agents address you",
       "brand": "Brand colour",
-      "brandTitle": "Company brand",
-      "brandDesc": "Logo, name and visual identity — what the title bar and business card show.",
-      "logo": "Company logo",
+      "brandTitle": "Appearance",
+      "brandDesc": "Name, colours and visual identity — what the title bar and card show.",
+      "logo": "Workspace logo",
       "logoHint": "PNG / JPG / WebP / GIF / SVG, square works best, up to 500 KB",
-      "bossTitle": "About you",
-      "bossDesc": "How agents address you in chats and tasks.",
-      "bossAvatar": "Your avatar",
-      "bossAvatarHint": "Shown in the title bar; initials are used when empty",
+      "userTitle": "About you",
+      "userDesc": "How agents address you in chats and tasks.",
+      "userAvatar": "Your avatar",
+      "userAvatarHint": "Shown in the title bar; initials are used when empty",
       "imageUpload": "Upload image",
       "imageReplace": "Replace image",
       "imageRemove": "Remove",
@@ -430,10 +426,14 @@
       "unsaved": "Unsaved",
       "saved": "Saved",
       "discard": "Discard",
-      "budget": "Monthly company limit",
-      "budgetHint": "Company budget: crossing it hard-stops dispatch. The budget centre shows live usage.",
+      "budget": "Monthly workspace limit",
+      "budgetHint": "Workspace budget: crossing it hard-stops dispatch. The budget centre shows live usage.",
       "openBudget": "Open budget centre",
-      "loading": "Reading the company profile…"
+      "loading": "Reading the workspace profile…",
+      "user": "What to call you",
+      "goalPlaceholder": "e.g. Hand the content work to my assistant",
+      "goal": "One-line goal",
+      "domain": "What you do"
     },
     "billing": {
       "desc": "How money is decided and shown. The ledger is always USD; the rate only changes the CNY figure on screen.",
@@ -518,8 +518,8 @@
       "unavailable": "Proxy settings are unavailable in this environment"
     },
     "runtime": {
-      "desc": "One base environment for the whole company: commands and acceptance scripts in the workspace run through the interpreters chosen here. Node and Python are both active, with no per-employee override.",
-      "globalNote": "This is a company-wide setting: changes apply to the next tool call and never interrupt a running task.",
+      "desc": "One base environment for the whole workspace: commands and acceptance scripts in the workspace run through the interpreters chosen here. Node and Python are both active, with no per-employee override.",
+      "globalNote": "This is a workspace-wide setting: changes apply to the next tool call and never interrupt a running task.",
       "nodeTitle": "Node runtime",
       "nodeDesc": "System Node wins by default; Electron's bundled Node is only the fallback when none is installed.",
       "pythonTitle": "Python runtime",
@@ -561,7 +561,37 @@
       "ocrDetail": "Output shape",
       "ocrDetailHint": "Text joins every line in reading order, which is what you want for meaning. Lines keeps each line's position and confidence, which is what you want for tables and forms.",
       "ocrDetailText": "Text",
-      "ocrDetailLines": "Lines"
+      "ocrDetailLines": "Lines",
+      "bundledEmpty": "No bundled engines"
+    },
+    "triage": {
+      "desc": "What is worth interrupting the assistant for: which events to ignore, which to hand to a model.",
+      "fastTitle": "Program layer",
+      "fastDesc": "The layer that costs no tokens. It only blocks what is certainly not work: our own write-backs, notifications with no content, the same file touched twice within a minute.",
+      "mode": "Policy",
+      "fastNoise": "Block noise only",
+      "fastAllowlist": "Allow these sources only",
+      "sources": "Sources",
+      "sourcesHint": "Sources outside the list never reach the assistant — register a new adapter here when you add one.",
+      "source": {
+        "im": "Chat",
+        "folder": "Folder",
+        "manual": "Attention queue",
+        "calendar": "Calendar",
+        "github": "GitHub"
+      },
+      "semanticTitle": "Semantic layer",
+      "semanticDesc": "The layer that costs tokens. It answers one question: does this deserve a slice of the assistant context?",
+      "semantic": "Who looks first",
+      "semanticRouter": "The assistant itself",
+      "semanticDecision": "A classifier first",
+      "threshold": "Noise threshold",
+      "thresholdHint": "Probability above this line is dropped. Higher is more conservative (may cost more tokens), lower saves more (may ask twice).",
+      "threshold05": "Aggressive",
+      "threshold07": "Default",
+      "threshold09": "Conservative",
+      "decisionHint": "The classifier is the model configured under Settings → Models → Decision. When none is configured this layer switches itself off and every event goes to the assistant — nothing is lost.",
+      "footnote": "Both layers fail upward: unclear, unconfigured, or a failed call all let the event through. What you tune here is cost, not whether work gets done."
     }
   },
   "notFound": {
@@ -583,7 +613,7 @@
     "dispatch": "Dispatch",
     "submit": "Dispatch and run",
     "running": "Running…",
-    "assignee": "Assignee",
+    "assignee": "Executor",
     "estTokens": "~{{tokens}} tokens",
     "deliverable": "Deliverable",
     "acceptance": "Acceptance (system-owned)",
@@ -596,7 +626,7 @@
       "accepted": "Accepted",
       "rejected": "Rejected",
       "failed": "Failed",
-      "review": "Awaiting manager",
+      "review": "Awaiting the system check",
       "delivered": "Delivered",
       "cancelled": "Cancelled"
     },
@@ -604,10 +634,8 @@
       "title": "Title",
       "brief": "Brief",
       "deliverable": "Deliverable (required)",
-      "assignee": "Assign to",
-      "tokens": "Estimated tokens",
-      "project": "Charge to project",
-      "noProject": "No project (employee/department/company only)"
+      "assignee": "Hand to",
+      "tokens": "Estimated tokens"
     },
     "placeholder": {
       "title": "What needs doing, in one line",
@@ -625,9 +653,9 @@
     "subtasks": "{{count}} subtasks",
     "subtasksDone": "done",
     "subtasksEmpty": "No subtasks yet",
-    "bossApprove": "Approve",
-    "bossReject": "Reject",
-    "bossVerdict": "Boss sign-off"
+    "userApprove": "Approve",
+    "userReject": "Reject",
+    "userVerdict": "Your sign-off"
   },
   "models": {
     "defaultLlm": "Default LLM",
@@ -661,57 +689,22 @@
       "videoHint": "pi has no video model type or generation API today (chat / image / classifier only), so this is not a fake entry."
     }
   },
-  "wizard": {
-    "title": "Hire a custom agent",
-    "name": "Name",
-    "role": "Title",
-    "roleHint": "Only used when there is no job, e.g. Backend Engineer",
-    "department": "Department",
-    "reportsTo": "Reports to",
-    "noManager": "None (reports to the boss)",
-    "job": "Job",
-    "jobNone": "No job (free-form title)",
-    "jobHint": "A job is a company-wide title; picking one brings its responsibilities, skills and default model.",
-    "jobNoneOpen": "No jobs in this company yet; create one under Org → Jobs.",
-    "probation": "Probation (days)",
-    "probationHint": "Leave empty to hire as a permanent employee",
-    "probationDays": "{{count}} days",
-    "probationNone": "No probation",
-    "reportingHint": "The reporting line grants decomposition rights: a manager can split work to direct reports.",
-    "skills": "Skill tags (inherit the job by default)",
-    "skillHint": "Type and press Enter, e.g. Node.js",
-    "skillsTagsHint": "Tags are for the marketplace and search; the tools it can really use live in the employee dossier under “Model and tools”.",
-    "addSkill": "Add skill",
-    "persona": "Personal charter (goes into the system prompt)",
-    "personaHint": "Responsibilities come from the job; write here how this agent works on top of them.",
-    "inheritModel": "Inherits the default model",
-    "modelHint": "Empty inherits the company default; a chosen model applies from the employee's first task.",
-    "back": "Back",
-    "next": "Next",
-    "submit": "Hire",
-    "step": {
-      "identity": "Identity",
-      "reporting": "Reporting",
-      "capability": "Capability",
-      "confirm": "Confirm"
-    },
-    "inheritedFromJob": "Filled in from the job “{{title}}”. Edits apply to this hire only, not to the job definition.",
-    "jobSeatUnplanned": "unplanned",
-    "jobSeatLeft": "{{count}} seat(s) left in this department"
-  },
   "issues": {
     "title": "Issues",
     "all": "All",
     "summary": "{{doing}} in progress · {{review}} awaiting your sign-off · {{stuck}} stuck",
-    "assignee": "Assignee",
-    "allAssignees": "All assignees",
+    "assignee": "Executor",
+    "allAssignees": "All executors",
     "search": "Search KEY / title / brief",
     "group": {
       "todo": "To do",
       "doing": "In progress",
       "review": "Awaiting review",
       "done": "Accepted",
-      "blocked": "Needs attention"
+      "blocked": "Needs attention",
+      "system-review": "System check",
+      "user-review": "Awaiting you",
+      "delivered": "Delivered"
     },
     "empty": "No work items yet. Dispatch a task in IM and it shows up here with a key.",
     "reviewTask": "review",
@@ -763,7 +756,7 @@
   },
   "capabilities": {
     "title": "Skills & tools",
-    "subtitle": "What each agent installs at runtime under the current configuration when it opens a work session — read straight from the registry, not a hand-written document. Change a model, an image/voice provider, or a reporting line and this list follows on refresh.",
+    "subtitle": "What each executor installs at runtime under the current configuration when it opens a line of work — read straight from the registry, not a hand-written document. Change a model, or an image/voice capability, and this list follows on refresh.",
     "refresh": "Refresh",
     "readAt": "Read at {{time}}",
     "unknownExtension": "Unregistered extension; trust the tool list below.",
@@ -775,8 +768,8 @@
     },
     "toolsTab": {
       "title": "Callable tools",
-      "description": "{{count}} tools, grouped by the extension that provides them; the number on the right is how many agents can call it.",
-      "agents": "{{count}} agents"
+      "description": "{{count}} tools, grouped by the extension that provides them; the number on the right is how many executors can call it.",
+      "agents": "{{count}}"
     },
     "mcp": {
       "title": "MCP servers",
@@ -786,7 +779,7 @@
       "needsTitle": "Getting there needs at least",
       "needClient": "A stdio / SSE client that starts the process or connects to the endpoint, with reconnect and exit handling",
       "needTools": "A translation from MCP tools to pi-durable tools, prefixed so names cannot collide with built-ins",
-      "needPolicy": "The existing trust gate and per-employee switches — an MCP server can read local data too"
+      "needPolicy": "The existing trust gate and per-executor switches — an MCP server can read local data too"
     },
     "external": {
       "title": "Pi extensions on this machine",
@@ -809,7 +802,7 @@
       "trustBody": "This extension is ordinary JavaScript, not a sandboxed plugin. Once enabled it runs inside the main process with the same rights as OPC itself.",
       "trustRisk": {
         "code": "Runs any code, including on startup",
-        "data": "Can read the company database, workspaces, API keys and session history",
+        "data": "Can read the workspace database, workspaces, API keys and session history",
         "network": "Can call the network on its own"
       },
       "trustConfirm": "Trust and enable"
@@ -824,8 +817,8 @@
       "files": "{{count}} files"
     },
     "extensionsTitle": "Built-in extensions",
-    "extensionsHint": "Grouped by extension, listed once; the badge counts how many agents install it. The tools themselves live in the Tools tab. Conditional capabilities follow the environment: without an image/voice model, or without reports, those tools simply do not appear.",
-    "extensionAgents": "{{count}} agents",
+    "extensionsHint": "Grouped by extension, listed once; the badge counts how many executors install it. The tools themselves live in the Tools tab. Conditional capabilities follow the environment: without an image/voice model, or without another executor, those tools simply do not appear.",
+    "extensionAgents": "{{count}} executors",
     "extensionToolCount": "{{count}} tools",
     "extensionNoTools": "No tools",
     "counts": {
@@ -834,12 +827,22 @@
       "sections": "{{count}} prompt sections"
     },
     "deferred": "On demand",
-    "agentTitle": "By agent",
-    "agentHint": "Expand a person to see what is installed in their own registry. Profile skill tags are for display only and never enter the prompt.",
+    "templates": {
+      "research": "Research",
+      "code": "Code",
+      "ops": "Ops"
+    },
+    "statuses": {
+      "idle": "Idle",
+      "running": "Running",
+      "retired": "Retired"
+    },
+    "agentTitle": "By executor",
+    "agentHint": "Expand an executor to see what is installed in its own registry. Skill tags are for display only and never enter the prompt.",
     "agentExtensions": "{{count}} extensions",
     "agentTools": "{{count}} tools",
     "agentExtensionsLabel": "Extensions",
-    "agentSkillsLabel": "Profile skills (display only)",
+    "agentSkillsLabel": "Skills (display only)",
     "agentToolsLabel": "Callable tools",
     "tools": {
       "read": "Read a file in the workspace.",
@@ -851,14 +854,11 @@
       "text_to_speech": "Synthesize text into an audio file.",
       "ocr_image": "Extract text from an image.",
       "remember": "Save one durable lesson for future tasks.",
-      "send_direct_message": "Send a message to a colleague.",
-      "ack_message": "Mark a colleague's message as read.",
-      "decompose_task": "Split a task into subtasks for direct reports.",
+      "decompose_task": "Split a task into subtasks for other executors.",
       "decide": "Judge a piece of evidence and return a label, a score or a probability."
     },
-    "head": "Head",
-    "noSkills": "No tags",
-    "empty": "No active agents yet.",
+    "noSkills": "No skills",
+    "empty": "No executors yet.",
     "loadError": "Could not read the capability catalogue: {{message}}",
     "extensions": {
       "work": {
@@ -899,7 +899,7 @@
       },
       "decompose": {
         "title": "Task decomposition",
-        "description": "Splits a large task into subtasks for reports; installed only for managers with a reporting line."
+        "description": "Splits a large task into subtasks for other executors; not installed when the workspace has only one."
       },
       "decision": {
         "title": "Structured decisions",
@@ -918,7 +918,6 @@
     "laterConfig": "Later",
     "next": "Next",
     "finish": "Enter workspace",
-    "hireAndContinue": "Hire {{count}} and continue",
     "backHome": "Back to start",
     "back": "Back",
     "backToEdit": "Back to edit",
@@ -926,41 +925,40 @@
     "step": {
       "general": "Preferences",
       "model": "Model engine",
-      "company": "Company card",
-      "team": "Build the team",
+      "company": "Workspace card",
       "done": "Done"
     },
     "welcome": {
       "brandTagline": "AI agent collaboration workspace",
       "badgeTitle": "OPC Workspace",
-      "badgeSub": "The operating system for a one-person company",
-      "titleLead": "One person, ",
-      "titleAccent": "a whole company.",
-      "subtitleLead": "Hire specialised AI agents, then dispatch, collaborate and keep the lessons in a familiar IM chat",
-      "subtitleTail": ". A few light settings and your company is running.",
+      "badgeSub": "A resident assistant for your own AI workspace",
+      "titleLead": "You just say it,",
+      "titleAccent": "it does the rest.",
+      "subtitleLead": "Drop in a goal and an executor picks it up; acceptance, reports and memory all stay on the same line of work",
+      "subtitleTail": " A few settings and it starts working for you.",
       "start": "Start setup",
       "skipToWorkspace": "Go to the workspace",
       "pressPrefix": "Press",
       "pressSuffix": "to start · everything stays adjustable in Settings",
-      "marketTitle": "Talent market · hire on sight",
-      "marketUnit": "{{count}} candidates",
-      "marketEmpty": "No agent package imported yet — you can import and hire on the next page.",
-      "briefAutoLoad": "brief.md loads on hire",
-      "ready": "Ready",
-      "windowDept": "Department group",
-      "windowOnDuty": "{{count}} agents on duty",
-      "founderMsg": "@everyone, follow the latest",
+      "windowWorkspace": "Workspace",
+      "windowOnDuty": "{{count}} executors on duty",
+      "founderMsg": "Follow the latest",
       "founderMsgTail": " spec and ship this week’s first deliverable.",
-      "agentReady": "On station, brief.md loaded",
-      "waitingDispatch": "{{name}} joined {{department}} · waiting for a brief",
+      "agentReady": "On station, waiting for a goal",
+      "waitingDispatch": "{{name}} · {{template}} · waiting for a brief",
       "engineTitle": "pi multi-model engine",
       "engineAvailable": "{{count}} reachable",
-      "statDepartments": "Departments",
-      "statAgents": "Agents",
+      "template": {
+        "research": "Research",
+        "code": "Code",
+        "ops": "Ops"
+      },
+      "statWorkers": "Executors",
+      "statSkills": "Skills",
       "statConfigured": "Configured",
-      "capIm": "Dispatch in IM group chats",
-      "capBrief": "brief.md handed down automatically",
-      "capModel": "Swap the underlying model per role"
+      "capIm": "One-to-one IM dispatch",
+      "capBrief": "Full context kept on the line of work",
+      "capModel": "Pick a model per executor"
     },
     "general": {
       "eyebrow": "Preferences",
@@ -1004,89 +1002,52 @@
       }
     },
     "company": {
-      "eyebrow": "Company card",
-      "title": "Give the company an identity",
-      "description": "The name and brand colour appear in the title bar and on the card. The monthly limit is the company budget — every dispatch has to pass it.",
-      "nameLabel": "Company name",
+      "eyebrow": "Workspace card",
+      "title": "Give this workspace a name",
+      "description": "The name and brand colour appear in the title bar and on the card. Executors do the actual work: hand one a goal and it starts.",
+      "nameLabel": "Workspace name",
       "namePlaceholder": "e.g. Starlight Content Studio",
-      "visionLabel": "One-line vision",
       "optional": "optional",
-      "visionPlaceholder": "e.g. An AI agent content factory",
       "colorTitle": "Brand colour",
-      "budgetTitle": "Monthly company limit",
+      "budgetTitle": "Monthly workspace limit",
       "budgetHint": "Exceeding it hard-stops every new dispatch",
       "budgetLabel": "Tokens per month",
       "budgetSave": "Save",
       "budgetSaved": "Limit saved.",
       "budgetInvalid": "The limit must be a whole number above 0.",
       "budgetUsage": "{{used}} of {{limit}} used",
-      "budgetScope": "Company budget · resets monthly",
-      "cardVisionPlaceholder": "One line about your vision",
-      "cardOrg": "{{departments}} departments · {{agents}} agents",
+      "budgetScope": "Workspace budget · resets monthly",
+      "cardWorkers": "{{count}} executors",
       "cardHint": "Live preview · move the pointer to feel the texture",
-      "budgetMissing": "The company budget row is created on the first hire or dispatch.",
-      "bossLabel": "What to call you",
-      "bossPlaceholder": "e.g. Austin",
-      "bossHint": "Shown in the title bar; agents read you by this name",
-      "industryTitle": "Industry",
-      "cardIndustryEmpty": "No industry yet"
-    },
-    "team": {
-      "eyebrow": "Build the team",
-      "title": "Hire your first agents",
-      "description": "The company already has {{agents}} agents across {{departments}} departments. Import an agent package, pick who joins — they enter the department group and load brief.md.",
-      "selectedCount": "{{count}} selected",
-      "emptyTitle": "No candidates in the talent market yet",
-      "emptyDescription": "Import an agent package (.json) to pick and hire, or skip for now and hire from the market later.",
-      "importPackage": "Import agent package",
-      "importing": "Importing…",
-      "existingTeam": "{{departments}} departments · {{agents}} on staff",
-      "quickTeam": "Quick pick",
-      "selectAll": "Select all",
-      "clear": "Clear",
-      "department": "Department",
-      "departmentFor": "Department for {{name}}",
-      "hiredIn": "Hired · {{department}}",
-      "descriptionEmpty": "The company is still empty. Create a department, then import and hire agents — they join the department group and load brief.md.",
-      "firstDepartment": "Create the first department",
-      "firstDepartmentHint": "Hiring needs a department to land in; the org chart can change it later.",
-      "firstDepartmentPlaceholder": "e.g. Content",
-      "create": "Create",
-      "creating": "Creating…",
-      "needDepartmentFirst": "Create a department above first — an agent needs somewhere to land."
+      "budgetMissing": "The workspace budget row is created on the first hire or dispatch.",
+      "userLabel": "What to call you",
+      "userPlaceholder": "e.g. Austin",
+      "userHint": "Shown in the title bar; agents read you by this name",
+      "goalLabel": "One-line vision",
+      "goalPlaceholder": "e.g. Hand the content work to my assistant",
+      "cardGoalPlaceholder": "One line about what you do",
+      "domainTitle": "What you do",
+      "cardDomainEmpty": "No industry yet"
     },
     "done": {
       "title": "“{{name}}” is ready",
-      "subtitle": "Everything is written to this machine — head into the workspace and brief your first agent.",
-      "company": "Company",
+      "subtitle": "Everything is written to this machine — head into the workspace and hand your first goal to an executor.",
+      "company": "Workspace",
       "model": "Default model",
-      "team": "Team",
-      "budgetLine": "Monthly limit {{limit}} tokens",
+      "team": "Executors",
       "autoPick": "Chosen by pi",
       "modelLine": "{{provider}} · thinking {{thinking}}",
       "modelFallback": "Set it any time in Settings",
-      "agentsTotal": "{{count}} agents",
-      "newHires": "{{count}} hired just now",
-      "noNewHires": "No new hires",
+      "workersTotal": "{{count}} executors",
       "actionChat": "Dispatch the first task",
-      "actionChatSub": "DM an agent, or @ a department group",
-      "actionOrg": "Open the org chart",
-      "actionOrgSub": "Adjust departments, headcount and brief.md",
+      "actionChatSub": "Hand a goal to an executor; it opens the line, works and reports back",
       "actionSettings": "Finish model setup",
       "actionSettingsSub": "More providers, image models and self-check"
     }
   },
   "company": {
-    "fallbackName": "My One-Person Company",
-    "bossFallback": "Boss",
-    "industry": {
-      "content": "Short video & content",
-      "ecommerce": "E-commerce",
-      "software": "Software & AI",
-      "knowledge": "Knowledge business",
-      "consulting": "Consulting & services",
-      "other": "Other"
-    },
+    "fallbackName": "My workspace",
+    "userFallback": "Me",
     "color": {
       "ocean": "Ocean",
       "violet": "Nebula",
@@ -1094,6 +1055,14 @@
       "sunset": "Sunset",
       "forest": "Forest",
       "graphite": "Graphite"
+    },
+    "domain": {
+      "content": "Short video & content",
+      "ecommerce": "E-commerce",
+      "software": "Software & AI",
+      "knowledge": "Knowledge business",
+      "consulting": "Consulting & services",
+      "other": "Other"
     }
   },
   "attention": {

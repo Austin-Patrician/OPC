@@ -8,14 +8,12 @@ export interface DispatchDraft {
   brief: string;
   deliverableSpec: string;
   assigneeId: string;
-  /** 可选：这笔工作记在哪个项目上（同时扣项目预算，§8.1）。 */
-  projectGroupId?: string;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: 'http-ok' | 'image-200';
 }
 
-/** Anything that can be assigned work; a `ProjectView` member is one. */
+/** 谁可以被派活：一个执行体。 */
 export interface DispatchCandidate {
   id: string;
   name: string;
@@ -25,9 +23,6 @@ export interface DispatchCandidate {
 interface DispatchTaskDialogProps {
   agents: readonly DispatchCandidate[];
   defaultAssigneeId: string;
-  /** 可选：派活时选项目，决定这笔钱扣在哪个项目上。 */
-  projects?: readonly { id: string; name: string }[];
-  defaultProjectId?: string;
   onSubmit: (draft: DispatchDraft) => Promise<CreateTaskResult>;
   onClose: () => void;
 }
@@ -42,8 +37,6 @@ interface DispatchTaskDialogProps {
 export function DispatchTaskDialog({
   agents,
   defaultAssigneeId,
-  projects = [],
-  defaultProjectId = '',
   onSubmit,
   onClose,
 }: DispatchTaskDialogProps) {
@@ -52,7 +45,6 @@ export function DispatchTaskDialog({
   const [brief, setBrief] = useState('');
   const [deliverableSpec, setDeliverableSpec] = useState('');
   const [assigneeId, setAssigneeId] = useState(defaultAssigneeId);
-  const [projectGroupId, setProjectGroupId] = useState(defaultProjectId);
   const [estTokens, setEstTokens] = useState(6000);
   const [template, setTemplate] = useState<'http-ok' | 'image-200'>('http-ok');
   const [submitting, setSubmitting] = useState(false);
@@ -71,7 +63,6 @@ export function DispatchTaskDialog({
         brief: brief.trim(),
         deliverableSpec: deliverableSpec.trim(),
         assigneeId,
-        ...(projectGroupId ? { projectGroupId } : {}),
         estTokens,
         acceptanceCommand: ['node', '{checks}/verify.mjs'],
         acceptanceTemplate: template,
@@ -162,23 +153,6 @@ export function DispatchTaskDialog({
               />
             </Field>
           </div>
-
-          {projects.length > 0 ? (
-            <Field label={t('task.field.project')}>
-              <select
-                value={projectGroupId}
-                onChange={(event) => setProjectGroupId(event.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-              >
-                <option value="">{t('task.field.noProject')}</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          ) : null}
 
           <div className="rounded-lg bg-surface-muted px-2.5 py-2">
             <div className="flex items-center justify-between">

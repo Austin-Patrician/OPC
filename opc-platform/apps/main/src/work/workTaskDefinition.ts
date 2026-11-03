@@ -157,7 +157,7 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
           });
           if (facts.length > 0) {
             workTask.facts = facts;
-            logStep(task.input.workTaskId, `注入 ${facts.length} 条公司事实`, {
+            logStep(task.input.workTaskId, `注入 ${facts.length} 条工作台规定`, {
               repository,
               recordDurableStep,
               onTaskChanged,
@@ -225,7 +225,7 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
 
       const files = listWorkspaceFiles(workspaceDir);
       if (files.length === 0) {
-        throw new Error('员工没有产出任何文件');
+        throw new Error('执行体没有产出任何文件');
       }
 
       repository.clearArtifacts(workTask.id);

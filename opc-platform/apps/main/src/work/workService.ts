@@ -1,6 +1,6 @@
 import type {
   TaskStatus,
-  EmployeeToolPolicy,
+  ToolPolicy,
   LinkType,
   CreateTaskInput,
   CreateTaskResult,
@@ -23,16 +23,15 @@ import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
-import { BOSS_USER_ID } from '../data/schema';
+import { USER_ID } from '../data/schema';
 import { TaskRepository, taskWorkspaceRelPath, type CreateTaskDraft } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
 import type { AppPaths } from '../env';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
-import type { OrgService } from '../org/orgService';
 import type { MemoryService } from '../memory/memoryService';
-import type { OrgFactService } from '../memory/orgFactService';
+import type { FactService } from '../memory/factService';
 import { validateDecomposition } from './decomposition';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
@@ -40,7 +39,7 @@ import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
-import { subjectOfPerson, subjectOfWorker, type RegistrySubject } from './registrySubject';
+import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
@@ -56,7 +55,6 @@ import {
   isToolEnabled,
   normalizeToolPolicy,
 } from './toolPolicy';
-import { resolveEmployeeModelRef } from '../models/employeeModel';
 import { resolveWorkerModelRef } from '../models/workerModel';
 import type { NetworkClient } from '../network/networkClient';
 import type { OcrEngine } from '../ocr/service';
@@ -65,20 +63,20 @@ import type { PiExtensionHost } from '../extensions/host';
 import type { PiSkillHost } from '../skills/host';
 import { createSkillsExtension } from '../skills/extension';
 
-/** How many manager rework rounds a task may take before it is parked for the boss. */
+/** How many manager rework rounds a task may take before it is parked for you. */
 
 /** Which work task each employee is executing right now (for tools that need it). */
 const runningTaskByEmployee = new Map<string, string>();
 
-function currentTaskIdFor(employeeId: string): string | undefined {
-  return runningTaskByEmployee.get(employeeId);
+function currentTaskIdFor(ownerId: string): string | undefined {
+  return runningTaskByEmployee.get(ownerId);
 }
 
 interface EmployeeHarness {
   harness: Harness;
   root: Conversation;
   /** Several runtimes can belong to one person once workers exist. */
-  employeeId: string;
+  ownerId: string;
 }
 
 
@@ -110,9 +108,8 @@ export interface WorkServiceDeps {
   speech?: SpeechService;
   /** Structured decisions (Jev / System One); absent = no `decide` tool. */
   decisions?: DecisionService;
-  org?: OrgService;
   memory?: MemoryService;
-  facts?: OrgFactService;
+  facts?: FactService;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
   /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
   network?: NetworkClient;
@@ -150,6 +147,12 @@ export class WorkService {
   private readonly runtime: RuntimeService;
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
+  /**
+   * The model-driven brain, when a model is configured. Kept as a field（不是构造
+   * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
+   * 会话只有 brain 自己认识。
+   */
+  private readonly modelBrain: HarnessBrain | null;
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
@@ -167,7 +170,7 @@ export class WorkService {
 
     // The real loop: HarnessBrain drives pi's generation/tool tasks. Without a
     // configured model we fall back to the deterministic brain so the app still works.
-    const modelBrain = deps.modelConfig
+    this.modelBrain = deps.modelConfig
       ? new HarnessBrain({
           harnessFor: (identity) => this.harnessFor(identity),
           context: () => getBackgroundContext(),
@@ -202,16 +205,16 @@ export class WorkService {
       onResumed: () => undefined,
       onFinished: (taskId, outcome, result) => {
         const finishedEmployees: string[] = [];
-        for (const [employeeId, running] of runningTaskByEmployee) {
+        for (const [ownerId, running] of runningTaskByEmployee) {
           if (running === taskId) {
-            runningTaskByEmployee.delete(employeeId);
-            finishedEmployees.push(employeeId);
+            runningTaskByEmployee.delete(ownerId);
+            finishedEmployees.push(ownerId);
           }
         }
         // A stack change made while this task was running is applied now: the next
         // task must open a harness with the new registry, not keep the old one.
-        for (const employeeId of finishedEmployees) {
-          if (this.dirtyHarnesses.delete(employeeId)) void this.evictRuntime(employeeId);
+        for (const ownerId of finishedEmployees) {
+          if (this.dirtyHarnesses.delete(ownerId)) void this.evictRuntime(ownerId);
         }
         const task = this.repository.getTask(taskId);
         // A session that failed at the storage layer is closed for good; keeping it
@@ -224,7 +227,7 @@ export class WorkService {
         if (passed && task && this.deps.memory) {
           void this.deps.memory
             .remember({
-              employeeId: task.assigneeId,
+              ownerId: task.assigneeId,
               kind: 'experience',
               content: `任务《${task.title}》通过验收。交付物：${task.artifacts
                 .map((artifact) => artifact.relPath)
@@ -259,13 +262,13 @@ export class WorkService {
       recallMemories: this.deps.memory
         ? async (task) => {
             // 两个作用域就够了：这条线自己的经验，和这个执行体自己的习惯。
-            // 「部门」那一层随着组织一起没了。
+            // 中间那一层（部门）早就没了，也不该再有。
             const scopes = [
               ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
               { type: 'personal' as const },
             ];
             const snippets = await this.deps.memory!.retrieve({
-              employeeId: task.assigneeId,
+              ownerId: task.assigneeId,
               query: `${task.title} ${task.brief}`,
               scopes,
               limit: 5,
@@ -279,9 +282,10 @@ export class WorkService {
         : undefined,
       recallFacts: this.deps.facts
         ? async (task) => {
-            // 规定挂在**这条线**上，全局那一层还在（它讲的是这个工作台本身）。
+            // 规定挂在**这条线**上；工作台那一层（global）永远都在，它讲的是这个助手
+            // 本身该守的规矩。
             const scopes = [
-              { type: 'org' as const },
+              { type: 'global' as const },
               ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
             ];
             return this.deps.facts!.current(scopes).map((fact) => ({
@@ -290,7 +294,7 @@ export class WorkService {
             }));
           }
         : undefined,
-      brain: (process.env.OPC_BRAIN_VARIANT ? scriptedBrain : (modelBrain ?? scriptedBrain)) as TaskBrain,
+      brain: (process.env.OPC_BRAIN_VARIANT ? scriptedBrain : (this.modelBrain ?? scriptedBrain)) as TaskBrain,
       fallbackBrain: scriptedBrain,
       repository: this.repository,
       recordDurableStep: (taskId, text) => this.recordDurableStep(taskId, text),
@@ -324,7 +328,7 @@ export class WorkService {
     return this.repository.getTask(toId) as WorkTask;
   };
 
-  /** Edits the issue fields the boss owns (priority / labels / due date). */
+  /** Edits the issue fields you owns (priority / labels / due date). */
   setIssueMeta = (
     taskId: string,
     patch: { priority?: WorkTask['priority']; labels?: string[]; dueAt?: number | null },
@@ -342,32 +346,32 @@ export class WorkService {
   listReviews = (taskId: string): WorkTask[] => this.repository.listReviews(taskId);
 
   /**
-   * Third and last acceptance: the boss. Only a task the system and the manager
-   * both passed can be signed off, so the boss is judging a finished deliverable.
+   * Third and last acceptance: you. Only a task the system and the manager
+   * both passed can be signed off, so you is judging a finished deliverable.
    */
-  bossDecision = (taskId: string, decision: 'approve' | 'reject', reason?: string): WorkTask => {
+  userDecision = (taskId: string, decision: 'approve' | 'reject', reason?: string): WorkTask => {
     const task = this.repository.getTask(taskId);
     if (!task) throw new Error('任务不存在');
     if (task.status !== 'accepted') throw new Error(`当前状态不能终审：${task.status}`);
 
     const approve = decision === 'approve';
-    const note = reason?.trim() || (approve ? '老板确认交付' : '老板否决');
+    const note = reason?.trim() || (approve ? '你确认交付' : '你否决');
     this.repository.addAcceptance(
       taskId,
       {
         verdict: approve ? 'pass' : 'fail',
-        reason: `老板终审：${note}`,
-        evidence: { command: [BOSS_USER_ID, decision], exitCode: approve ? 0 : 1, stdoutTail: note, stderrTail: '', durationMs: 0 },
+        reason: `你终审：${note}`,
+        evidence: { command: [USER_ID, decision], exitCode: approve ? 0 : 1, stdoutTail: note, stderrTail: '', durationMs: 0 },
       },
-      BOSS_USER_ID,
+      USER_ID,
     );
     this.repository.setStatus(taskId, approve ? 'delivered' : 'rejected', {
       finishedAt: Date.now(),
-      error: approve ? null : `老板否决：${note}`,
+      error: approve ? null : `你否决：${note}`,
     });
     const updated = this.repository.getTask(taskId) as WorkTask;
     this.emit(updated);
-    // The boss just settled it: the line of work hears the final answer, not the
+    // You just settled it: the line of work hears the final answer, not the
     // interim "awaiting sign-off" one.
     this.reportedThreads.delete(taskId);
     this.reportToThread(taskId);
@@ -375,9 +379,57 @@ export class WorkService {
   };
 
   /**
-   * 老板在注意力队列上的两个动作（steering 层）。
+   * 你在活还没干完时改方向（§8.2「随时介入」在双层架构里的落点）。
    *
-   * `approve` —— 认可。这活只有人能判，所以认可就是终审：任务记成老板通过，
+   * 两件事一起做，因为它们覆盖的是两个不同的时刻：
+   *
+   * - **正在跑**的活：把话插进它的会话（pi 的 inbox，`steer` 模式，下一个 boundary
+   *   生效），这一轮就能看到；
+   * - **还没开跑 / 要重试**的活：写进 `task.steering`。`produce` 每次尝试都重新读
+   *   任务，所以下一轮一定带上。
+   *
+   * 两条都覆盖不到的情形只有一种：这条线上的活已经到终态。那时该做的是开一条新线，
+   * 而不是改一条已经收尾的线——所以这里如实拒绝，让 Router 去 open_line。
+   */
+  steerThread = async (
+    threadId: string,
+    note: string,
+  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number }> => {
+    const text = note.trim();
+    if (!text) return { ok: false, reason: '改方向总得说清楚改什么', live: 0, queued: 0 };
+
+    const thread = this.threads.getThread(threadId);
+    if (!thread) return { ok: false, reason: `未知工作线：${threadId}`, live: 0, queued: 0 };
+
+    const open = this.repository.listPending().filter((task) => task.threadId === threadId);
+    if (open.length === 0) {
+      // 说清楚"为什么改不了"，而不是一句通用的拒绝：你下一步该做什么，取决于
+      // 这条活停在哪——还在排队、在等验收、还是已经收尾了。
+      const latest = this.repository.latestForThread(threadId);
+      const reason =
+        latest && (latest.status === 'review' || latest.status === 'delivered')
+          ? `这条线上的活正在等验收（${latest.status}）：要改方向就让它重做，别在验收里改`
+          : latest
+            ? `这条线上的活已经收尾了（${latest.status}），改方向要从新的一条线开始`
+            : '这条线上还没有任务：先开一条线，再改它的方向';
+      return { ok: false, reason, live: 0, queued: 0 };
+    }
+
+    let live = 0;
+    for (const task of open) {
+      this.repository.addSteering(task.id, text);
+      // 时间线上留一行：你会想知道这句话到底有没有被带到。
+      this.repository.addStep(task.id, `你改方向：${text}`);
+      if (this.modelBrain && (await this.modelBrain.interject(task.id, text))) live += 1;
+    }
+    this.threads.touch(threadId);
+    return { ok: true, live, queued: open.length - live };
+  };
+
+  /**
+   * 你在注意力队列上的两个动作（steering 层）。
+   *
+   * `approve` —— 认可。这活只有人能判，所以认可就是终审：任务记成你通过，
    * 工作线关掉。`rework` —— 不满意，带着意见再做一次：**新建一个任务**而不是
    * 重开旧的，因为旧任务的预算已结算、验收记录已定案，重开会让账本和验收历史
    * 互相矛盾。
@@ -391,10 +443,10 @@ export class WorkService {
     const text = note?.trim() || '';
 
     if (decision === 'approve') {
-      // `bossDecision` only accepts a task awaiting judgement; a thread whose task
+      // `userDecision` only accepts a task awaiting judgement; a thread whose task
       // is already delivered just needs closing.
       if (latest?.status === 'accepted') {
-        this.bossDecision(latest.id, 'approve', text || undefined);
+        this.userDecision(latest.id, 'approve', text || undefined);
       } else {
         this.threads.setState(threadId, 'done');
       }
@@ -406,7 +458,7 @@ export class WorkService {
     if (!latest) return { ok: false, error: '这条工作线上还没有任务，无法返工' };
     const created = this.createTask({
       title: latest.title,
-      brief: text ? `${latest.brief}\n\n老板的意见：${text}` : `${latest.brief}\n\n老板要求重做`,
+      brief: text ? `${latest.brief}\n\n你的意见：${text}` : `${latest.brief}\n\n你要求重做`,
       deliverableSpec: latest.deliverableSpec,
       assigneeId: latest.assigneeId,
       estTokens: latest.estTokens,
@@ -425,7 +477,7 @@ export class WorkService {
 
   /**
    * Manager decomposition. Children are ordinary tasks, so they run through the
-   * same pi loop and acceptance as anything the boss dispatches.
+   * same pi loop and acceptance as anything you dispatches.
    */
   decompose = (
     parentTaskId: string,
@@ -465,7 +517,7 @@ export class WorkService {
           acceptanceCommand: ['node', '{checks}/verify.mjs'],
           acceptanceTemplate: subtask.acceptanceTemplate ?? 'http-ok',
           // Same line of work as the parent: a goal decomposed into five tasks is
-          // still one thing to the boss, and must be recallable as one thread.
+          // still one thing to you, and must be recallable as one thread.
           ...(parent.threadId ? { threadId: parent.threadId } : {}),
           ...(childWorker ? { workerId: childWorker.id } : {}),
         },
@@ -475,7 +527,7 @@ export class WorkService {
       );
       this.emit(child);
       created.push(child);
-      // A decomposed subtask is dispatched just like boss work: it must progress
+      // A decomposed subtask is dispatched just like user work: it must progress
       // without another manual click.
       this.runTask(child.id);
     }
@@ -487,19 +539,19 @@ export class WorkService {
 
   /**
    * Reservation happens before the row exists: refusing a task must cost nothing
-   * and must not leave an orphan task the boss thinks is running.
+   * and must not leave an orphan task you thinks is running.
    */
   /**
    * A configured-but-unusable default LLM used to make the harness wait on the
    * network until the task timed out ("stuck in 进行中" with no explanation).
-   * Refuse up front with a message the boss can act on.
+   * Refuse up front with a message you can act on.
    */
   private assertModelUsable(): void {
     const config = this.deps.modelConfig;
     if (!config) return;
     const llm = config.getDefaults().llm;
-    // 没配模型就不装成"员工在干活"：脚本化执行只留给探针（它们显式设 OPC_BRAIN_VARIANT）。
-    // 真实公司里先把模型配好（设置 → 模型），否则任务直接失败并说明原因，而不是让一个
+    // 没配模型就不装成"有人在干活"：脚本化执行只留给探针（它们显式设 OPC_BRAIN_VARIANT）。
+    // 真实使用里先把模型配好（设置 → 模型），否则任务直接失败并说明原因，而不是让一个
     // 写死 hello-world 的替身把任务"干完"。
     if (!llm && !process.env.OPC_BRAIN_VARIANT) {
       throw new Error(
@@ -595,8 +647,8 @@ export class WorkService {
   /**
    * 同一个任务只能有一个 run 在跑。
    *
-   * 这不是优化而是正确性：pi 的 Session 是单写者，同一员工的两个 run 并发写同一个
-   * sqlite 会直接 `Session failed after a storage error`，并把这个员工的 harness 毒化。
+   * 这不是优化而是正确性：pi 的 Session 是单写者，同一执行体的两个 run 并发写同一个
+   * sqlite 会直接 `Session failed after a storage error`，并把这个执行体的 harness 毒化。
    * 触发路径很常见：负责人验收任务由 `openManagerReview` 自己启动，UI/探针再点一次。
    */
   private isRunning(taskId: string): boolean {
@@ -689,32 +741,17 @@ export class WorkService {
    * archive tag and is never injected into the prompt.
    */
   capabilities = async (): Promise<CapabilityCatalog> => {
-    const departmentOf = new Map<string, { id: string; name: string }>();
-    for (const department of this.deps.org?.list() ?? []) {
-      for (const member of department.members) {
-        departmentOf.set(member.id, { id: department.id, name: department.name });
-      }
-    }
-
-    const employees = (this.deps.org?.everyone() ?? []).filter(
-      (employee) => employee.status === 'active',
-    );
-
     const agents: AgentCapability[] = [];
-    for (const employee of employees) {
-      const snapshot = (await this.buildRegistry(this.subjectOfEmployee(employee.id))).snapshot();
-      const department = departmentOf.get(employee.id);
+    for (const worker of this.threads.listAllWorkers()) {
+      const snapshot = (await this.buildRegistry(subjectOfWorker(worker))).snapshot();
+      const model = resolveWorkerModelRef({ worker, modelConfig: this.deps.modelConfig });
       agents.push({
-        employeeId: employee.id,
-        name: employee.name,
-        role: employee.role,
-        level: employee.level,
-        model: employee.model,
-        avatar: employee.avatar,
-        departmentId: department?.id ?? employee.departmentId,
-        departmentName: department?.name ?? '',
-        isHead: employee.isHead,
-        skills: employee.skills,
+        workerId: worker.id,
+        name: worker.name,
+        template: worker.template,
+        status: worker.status,
+        model: model ? labelOf(this.deps.modelConfig, model) : '',
+        skills: worker.skills,
         extensions: snapshot.installed().map((extension) => ({
           name: extension.name,
           tools: (extension.tools ?? []).map((tool) => tool.name),
@@ -745,7 +782,7 @@ export class WorkService {
    * explain the same missing provider without the main process translating.
    */
   private async toolSlots(subject: RegistrySubject): Promise<ToolSlot[]> {
-    const personId = subject.employeeId ?? subject.id;
+    const personId = subject.ownerId ?? subject.id;
     // §2.2：工具集是执行体自己的属性。`employee` 那一路只是迁移期兜底。
     const policy = subject.policy ?? EMPTY_TOOL_POLICY;
 
@@ -813,7 +850,7 @@ export class WorkService {
     }
 
     // Text out of pictures for models without vision. Two independent gates: the
-    // boss's switch (设置 → 运行时) and the models actually being on disk. An
+    // your switch (设置 → 运行时) and the models actually being on disk. An
     // installed tool that can only fail is worse than an absent one.
     const ocr = this.deps.ocr;
     if (ocr && (ocr.settings?.().enabled ?? true) && (ocr.assetsReady?.() ?? true)) {
@@ -837,7 +874,7 @@ export class WorkService {
         essential: false,
         available: true,
         extension: createRememberToolExtension({
-          employeeId: personId,
+          ownerId: personId,
           taskId: () => currentTaskIdFor(personId),
           remember: async ({ content, kind }) => {
             // 记在**当前这条工作线**上：同一条线索的下一个执行体能读到，
@@ -845,7 +882,7 @@ export class WorkService {
             const taskId = currentTaskIdFor(personId);
             const threadId = taskId ? this.repository.getTask(taskId)?.threadId : undefined;
             return memory.remember({
-              employeeId: personId,
+              ownerId: personId,
               kind,
               content,
               scope: threadId ? { type: 'thread', id: threadId } : { type: 'personal' },
@@ -859,9 +896,9 @@ export class WorkService {
       slots.push({ name: 'opc.memory', essential: false, available: false, reason: 'memory-disabled' });
     }
 
-    // 拆解的前提是"有人可派"。一个人干不了两个人的活，所以只有一个人时工具根本不装；
-    // 有两三个人时，谁都可以把活交给别人——这里已经没有汇报线了。
-    const assignable = subject.employeeId ? this.assignableTo(subject.employeeId) : [];
+    // 拆解的前提是"还有别的执行体可派"。只有一个时工具根本不装；
+    // 有两个以上时，谁都可以把活交给别人——这里已经没有汇报线了。
+    const assignable = this.assignableTo(subject.id);
     if (assignable.length > 0) {
       slots.push({
         name: 'opc.decompose',
@@ -1010,7 +1047,7 @@ export class WorkService {
     const slots = await this.toolSlots(subjectOfWorker(worker));
     const knownExtensions = new Map(slots.map((slot) => [slot.name, slot]));
 
-    let policy: EmployeeToolPolicy | undefined;
+    let policy: ToolPolicy | undefined;
     if (input.policy) {
       policy = normalizeToolPolicy(input.policy);
       const unknown = policy.disabledExtensions.filter((name) => !knownExtensions.has(name));
@@ -1021,7 +1058,7 @@ export class WorkService {
       if (essential.length > 0) throw new Error(`核心扩展不能关闭：${essential.join('、')}`);
       // Tool names are deliberately not validated: a deny-list entry for a tool
       // whose provider is temporarily unavailable must survive, not make the
-      // whole save fail when the boss changes something else.
+      // whole save fail when you changes something else.
     }
 
     if (input.model) {
@@ -1082,7 +1119,7 @@ export class WorkService {
    * Tells the task's line of work what happened, and how loudly.
    *
    * Called at every point a task can reach an outcome — the run finishing, the
-   * manager's verdict, the boss's own decision — and de-duplicated by status, so
+   * manager's verdict, the your own decision — and de-duplicated by status, so
    * a task that goes accepted → review → accepted reports once, at the end.
    */
   private reportToThread(taskId: string): void {
@@ -1113,52 +1150,53 @@ export class WorkService {
   }
 
   /**
-   * 运行时主体的两种来源：执行体本身，或迁移期里还没有执行体的那个人。
+   * 运行时主体：优先是这个执行体本身；旧任务还没有 worker 行时，用一个不含
+   * `ownerId` 的通用主体（没有同事、没有可拆的活、策略为空）。
    */
-  private subjectOfEmployee(employeeId: string): RegistrySubject {
-    const person = this.deps.org?.everyone().find((entry) => entry.id === employeeId);
-    return subjectOfPerson({
-      id: employeeId,
-      ...(person?.name ? { name: person.name } : {}),
-      ...(person?.skills ? { skills: person.skills } : {}),
-    });
-  }
-
-  /** 有执行体就用执行体，没有就退回按人（旧任务/旧数据）。 */
   private subjectFor(identity: RuntimeIdentity): RegistrySubject {
     const worker = this.threads.getWorker(identity.runtimeKey);
-    return worker ? subjectOfWorker(worker) : this.subjectOfEmployee(identity.employeeId);
+    if (worker) return subjectOfWorker(worker);
+    return { id: identity.ownerId, name: identity.ownerId, template: 'research', skills: [] };
   }
 
   /**
-   * Who may take a subtask from this person: every other execution body.
+   * Who may take a subtask from this execution body: every other live worker.
    *
-   * Reporting lines are gone from this decision on purpose — with one person there
+   * Reporting lines are gone from this decision on purpose — with one worker there
    * is nobody to hand work to, and with peers there is no reason to route it
    * through a manager that no longer exists.
    */
-  private assignableTo(employeeId: string): { id: string }[] {
-    return (this.deps.org?.everyone() ?? [])
-      .filter((member) => member.id !== employeeId)
-      .map((member) => ({ id: member.id }));
+  private assignableTo(workerId: string): { id: string }[] {
+    return this.threads
+      .listAllWorkers()
+      .filter((worker) => worker.id !== workerId)
+      .map((worker) => ({ id: worker.id }));
   }
 
   /**
-   * The execution body for (thread, person), created on first use.
+   * The execution body for (thread, executor), created on first use.
    *
-   * Idempotent by design: a thread with five tasks from the same person gets one
-   * worker, so its context is built once instead of five times.
+   * Idempotent by design: a thread with five tasks from the same executor gets one
+   * worker, so its context is built once instead of five times. When the dispatcher
+   * hands us a live worker id (the seeded default executor), its name / template /
+   * skills / model are carried onto the thread-scoped copy.
    */
-  private ensureWorker(threadId: string, employeeId: string) {
-    const person = this.deps.org?.everyone().find((entry) => entry.id === employeeId);
+  private ensureWorker(threadId: string, executorId: string) {
+    const existing = this.threads.getWorker(executorId);
+    if (existing?.threadId === threadId) return existing;
+
     // The model is pinned here, at creation: a line of work keeps the runtime it
     // started with, so a later change of the company default does not silently
     // swap the brain under unfinished work.
-    const model = resolveEmployeeModelRef(this.deps.modelConfig, this.deps.org, employeeId);
+    const model = resolveWorkerModelRef({
+      worker: existing,
+      modelConfig: this.deps.modelConfig,
+    });
     return this.threads.ensureWorker({
       threadId,
-      employeeId,
-      name: person?.name ?? employeeId,
+      ownerId: executorId,
+      name: existing?.name ?? executorId,
+      ...(existing ? { template: existing.template, skills: existing.skills } : {}),
       ...(model ? { modelProvider: model.providerId, modelId: model.modelId } : {}),
     });
   }
@@ -1184,7 +1222,7 @@ export class WorkService {
   /**
    * Opens (or reuses) the runtime for one execution body.
    *
-   * `runtimeKey` names the sqlite file and the cache slot; `employeeId` decides
+   * `runtimeKey` names the sqlite file and the cache slot; `ownerId` decides
    * the tool registry and model. They are the same value until a task carries a
    * worker id, which is why old data keeps its existing `agents/<employee>.sqlite`.
    */
@@ -1234,7 +1272,7 @@ export class WorkService {
       context,
     );
     const root = await harness.root(context);
-    const entry = { harness, root, employeeId: identity.employeeId };
+    const entry = { harness, root, ownerId: identity.ownerId };
     this.harnesses.set(identity.runtimeKey, entry);
     return entry;
   }

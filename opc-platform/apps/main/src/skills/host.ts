@@ -5,7 +5,7 @@ import type { PiSkillCatalog, PiSkillView } from '@opc/shared/ipc';
 import { scanSkills, type ScanSkillsResult, type ScannedSkill } from './scanner';
 
 /**
- * The skills OPC found on this machine, and which ones the boss turned off.
+ * The skills OPC found on this machine, and which ones you turned off.
  *
  * There is no trust gate here, on purpose: a skill is Markdown. Reading it can
  * only cost prompt tokens, never run code. What *does* run code is a script the
@@ -19,7 +19,7 @@ import { scanSkills, type ScanSkillsResult, type ScannedSkill } from './scanner'
 
 interface Store {
   version: 1;
-  /** Skill ids (absolute SKILL.md paths) the boss switched off. */
+  /** Skill ids (absolute SKILL.md paths) you switched off. */
   disabled: string[];
 }
 

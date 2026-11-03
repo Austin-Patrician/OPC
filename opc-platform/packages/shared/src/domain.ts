@@ -24,7 +24,7 @@ export type ConversationKind = 'dm' | 'group' | 'channel';
 
 /**
  * §7.5 lifecycle. `cooling` is an idle thread that must not generate new replies;
- * `escalated` is one that never converged and now needs the boss (§7.3 turn limit).
+ * `escalated` is one that never converged and now needs you (§7.3 turn limit).
  * Archiving is tracked separately (`archivedAt`) because the sweep queries it.
  */
 export type ConversationStatus = 'open' | 'cooling' | 'escalated';
@@ -45,22 +45,12 @@ export interface Conversation {
   /** Set once the conversation is archived and its lessons consolidated. */
   archivedAt?: number;
   primaryAgentId?: string;
-  /** Employee-authored turns; the boss's own messages never count (§7.3 ②). */
+  /** Employee-authored turns; the your own messages never count (§7.3 ②). */
   turnCount?: number;
   /** Defaults to `open` when absent (payloads written before Step 3). */
   status?: ConversationStatus;
   statusChangedAt?: number;
   messages: Message[];
-}
-
-export interface Department {
-  id: string;
-  name: string;
-  code: string;
-  color: string;
-  description: string;
-  leadAgentId: string;
-  groupConversationId: string;
 }
 
 export interface DeliverableMeta {
@@ -136,6 +126,17 @@ export interface TaskStep {
   text: string;
 }
 
+/**
+ * 你在活还没干完时改的一句话。
+ *
+ * 单独一个类型而不是裸 `string[]`：它以后大概会长出「谁说的」「针对哪一版交付」，
+ * 而那时库里已经存着旧数据了——加字段比重解释一个字符串便宜。
+ */
+export interface TaskSteering {
+  note: string;
+  at: number;
+}
+
 export interface WorkTask {
   id: string;
   title: string;
@@ -167,9 +168,9 @@ export interface WorkTask {
   blockedBy: IssueLink[];
   /** Set when a task is the manager sign-off of another task. */
   reviewOfTaskId?: string;
-  /** Review tasks are judged by the boss, never by another manager review. */
+  /** Review tasks are judged by you, never by another manager review. */
   isReview: boolean;
-  /** 0 for tasks the boss dispatched directly. */
+  /** 0 for tasks you dispatched directly. */
   depth: number;
   /** How many subtasks this task decomposed into (0 for leaves). */
   childCount: number;
@@ -180,8 +181,16 @@ export interface WorkTask {
   /** The job's responsibilities, read live from `position → job` at task load. */
   /** Memories recalled for this run (L2 personal experience, L5 episodic). */
   memories?: { kind: string; content: string; scopeType: string }[];
-  /** Current company/department facts (org_fact), most specific last. */
+  /** Current company/department facts (fact), most specific last. */
   facts?: { statement: string; scopeType: string }[];
+  /**
+   * 你中途改的方向。
+   *
+   * 和 `brief` 分开存，因为它们是两种东西：`brief` 是派活时说的话，`steering` 是
+   * 你后来改主意说的话，**后者优先**。每次尝试都会重新从库里读任务，所以写在
+   * 这里的话下一轮一定带得上——这是 §8.2「随时介入」在双层架构里的落点。
+   */
+  steering?: TaskSteering[];
   /** Which system checker to run: an HTTP service or "an image is served with 200". */
   acceptanceTemplate: AcceptanceTemplate;
   status: TaskStatus;
@@ -203,304 +212,54 @@ export interface WorkTask {
   steps: TaskStep[];
 }
 
-/** ── Organisation ───────────────────────────────────────────────────────── */
+/** ── 你是谁：工作台资料与称呼 ─────────────────────────────────────────── */
 
 /**
- * Lifecycle of a standing commitment.
+ * 一个执行体不许调用的工具。
  *
- * `paused` and `done` are real states, not labels: a paused project stops feeding
- * memory into its members' context, while `archived` is terminal and hides the
- * project from the index.
+ * 用**黑名单**而不是白名单：空策略的意思是"当前运行时能装的都给它"，所以新扩展会
+ * 自动出现在已有执行体身上，而不是因为有人拨过一次开关就被静默关掉。
  */
-export type ProjectStatus = 'planning' | 'active' | 'paused' | 'done' | 'archived';
-
-/** The four states a project can be moved to from the UI; `archived` has its own action. */
-export const PROJECT_STATUSES = ['planning', 'active', 'paused', 'done'] as const;
-
-export type EditableProjectStatus = (typeof PROJECT_STATUSES)[number];
+export interface ToolPolicy {
+  /** Extension names (e.g. `opc.image`) this executor must not get. */
+  disabledExtensions: string[];
+  /** Tool names (e.g. `bash`) this executor must not get, even when installed. */
+  disabledTools: string[];
+}
 
 /**
- * The one company this installation is (§1.3): its `company` row plus the profile
- * preferences that have no column of their own (vision / brand colour / how the
- * boss is addressed). Read and written through `window.opc.company`, so the
- * renderer never keeps a second copy in localStorage.
+ * 这台机器上的那个工作台：`company` 那一行，加上没有自己列的那点资料
+ * （你在做什么、一句话目标、配色、怎么称呼你）。读写都走 `window.opc.company`，
+ * 所以渲染层不会在 localStorage 里存第二份。
  */
 export interface CompanyProfile {
   id: string;
-  /** Displayed in the title bar and on the onboarding business card. */
+  /** Displayed in the title bar and on the onboarding card. */
   name: string;
-  /** `content` | `ecommerce` | … — the renderer owns the vocabulary. */
-  industry: string;
-  vision: string;
+  /** `content` | `ecommerce` | … — 渲染层拥有这份词汇表。 */
+  domain: string;
+  goal: string;
   /** Brand palette id; unknown ids fall back to the default palette entry. */
   colorId: string;
-  /** What the boss is called in the UI ("老板" by default). */
-  bossName: string;
-  /** Uploaded company logo as a base64 data URL; absent = brand monogram. */
+  /** What you are called in the UI ("我" by default). */
+  userName: string;
+  /** Uploaded logo as a base64 data URL; absent = monogram. */
   logo?: string;
-  /** Uploaded boss avatar as a base64 data URL; absent = initials. */
-  bossAvatar?: string;
+  /** Uploaded avatar as a base64 data URL; absent = initials. */
+  userAvatar?: string;
 }
 
 /** Partial update; omitted fields keep their stored value. */
 export interface CompanyProfilePatch {
   name?: string;
-  industry?: string;
-  vision?: string;
+  domain?: string;
+  goal?: string;
   colorId?: string;
-  bossName?: string;
+  userName?: string;
   /** Data URL; `''` removes the uploaded image. */
   logo?: string;
-  bossAvatar?: string;
+  userAvatar?: string;
 }
-
-export interface OrgMember {
-  id: string;
-  name: string;
-  role: string;
-  level: string;
-  /** `active` | `terminated` (employees are never hard-deleted). */
-  status: string;
-  model: string;
-  /** Structured model selection; absent means "inherit the company default". */
-  modelRef?: ModelRef;
-  title: string;
-  departmentId: string;
-  reportsToEmployeeId?: string;
-  /** The job (and its headcount slot) this seat occupies, when the department has one. */
-  jobId?: string;
-  isHead: boolean;
-  /** Covers the head seat while it is vacant; never the same person as `isHead`. */
-  isActingHead: boolean;
-  activeTasks: number;
-  tokensUsed: number;
-  skills: string[];
-  persona: string;
-  /** Data URL of the uploaded portrait, '' when the agent still uses initials. */
-  avatar: string;
-  /** When the employee joined, ms epoch. */
-  hiredAt: number;
-  /** When they left, ms epoch; unset while employed. Set by `terminate`, cleared by `reinstate`. */
-  terminatedAt?: number;
-  /** Probation end, ms epoch; unset means no probation (or already confirmed). */
-  probationEndsAt?: number;
-  /** Today's model spend in USD, summed from the task ledger. */
-  costTodayUsd: number;
-  /** Deliverables the system and the manager both accepted. */
-  tasksDone: number;
-}
-
-/** Everything the boss can do to a person, in one operation rather than three. */
-export type PersonnelAction = 'transfer' | 'terminate' | 'reinstate' | 'set-manager' | 'promote' | 'confirm';
-
-export interface PersonnelInput {
-  employeeId: string;
-  action: PersonnelAction;
-  /** transfer: target department; set-manager: manager id ('' clears it). */
-  departmentId?: string;
-  reportsToEmployeeId?: string;
-  /** promote: the new level ("P6"). */
-  level?: string;
-  /** promote: a new seat title, when the promotion also renames the seat. */
-  title?: string;
-  /** Why: recorded on the employment event, so the timeline can explain itself. */
-  reason?: string;
-}
-
-/**
- * Which tools one employee may call.
- *
- * Deny lists on purpose: an empty policy means "every tool the current runtime can
- * install", so a new extension appears for existing employees instead of being
- * silently disabled for anyone who ever touched a toggle.
- */
-export interface EmployeeToolPolicy {
-  /** Extension names (e.g. `opc.image`) this employee must not get. */
-  disabledExtensions: string[];
-  /** Tool names (e.g. `bash`) this employee must not get, even when installed. */
-  disabledTools: string[];
-}
-
-export interface DepartmentNode {
-  id: string;
-  name: string;
-  code: string;
-  description: string;
-  color: string;
-  /** Parent department; unset for a top-level department. */
-  parentId?: string;
-  /** Order among siblings; the chart renders by it, not by creation time. */
-  sortOrder: number;
-  headEmployeeId?: string;
-  /** Covers the seat while it is vacant or its holder is away; never both roles at once. */
-  actingHeadEmployeeId?: string;
-  members: OrgMember[];
-}
-
-/** Everything the boss can change about a department, in one operation. */
-export interface DepartmentEditInput {
-  id: string;
-  name?: string;
-  code?: string;
-  description?: string;
-  /** `null` moves it to the top level; omitted leaves the parent alone. */
-  parentId?: string | null;
-  sortOrder?: number;
-}
-
-/**
- * A job: a **company-wide** title ("测试工程师", "CFO"), not a seat in one department.
- *
- * The job is the definition — responsibilities, default skills, default model. How many
- * people a department wants to hire into it is *headcount*, and that lives in
- * `department_job` (see `JobSeat`). Splitting the two is what lets the same title be
- * shared by engineering and QA without duplicating its responsibilities.
- *
- * Editing a job never rewrites someone already in it: skills and model are copied at
- * hire time. Responsibilities are read live and reach the next task.
- */
-export interface JobNode {
-  id: string;
-  title: string;
-  level: string;
-  /** What this job is responsible for; reaches the agent prompt as the charter. */
-  description: string;
-  /** Default skills a hire starts with. */
-  skills: string[];
-  /** Human-readable model snapshot; `''` means "inherit the company default". */
-  model: string;
-  /** Structured model choice; absent means "inherit the company default". */
-  modelRef?: ModelRef;
-  /** Live seats across the whole company. */
-  filled: number;
-  /** Planned seats across departments; 0 means no department claimed one yet. */
-  headcount: number;
-  /** Which departments plan to hire into this job, with their own cap. */
-  seats: JobSeat[];
-}
-
-/** One department's plan for one job: "we want N 测试工程师". */
-export interface JobSeat {
-  departmentId: string;
-  departmentName: string;
-  headcount: number;
-  /** Live seats in this department. */
-  filled: number;
-}
-
-export interface JobInput {
-  title: string;
-  level?: string;
-  description?: string;
-  skills?: string[];
-  model?: string;
-  modelRef?: ModelRef | null;
-}
-
-export interface JobEditInput {
-  id: string;
-  title?: string;
-  level?: string;
-  description?: string;
-  skills?: string[];
-  model?: string;
-  /** Omit to keep, `null` to clear (inherit the company default). */
-  modelRef?: ModelRef | null;
-}
-
-/** Sets one department's headcount for one job; `0` keeps the row as "占住但不招". */
-export interface JobSeatInput {
-  jobId: string;
-  departmentId: string;
-  headcount: number;
-}
-
-/**
- * One entry in an employee's HR timeline.
- *
- * The position table can only tell you "they moved"; it cannot tell you when, who
- * decided, or why — it overwrites nothing but keeps no reason either. This is the
- * append-only record that answers those questions.
- */
-export type EmploymentEventKind =
-  | 'hired'
-  | 'transferred'
-  | 'promoted'
-  | 'head_appointed'
-  | 'head_removed'
-  | 'terminated'
-  | 'reinstated'
-  /** Probation passed: the employee is now permanent. */
-  | 'confirmed';
-
-export interface EmploymentEvent {
-  id: string;
-  employeeId: string;
-  kind: EmploymentEventKind;
-  fromDepartmentId?: string;
-  toDepartmentId?: string;
-  fromTitle?: string;
-  toTitle?: string;
-  fromLevel?: string;
-  toLevel?: string;
-  /** `'boss'` or an employee id. */
-  actor: string;
-  reason: string;
-  at: number;
-}
-
-export interface HireInput {
-  name: string;
-  role: string;
-  level?: string;
-  departmentId: string;
-  title?: string;
-  reportsToEmployeeId?: string;
-  isHead?: boolean;
-  model?: string;
-  /** Structured model choice; wins over the legacy free-text `model` label. */
-  modelRef?: ModelRef;
-  skills?: string[];
-  /** Free-form charter injected into the agent's system prompt. */
-  persona?: string;
-  /** Which headcount slot this hire fills; checked against `job.headcount`. */
-  jobId?: string;
-  /** Probation length in days; 0 / unset means hired as a permanent employee. */
-  probationDays?: number;
-}
-
-/** One performance review. Scores are 1–5; the overall score is the only required one. */
-export type EvaluationKind = 'probation' | 'periodic' | 'project' | 'exit';
-
-export interface Evaluation {
-  id: string;
-  employeeId: string;
-  kind: EvaluationKind;
-  /** Period label, e.g. `2026-Q3`; `''` for a one-off review. */
-  periodKey: string;
-  scoreOverall: number;
-  scoreQuality?: number;
-  scoreSpeed?: number;
-  scoreCost?: number;
-  summary: string;
-  /** `'boss'` or an employee id. */
-  reviewer: string;
-  at: number;
-}
-
-export interface EvaluationInput {
-  employeeId: string;
-  kind?: EvaluationKind;
-  periodKey?: string;
-  scoreOverall: number;
-  scoreQuality?: number;
-  scoreSpeed?: number;
-  scoreCost?: number;
-  summary?: string;
-  reviewer?: string;
-}
-
-/** ── 招聘：试跑面试与员工包 (§4.4) ─────────────────────────────────────── */
 
 /** ── Runtime environments (global base environment) ────────────────────── */
 
@@ -566,7 +325,7 @@ export interface RuntimeInspection {
 }
 
 /**
- * An engine whose models ship *with* the app — the boss cannot pick another one,
+ * An engine whose models ship *with* the app — you cannot pick another one,
  * so it is never a profile. It still belongs on the runtime page: "can this
  * machine read a picture" is machine state, exactly like a missing interpreter.
  *
@@ -903,21 +662,6 @@ export interface ProviderTestResult {
 export type BudgetScope = 'company' | 'employee' | 'project' | 'department';
 export type BudgetState = 'ok' | 'warn' | 'stopped';
 
-/** A crossed threshold. One row per budget per level per month (`idx_alert_once`). */
-export type BudgetAlertLevel = 'warn' | 'stop';
-
-export interface BudgetAlert {
-  id: string;
-  budgetId: string;
-  scope: BudgetScope;
-  scopeId: string;
-  periodKey: string;
-  level: BudgetAlertLevel;
-  usedTokens: number;
-  limitTokens: number;
-  ratio: number;
-  createdAt: number;
-}
 
 export interface Budget {
   id: string;
@@ -966,7 +710,7 @@ export type TaskError = BudgetError;
  * How a call's money is decided (doc: `docs/ai-billing.md` §4.1).
  *
  * `provider_first` is the default: trust a provider-reported amount when there is
- * one, otherwise fall back to the price list the boss maintains. The two strict
+ * one, otherwise fall back to the price list you maintains. The two strict
  * modes exist for audit (`configured_only`) and invoice-parity (`provider_only`)
  * installs.
  */
@@ -1099,7 +843,7 @@ export interface ProxyTestResult {
 export interface Message {
   id: string;
   kind: MessageKind;
-  /** Agent id, `'user'` for the boss, `'system'` for HR/system notices. */
+  /** Agent id, `'user'` for you, `'system'` for HR/system notices. */
   senderId: string;
   senderName: string;
   senderRole?: string;
@@ -1119,16 +863,16 @@ export interface Message {
  * ── v2 core: thread / worker / trigger / report ─────────────────────────────
  *
  * The centre of the model moved from `employee` to `thread`
- * (docs/v2/00-audit.md §2): what the boss follows is a line of work, not a
+ * (docs/v2/00-audit.md §2): what you follows is a line of work, not a
  * person. A `worker` is an execution body that exists for as long as a thread
  * needs it — it has a template and skills, and no career, no rank, no reporting
- * line, and no memory the boss is not allowed to read.
+ * line, and no memory you is not allowed to read.
  */
 
 export type ThreadState = 'open' | 'running' | 'waiting' | 'done' | 'failed' | 'archived';
 
 /**
- * How loudly a thread is allowed to reach the boss.
+ * How loudly a thread is allowed to reach you.
  *
  * `silent` is the default and the point of the whole design: work that needs no
  * decision finishes without a notification. `decide` is the only level allowed
@@ -1177,7 +921,7 @@ export interface Worker {
    * after B4 there is no employee table, and this becomes the worker's own name
    * and charter.
    */
-  employeeId: string | null;
+  ownerId: string | null;
   modelProvider: string | null;
   modelId: string | null;
   /**
@@ -1221,7 +965,50 @@ export interface TriggerEvent {
   triagedAt: number | null;
 }
 
-/** A thread's word to the boss. The three levels are the whole interface. */
+/**
+ * 两层过滤各自怎么判（§3.1）。
+ *
+ * 这是一个**策略**，不是常量：程序层挡掉什么、语义层由谁先看，都能在设置里换。
+ * 默认值是"能便宜就便宜，拿不准就交给 Router"，所以换了策略只会影响花多少钱，
+ * 不会影响活会不会丢——两层的失败方向都朝着"多问一次"。
+ */
+export interface TriagePolicy {
+  /**
+   * 程序层（零 token）：
+   * - `noise`：只挡**确定**是噪声的（空内容、自己写出来的回环、窗口内重复），
+   *   其余一律往上交。这是默认——它挡错东西的代价是丢活。
+   * - `allowlist`：只放行 `sources` 里的来源。适合"我就想让它盯收件箱"的人，
+   *   代价是新接的适配器要在这里登记一次，否则它的声音永远进不来。
+   */
+  fastPath: 'noise' | 'allowlist';
+  /** `allowlist` 模式放行的来源；`noise` 模式下不用。 */
+  sources: TriggerSource[];
+  /**
+   * 语义层由谁先看：
+   * - `router`：直接交给 Router 会话，它自己判断（默认，最准，花 Router 的上下文）。
+   * - `decision`：先用分类器判一遍"这是不是噪声"，通过的才进 Router。判不动的
+   *   （模型没配、调用失败）一律放行——省钱的层不许有丢活的权力。
+   */
+  semantic: 'router' | 'decision';
+  /** `decision` 模式：判为噪声的概率达到这个值就丢掉（0~1）。 */
+  noiseThreshold: number;
+}
+
+export const DEFAULT_TRIAGE_POLICY: TriagePolicy = {
+  fastPath: 'noise',
+  sources: ['im', 'folder', 'manual'],
+  semantic: 'router',
+  noiseThreshold: 0.7,
+};
+
+export interface TriagePolicyPatch {
+  fastPath?: TriagePolicy['fastPath'];
+  sources?: TriggerSource[];
+  semantic?: TriagePolicy['semantic'];
+  noiseThreshold?: number;
+}
+
+/** A thread's word to you. The three levels are the whole interface. */
 export interface WorkReport {
   id: string;
   threadId: string;

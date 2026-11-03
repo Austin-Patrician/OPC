@@ -14,10 +14,10 @@ import { DEFAULT_BRAND_COLOR } from './options';
 const PLACEHOLDER: CompanyProfile = {
   id: 'company-local',
   name: '',
-  industry: '',
-  vision: '',
+  domain: '',
+  goal: '',
   colorId: DEFAULT_BRAND_COLOR,
-  bossName: '',
+  userName: '',
 };
 
 interface CompanyState {

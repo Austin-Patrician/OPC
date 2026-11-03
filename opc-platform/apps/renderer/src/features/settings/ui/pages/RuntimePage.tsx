@@ -113,7 +113,7 @@ function OcrEngineControls({
  *
  * The environment is company-wide by design: one Node and one Python choice for
  * every employee, so a task never silently runs under a different interpreter
- * than the one the boss configured. Built-ins are detection strategies (system
+ * than the one you configured. Built-ins are detection strategies (system
  * PATH / Electron's bundled Node); custom profiles point at a venv or conda.
  */
 export function RuntimePage() {

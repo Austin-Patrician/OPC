@@ -97,7 +97,7 @@ export function ImagePage() {
 
   /**
    * What "默认生图模型" may point at: a provider that actually has a credential,
-   * and a row that is switched on. Listing the whole catalog here let the boss
+   * and a row that is switched on. Listing the whole catalog here let you
    * pick a model that cannot run (no key, or never enabled).
    */
   const selectableProviders = useMemo(
@@ -333,7 +333,7 @@ export function ImagePage() {
       }
 
       // Saving never flips a switch: the table's own switches decide which rows
-      // exist, so a row the boss turned off is not resurrected by a save.
+      // exist, so a row you turned off is not resurrected by a save.
       let nextModels = storedModels;
       for (const [modelId, price] of Object.entries(priceDraft)) {
         if (!nextModels.some((model) => model.id === modelId)) continue;

@@ -1,9 +1,16 @@
 import crypto from 'node:crypto';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
-export type FactScopeType = 'org' | 'department' | 'project' | 'thread';
+/**
+ * 事实的作用域只剩两层。
+ *
+ * 它曾经是 `org | department | project | thread`——一个组织、它的部门、它的项目。
+ * 产品现在是**一个助手的个人工作台**：只有"这个工作台都算数的事"（`global`）和
+ * "这条工作线自己定的事"（`thread`）。中间那两层从来没有对应的表。
+ */
+export type FactScopeType = 'global' | 'thread';
 
-export interface OrgFact {
+export interface Fact {
   id: string;
   scopeType: FactScopeType;
   scopeId: string;
@@ -32,30 +39,30 @@ export interface WriteFactInput {
 const COMPANY_ID = 'company-local';
 
 /**
- * Company-level knowledge ("Q4 先做留存", "所有交付必须带 README").
+ * 这个工作台里都算数的事（"交付必须带 README"）与单条工作线自己的规定。
  *
- * Two rules from the design are enforced here rather than by callers:
- * - **one current fact per (scope, subject, predicate)**: writing a new value
- *   closes the old one with `valid_until`, so history is kept and queries stay simple;
- * - scope is explicit, so a department fact never leaks into another department
- *   (the same reason employee memories carry scope columns).
+ * 设计里的两条规则在这里强制，而不是靠调用方自觉：
+ * - **同一 (scope, subject, predicate) 只有一个当前值**：写新值时用 `valid_until`
+ *   关掉旧的，历史留着，查询保持简单；
+ * - 作用域是显式的，所以一条工作线的规定不会漏到另一条线（记忆表带 scope 列也是
+ *   同一个原因）。
  */
-export class OrgFactService {
+export class FactService {
   constructor(private readonly db: CompanyDatabase) {}
 
   /** Closes any current fact with the same key, then inserts the new one. */
-  write = (input: WriteFactInput): OrgFact => {
+  write = (input: WriteFactInput): Fact => {
     const now = Date.now();
     const predicate = (input.predicate ?? 'is').trim() || 'is';
-    const scopeId = input.scopeType === 'org' ? COMPANY_ID : (input.scopeId ?? '').trim();
-    if (input.scopeType !== 'org' && !scopeId) throw new Error('部门/项目事实需要 scopeId');
+    const scopeId = input.scopeType === 'global' ? COMPANY_ID : (input.scopeId ?? '').trim();
+    if (input.scopeType !== 'global' && !scopeId) throw new Error('工作线内的事实需要一个 scopeId');
     const statement = (input.statement ?? `${input.subject} ${predicate} ${input.object}`).trim();
     const id = `fact-${crypto.randomUUID()}`;
 
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `UPDATE org_fact SET valid_until = ?, updated_at = ?
+          `UPDATE fact SET valid_until = ?, updated_at = ?
             WHERE company_id = ? AND scope_type = ? AND scope_id = ? AND subject = ? AND predicate = ?
               AND valid_until IS NULL AND is_archived = 0`,
         )
@@ -63,7 +70,7 @@ export class OrgFactService {
 
       this.db
         .prepare(
-          `INSERT INTO org_fact
+          `INSERT INTO fact
              (id, company_id, scope_type, scope_id, subject, predicate, object, statement,
               source_type, source_id, valid_from, confidence, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -102,13 +109,13 @@ export class OrgFactService {
     };
   };
 
-  /** Current facts for the scopes an employee may see, most specific last. */
-  current = (scopes: { type: FactScopeType; id?: string }[], limit = 20): OrgFact[] => {
+  /** Current facts for the scopes this agent may see, most specific last. */
+  current = (scopes: { type: FactScopeType; id?: string }[], limit = 20): Fact[] => {
     const rows = this.db
       .prepare(
         `SELECT id, scope_type, scope_id, subject, predicate, object, statement, confidence,
                 valid_from, source_type, source_id
-           FROM org_fact
+           FROM fact
           WHERE company_id = ? AND valid_until IS NULL AND is_archived = 0
           ORDER BY valid_from DESC
           LIMIT 200`,
@@ -127,11 +134,11 @@ export class OrgFactService {
       source_id: string | null;
     }[];
 
-    const allowed = new Set(scopes.map((scope) => `${scope.type}:${scope.type === 'org' ? COMPANY_ID : scope.id ?? ''}`));
+    const allowed = new Set(scopes.map((scope) => `${scope.type}:${scope.type === 'global' ? COMPANY_ID : scope.id ?? ''}`));
     return rows
       .filter((row) => allowed.has(`${row.scope_type}:${row.scope_id}`))
-      // org-wide first, then department/project (the more specific context last wins).
-      .sort((a, b) => (a.scope_type === 'org' ? 1 : 0) - (b.scope_type === 'org' ? 1 : 0))
+      // 工作线的规定排在后面：越具体越后，冲突时后面的赢。
+      .sort((a, b) => (a.scope_type === 'global' ? 1 : 0) - (b.scope_type === 'global' ? 1 : 0))
       .slice(0, limit)
       .map((row) => ({
         id: row.id,
@@ -149,12 +156,12 @@ export class OrgFactService {
   };
 
   /** Everything, including superseded rows — the audit view. */
-  history = (subject?: string): OrgFact[] => {
+  history = (subject?: string): Fact[] => {
     const rows = this.db
       .prepare(
         `SELECT id, scope_type, scope_id, subject, predicate, object, statement, confidence,
                 valid_from, source_type, source_id
-           FROM org_fact WHERE company_id = ? ${subject ? 'AND subject = ?' : ''}
+           FROM fact WHERE company_id = ? ${subject ? 'AND subject = ?' : ''}
           ORDER BY valid_from DESC LIMIT 200`,
       )
       .all(...(subject ? [COMPANY_ID, subject] : [COMPANY_ID])) as {

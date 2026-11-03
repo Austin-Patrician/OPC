@@ -8,15 +8,21 @@ import { Type } from 'typebox';
  * 自己**不执行**具体任务。所以这里没有 bash、读写文件、代码执行——那套工具属于
  * Worker（§2.1「甚至可以不配备 Bash 工具」）。
  *
- * 留下的七个工具正好是 Super-agent 里 Router 的全部动作：
+ * 留下的九个工具正好是 Super-agent 里 Router 的全部动作：
  *
  *   open_line_of_work  派活（开线 + 建 worker + 订阅 + 跑第一个任务）
- *   reply_to_boss      唯一的外观信道（§2.2：Worker 不直接与人交互，由 Router 统一回复）
+ *   reply_to_user      唯一的外观信道（§2.2：Worker 不直接与人交互，由 Router 统一回复）
  *   recall             链式召回（§3.3：任何对象都能顺着 id 往下跳）
  *   list_lines         看一眼全局：哪条线在动、哪条线卡住
- *   steer_line         中途改方向（老板改主意了，下一轮 worker 会看到）
- *   ask_boss           需要拍板时进注意力队列
+ *   steer_line         中途改方向（你改主意了，下一轮 worker 会看到）
+ *   ask_user           需要拍板时进注意力队列
  *   close_line         收线
+ *   remember           记住一件关于你的事（§2.1：Router 是"序点、协调点和记忆"）
+ *   recall_memory      回想以前记过什么
+ *
+ * 最后两个是记忆，不是执行：它们只在 Router 自己的名下读写几行文本，不碰文件、
+ * 不碰代码。没有它们，`memory` 表里那批 `owner_id='router'` 的行就永远没人读——
+ * 一条完整的记忆生产链，收件人从来不拆信。
  *
  * 工具全都**立即返回**。派活不会等任务跑完——那是 §4.1 的全双工：Router 立刻
  * 收到「已启动」，结果之后作为一条新事件回到它这里。这就是为什么 Router 一轮
@@ -44,7 +50,7 @@ export interface RouterToolDeps {
     template?: 'research' | 'code' | 'ops';
   }): { ok: true; threadId: string; workerId: string; taskId: string | null } | { ok: false; reason: string };
 
-  /** 对老板说话。这是 Router 唯一能让人看见它的方式。 */
+  /** 对你说话。这是 Router 唯一能让人看见它的方式。 */
   reply(text: string): void;
 
   /** 链式召回：返回一个对象的压缩视图 + 相邻对象的 id（Inline & Spill）。 */
@@ -52,11 +58,24 @@ export interface RouterToolDeps {
 
   lines(state?: 'active' | 'all'): LineSummary[];
 
-  steerLine(threadId: string, note: string): { ok: boolean; reason?: string };
+  /**
+   * 你中途改方向。`live` = 真的插进了正在跑的会话；`queued` = 记在这条线上，
+   * 等它开跑/重试时带上。`ok: false` 表示这条线已经收尾，改方向得开新线。
+   */
+  steerLine(
+    threadId: string,
+    note: string,
+  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
 
-  askBoss(threadId: string | null, question: string): { ok: boolean; reason?: string };
+  askUser(threadId: string | null, question: string): { ok: boolean; reason?: string };
 
   closeLine(threadId: string, summary: string): { ok: boolean; reason?: string };
+
+  /** 记一件关于你的事（偏好、否决过的方向、要求的格式）。 */
+  remember(text: string): Promise<{ ok: boolean; id?: string; reason?: string }>;
+
+  /** 按一句话回想以前记过什么。 */
+  recallMemory(query: string): Promise<{ ok: boolean; items?: string[]; reason?: string }>;
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -81,12 +100,20 @@ export function createRouterTools(deps: RouterToolDeps) {
        */
       section('router-role', () =>
         [
-          '你是这个工作台的调度者，也是老板唯一对话的对象。',
+          '你是这个工作台的调度者，也是用户唯一对话的对象。',
           '',
           '## 你做什么',
-          '你把老板的话接住，判断该不该派活，把活派出去，然后把结果收回来告诉他。',
+          '用户说的话由你接住，判断该不该派活，把活派出去，然后把结果收回来讲给他。',
           '你负责的是**任务之间**的关系：哪件事和哪件事是同一件、哪件事该先做、',
           '哪件事卡住了要不要说。你不介入单件事内部怎么拆。',
+          '用户在活还没干完时改主意，用 steer_line 把那句话带到那条线上——那仍然是同一件事，',
+          '不要为此开第二条线。',
+          '',
+          '## 你要记得',
+          '你是一个跨天、跨工作线连续的存在：他说过什么、否决过什么，不该每次重新问。',
+          '听到"以后都这样""别再做 X"这类要求，用 remember 记下来；',
+          '拿不准他以前的偏好时，先 recall_memory，别用猜测填空。',
+          '输入里如果带着"工作台的规矩"，那是长期有效的约定，优先于你这一次的临时判断。',
           '',
           '## 你不做什么',
           '你没有文件读写、没有 shell、没有代码执行。活不是你干的。',
@@ -94,12 +121,12 @@ export function createRouterTools(deps: RouterToolDeps) {
           '绝不编造执行结果。手上没有证据时，就说没有，或者去开一条线查。',
           '',
           '## 怎么说话',
-          '老板用聊天跟你说话。他问「怎么样了」，就照实说手上有哪几条线、各到哪一步；',
-          '他不知道进度时不要用猜测填空。回答简短、具体，不复述他的原话。',
+          '用户在聊天窗口里跟你说话。他问「怎么样了」，就照实说手上有哪几条线、各到哪一步；',
+          '不知道进度时不要用猜测填空。回答简短、具体，不复述他的原话。',
           '',
           '## 打扰的纪律',
           '大部分事情不需要他知道。干完了就安静地记在线上，只有两种情形值得开口：',
-          '需要他拍板（ask_boss），或者他要的那件事完成了（reply_to_boss）。',
+          '需要他拍板（ask_user），或者他要的那件事完成了（reply_to_user）。',
           '每一次打扰都要有理由；没有理由的汇报是噪音。',
         ].join('\n'),
       ),
@@ -144,9 +171,9 @@ export function createRouterTools(deps: RouterToolDeps) {
       }),
 
       defineTool({
-        name: 'reply_to_boss',
+        name: 'reply_to_user',
         description:
-          '对老板说一句话。这是老板唯一能看到你的途径——不调用它，你等于没说话。' +
+          '对用户说一句话。这是用户唯一能看到你的途径——不调用它，你等于没说话。' +
           '简短、具体、只说你知道的。',
         parameters: Type.Object({
           text: Type.String({ description: '要说的话。' }),
@@ -193,30 +220,68 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'steer_line',
         description:
-          '老板中途改了方向：给一条正在跑的线加一句话。执行体下一轮会看到它，' +
-          '不需要重开一条线。',
+          '用户中途改了方向：把这句话带到一条**还没收尾**的线上。' +
+          '正在跑的活在这一轮之后就能看到它；还没开跑的活会在开跑时看到它。' +
+          '不要为此开第二条线——同一件事换个方向还是同一件事。',
         parameters: Type.Object({
           thread_id: Type.String(),
-          note: Type.String({ description: '要改什么、为什么改。' }),
+          note: Type.String({ description: '改什么、为什么改。执行体会把它当成最高优先级的说明。' }),
         }),
         execute: async (args) => {
-          const result = deps.steerLine(args.thread_id, args.note);
-          return result.ok ? ok('已经带到那条线上。') : fail(`没带上：${result.reason}`);
+          const result = await deps.steerLine(args.thread_id, args.note);
+          if (!result.ok) return fail(`没带上：${result.reason ?? '未知原因'}`);
+          return ok(
+            result.live > 0
+              ? `已经插到正在跑的活上（${result.live} 条），它这一轮就能看到。`
+              : `记在这条线上了（${result.queued} 条活还没开跑），它开跑时会看到。`,
+          );
         },
       }),
 
       defineTool({
-        name: 'ask_boss',
+        name: 'ask_user',
         description:
-          '需要老板拍板时用。这会进他的注意力队列并打断他——只在真的需要一个人做决定时才用；' +
+          '需要用户拍板时用。这会进他的注意力队列并打断他——只在真的需要一个人做决定时才用；' +
           '能自己判断的一律自己判断。',
         parameters: Type.Object({
           thread_id: Type.Optional(Type.String()),
           question: Type.String({ description: '一个可以直接回答的问题，带上下文。' }),
         }),
         execute: async (args) => {
-          const result = deps.askBoss(args.thread_id ?? null, args.question);
+          const result = deps.askUser(args.thread_id ?? null, args.question);
           return result.ok ? ok('已经进队列。') : fail(`没进队列：${result.reason}`);
+        },
+      }),
+
+      defineTool({
+        name: 'remember',
+        description:
+          '记一件关于用户的事：他的偏好、他否决过的方向、他要求过的格式。' +
+          '记的是**跨工作线**仍然成立的事；某条线内部的进展不属于这里。只是记下来，不必为此回话。',
+        parameters: Type.Object({
+          text: Type.String({
+            description: '一句话，写清是谁的什么偏好。例如「他说文档放 README 里就够了，别单开 wiki」。',
+          }),
+        }),
+        execute: async (args) => {
+          const result = await deps.remember(args.text);
+          return result.ok ? ok('记住了。') : fail(`没记上：${result.reason ?? '未知原因'}`);
+        },
+      }),
+
+      defineTool({
+        name: 'recall_memory',
+        description:
+          '按一句话回想以前记过什么。开工前想知道"他说过什么"时用它——' +
+          '上下文里没有的东西不代表没发生过。什么都没有就如实说没有。',
+        parameters: Type.Object({
+          query: Type.String({ description: '要回想的事，用自己的话写。' }),
+        }),
+        execute: async (args) => {
+          const result = await deps.recallMemory(args.query);
+          if (!result.ok) return fail(`没想起来：${result.reason ?? '未知原因'}`);
+          if (!result.items || result.items.length === 0) return ok('没有相关的记录。');
+          return ok(result.items.map((item) => `- ${item}`).join('\n'));
         },
       }),
 

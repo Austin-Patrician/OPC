@@ -71,7 +71,7 @@ describe('NetworkProxyService', () => {
   });
 
   it('stores the password encrypted and never returns it', async () => {
-    await service.update({ mode: 'manual', protocol: 'http', host: 'p.corp', port: 3128, username: 'boss', password: 's3cret', bypass: '' });
+    await service.update({ mode: 'manual', protocol: 'http', host: 'p.corp', port: 3128, username: 'proxy-user', password: 's3cret', bypass: '' });
 
     const row = db.prepare("SELECT value FROM app_setting WHERE key = 'network.proxyPassword'").get() as {
       value: string;
@@ -83,11 +83,11 @@ describe('NetworkProxyService', () => {
   });
 
   it('keeps a stored password when the field is omitted, clears it with an empty string', async () => {
-    const base = { mode: 'manual' as const, protocol: 'http' as const, host: 'p.corp', port: 3128, username: 'boss', bypass: '' };
+    const base = { mode: 'manual' as const, protocol: 'http' as const, host: 'p.corp', port: 3128, username: 'proxy-user', bypass: '' };
     await service.update({ ...base, password: 's3cret' });
 
-    await service.update({ ...base, username: 'boss2' });
-    expect(service.resolve()).toMatchObject({ username: 'boss2', password: 's3cret' });
+    await service.update({ ...base, username: 'proxy-user-2' });
+    expect(service.resolve()).toMatchObject({ username: 'proxy-user-2', password: 's3cret' });
 
     await service.update({ ...base, password: '' });
     expect(service.get().hasPassword).toBe(false);
@@ -155,9 +155,9 @@ describe('NetworkProxyService', () => {
   });
 
   it('builds a test candidate from the draft, borrowing the stored secret', async () => {
-    await service.update({ mode: 'manual', protocol: 'http', host: 'p.corp', port: 3128, username: 'boss', password: 's3cret', bypass: '' });
+    await service.update({ mode: 'manual', protocol: 'http', host: 'p.corp', port: 3128, username: 'proxy-user', password: 's3cret', bypass: '' });
 
-    const candidate = service.candidate({ mode: 'manual', protocol: 'http', host: 'q.corp', port: 8080, username: 'boss', bypass: '' });
+    const candidate = service.candidate({ mode: 'manual', protocol: 'http', host: 'q.corp', port: 8080, username: 'proxy-user', bypass: '' });
     expect(candidate).toMatchObject({ host: 'q.corp', port: 8080, password: 's3cret', hasPassword: true });
     // Testing must not persist anything.
     expect(service.get().host).toBe('p.corp');

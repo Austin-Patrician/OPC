@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { ArrowRight, MessagesSquare, Settings2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
+import type { ModelDefaults, ProviderConfig, Worker } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { THINKING_LEVELS, findProvider } from '@/shared/providers/catalog';
 import { companyName } from '@/entities/company/model/options';
@@ -39,8 +39,7 @@ const ACTIONS: { target: DoneTarget; icon: typeof MessagesSquare; titleKey: stri
 ];
 
 interface StepDoneProps {
-  departments: DepartmentNode[];
-  agentCount: number;
+  workers: Worker[];
   providers: ProviderConfig[];
   defaults: ModelDefaults;
   thinking: string;
@@ -49,8 +48,7 @@ interface StepDoneProps {
 
 /** Summary of what is now true in the database, then three real ways into the app. */
 export function StepDone({
-  departments,
-  agentCount,
+  workers,
   providers,
   defaults,
   thinking,
@@ -65,8 +63,6 @@ export function StepDone({
   const design = providerId ? findProvider(providerId) : undefined;
   const thinkingLabel = THINKING_LEVELS.find((level) => level.value === thinking)?.label;
   const displayName = companyName(profile, t('company.fallbackName'));
-
-  const roster = departments.flatMap((department) => department.members);
 
   return (
     <div className="relative">
@@ -131,7 +127,7 @@ export function StepDone({
             <div className="min-w-0">
               <div className="truncate text-base-plus font-semibold text-ink">{displayName}</div>
               <div className="truncate text-xs-plus text-ink-tertiary">
-                {profile.vision.trim() || t('company.fallbackName')}
+                {profile.goal.trim() || t('company.fallbackName')}
               </div>
             </div>
           </div>
@@ -163,21 +159,15 @@ export function StepDone({
         <SummaryCard label={t('onboarding.done.team')} delay={0.56}>
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex shrink-0 -space-x-2">
-              {roster
+              {workers
                 .slice(0, 3)
-                .map((member) => (
-                  <Avatar
-                    key={member.id}
-                    name={member.name}
-                    src={member.avatar || undefined}
-                    size="sm"
-                    className="ring-2 ring-surface"
-                  />
+                .map((worker) => (
+                  <Avatar key={worker.id} name={worker.name} size="sm" className="ring-2 ring-surface" />
                 ))}
             </div>
             <div className="min-w-0">
               <div className="truncate text-base-plus font-semibold text-ink">
-                {t('onboarding.done.agentsTotal', { count: agentCount })}
+                {t('onboarding.done.workersTotal', { count: workers.length })}
               </div>
             </div>
           </div>

@@ -15,7 +15,7 @@ import { createLineOpener } from './workDispatch';
  *
  * 1. **不阻塞**。派完立刻返回 id，不等任务跑完——这就是 §4.1 的全双工在
  *    Router 这一层的落地方式（活本身是跨进程的 durable task，天然异步）。
- * 2. **同一个环境身份不出第二条线**。老板在同一话题里连说三句，是一条线的三段
+ * 2. **同一个环境身份不出第二条线**。你在同一话题里连说三句，是一条线的三段
  *    上下文，不是三件互不相干的事。
  * 3. **没有闸门就说没有闸门**。验不了的活用 `UNVERIFIED_GATE`，结论是"需要人
  *    看一眼"，不假装通过。
@@ -50,8 +50,8 @@ function opener(overrides: {
     // 真实装配里 resolveWorker 会 ensureWorker；这里照做，外键才有对象。
     resolveWorker: ({ threadId }) => {
       if (overrides.noWorker) return null;
-      const worker = threads.ensureWorker({ threadId, employeeId: 'emp-1', name: '执行体' });
-      return { employeeId: 'emp-1', workerId: worker.id };
+      const worker = threads.ensureWorker({ threadId, ownerId: 'emp-1', name: '执行体' });
+      return { ownerId: 'emp-1', workerId: worker.id };
     },
     createTask: (input) => {
       created.push(input);
@@ -120,5 +120,49 @@ describe('派活', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain('配额不足');
+  });
+
+  it('钉住执行体时不再挑人：直通的归属已经定了', () => {
+    const thread = threads.createThread({ title: '季度财报', goal: '整理', threadKey: 'folder:inbox/q3.md' });
+    // 两个执行体都在这条线上，被钉住的是第二个。
+    threads.createWorker({ name: '甲', threadId: thread.id, ownerId: 'emp-a' });
+    const pinned = threads.createWorker({ name: '乙', threadId: thread.id, ownerId: 'emp-b' });
+
+    let picked = 0;
+    const created: CreateTaskInput[] = [];
+    const open = createLineOpener({
+      threads,
+      resolveWorker: () => {
+        picked += 1;
+        return { ownerId: 'emp-a', workerId: 'someone-else' };
+      },
+      createTask: (input) => {
+        created.push(input);
+        return { ok: true, task: { id: 'task-1' } } as never;
+      },
+      startTask: () => undefined,
+    });
+
+    const result = open({ goal: '这个文件又变了', threadKey: 'folder:inbox/q3.md', workerId: pinned.id });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 挑人这一步根本没发生，任务挂在被钉住的那个执行体上。
+    expect(picked).toBe(0);
+    expect(result.workerId).toBe(pinned.id);
+    expect(created[0]!.workerId).toBe(pinned.id);
+    expect(created[0]!.assigneeId).toBe('emp-b');
+  });
+
+  it('钉住的人不在这条线上（线被重建过）时退回正常挑人', () => {
+    const thread = threads.createThread({ title: '新事', goal: '新事', threadKey: 'folder:inbox/new.md' });
+    const stray = threads.createWorker({ name: '外人', ownerId: 'emp-x' });
+
+    const { open, created } = opener();
+    const result = open({ goal: '看一眼', threadKey: 'folder:inbox/new.md', workerId: stray.id });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.threadId).toBe(thread.id);
+    expect(created[0]!.workerId).not.toBe(stray.id);
   });
 });

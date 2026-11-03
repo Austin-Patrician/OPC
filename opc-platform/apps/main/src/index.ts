@@ -3,25 +3,22 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
-import { ChatService } from './chat/chatService';
-import { agentsFromOrg, chatDepartmentsFromOrg, ensureFirstCompany } from './seed/firstCompany';
+import { ChatService, ROUTER_ID } from './chat/chatService';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
 import { ConsolidationRunStore } from './memory/consolidationRun';
 import { MemoryService } from './memory/memoryService';
-import { OrgFactService } from './memory/orgFactService';
+import { FactService } from './memory/factService';
 import { resetCompany } from './seed/resetCompany';
-import { ensureDefaultExecutor } from './seed/defaultExecutor';
-import { openCompanyDatabase } from './data/companyDatabase';
+import { openCompanyDatabase, type CompanyDatabase } from './data/companyDatabase';
 import { registerIpc } from './ipc/register';
 import { AuthService } from './models/authService';
 import { FileCredentialStore } from './models/credentialStore';
 import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
-import { resolveEmployeeModelRef } from './models/employeeModel';
 import { SpeechService } from './models/speechService';
-import type { SubtaskDraft, WorkThread } from '@opc/shared/domain';
+import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -31,7 +28,6 @@ import { OcrSettingsStore } from './ocr/settings';
 import { registerOcrScheme } from './ocr/protocol';
 import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
-import { OrgService } from './org/orgService';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
 import { PiExtensionHost } from './extensions/host';
@@ -41,8 +37,13 @@ import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
 import { Watchdog } from './watchdog/watchdog';
 import { createRouterHost } from './router/routerHost';
+import { TriagePolicyStore } from './router/triagePolicy';
 import { createLineOpener } from './router/workDispatch';
 import type { TickReport } from './router/router';
+import { Router } from './router/router';
+import { createFastPath } from './router/triage';
+import { createDecisionGate } from './router/semanticGate';
+import type { SemanticScreener } from './router/semanticGate';
 import { pickWorker } from './work/workerPool';
 import { DEMO_TASK } from './work/acceptanceTemplate';
 
@@ -77,11 +78,10 @@ const isBlockerProbe = process.env.OPC_BLOCKER_PROBE === '1';
 const isIssueMetaProbe = process.env.OPC_ISSUE_META_PROBE === '1';
 /** `OPC_PRICING_PROBE=1`: decorated model ids map onto pi's official prices. */
 const isPricingProbe = process.env.OPC_PRICING_PROBE === '1';
-/** OPC_INBOX_PROBE=1: inbox → wake quota → heartbeat → guards, end to end (F5/F6). */
 /** `OPC_RUN_TASK=<issue key | task id>`: 用真实模型把一条任务跑到终态，然后退出。 */
 const runTaskRef = process.env.OPC_RUN_TASK;
 const isRunTask = Boolean(runTaskRef);
-/** `OPC_FACT_PROBE=1`: company facts are versioned and reach the employee's prompt. */
+/** `OPC_FACT_PROBE=1`: company facts are versioned and reach the executor's prompt. */
 const isFactProbe = process.env.OPC_FACT_PROBE === '1';
 /** `OPC_ARCHIVE_PROBE=1`: idle conversation → archived → consolidated once. */
 const isArchiveProbe = process.env.OPC_ARCHIVE_PROBE === '1';
@@ -91,16 +91,16 @@ const isConsolidateProbe = process.env.OPC_CONSOLIDATE_PROBE === '1';
 const isMemoryProbe = process.env.OPC_MEMORY_PROBE === '1';
 /** `OPC_CHAT_PERSIST_PROBE=1`: messages survive a ChatService restart. */
 const isChatPersistProbe = process.env.OPC_CHAT_PERSIST_PROBE === '1';
-/** `OPC_RESET_COMPANY=1`: wipe business rows, re-seed the clean two-department company. */
+/** `OPC_RESET_COMPANY=1`: wipe business rows, re-seed the one default executor. */
 const isResetCompany = process.env.OPC_RESET_COMPANY === '1';
 /** `OPC_FIRST_RUN_PROBE=1`: a temp userData dir → prove what a fresh install contains. */
 const isFirstRunProbe = process.env.OPC_FIRST_RUN_PROBE === '1';
-/** `OPC_CHAT_PROBE=1`: 1v1 + department group are created once and reused. */
+/** `OPC_CHAT_PROBE=1`: a 1v1 conversation is created once and reused. */
 const isChatProbe = process.env.OPC_CHAT_PROBE === "1";
+/** `OPC_TRIAGE_PROBE=1`: 两层过滤各自可配，而且两层都不丢活。 */
+const isTriageProbe = process.env.OPC_TRIAGE_PROBE === '1';
 /** `OPC_REVIEW_PROBE=1`: system pass → manager verdict.json → original accepted. */
 const isReviewProbe = process.env.OPC_REVIEW_PROBE === "1";
-/** `OPC_ORG_PROBE=1`: department → hire → dispatch → fire → dispatch refused. */
-const isOrgProbe = process.env.OPC_ORG_PROBE === "1";
 /** `OPC_IMAGE_LOOP_PROBE=1`: mock image endpoint → agent tool → image-200 acceptance. */
 const isImageLoopProbe = process.env.OPC_IMAGE_LOOP_PROBE === "1";
 /** `OPC_CRASH_PROBE=start|resume`: kill the app mid-run, then prove it resumes. */
@@ -231,33 +231,65 @@ function getBackgroundContext() {
   return routerContextPromise;
 }
 
-/** 只有真到达老板的东西才值得一行日志；安静是预期结果。 */
+/** 只有真到达你的东西才值得一行日志；安静是预期结果。 */
 function logTick(report: TickReport): void {
-  if (report.routed === 0 && report.passthrough === 0 && report.reports === 0) return;
+  if (
+    report.routed === 0 &&
+    report.passthrough === 0 &&
+    report.reports === 0 &&
+    report.gated === 0 &&
+    report.dropped === 0
+  ) {
+    return;
+  }
   console.warn('[router]', report);
+}
+
+/**
+ * 全新安装时唯一需要的那个执行体。
+ *
+ * 界面上已经没有招聘、部门和组织架构了，但派活仍然需要一个执行体：模型、工具
+ * 策略、技能都挂在 `worker` 行上。所以首次运行只建**一个**，而不是塞一个演示公司。
+ *
+ * 幂等：已经有执行体就返回第一个，重复调用不会多出第二个。
+ */
+const DEFAULT_EXECUTOR = {
+  name: '小助手',
+  template: 'research',
+  // 三个模板都要能落在它身上：pickWorker 命中不了别人时也必须有人能干。
+  skills: ['TypeScript', 'Node.js', 'Python', '调研', '写作', '分析', '部署', '运维'],
+} as const;
+
+function seedExecutor(db: CompanyDatabase): Worker {
+  const threads = new ThreadRepository(db);
+  const existing = threads.listAllWorkers()[0];
+  if (existing) return existing;
+  return threads.createWorker({
+    name: DEFAULT_EXECUTOR.name,
+    template: DEFAULT_EXECUTOR.template,
+    skills: [...DEFAULT_EXECUTOR.skills],
+  });
 }
 
 async function bootstrap(): Promise<void> {
   initAppPaths();
 
   const db = openCompanyDatabase(appPaths.database);
-  // Smoke runs must not inherit an exhausted budget from earlier real runs.
-  if (isSmoke) db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
   const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
   const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
   const network = new NetworkProxyService(db, {
     cipher: { encrypt: encryptSecret, decrypt: decryptSecret },
     apply: applyProxy,
   });
-  const org = new OrgService(db);
   // One instance for the process: the router writes threads here, IPC reads them.
   const threads = new ThreadRepository(db);
   // 全新安装要有一个人能干活：界面上已经没有招聘和组织架构了，
   // 所以这里自动建**一个**执行体（不是以前那个六个人的演示公司）。
   // 用 `OPC_COMPANY_SETUP=<file>` 导入模板仍然有效，它会先于这一步发生。
   try {
-    const executor = ensureDefaultExecutor(org);
-    if (executor.created) console.warn('[OPC] 已创建默认执行体「小助手」：可以直接丢目标给它了。');
+    const before = threads.listAllWorkers().length;
+    seedExecutor(db);
+    if (before === 0) console.warn('[OPC] 已创建默认执行体「小助手」：可以直接丢目标给它了。');
   } catch (error) {
     console.error('[OPC] 创建默认执行体失败', error);
   }
@@ -275,10 +307,10 @@ async function bootstrap(): Promise<void> {
     const models = await modelConfig.runtime.createModels();
     const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
     if (!model) throw new Error('找不到模型');
-    const transcript = turns.map((turn) => `${turn.senderId === 'user' ? '老板' : '员工'}：${turn.text}`).join('\n');
+    const transcript = turns.map((turn) => `${turn.senderId === 'user' ? '你' : '助手'}：${turn.text}`).join('\n');
     const answer = await models.complete(model, {
       systemPrompt:
-        '把这段对话里值得长期记住的经验、事实和老板偏好提炼成条目。每条一行，格式为「类型|内容」，类型只能是 experience/fact/preference。只提炼对话里明确出现的，不要推测。',
+        '把这段对话里值得长期记住的经验、事实和用户的偏好提炼成条目。每条一行，格式为「类型|内容」，类型只能是 experience/fact/preference。只提炼对话里明确出现的，不要推测。',
       messages: [{ role: 'user', content: [{ type: 'text', text: transcript }] }],
     } as never);
     const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
@@ -300,53 +332,16 @@ async function bootstrap(): Promise<void> {
       })
       .filter((lesson) => lesson.content.length > 0);
   };
-  chat.consolidate = async ({ conversationId, employeeId, messages: turns }) =>
-    consolidateConversation(memory, { conversationId, employeeId, messages: turns }, summarize, {
+  chat.consolidate = async ({ conversationId, ownerId, messages: turns }) =>
+    consolidateConversation(memory, { conversationId, ownerId, messages: turns }, summarize, {
       runs: consolidationRuns,
     });
 
-  /** One completion, given a model ref and a system prompt. */
-  const completeAs = async (
-    ref: { providerId: string; modelId: string },
-    systemPrompt: string,
-    text: string,
-  ): Promise<string> => {
-    const models = await modelConfig.runtime.createModels();
-    const model = await modelConfig.runtime.resolveModel(ref.providerId, ref.modelId);
-    if (!model) throw new Error(`找不到模型 ${ref.providerId}/${ref.modelId}`);
-
-    const answer = await models.complete(model, {
-      systemPrompt,
-      messages: [{ role: 'user', content: [{ type: 'text', text }] }],
-    } as never);
-
-    const content = (answer as { content?: { type: string; text?: string }[] }).content ?? [];
-    return content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('')
-      .trim();
-  };
-
-  // An agent answers with its own model. No provider → no answer, never a canned one.
-  chat.replyWithModel = async ({ agent, text }) => {
-    const ref = resolveEmployeeModelRef(modelConfig, org, agent.id);
-    if (!ref) throw new Error('未配置默认 LLM 模型');
-    return completeAs(
-      ref,
-      [
-        `你是「${agent.name}」，岗位是 ${agent.role}。`,
-        agent.briefMd ? `你的工作规范：${agent.briefMd}` : '',
-        '用中文直接回答老板的问题，简短、具体，不要复述他的原话，也不要编造成果。',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      text,
-    );
-  };
-
+  // 这里本来有 `chat.replyWithModel`：一个执行体用「你是「X」，岗位是 Y」的人设直接
+  // 回答你。v2 的双层架构里没有这条路——Worker 只向 Router 汇报，由 Router 统一
+  // 对外说话（§2.2）。留着它就等于留了第二个能回答你的人。
   const memory = new MemoryService(db);
-  const facts = new OrgFactService(db);
+  const facts = new FactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
   const imageService = new ImageService(modelConfig, networkClient);
   const speechService = new SpeechService(modelConfig, networkClient);
@@ -366,10 +361,10 @@ async function bootstrap(): Promise<void> {
   const billingSettings = new BillingSettingsService(db);
   billingSettings.ensureDefaults();
   // Pi extensions on this machine (`~/.pi/agent/extensions`). Scanning is free;
-  // only the ones the boss turned on are imported.
+  // only the ones you turned on are imported.
   const piExtensions = new PiExtensionHost({ userDataDir: appPaths.userData });
   // Skills are Markdown, so there is nothing to trust: they are discovered and
-  // available unless the boss switches them off.
+  // available unless you switches them off.
   const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
   work = new WorkService({
     db,
@@ -379,7 +374,6 @@ async function bootstrap(): Promise<void> {
     images: imageService,
     speech: speechService,
     decisions: decisionService,
-    org,
     memory,
     facts,
     network: networkClient,
@@ -389,8 +383,13 @@ async function bootstrap(): Promise<void> {
     piSkills,
   });
 
-  // v2 路由：在 IPC 之前建好，老板才能在注意力队列上直接丢一个目标进来。
+  // v2 路由：在 IPC 之前建好，你才能在注意力队列上直接丢一个目标进来。
   // 定时器在下面按「非无头」条件启动——这里只创建，不驱动。
+  /**
+   * 两层过滤的配置（§3.1）。存在 `app_setting` 里，设置页写、调度循环每一轮读。
+   */
+  const triage = new TriagePolicyStore(db);
+
   /**
    * Router：一个真的会话。
    *
@@ -405,48 +404,76 @@ async function bootstrap(): Promise<void> {
     modelConfig,
     envFor: () => runtimeService.envFor() as Record<string, string>,
     context: () => getBackgroundContext(),
+    /** 两层过滤怎么配：设置页写、每一轮读（改完立刻生效）。 */
+    policy: () => triage.get(),
+    /** 语义门用的分类器；没配模型时这一层自动关掉，不是错误。 */
+    decisions: decisionService,
+    /** Router 的记忆：写读都在 `ROUTER_ID` 名下，和归档巩固落在同一个 owner 上。 */
+    memory,
+    /** 工作台的规矩：执行体的提示词里有，Router 也得有。 */
+    facts,
     openLine: createLineOpener({
       threads,
       createTask: work!.createTask,
       // 启动但不等待：派活是异步的，Router 拿到 id 就结束这一轮（§4.1）。
       startTask: (taskId) => work!.runTask(taskId),
-      // 谁来干：按模板匹配技能，而不是"第一个在职员工"。
+      // 谁来干：按模板匹配技能，而不是"名单里的第一个"。
       resolveWorker: ({ threadId, template, hint }) => {
-        const people = agentsFromOrg(org).map((agent) => ({
-          employeeId: agent.id,
-          name: agent.name,
-          skills: agent.skills ?? [],
+        const people = threads.listAllWorkers().map((worker) => ({
+          ownerId: worker.id,
+          name: worker.name,
+          skills: worker.skills,
         }));
         const picked = pickWorker(people, template, hint);
         if (!picked) return null;
         const worker = threads.ensureWorker({
           threadId,
-          employeeId: picked.employeeId,
+          ownerId: picked.ownerId,
           name: picked.name,
           template,
         });
-        return { employeeId: picked.employeeId, workerId: worker.id };
+        return { ownerId: picked.ownerId, workerId: worker.id };
       },
     }),
-    // Router 对老板说话：走聊天这条唯一的外观信道（§2.2）。
+    // Router 对你说话：走聊天这条唯一的外观信道（§2.2）。
     reply: (text) => chat!.appendRouterMessage(chat!.ensureAssistant(), text),
+    /**
+     * 你中途改方向（§8.2）。
+     *
+     * 没有这一行，`steer_line` 就是一个空插座：模型会调它、会失败，而"改主意"
+     * 在双层架构里没有第二条路可走——你只能看着一条跑错方向的活跑完。
+     */
+    steer: (threadId, note) => work!.steerThread(threadId, note),
   });
   const goalRouter = routerHost;
 
   /**
-   * 老板在聊天里说话 = 一条 Trigger（§3「事件驱动」）。
+   * 推一轮调度，不等它跑完。
    *
-   * 注意这里**不带 `threadKey`**：聊天是人对 Router 说话的信道，不是某条工作线的
-   * 事件流。带上键的话，一旦 Router 为这个话题开过线，后面每句话都会被直通给那个
-   * 执行体，Router 就再也听不到老板说话了——那是把信道和执行流混成一件事。
+   * `tick` 是 `async` 的（语义门可能是一次模型调用），但调用方都不该被它吊住：
+   * 你打完字要立刻看到自己的消息，20 秒的定时器也不该因为一次分类调用而漂移。
+   * 失败只记日志——事件还在队列里，下一轮会重试。
    */
-  chat.onBossMessage = ({ text }) => {
-    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text } });
-    logTick(goalRouter.tick());
+  const pushTick = (): void => {
+    void goalRouter.tick().then(logTick, (error: unknown) => {
+      console.error('[router] 一轮调度失败', error);
+    });
   };
 
   /**
-   * 老板在注意力队列上丢一个目标。
+   * 你在聊天里说话 = 一条 Trigger（§3「事件驱动」）。
+   *
+   * 注意这里**不带 `threadKey`**：聊天是人对 Router 说话的信道，不是某条工作线的
+   * 事件流。带上键的话，一旦 Router 为这个话题开过线，后面每句话都会被直通给那个
+   * 执行体，Router 就再也听不到你说话了——那是把信道和执行流混成一件事。
+   */
+  chat.onUserMessage = ({ text }) => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text } });
+    pushTick();
+  };
+
+  /**
+   * 你在注意力队列上丢一个目标。
    *
    * 只开线 + 入队事件，**不直接建任务**：这件事值不值得做、该给谁做，仍然是
    * Router 的决定。开线在这里做，是为了让 UI 立刻能显示它，而不是等下一轮 tick。
@@ -455,8 +482,8 @@ async function bootstrap(): Promise<void> {
     const title = goal.split('\n')[0]?.slice(0, 60).trim() || '未命名目标';
     const thread = threads.createThread({ title, goal });
     threads.enqueueEvent({ source: 'manual', kind: 'goal', payload: { goal }, threadId: thread.id });
-    // 老板刚打的字不该等 20 秒：立刻推一次，剩下的交给定时器。
-    logTick(goalRouter.tick());
+    // 你刚打的字不该等 20 秒：立刻推一次，剩下的交给定时器。
+    pushTick();
     return thread;
   };
 
@@ -475,9 +502,9 @@ async function bootstrap(): Promise<void> {
     models: modelConfig,
     speech: speechService,
     decisions: decisionService,
-    org,
     facts,
     consolidationRuns,
+    triage,
     company: new CompanyService(db),
     network,
     runtime: runtimeService,
@@ -505,7 +532,7 @@ async function bootstrap(): Promise<void> {
     app.on('before-quit', () => clearInterval(timer));
   }
 
-  // The v2 loop: a folder the boss drops files into becomes lines of work.
+  // The v2 loop: a folder you drops files into becomes lines of work.
   //
   // This is the whole point of the重构 — nothing is typed into a chat window. A file
   // lands, the router decides it is worth doing, a thread opens, a task runs, and the
@@ -534,7 +561,7 @@ async function bootstrap(): Promise<void> {
     });
     watcher.start();
 
-    const tick = setInterval(() => logTick(goalRouter.tick()), 20_000);
+    const tick = setInterval(() => pushTick(), 20_000);
     tick.unref?.();
 
     app.on('before-quit', () => {
@@ -562,7 +589,7 @@ async function bootstrap(): Promise<void> {
     app.on('before-quit', () => clearInterval(sweep));
   }
 
-  // Outgoing traffic must already follow the boss's choice when the first window
+  // Outgoing traffic must already follow the your choice when the first window
   // paints: install the fetch bridge, then apply the stored config. A broken proxy
   // must not stop the app from opening — the settings page is where it gets fixed.
   connectProxyRuntime();
@@ -606,6 +633,7 @@ const isHeadlessMode =
   isResetCompany ||
   isFirstRunProbe ||
   isChatProbe ||
+  isTriageProbe ||
   isReviewProbe ||
   isRunTask;
 const hasLock = isHeadlessMode ? true : app.requestSingleInstanceLock();
@@ -644,21 +672,20 @@ if (!hasLock) {
     }
 
     if (isRunTask) {
-      // 单条任务跑到底：给"真实公司 + 真实模型"一个非交互的入口，也方便回归。
-      // 用真库（就是老板正在用的公司），不改任何别的任务。
+      // 单条任务跑到底：给"真实工作台 + 真实模型"一个非交互的入口，也方便回归。
+      // 用真库（就是你正在用的那份），不改任何别的任务。
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
       const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
-      const org = new OrgService(db);
-          const work = new WorkService({
+      seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
         modelConfig,
-        org,
         memory: new MemoryService(db),
-        facts: new OrgFactService(db),
+        facts: new FactService(db),
       });
 
       try {
@@ -726,18 +753,16 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consol-run-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
+      const executor = seedExecutor(db);
       const memory = new MemoryService(db);
       const runs = new ConsolidationRunStore(db);
 
       const slice = {
         conversationId: 'conv-run-probe',
-        employeeId: member.id,
+        ownerId: executor.id,
         messages: [
           { senderId: 'user', text: '交付先给最小可运行版本' },
-          { senderId: member.id, text: '明白' },
+          { senderId: executor.id, text: '明白' },
         ],
       };
 
@@ -748,7 +773,7 @@ if (!hasLock) {
         async ({ messages }) =>
           messages
             .filter((message) => message.senderId === 'user')
-            .map((message) => ({ kind: 'preference' as const, content: `老板要求：${message.text}` })),
+            .map((message) => ({ kind: 'preference' as const, content: `你的要求：${message.text}` })),
         { runs },
       );
       const failed = await consolidateConversation(
@@ -787,14 +812,11 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-blocker-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
+      const executor = seedExecutor(db);
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
       });
 
       const dispatch = (title: string) => {
@@ -802,7 +824,7 @@ if (!hasLock) {
           title,
           brief: 'b',
           deliverableSpec: 'server.js 返回 200',
-          assigneeId: member.id,
+          assigneeId: executor.id,
           estTokens: 1000,
           acceptanceCommand: [],
           acceptanceTemplate: 'http-ok',
@@ -843,20 +865,17 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-meta-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
+      const executor = seedExecutor(db);
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
       });
       const created = work.createTask({
         title: '优先级探针',
         brief: 'b',
         deliverableSpec: 'server.js 返回 200',
-        assigneeId: member.id,
+        assigneeId: executor.id,
         estTokens: 1000,
         acceptanceCommand: [],
         acceptanceTemplate: 'http-ok',
@@ -936,49 +955,50 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-fact-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const facts = new OrgFactService(db);
+      const executor = seedExecutor(db);
+      const facts = new FactService(db);
       const memory = new MemoryService(db);
-      const member = org.list().flatMap((department) => department.members)[0]!;
-      const departmentId = member.departmentId;
+      const threads = new ThreadRepository(db);
+      // 作用域只剩两层：整个工作台的规定，和某条工作线自己的规定。
+      const line = threads.createThread({ title: '写季度留存方案' });
+      const otherLine = threads.createThread({ title: '另一条线' });
 
-      const first = facts.write({ scopeType: 'org', subject: 'Q4目标', object: '先做留存', statement: 'Q4 目标：先做留存，不做新功能' });
-      const second = facts.write({ scopeType: 'org', subject: 'Q4目标', object: '先做留存与复购', statement: 'Q4 目标：先做留存与复购' });
+      const first = facts.write({ scopeType: 'global', subject: 'Q4目标', object: '先做留存', statement: 'Q4 目标：先做留存，不做新功能' });
+      const second = facts.write({ scopeType: 'global', subject: 'Q4目标', object: '先做留存与复购', statement: 'Q4 目标：先做留存与复购' });
       facts.write({
-        scopeType: 'department',
-        scopeId: departmentId,
+        scopeType: 'thread',
+        scopeId: line.id,
         subject: '交付规范',
         object: '必须带 README',
-        statement: '部门规定：每个交付必须带 README',
+        statement: '这条线的规定：每个交付必须带 README',
       });
       facts.write({
-        scopeType: 'department',
-        scopeId: org.list()[1]?.id ?? departmentId,
+        scopeType: 'thread',
+        scopeId: otherLine.id,
         subject: '交付规范',
-        object: '另一部门的私有规定',
-        statement: '另一个部门的规定（不应该出现在本员工上下文里）',
+        object: '另一条线的私有规定',
+        statement: '另一条线的规定（不应该出现在这条线的上下文里）',
       });
 
-      const current = facts.current([{ type: 'org' }, { type: 'department', id: departmentId }]);
+      const current = facts.current([{ type: 'global' }, { type: 'thread', id: line.id }]);
       const history = facts.history('Q4目标');
 
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
         memory,
         facts,
       });
       const created = work.createTask({
         title: '写季度留存方案',
-        brief: '按公司 Q4 目标写',
+        brief: '按工作台 Q4 目标写',
         deliverableSpec: 'server.js 在 3000 端口返回 200',
-        assigneeId: member.id,
+        assigneeId: executor.id,
         estTokens: 4000,
         acceptanceCommand: [],
         acceptanceTemplate: 'http-ok',
+        threadId: line.id,
       });
       if (!created.ok) throw new Error('事实探针创建任务失败');
       const finished = await work.runTaskAndWait(created.task.id);
@@ -988,12 +1008,12 @@ if (!hasLock) {
           probe: 'facts',
           firstSuperseded: first.id !== second.id && history.length === 2,
           currentStatements: current.map((fact) => fact.statement),
-          leakedOtherDepartment: current.some((fact) => fact.statement.includes('另一个部门')),
+          leakedOtherLine: current.some((fact) => fact.statement.includes('另一条线')),
           injectedIntoPrompt: finished.steps.find((step) => step.text.startsWith('注入'))?.text ?? null,
           taskStatus: finished.status,
         }) + '\n',
       );
-      app.exit(current.length === 2 && !current.some((fact) => fact.statement.includes('另一个部门')) ? 0 : 1);
+      app.exit(current.length === 2 && !current.some((fact) => fact.statement.includes('另一条线')) ? 0 : 1);
       return;
     }
 
@@ -1001,9 +1021,6 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-archive-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
       const memory = new MemoryService(db);
 
       const chatProbe = new ChatService({
@@ -1011,14 +1028,14 @@ if (!hasLock) {
         conversations: [],
       });
       // Deterministic summariser stand-in; the real one is models.complete.
-      chatProbe.consolidate = async ({ conversationId, employeeId, messages: turns }) => {
-        const bossLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
+      chatProbe.consolidate = async ({ conversationId, ownerId, messages: turns }) => {
+        const userLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
         let written = 0;
-        for (const line of bossLines.filter((entry) => entry.includes('README'))) {
+        for (const line of userLines.filter((entry) => entry.includes('README'))) {
           await memory.remember({
-            employeeId,
+            ownerId,
             kind: 'preference',
-            content: `老板要求：${line}`,
+            content: `你的要求：${line}`,
             scope: { type: 'personal' },
             sourceType: 'consolidation',
             sourceId: conversationId,
@@ -1028,13 +1045,16 @@ if (!hasLock) {
         return { written };
       };
 
-      const conversationId = chatProbe.openDirect(member.id);
+      const conversationId = chatProbe.ensureAssistant();
+      // 两句而不是一句：巩固的下限是"会话太短就不值得"，而这里没有执行体替它回话，
+      // 只有你自己说的话。
       chatProbe.sendMessage({ conversationId, text: '文档以后放 README 里就够了，别单开 wiki' });
-      await new Promise((resolve) => setTimeout(resolve, 1600));
+      chatProbe.sendMessage({ conversationId, text: '交付都先给我最小可运行版本' });
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       // Nothing is idle yet.
       const early = await chatProbe.sweepIdleConversations(60 * 60 * 1000);
-      // Backdate the row, as if the boss walked away an hour ago.
+      // Backdate the row, as if you walked away an hour ago.
       db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(
         Date.now() - 2 * 60 * 60 * 1000,
         conversationId,
@@ -1053,11 +1073,19 @@ if (!hasLock) {
           idempotentSecondSweep: again.length,
           archivedAt: row.archived_at !== null,
           consolidatedAt: row.consolidated_at !== null,
-          memories: memory.listForEmployee(member.id).map((item) => item.content),
+          // 巩固的对象是**这条会话的对面**，现在那个对面是 Router（§2.2）。
+          memories: memory.listForOwner(ROUTER_ID).map((item) => item.content),
         }) + '\n',
       );
       app.exit(
-        early.length === 0 && swept.length === 1 && again.length === 0 && row.consolidated_at !== null ? 0 : 1,
+        early.length === 0 &&
+          swept.length === 1 &&
+          again.length === 0 &&
+          row.consolidated_at !== null &&
+          // 归档只是机械动作；这条链的意义是"归档之后真的变成了记忆"。
+          memory.countForOwner(ROUTER_ID) > 0
+          ? 0
+          : 1,
       );
       return;
     }
@@ -1066,17 +1094,15 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consolidate-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
+      const executor = seedExecutor(db);
       const memory = new MemoryService(db);
 
       const conversation = {
         conversationId: 'conv-probe',
-        employeeId: member.id,
+        ownerId: executor.id,
         messages: [
           { senderId: 'user', text: '以后交付都先给我最小可运行版本，别一次性堆功能' },
-          { senderId: member.id, text: '明白，先跑通再扩展。' },
+          { senderId: executor.id, text: '明白，先跑通再扩展。' },
           { senderId: 'user', text: '文档放 README 里就够了' },
         ],
       };
@@ -1086,18 +1112,18 @@ if (!hasLock) {
 
       // 2) with a summarizer (a deterministic stand-in for the model in this probe)
       const withModel = await consolidateConversation(memory, conversation, async ({ messages: turns }) => {
-        const bossLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
-        return bossLines
+        const userLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
+        return userLines
           .filter((line) => line.includes('最小可运行') || line.includes('README'))
           .map((line) => ({
-            content: `老板要求：${line}`,
+            content: `你的要求：${line}`,
             kind: 'preference' as const,
           }));
       });
 
-      const stored = memory.listForEmployee(member.id);
+      const stored = memory.listForOwner(executor.id);
       const recalled = await memory.retrieve({
-        employeeId: member.id,
+        ownerId: executor.id,
         query: '这单怎么交付，文档放哪',
         scopes: [{ type: 'personal' }],
         limit: 2,
@@ -1121,27 +1147,25 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-memory-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0]!;
+      const executor = seedExecutor(db);
       const memory = new MemoryService(db);
 
       await memory.remember({
-        employeeId: member.id,
+        ownerId: executor.id,
         kind: 'experience',
         content: '健康检查服务必须监听 3000 端口，验收脚本会用 curl 打 /health',
         scope: { type: 'personal' },
         sourceType: 'manual',
       });
       await memory.remember({
-        employeeId: member.id,
+        ownerId: executor.id,
         kind: 'preference',
-        content: '老板偏好先给最小可运行版本，再补文档',
+        content: '你偏好先给最小可运行版本，再补文档',
         scope: { type: 'personal' },
         sourceType: 'manual',
       });
       await memory.remember({
-        employeeId: member.id,
+        ownerId: executor.id,
         kind: 'experience',
         content: '配色只用语义 token，不写死 hex',
         scope: { type: 'personal' },
@@ -1149,26 +1173,25 @@ if (!hasLock) {
       });
 
       const recalled = await memory.retrieve({
-        employeeId: member.id,
+        ownerId: executor.id,
         query: '写一个健康检查服务，要能被 curl 验收',
         scopes: [{ type: 'personal' }],
         limit: 2,
       });
-      const afterRecall = memory.listForEmployee(member.id).find((item) => item.id === recalled[0]?.id);
-      const totalBefore = memory.countForEmployee(member.id);
+      const afterRecall = memory.listForOwner(executor.id).find((item) => item.id === recalled[0]?.id);
+      const totalBefore = memory.countForOwner(executor.id);
 
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
         memory,
       });
       const created = work.createTask({
         title: '写健康检查服务',
         brief: 'node:http，/health 返回 200',
         deliverableSpec: 'server.js 在 3000 端口返回 200',
-        assigneeId: member.id,
+        assigneeId: executor.id,
         estTokens: 4000,
         acceptanceCommand: [],
         acceptanceTemplate: 'http-ok',
@@ -1185,7 +1208,7 @@ if (!hasLock) {
           recallCount: afterRecall ? 1 : 0,
           injectedIntoPrompt: injected?.text ?? null,
           taskStatus: finished.status,
-          memoriesAfterTask: memory.countForEmployee(member.id),
+          memoriesAfterTask: memory.countForOwner(executor.id),
         }) + '\n',
       );
       app.exit(injected ? 0 : 1);
@@ -1195,24 +1218,23 @@ if (!hasLock) {
     if (isChatPersistProbe) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      ensureFirstCompany(org);
-      const member = org.list().flatMap((department) => department.members)[0];
-      if (!member) throw new Error('聊天持久化探针需要至少一名员工');
+      // 装一个执行体在库里，正是为了证明**它不会**开口：聊天里说话的人只有你和
+      // Router（§2.2）。这条断言取代了原来那句"回复是否老实"，因为现在根本不该
+      // 有回复——回复要等 Router 决定。
+      const executor = seedExecutor(db);
 
-      const first = new ChatService({ db, agents: agentsFromOrg(org), departments: chatDepartmentsFromOrg(org), conversations: [] });
-      const conversationId = first.openDirect(member.id);
+      const first = new ChatService({ db, conversations: [] });
+      const conversationId = first.ensureAssistant();
       first.sendMessage({ conversationId, text: '最近有什么产品上线了么' });
-      // The reply arrives on a timer (typing indicator first), so let it land.
-      await new Promise((resolve) => setTimeout(resolve, 1600));
       const firstSnapshot = first.getSnapshot();
       const firstCount = firstSnapshot.conversations.find((item) => item.id === conversationId)?.messages.length ?? 0;
       first.dispose();
 
       // "Restart": a brand-new service reading the same SQLite file.
-      const second = new ChatService({ db, agents: agentsFromOrg(org), departments: chatDepartmentsFromOrg(org), conversations: [] });
+      const second = new ChatService({ db, conversations: [] });
       const restored = second.getSnapshot().conversations.find((item) => item.id === conversationId);
       const restoredTexts = (restored?.messages ?? []).map((message) => message.text ?? message.kind);
+      const speakers = [...new Set((restored?.messages ?? []).map((message) => message.senderId))];
 
       process.stdout.write(
         JSON.stringify({
@@ -1221,62 +1243,32 @@ if (!hasLock) {
           messagesBeforeRestart: firstCount,
           conversationsAfterRestart: second.getSnapshot().conversations.length,
           restoredMessages: restoredTexts,
-          repliedHonestly: restoredTexts.some((text) => typeof text === 'string' && text.includes('还没配置可用模型')) ||
-            restoredTexts.some((text) => typeof text === 'string' && text.includes('模型调用失败')),
+          speakers,
+          workerSilent: !speakers.includes(executor.id),
           persists: firstCount > 0 && restoredTexts.length === firstCount,
         }) + '\n',
       );
       second.dispose();
-      app.exit(firstCount > 0 && restoredTexts.length === firstCount ? 0 : 1);
+      app.exit(firstCount > 0 && restoredTexts.length === firstCount && !speakers.includes(executor.id) ? 0 : 1);
       return;
     }
 
     if (isResetCompany) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
       const removed = resetCompany(db);
-      const first = ensureFirstCompany(org);
-      let duplicateRejected = false;
-      try {
-        org.createDepartment({ name: ' 产品部 ' });
-      } catch (error) {
-        duplicateRejected = error instanceof Error && error.message.includes('部门名称已存在');
-      }
-      let duplicateCodeRejected = false;
-      try {
-        org.createDepartment({ name: '产品二部', code: ' pd-01 ' });
-      } catch (error) {
-        duplicateCodeRejected = error instanceof Error && error.message.includes('部门代号已存在');
-      }
-      const movable = org
-        .list()
-        .flatMap((department) => department.members)
-        .find((member) => !member.isHead);
-      const withHead = org.createDepartment({
-        name: '增长部',
-        code: 'GR-01',
-        description: '负责拉新与留存实验。',
-        headEmployeeId: movable?.id,
-      });
-      const movedHead = withHead.members.find((member) => member.isHead);
-      // Leave the company as the seed created it: drop the probe department again.
-      db.prepare('DELETE FROM position WHERE department_id = ?').run(withHead.id);
-      db.prepare('DELETE FROM department WHERE id = ?').run(withHead.id);
-
-      const departments = org.list();
+      const threads = new ThreadRepository(db);
+      const first = seedExecutor(db);
+      const second = seedExecutor(db);
+      const workers = threads.listAllWorkers();
       process.stdout.write(
         JSON.stringify({
           probe: 'reset-company',
-          headAppointed: movedHead ? `${movedHead.name}@${withHead.name}` : null,
-          headDepartment: movedHead?.departmentId === withHead.id,
           removed,
-          seeded: first,
-          duplicateRejected,
-          duplicateCodeRejected,
-          departments: departments.map((department) => `${department.name}:${department.members.length}`),
-          names: departments.map((department) => department.name),
-          uniqueNames: new Set(departments.map((department) => department.name)).size,
+          seeded: `${first.name}/${first.template}`,
+          idempotent: first.id === second.id,
+          workers: workers.map((worker) => `${worker.name}:${worker.status}`),
+          storedRows: (db.prepare('SELECT COUNT(*) AS n FROM worker').get() as { n: number }).n,
         }) + '\n',
       );
       app.exit(0);
@@ -1287,11 +1279,11 @@ if (!hasLock) {
       app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-first-run-')));
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      const first = ensureFirstCompany(org);
-      const second = ensureFirstCompany(org);
-      const departments = org.list();
-      const employees = departments.flatMap((department) => department.members);
+      const threads = new ThreadRepository(db);
+      const before = threads.listAllWorkers().length;
+      const first = seedExecutor(db);
+      const second = seedExecutor(db);
+      const workers = threads.listAllWorkers();
       const chat = new ChatService({
         conversations: [],
       });
@@ -1299,15 +1291,13 @@ if (!hasLock) {
       process.stdout.write(
         JSON.stringify({
           probe: 'first-run',
-          createdOnFirstCall: first.created,
-          createdOnSecondCall: second.created,
-          departments: departments.map((department) => `${department.name}:${department.members.length}`),
-          employees: employees.map((member) => `${member.name}/${member.title}/${member.level}`),
-          heads: employees.filter((member) => member.isHead).map((member) => member.name),
-          reportingLines: employees.filter((member) => member.reportsToEmployeeId).length,
+          createdOnFirstCall: before === 0 && workers.length === 1,
+          createdOnSecondCall: first.id !== second.id,
+          workers: workers.map((worker) => `${worker.name}/${worker.template}`),
+          skills: first.skills,
           seededConversations: snapshot.conversations.length,
           storedRows: (
-            db.prepare('SELECT COUNT(*) AS n FROM employee WHERE status = ?').get('active') as { n: number }
+            db.prepare('SELECT COUNT(*) AS n FROM worker WHERE status != ?').get('retired') as { n: number }
           ).n,
         }) + '\n',
       );
@@ -1317,14 +1307,14 @@ if (!hasLock) {
 
     if (isChatProbe) {
       // v2：聊天只有一条会话，对面是 Router。探针查三件事——重复调用不出第二条、
-      // 老板的话变成一条 Trigger、Router 说话走唯一出口。
+      // 你的话变成一条 Trigger、Router 说话走唯一出口。
       initAppPaths();
-      const service = new ChatService({ agents: [], departments: [], conversations: [] });
+      const service = new ChatService({ agents: [], conversations: [] });
       const first = service.ensureAssistant();
       const second = service.ensureAssistant();
 
       const triggers: string[] = [];
-      service.onBossMessage = (input) => triggers.push(input.text);
+      service.onUserMessage = (input) => triggers.push(input.text);
       service.sendMessage({ conversationId: first, text: '在吗' });
       service.appendRouterMessage(first, '在。');
 
@@ -1351,30 +1341,146 @@ if (!hasLock) {
       return;
     }
 
+    if (isTriageProbe) {
+      // 两层过滤（§3.1）在真实装配下走一遍。这里不碰 harness：要验的是
+      // 「策略 → 程序层 / 语义门 → 调度循环」这条链，而不是模型说得好不好。
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      db.exec('DELETE FROM event; DELETE FROM report; DELETE FROM subscription; DELETE FROM worker; DELETE FROM thread;');
+      const threads = new ThreadRepository(db);
+      const store = new TriagePolicyStore(db);
+
+      const makeRouter = (screen?: SemanticScreener) => {
+        const delivered: string[] = [];
+        const router = new Router({
+          threads,
+          prefilter: createFastPath({ policy: () => store.get() }),
+          ...(screen ? { semantic: screen } : {}),
+          deliver: (text) => delivered.push(text),
+        });
+        return { router, delivered };
+      };
+
+      const run = async () => {
+        // ① 名单模式：没登记的来源进不来，登记了的照常进。
+        store.set({ fastPath: 'allowlist', sources: ['folder'] });
+        threads.enqueueEvent({ source: 'github', kind: 'pr.opened', payload: { text: 'PR #12' } });
+        threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/a.md' } });
+        const allowlist = await makeRouter().router.tick();
+
+        // ② 噪声模式：回环与重复挡掉，人说的话一条不少。
+        store.set({ fastPath: 'noise', semantic: 'router' });
+        db.exec('DELETE FROM event;');
+        threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'out/x.md', origin: 'self' } });
+        threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/b.md' } });
+        threads.enqueueEvent({ source: 'folder', kind: 'folder.added', payload: { path: 'inbox/b.md' } });
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+        const noise = await makeRouter().router.tick();
+
+        // ③ 语义门：分类器判掉的那条既不进 Router，也在库里记成 dropped。
+        store.set({ fastPath: 'noise', semantic: 'decision', noiseThreshold: 0.7 });
+        db.exec('DELETE FROM event;');
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '心跳' } });
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '把周报写出来' } });
+        const decisions = {
+          classify: async (input: { questions: Record<string, unknown> }) => {
+            const answers: Record<string, unknown> = {};
+            let index = 0;
+            for (const key of Object.keys(input.questions)) {
+              answers[key] = { type: 'bool', probability: index === 0 ? 0.95 : 0.05 };
+              index += 1;
+            }
+            return { ok: true, answers };
+          },
+        } as unknown as DecisionService;
+        const gated = await makeRouter(
+          createDecisionGate({ decisions, threshold: () => store.get().noiseThreshold }),
+        ).router.tick();
+
+        // ④ 分类器挂了：一条都不能丢。
+        db.exec('DELETE FROM event;');
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+        const broken = {
+          classify: async () => {
+            throw new Error('没有决策模型');
+          },
+        } as unknown as DecisionService;
+        const fallback = await makeRouter(
+          createDecisionGate({ decisions: broken, threshold: () => 0.7 }),
+        ).router.tick();
+
+        const droppedRows = (
+          db.prepare("SELECT COUNT(*) AS n FROM event WHERE triage = 'dropped'").get() as { n: number }
+        ).n;
+
+        // ⑤ 工作台的规矩进 Router 的上下文：执行体的提示词里有，调度的人也得有。
+        db.exec('DELETE FROM event;');
+        const facts = new FactService(db);
+        facts.write({ scopeType: 'global', subject: '交付', object: '每个交付必须带 README' });
+        threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+        const withRules: string[] = [];
+        const rulesRouter = new Router({
+          threads,
+          prefilter: createFastPath({ policy: () => store.get() }),
+          rules: () => facts.current([{ type: 'global' }], 12).map((fact) => fact.statement),
+          deliver: (text) => withRules.push(text),
+        });
+        await rulesRouter.tick();
+
+        process.stdout.write(
+          JSON.stringify({
+            probe: 'triage',
+            allowlist: { dropped: allowlist.dropped, routed: allowlist.routed },
+            // ② 五条事件：回环 + 重复各挡一条，剩下的三条（两份人的话 + 一份文件）都往上交。
+            noise: { dropped: noise.dropped, routed: noise.routed },
+            gated: { gated: gated.gated, routed: gated.routed },
+            fallback: { gated: fallback.gated, routed: fallback.routed },
+            droppedRowsAfterFallback: droppedRows,
+            rulesInPrompt: withRules[0]?.includes('每个交付必须带 README') ?? false,
+          }) + '\n',
+        );
+
+        app.exit(
+          allowlist.dropped === 1 &&
+            allowlist.routed === 1 &&
+            noise.dropped === 2 &&
+            noise.routed === 3 &&
+            gated.gated === 1 &&
+            gated.routed === 1 &&
+            fallback.gated === 0 &&
+            fallback.routed === 1 &&
+            droppedRows === 0 &&
+            withRules[0]?.includes('每个交付必须带 README') === true
+            ? 0
+            : 1,
+        );
+      };
+
+      void run().catch((error: unknown) => {
+        console.error('[triage probe]', error);
+        app.exit(1);
+      });
+      return;
+    }
+
     if (isReviewProbe) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      db.exec(
-        'DELETE FROM acceptance; DELETE FROM artifact; DELETE FROM task_step; DELETE FROM task; DELETE FROM budget_reservation;',
-      );
-      org.createDepartment({ name: '验收部', code: 'RV-01' });
-      const dept = org.list().find((node) => node.code === 'RV-01')!;
-      const manager = org.hire({ name: '主管甲', role: '技术主管', departmentId: dept.id, isHead: true });
-      const worker = org.hire({ name: '组员乙', role: '工程师', departmentId: dept.id, reportsToEmployeeId: manager.id });
+      db.exec('DELETE FROM acceptance; DELETE FROM artifact; DELETE FROM task_step; DELETE FROM task;');
+      const executor = seedExecutor(db);
 
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
       });
       const created = work.createTask({
         title: '写一个健康检查服务',
         brief: 'node:http，/health 返回 200',
         deliverableSpec: 'server.js 在 3000 端口返回 200',
-        assigneeId: worker.id,
+        assigneeId: executor.id,
         estTokens: 5000,
         acceptanceCommand: [],
         acceptanceTemplate: 'http-ok',
@@ -1385,17 +1491,8 @@ if (!hasLock) {
         return;
       }
       void work.runTaskAndWait(created.task.id).then(async () => {
-        // The review task runs on its own; wait for it to settle.
-        for (let i = 0; i < 240; i += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-          const after = work.getTask(created.task.id);
-          const review = work.listReviews(created.task.id)[0];
-          const settled = review?.status === 'accepted' || review?.status === 'failed' || review?.status === 'rejected';
-          if (after && settled && (after.status === 'accepted' || after.status === 'rejected')) break;
-        }
         const final = work.getTask(created.task.id)!;
-        const afterRevise = work.getTask(created.task.id)!;
-        const delivered = afterRevise.status === 'accepted' ? work.bossDecision(created.task.id, 'approve') : null;
+        const delivered = final.status === 'accepted' ? work.userDecision(created.task.id, 'approve') : null;
         const reviewList = work.listReviews(created.task.id);
         process.stdout.write(
           JSON.stringify({
@@ -1405,8 +1502,7 @@ if (!hasLock) {
             error: final.error ?? null,
             reviewTasks: reviewList.length,
             reviewStatus: reviewList[0]?.status ?? null,
-            reworkRounds: reviewList.length,
-            bossStatus: delivered?.status ?? null,
+            deliveredStatus: delivered?.status ?? null,
           }) + '\n',
         );
         app.exit(final.status === 'accepted' || final.status === 'delivered' ? 0 : 1);
@@ -1418,30 +1514,28 @@ if (!hasLock) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-      const org = new OrgService(db);
-      db.exec("DELETE FROM position; DELETE FROM department;");
-      org.createDepartment({ name: '交付部', code: 'QA-01' });
-      const dept = org.list().find((node) => node.code === 'QA-01')!;
-
-      const manager = org.hire({ name: '李雷', role: '交付总监', level: 'M2', departmentId: dept.id, isHead: true });
-      const worker = org.hire({
-        name: '韩梅梅',
-        role: '前端工程师',
-        level: 'P6',
-        departmentId: dept.id,
-        reportsToEmployeeId: manager.id,
+      const threads = new ThreadRepository(db);
+      const manager = threads.createWorker({
+        name: '李雷',
+        template: 'research',
+        skills: ['交付', '管理', '验收'],
       });
-      const outsider = org.hire({ name: '外人', role: '别的部门', level: 'P6', departmentId: dept.id });
+      const worker = threads.createWorker({
+        name: '韩梅梅',
+        template: 'code',
+        skills: ['TypeScript', 'Node.js', '前端'],
+      });
+      const outsider = threads.createWorker({
+        name: '外人',
+        template: 'research',
+        skills: ['调研'],
+      });
 
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        org,
       });
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
 
       const parent = work.createTask({ ...DEMO_TASK, assigneeId: manager.id, estTokens: 20000 });
       if (!parent.ok) {
@@ -1508,58 +1602,6 @@ if (!hasLock) {
       return;
     }
 
-    if (isOrgProbe) {
-      process.env.OPC_BRAIN_VARIANT ??= 'ok';
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
-        db,
-        paths: appPaths,
-        upsertTaskCard: () => undefined,
-      });
-      const org = new OrgService(db);
-      // Deterministic probe: reset the org projection, keep employees.
-      db.exec("DELETE FROM position; UPDATE department SET deleted_at = NULL");
-      ensureFirstCompany(org);
-  org.ensureDistinctColors();
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
-
-      const department = org.createDepartment({ name: '交付部', code: 'QA-01' });
-      const hired = org.hire({ name: '林小舟', role: '前端工程师', level: 'P6', departmentId: department.id });
-
-      const created = work.createTask({
-        ...DEMO_TASK,
-        assigneeId: hired.id,
-      });
-      const finished = created.ok ? await work.runTaskAndWait(created.task.id) : null;
-
-      org.fire(hired.id);
-      const afterFire = work.createTask({ ...DEMO_TASK, assigneeId: hired.id });
-
-      const tree = org.list();
-      process.stdout.write(
-        `${JSON.stringify(
-          {
-            departments: tree.map((node) => `${node.name}(${node.members.length})`),
-            hiredId: hired.id,
-            dispatched: created.ok,
-            taskStatus: finished?.status ?? null,
-            afterFireRefused: afterFire.ok ? null : afterFire.error.code ?? 'refused',
-            afterFireMessage: afterFire.ok ? null : afterFire.error.message,
-          },
-          null,
-          2,
-        )}\n`,
-      );
-      await work.dispose();
-      app.exit(
-        created.ok && finished?.status === 'accepted' && !afterFire.ok ? 0 : 1,
-      );
-      return;
-    }
-
     if (isImageLoopProbe) {
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
@@ -1600,9 +1642,8 @@ if (!hasLock) {
       modelConfig.setDefault('image', { providerId: 'mock-image', modelId: 'mock/png-1' });
 
       const images = new ImageService(modelConfig);
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      const executor = seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
@@ -1610,13 +1651,12 @@ if (!hasLock) {
         images,
       });
 
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
       const created = work.createTask({
         title: '生成一张占位图片',
         brief:
           '必须调用 generate_image 工具生成一张图片，filename 用 icon.png。不要自己写 Base64，也不要只回复文字。',
         deliverableSpec: 'icon.png：一张 PNG 图片',
-        assigneeId: 'agent-fe',
+        assigneeId: executor.id,
         estTokens: 6000,
         acceptanceCommand: ['node', '{checks}/verify.mjs'],
         acceptanceTemplate: 'image-200',
@@ -1655,15 +1695,13 @@ if (!hasLock) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok'; // probes are deterministic and must not spend tokens
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      const executor = seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
       });
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
-      const created = work.createTask({ ...DEMO_TASK, assigneeId: 'agent-fe' });
+      const created = work.createTask({ ...DEMO_TASK, assigneeId: executor.id });
       if (!created.ok) {
         process.stdout.write(`${JSON.stringify({ refused: created.error })}\n`);
         app.exit(2);
@@ -1679,27 +1717,15 @@ if (!hasLock) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok'; // probes are deterministic and must not spend tokens
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
       });
       const before = work.listTasks().filter((task) => task.status === 'running').length;
 
-      // Orphan reservation: task id that no longer exists. The reaper must free it.
-      const orphanId = `reservation-orphan-${Date.now()}`;
-      db.prepare(
-        `INSERT INTO budget_reservation (id, budget_id, task_id, employee_id, est_tokens, status, expires_at, created_at)
-         VALUES (?, (SELECT id FROM budget WHERE scope='employee' LIMIT 1), 'task-gone', 'agent-fe', 1234, 'active', NULL, ?)`,
-      ).run(orphanId, Date.now());
-      db.prepare(`UPDATE budget SET reserved_tokens = reserved_tokens + 1234 WHERE scope='employee'`).run();
-
       await work.recover();
-      const orphan = db
-        .prepare('SELECT status FROM budget_reservation WHERE id = ?')
-        .get(orphanId) as { status: string } | undefined;
 
       const deadline = Date.now() + 30_000;
       let latest = work.listTasks()[0];
@@ -1720,7 +1746,6 @@ if (!hasLock) {
               latest?.steps
                 .map((step) => step.text)
                 .filter((text) => text.includes('继续') || text.includes('启动恢复')) ?? [],
-            orphanReservation: orphan?.status ?? null,
           },
           null,
           2,
@@ -1748,17 +1773,15 @@ if (!hasLock) {
         });
       }
 
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      const executor = seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
         modelConfig,
       });
 
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
-      const created = work.createTask({ ...DEMO_TASK, assigneeId: 'agent-fe' });
+      const created = work.createTask({ ...DEMO_TASK, assigneeId: executor.id });
       if (!created.ok) {
         process.stdout.write(`${JSON.stringify({ refused: created.error }, null, 2)}\n`);
         app.exit(2);
@@ -1793,17 +1816,14 @@ if (!hasLock) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok'; // probes are deterministic and must not spend tokens
       initAppPaths();
       const db = openCompanyDatabase(appPaths.database);
-        const probeOrg = new OrgService(db);
-        ensureFirstCompany(probeOrg);
-        const work = new WorkService({
+      const executor = seedExecutor(db);
+      const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
       });
-      // Probes must be deterministic: start from an empty ledger/reservation state.
-      db.exec('DELETE FROM budget_reservation; DELETE FROM budget;');
       try {
-        const created = work.createTask({ ...DEMO_TASK, assigneeId: 'agent-fe' });
+        const created = work.createTask({ ...DEMO_TASK, assigneeId: executor.id });
         if (!created.ok) {
           process.stdout.write(`${JSON.stringify({ refused: created.error }, null, 2)}\n`);
           await work.dispose();

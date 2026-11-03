@@ -21,7 +21,7 @@ import {
   TextField,
 } from '../kit';
 
-/** Strips Electron's IPC wrapper so the boss sees the real reason. */
+/** Strips Electron's IPC wrapper so you sees the real reason. */
 function reasonOf(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');

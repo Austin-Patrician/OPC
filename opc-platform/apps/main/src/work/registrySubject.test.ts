@@ -1,12 +1,12 @@
 import type { Worker } from '@opc/shared/domain';
 import { describe, expect, it } from 'vitest';
-import { subjectOfPerson, subjectOfWorker } from './registrySubject';
+import { subjectOfWorker } from './registrySubject';
 
 /**
- * 运行时主体从「人」换成「执行体」。
+ * 运行时主体是执行体。
  *
- * `employeeId` 的有无就是 v2 的分界线：有它，各处沿用旧的按人查表；没有它，
- * 通讯工具的同事列表为空、拆解不做、工具策略为空——全部自然降级，不需要再改一次。
+ * `employee` 表已经删掉，主体的身份只来自 worker 行；`ownerId` 只剩"老行上
+ * 的遗留值"这一种含义，用来让旧任务对上原来的运行目录。
  */
 function worker(overrides: Partial<Worker> = {}): Worker {
   return {
@@ -15,7 +15,7 @@ function worker(overrides: Partial<Worker> = {}): Worker {
     template: 'code',
     skills: ['TypeScript'],
     threadId: 'th-1',
-    employeeId: 'emp-1',
+    ownerId: 'emp-1',
     modelProvider: null,
     modelId: null,
   policyJson: '{}',
@@ -34,23 +34,11 @@ describe('subjectOfWorker', () => {
     expect(subject.skills).toEqual(['TypeScript']);
   });
 
-  it('carries the person along only while the person still exists', () => {
-    expect(subjectOfWorker(worker()).employeeId).toBe('emp-1');
-    // 没有员工之后，这一项就没了——其余代码不需要再改。
-    expect(subjectOfWorker(worker({ employeeId: null })).employeeId).toBeUndefined();
-  });
-});
-
-describe('subjectOfPerson', () => {
-  it('is the legacy path: a person id acting as its own executor', () => {
-    const subject = subjectOfPerson({ id: 'emp-9', name: '李雷', skills: ['Node.js'] });
-    expect(subject).toMatchObject({ id: 'emp-9', name: '李雷', employeeId: 'emp-9' });
-    expect(subject.skills).toEqual(['Node.js']);
-  });
-
-  it('still produces a usable subject when the person row is missing', () => {
-    const subject = subjectOfPerson({ id: 'emp-9' });
-    expect(subject.name).toBe('emp-9');
-    expect(subject.template).toBe('research');
+  it('carries the legacy id only when an old worker row still has one', () => {
+    expect(subjectOfWorker(worker()).ownerId).toBe('emp-1');
+    // New workers have no such column value; the subject is still complete.
+    const fresh = subjectOfWorker(worker({ ownerId: null }));
+    expect(fresh.ownerId).toBeUndefined();
+    expect(fresh.id).toBe('w-1');
   });
 });

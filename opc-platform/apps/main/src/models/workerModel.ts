@@ -4,9 +4,9 @@ import type { ModelConfigService } from './modelConfigService';
 /**
  * 执行体用哪个模型。
  *
- * 两层，不是三层了：**执行体自己的 → 公司默认**。
+ * 两层，不是三层了：**执行体自己的 → 工作台默认**。
  *
- * 中间那一层曾经是「某个员工的模型覆盖」。`employee` 从运行时里摘掉之后它自然消失，
+ * 中间那一层曾经是「某个人的模型覆盖」。`employee` 从运行时里摘掉之后它自然消失，
  * 这也正是 v2 想说的：一条工作线的运行环境在它被创建的那一刻就定了，包括用哪个
  * 模型；而跑这条线的执行体是它自己，不是某个人的替身。
  *
@@ -27,7 +27,7 @@ export function resolveWorkerModelRef(input: {
   if (!pinned) return fallback;
 
   if (isUsable(modelConfig, pinned)) return pinned;
-  console.warn(`执行体 ${worker?.id} 配置的模型已不存在，回退到公司默认模型`);
+  console.warn(`执行体 ${worker?.id} 配置的模型已不存在，回退到工作台默认模型`);
   return fallback;
 }
 

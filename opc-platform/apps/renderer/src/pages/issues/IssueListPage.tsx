@@ -9,7 +9,7 @@ import { useMoney } from '@/entities/billing/model/useBilling';
  * Issue ledger — every work item in the company, read as a ledger rather than a
  * card wall: a monospaced key column, hairline rows, and one coloured rail that
  * carries the state. Deliberately quiet so a hundred rows stay scannable; the
- * accent is spent only on the state that needs the boss (待你终审 / 卡住).
+ * accent is spent only on the state that needs you (待你终审 / 卡住).
  */
 
 import { decideDrop, groupOf, type BoardGroup, type DropAction } from './issueTransitions';
@@ -22,12 +22,12 @@ type Group = BoardGroup;
 
 const GROUP_OF = (status: TaskStatus): Group => groupOf(status);
 
-const GROUP_ORDER: Group[] = ['blocked', 'manager-review', 'boss-review', 'doing', 'todo', 'delivered'];
+const GROUP_ORDER: Group[] = ['blocked', 'system-review', 'user-review', 'doing', 'todo', 'delivered'];
 
 const RAIL: Record<Group, string> = {
   blocked: 'var(--danger)',
-  'manager-review': 'var(--warning)',
-  'boss-review': 'var(--accent)',
+  'system-review': 'var(--warning)',
+  'user-review': 'var(--accent)',
   doing: 'var(--accent)',
   todo: 'var(--text-quaternary)',
   delivered: 'var(--success)',
@@ -35,7 +35,7 @@ const RAIL: Record<Group, string> = {
 
 function groupIcon(group: Group) {
   if (group === 'blocked') return ShieldAlert;
-  if (group === 'manager-review' || group === 'boss-review') return Stamp;
+  if (group === 'system-review' || group === 'user-review') return Stamp;
   if (group === 'doing') return Loader2;
   if (group === 'delivered') return CheckCircle2;
   return CircleDashed;
@@ -101,8 +101,8 @@ export function IssueListPage() {
     const base: Record<Group, number> = {
       todo: 0,
       doing: 0,
-      'manager-review': 0,
-      'boss-review': 0,
+      'system-review': 0,
+      'user-review': 0,
       delivered: 0,
       blocked: 0,
     };
@@ -112,9 +112,9 @@ export function IssueListPage() {
 
   const runAction = async (task: WorkTask, action: DropAction) => {
     if (action.kind === 'run') await window.opc!.work.runTask(task.id);
-    if (action.kind === 'approve') await window.opc!.work.bossDecision(task.id, 'approve');
+    if (action.kind === 'approve') await window.opc!.work.userDecision(task.id, 'approve');
     if (action.kind === 'reject-and-redo') {
-      await window.opc!.work.bossDecision(task.id, 'reject');
+      await window.opc!.work.userDecision(task.id, 'reject');
       await window.opc!.work.runTask(task.id);
     }
     setTasks(await window.opc!.work.listTasks(500));
@@ -137,7 +137,7 @@ export function IssueListPage() {
   };
 
   const selected = filtered.find((task) => task.id === selectedId) ?? tasks.find((task) => task.id === selectedId);
-  const waiting = counts['boss-review'];
+  const waiting = counts['user-review'];
   const stuck = counts.blocked;
 
   return (
@@ -401,7 +401,7 @@ export function IssueListPage() {
               <span className="flex-1">{t('issues.peopleTitle')}</span>
               <span className="w-10 text-right">{t('issues.col.total')}</span>
               <span className="w-10 text-right">{t('issues.group.doing')}</span>
-              <span className="w-10 text-right">{t('issues.group.manager-review')}</span>
+              <span className="w-10 text-right">{t('issues.group.system-review')}</span>
               <span className="w-10 text-right">{t('issues.group.delivered')}</span>
               <span className="w-10 text-right">{t('issues.group.blocked')}</span>
               <span className="w-14 text-right">{t('issues.col.lead')}</span>
@@ -442,7 +442,7 @@ export function IssueListPage() {
                             { key: 'doing', label: t('issues.group.doing'), value: person.doing, color: 'var(--accent)' },
                             {
                               key: 'waiting',
-                              label: t('issues.group.manager-review'),
+                              label: t('issues.group.system-review'),
                               value: person.waiting,
                               color: 'var(--warning)',
                             },

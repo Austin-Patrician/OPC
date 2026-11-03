@@ -12,6 +12,7 @@ import { NetworkPage } from './pages/NetworkPage';
 import { VoicePage } from './pages/VoicePage';
 import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
+import { TriagePage } from './pages/TriagePage';
 import { useTranslation } from 'react-i18next';
 import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
@@ -21,6 +22,7 @@ const PAGE_IDS = [
   'company',
   'billing',
   'compaction',
+  'triage',
   'runtime',
   'llm',
   'image',
@@ -71,6 +73,7 @@ export function SettingsShell() {
         { id: 'company', label: t('settings.page.company') },
         { id: 'billing', label: t('settings.page.billing') },
         { id: 'compaction', label: t('settings.page.compaction') },
+        { id: 'triage', label: t('settings.page.triage') },
         { id: 'runtime', label: t('settings.page.runtime') },
       ],
     },
@@ -125,6 +128,8 @@ export function SettingsShell() {
         return <BillingPage />;
       case 'compaction':
         return <CompactionPage />;
+      case 'triage':
+        return <TriagePage />;
       case 'runtime':
         return <RuntimePage />;
       case 'llm':

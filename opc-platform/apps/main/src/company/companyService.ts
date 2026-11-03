@@ -1,37 +1,34 @@
 import type { CompanyProfile, CompanyProfilePatch } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
-import { BOSS_USER_ID, COMPANY_ID } from '../data/schema';
+import { USER_ID, COMPANY_ID } from '../data/schema';
 
 /**
- * The `company` row, the boss, and the profile bits that have no column of their own.
+ * `company` 那一行、你，以及没有自己列的那点资料。
  *
- * `company.name` / `company.industry` are real columns (§4), so the company's
- * identity is business data, not a UI preference: it survives a reinstall of the
- * renderer, travels with a database copy, and is visible to the main process.
+ * `company.name` / `company.domain` 是真实的列（§4），所以工作台的身份是业务数据、
+ * 不是界面偏好：重装渲染层不会丢，跟着库走，主进程也看得见。
  *
- * **The boss is a row, not a setting.** Name and portrait live in `app_user`
- * (`id = 'boss'`, the only human this product has), because "老板" is a person the rest
- * of the schema already references: `employment_event.actor`, `evaluation.reviewer`
- * and `acceptance.reviewer` all carry that id. Keeping the name in `app_setting` made
- * the human a preference, which is exactly what a preferences reset would wipe.
+ * **「你」是一行，不是一个设置项。** 名字与头像在 `app_user`（`id = 'user'`，这个产品
+ * 里唯一的那个人），因为"是谁验收的"必须解析成一个持久的身份：`acceptance.reviewer`
+ * 记的就是这个 id。把名字放在 `app_setting` 里等于把"人"降级成偏好——一次偏好重置
+ * 就会把它抹掉。
  *
- * Vision and brand colour stay `app_setting` rows: those really are presentation.
+ * 愿景与品牌色继续留在 `app_setting`：那些确实是外观。
  *
- * Writes are clamped here, not in the UI: the renderer's `maxLength` is a hint, and
- * a hostile or buggy caller must not be able to store an unbounded string.
+ * 长度在这里夹，不在界面里：渲染层的 `maxLength` 只是提示，恶意或有 bug 的调用方
+ * 不该能写进一个无界字符串。
  */
-const KEY_VISION = 'profile.vision';
+const KEY_GOAL = 'profile.goal';
 const KEY_COLOR = 'profile.colorId';
 const KEY_LOGO = 'profile.logo';
-// `profile.bossName` / `profile.bossAvatar` are no longer read or written here: the v18
-// migration copied them into `app_user`, and the old rows are left in place so a
-// rollback one version still renders the boss.
+// `profile.bossName` / `profile.bossAvatar` 这里不再读写：v18 已经把值搬进 `app_user`，
+// 旧的两行留着，回滚一个版本仍能渲染出称呼。
 
-export const DEFAULT_COMPANY_NAME = '我的公司';
-export const DEFAULT_BOSS_NAME = '老板';
+export const DEFAULT_COMPANY_NAME = '我的工作台';
+export const DEFAULT_USER_NAME = '我';
 export const DEFAULT_COMPANY_COLOR = 'ocean';
 
-const LIMITS = { name: 40, industry: 40, vision: 60, colorId: 24, bossName: 20 } as const;
+const LIMITS = { name: 40, domain: 40, goal: 60, colorId: 24, userName: 20 } as const;
 
 /**
  * Uploaded logos travel through the same `app_setting` row as the other profile
@@ -45,7 +42,7 @@ const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml);base64,[a-z0
 interface CompanyRow {
   id: string;
   name: string;
-  industry: string | null;
+  domain: string | null;
 }
 
 export class CompanyService {
@@ -53,19 +50,19 @@ export class CompanyService {
 
   get = (): CompanyProfile => {
     const row = this.db
-      .prepare('SELECT id, name, industry FROM company WHERE id = ?')
+      .prepare('SELECT id, name, domain FROM company WHERE id = ?')
       .get(COMPANY_ID) as CompanyRow | undefined;
-    const boss = this.boss();
+    const user = this.user();
 
     return {
       id: row?.id ?? COMPANY_ID,
       name: row?.name ?? DEFAULT_COMPANY_NAME,
-      industry: row?.industry ?? '',
-      vision: this.setting(KEY_VISION) ?? '',
+      domain: row?.domain ?? '',
+      goal: this.setting(KEY_GOAL) ?? '',
       colorId: this.setting(KEY_COLOR) ?? DEFAULT_COMPANY_COLOR,
-      bossName: boss.name,
+      userName: user.name,
       logo: this.setting(KEY_LOGO) || undefined,
-      bossAvatar: boss.avatar || undefined,
+      userAvatar: user.avatar || undefined,
     };
   };
 
@@ -74,13 +71,13 @@ export class CompanyService {
    * row as "the defaults" instead of an error: a database that predates v18 and one
    * that has been hand-edited should both still open.
    */
-  boss = (): { id: string; name: string; avatar: string } => {
+  user = (): { id: string; name: string; avatar: string } => {
     const row = this.db
       .prepare('SELECT id, name, avatar FROM app_user WHERE id = ?')
-      .get(BOSS_USER_ID) as { id: string; name: string; avatar: string } | undefined;
+      .get(USER_ID) as { id: string; name: string; avatar: string } | undefined;
     return {
-      id: BOSS_USER_ID,
-      name: row?.name?.trim() || DEFAULT_BOSS_NAME,
+      id: USER_ID,
+      name: row?.name?.trim() || DEFAULT_USER_NAME,
       avatar: row?.avatar ?? '',
     };
   };
@@ -91,20 +88,20 @@ export class CompanyService {
       const current = this.get();
 
       const name = patch.name === undefined ? current.name : clamp(patch.name, LIMITS.name);
-      const industry = patch.industry === undefined ? current.industry : clamp(patch.industry, LIMITS.industry);
+      const domain = patch.domain === undefined ? current.domain : clamp(patch.domain, LIMITS.domain);
 
       this.db
-        .prepare('UPDATE company SET name = ?, industry = ?, updated_at = ? WHERE id = ?')
-        .run(name || DEFAULT_COMPANY_NAME, industry, now, COMPANY_ID);
+        .prepare('UPDATE company SET name = ?, domain = ?, updated_at = ? WHERE id = ?')
+        .run(name || DEFAULT_COMPANY_NAME, domain, now, COMPANY_ID);
 
-      if (patch.vision !== undefined) this.setSetting(KEY_VISION, clamp(patch.vision, LIMITS.vision), now);
+      if (patch.goal !== undefined) this.setSetting(KEY_GOAL, clamp(patch.goal, LIMITS.goal), now);
       if (patch.colorId !== undefined) this.setSetting(KEY_COLOR, clamp(patch.colorId, LIMITS.colorId), now);
       if (patch.logo !== undefined) this.setSetting(KEY_LOGO, clampImage(patch.logo), now);
 
-      // The boss is one row, upserted rather than inserted: the migration seeds it, and
-      // a hand-deleted row must come back instead of failing the write.
-      if (patch.bossName !== undefined || patch.bossAvatar !== undefined) {
-        const before = this.boss();
+      // 你就是那一行：upsert 而不是 insert —— 迁移会种下它，手工删掉之后必须能长回来，
+      // 而不是让这次写入失败。
+      if (patch.userName !== undefined || patch.userAvatar !== undefined) {
+        const before = this.user();
         this.db
           .prepare(
             `INSERT INTO app_user (id, name, avatar, created_at, updated_at)
@@ -113,11 +110,11 @@ export class CompanyService {
                name = excluded.name, avatar = excluded.avatar, updated_at = excluded.updated_at`,
           )
           .run(
-            BOSS_USER_ID,
-            patch.bossName === undefined
+            USER_ID,
+            patch.userName === undefined
               ? before.name
-              : clamp(patch.bossName, LIMITS.bossName) || DEFAULT_BOSS_NAME,
-            patch.bossAvatar === undefined ? before.avatar : clampImage(patch.bossAvatar),
+              : clamp(patch.userName, LIMITS.userName) || DEFAULT_USER_NAME,
+            patch.userAvatar === undefined ? before.avatar : clampImage(patch.userAvatar),
             now,
             now,
           );

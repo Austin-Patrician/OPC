@@ -1,6 +1,6 @@
 import type { IssuePriority, WorkTask } from '@opc/shared/domain';
 
-/** P0 first: the boss's ordering is the point of a priority field. */
+/** P0 first: the your ordering is the point of a priority field. */
 const RANK: Record<IssuePriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
 export type IssueSort = 'priority' | 'due' | 'created' | 'cost';

@@ -12,9 +12,11 @@
 | `thread` | 一条工作线：目标进，交付物 + 判定出 | `project_group` + `assignment` + `employee`（作为主语） |
 | `worker` | 一次性执行体：模板 + 技能 + 当前 thread | `employee` + `position` + 汇报线 |
 | `event` | Trigger：环境里发生的事，带两级过滤状态机 | `inbox_item` |
-| `report` | 工作线对老板说的话，三级注意力 | `budget_alert` + 各种散落通知 |
+| `report` | 工作线对你说的话，三级注意力 | `budget_alert` + 各种散落通知 |
+| `memory` / `fact` | 记住的事 + 定过的规矩（V33 改的名） | `employee_memory` / `org_fact` |
 
-**红线**：新代码里不出现 `employee` 这个词。中心实体是 `thread`。
+**红线**：新代码里不出现 `employee` / `org` / `boss` 这三个词。中心实体是 `thread`；
+这个工作台里只有**你**和**它**（词表与 V33 迁移见 `06-vocabulary.md`）。
 
 ---
 
@@ -208,13 +210,25 @@ Router 现在尊重**事件自带的 `threadId`**（`verdict.threadId ?? event.t
 
 **已做（`a1d37fe`）B4-1**：删掉 22 个组织/招聘 IPC 通道 + 只服务于它们的辅助函数
 （`refreshOrg` / `readModelRef` / `readSkills`），净删 303 行，零行为变化。
-`org.list` 留了下来——onboarding 还要用它显示"当前有几个人"。
+`org.list` 当时留了下来——onboarding 还要用它显示"当前有几个人"；B4-3 把它换成了
+`workers.list`（读 `ThreadRepository.listAllWorkers()`）。
 
 **已做（`7c0c231`）B4-2**：首启自动建**一个**「小助手」。
 删掉组织页之后，界面上已经没有任何办法创建执行体，而派活仍然需要一个
 （工具注册表和模型还从 employee 上取）——不建人的话，全新安装丢第一个目标
 只会得到「没有可用的执行者」，产品在第一次使用时就死了。
 刻意不是以前那个六人的演示公司。
+
+**已做 B4-3（最后一步）**：
+
+- `index.ts` 的建公司逻辑换成一个 `seedExecutor(db)`：调
+  `ThreadRepository.createWorker()` 建默认执行体「小助手」（template `research`），
+  幂等，已有 live worker 就返回第一个。`firstCompany` / `defaultExecutor` 退役。
+- `org/`、`models/employeeModel.ts` 整个删除；`WorkService` 不再接收 `org`，
+  能力清单读 `listAllWorkers()`，可派对象是"除自己以外的 live worker"。
+- **V31 删 13 张表**：文档里那 12 张之外，还有 `department_job`——它是
+  `repairJobCatalogue()` 动态建出来的关联表，删掉 `job` 之后会变成孤儿。
+- 连带清掉残留的 `budget_reservation` / `budget` 操作（表在 V29 就没了）。
 
 **剩下的建议顺序**（每一步都要能跑）：
 

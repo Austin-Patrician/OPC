@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { OrgFactView } from '@opc/shared/ipc';
+import type { FactView } from '@opc/shared/ipc';
 import { cn } from '@/shared/lib/cn';
 import { useModels } from '@/features/models/model/useModels';
 import { NumberField, PageHeader, Row, Section, Toggle } from '../kit';
@@ -111,7 +111,7 @@ export function CompactionPage() {
         </p>
       </div>
 
-      <CompanyFacts />
+      <WorkspaceFacts />
       <ConsolidationRuns />
     </>
   );
@@ -171,7 +171,7 @@ function ConsolidationRuns() {
                   ? t('settings.runs.created', { count: run.memoriesCreated, episodes: run.episodeCount })
                   : (run.error ?? '—')}
               </span>
-              <span className="shrink-0 font-mono text-3xs text-ink-quaternary">{run.employeeId.slice(0, 8)}</span>
+              <span className="shrink-0 font-mono text-3xs text-ink-quaternary">{run.ownerId.slice(0, 8)}</span>
             </li>
           ))}
         </ul>
@@ -181,12 +181,12 @@ function ConsolidationRuns() {
 }
 
 /**
- * Company-level facts (org_fact): the rules that enter every employee's prompt.
- * Writing the same subject again supersedes the old value — history stays in the DB.
+ * 工作台层级的事实：它们会进每一个执行体的提示词。
+ * 同一个 subject 再写一次会取代旧值，历史留在库里。
  */
-function CompanyFacts() {
+function WorkspaceFacts() {
   const { t } = useTranslation();
-  const [facts, setFacts] = useState<OrgFactView[]>([]);
+  const [facts, setFacts] = useState<FactView[]>([]);
   const [subject, setSubject] = useState('');
   const [object, setObject] = useState('');
   const [busy, setBusy] = useState(false);
@@ -214,7 +214,7 @@ function CompanyFacts() {
     try {
       setFacts(
         await window.opc!.facts.write({
-          scopeType: 'org',
+          scopeType: 'global',
           subject: subject.trim(),
           object: object.trim(),
         }),
@@ -236,11 +236,11 @@ function CompanyFacts() {
       {facts.length === 0 ? (
         <p className="px-4 py-5 text-sm text-ink-quaternary">{t('settings.facts.empty')}</p>
       ) : (
-        <ul data-testid="org-facts">
+        <ul data-testid="facts">
           {facts.map((fact) => (
             <li
               key={fact.id}
-              data-testid="org-fact-row"
+              data-testid="fact-row"
               className="flex items-start gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
             >
               <span className="mt-0.5 rounded bg-surface-muted px-1.5 py-0.5 font-mono text-3xs text-ink-tertiary">
@@ -257,14 +257,14 @@ function CompanyFacts() {
 
       <div className="flex flex-wrap items-end gap-2 border-t border-line px-4 py-3">
         <input
-          data-testid="org-fact-subject"
+          data-testid="fact-subject"
           value={subject}
           onChange={(event) => setSubject(event.target.value)}
           placeholder={t('settings.facts.subject')}
           className="h-8 w-36 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
         />
         <input
-          data-testid="org-fact-object"
+          data-testid="fact-object"
           value={object}
           onChange={(event) => setObject(event.target.value)}
           onKeyDown={(event) => {
@@ -275,7 +275,7 @@ function CompanyFacts() {
         />
         <button
           type="button"
-          data-testid="org-fact-save"
+          data-testid="fact-save"
           disabled={busy || !subject.trim() || !object.trim()}
           onClick={() => void save()}
           className={cn(

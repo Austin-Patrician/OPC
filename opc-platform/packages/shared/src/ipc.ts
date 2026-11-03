@@ -1,11 +1,8 @@
 import type {
   Agent,
-  BudgetScope,
-  BudgetState,
   BillingSettings,
   BillingSettingsPatch,
   Conversation,
-  Department,
   CreateTaskInput,
   CreateTaskResult,
   CatalogProvider,
@@ -14,16 +11,19 @@ import type {
   CompanyProfilePatch,
   DecisionClassifyInput,
   DecisionClassifyResult,
-  DepartmentNode,
   WorkThread,
-  EmployeeToolPolicy,
+  Worker,
+  WorkerStatus,
+  WorkerTemplate,
+  ToolPolicy,
+  TriagePolicy,
+  TriagePolicyPatch,
   ModelDefaults,
   ModelOption,
   ModelRef,
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
-  ProjectStatus,
   ProxyConfig,
   ProxyConfigInput,
   ProxyTestResult,
@@ -98,6 +98,10 @@ export const IPC = {
   memory: {
     consolidationRuns: 'memory:consolidationRuns',
   },
+  router: {
+    getTriage: 'router:getTriage',
+    setTriage: 'router:setTriage',
+  },
   threads: {
     start: 'threads:start',
     list: 'threads:list',
@@ -106,8 +110,8 @@ export const IPC = {
     decide: 'threads:decide',
     close: 'threads:close',
   },
-  org: {
-    list: 'org:list',
+  workers: {
+    list: 'workers:list',
   },
   artifacts: {
     read: 'artifacts:read',
@@ -123,7 +127,7 @@ export const IPC = {
   },
   work: {
     listTasks: 'work:listTasks',
-    bossDecision: 'work:bossDecision',
+    userDecision: 'work:userDecision',
     setIssueMeta: 'work:setIssueMeta',
     linkTasks: 'work:linkTasks',
     subtasks: 'work:subtasks',
@@ -177,7 +181,6 @@ export const IPC = {
 
 export interface ChatSnapshot {
   agents: Agent[];
-  departments: Department[];
   conversations: Conversation[];
   /** conversationId → display names currently working. */
   typingByConversation: Readonly<Record<string, readonly string[]>>;
@@ -245,8 +248,8 @@ export interface WorkBridge {
   createTask(input: CreateTaskInput): Promise<CreateTaskResult>;
   /** Fire-and-forget: progress arrives through `onTaskChanged`. */
   runTask(taskId: string): Promise<void>;
-  /** Boss sign-off: approve → delivered, reject → parked with a reason. */
-  bossDecision(taskId: string, decision: 'approve' | 'reject', reason?: string): Promise<WorkTask>;
+  /** You sign-off: approve → delivered, reject → parked with a reason. */
+  userDecision(taskId: string, decision: 'approve' | 'reject', reason?: string): Promise<WorkTask>;
   setIssueMeta(
     taskId: string,
     patch: { priority?: 'P0' | 'P1' | 'P2' | 'P3'; labels?: string[]; dueAt?: number | null },
@@ -348,9 +351,9 @@ export interface ArtifactReadResult {
   error?: string;
 }
 
-export interface OrgFactView {
+export interface FactView {
   id: string;
-  scopeType: 'org' | 'department' | 'project';
+  scopeType: 'global' | 'thread';
   scopeId: string;
   subject: string;
   predicate: string;
@@ -360,32 +363,10 @@ export interface OrgFactView {
   validFrom: number;
 }
 
-export interface ProjectView {
-  id: string;
-  name: string;
-  code: string;
-  description: string;
-  departmentId: string;
-  status: ProjectStatus;
-  /** The one accountable person on the project; always one of `members` when set. */
-  ownerEmployeeId?: string;
-  /** ms epoch; the dossier shows when the commitment was opened. */
-  createdAt: number;
-  members: {
-    employeeId: string;
-    name: string;
-    role: string;
-    /** `paused` is a budget hard stop, not a removal. */
-    status?: string;
-    pauseReason?: string;
-    /** Project-internal reporting line, which may differ from the department one. */
-    reportsToEmployeeId?: string;
-  }[];
-}
 
 export interface ConsolidationRunView {
   id: string;
-  employeeId: string;
+  ownerId: string;
   conversationIds: string[];
   episodeCount: number;
   memoriesCreated: number;
@@ -418,16 +399,13 @@ export interface CapabilityExtension {
 }
 
 export interface AgentCapability {
-  employeeId: string;
+  workerId: string;
   name: string;
-  role: string;
-  level: string;
+  template: WorkerTemplate;
+  status: WorkerStatus;
+  /** Label of the model this execution body actually runs on. */
   model: string;
-  avatar: string;
-  departmentId: string;
-  departmentName: string;
-  isHead: boolean;
-  /** Archive tags from the employee record; never injected into the prompt. */
+  /** Skills carried by the worker record; never injected into the prompt. */
   skills: string[];
   extensions: CapabilityExtension[];
   tools: CapabilityTool[];
@@ -439,7 +417,7 @@ export interface CapabilityCatalog {
 }
 
 export interface CapabilitiesBridge {
-  /** Installed extensions and tools per active employee, read from the live registry. */
+  /** Installed extensions and tools per live execution body, read from the live registry. */
   list(): Promise<CapabilityCatalog>;
 }
 
@@ -524,23 +502,33 @@ export interface SkillsBridge {
 
 export interface MemoryBridge {
   /** Recent consolidation runs — the audit trail of "下班反思". */
-  consolidationRuns(employeeId?: string): Promise<ConsolidationRunView[]>;
+  consolidationRuns(ownerId?: string): Promise<ConsolidationRunView[]>;
+}
+
+/**
+ * 调度的两层过滤怎么配（§3.1）。
+ *
+ * 设置页只读这一份：改完立刻生效，不需要重启——Router 每一轮都重新读。
+ */
+export interface RouterBridge {
+  getTriage(): Promise<TriagePolicy>;
+  setTriage(patch: TriagePolicyPatch): Promise<TriagePolicy>;
 }
 
 export interface FactsBridge {
-  /** Current facts: by employee (org + their department) or by department. */
-  list(filter?: { employeeId?: string; departmentId?: string; projectId?: string }): Promise<OrgFactView[]>;
+  /** 当前生效的事实：整条工作线的（给 threadId），或者整个工作台的。 */
+  list(filter?: { threadId?: string }): Promise<FactView[]>;
   write(input: {
-    scopeType: 'org' | 'department' | 'project';
+    scopeType: 'global' | 'thread';
     scopeId?: string;
     subject: string;
     object: string;
     statement?: string;
-  }): Promise<OrgFactView[]>;
+  }): Promise<FactView[]>;
 }
 
 /** One tool as the employee's stack page sees it. */
-export interface EmployeeToolView {
+export interface ToolView {
   name: string;
   /** Short label key suffix under `capabilities.tools.*`; falls back to `name`. */
   label: string;
@@ -551,7 +539,7 @@ export interface EmployeeToolView {
 }
 
 /** One extension group in the employee's stack. */
-export interface EmployeeToolExtensionView {
+export interface ToolExtensionView {
   name: string;
   /** Core extensions cannot be switched off, only their tools can be trimmed. */
   essential: boolean;
@@ -559,14 +547,14 @@ export interface EmployeeToolExtensionView {
   /** When unavailable: `no-image-provider`, `no-speech-model`, `no-subordinates`, ... */
   reason?: string;
   enabled: boolean;
-  tools: EmployeeToolView[];
+  tools: ToolView[];
 }
 
 /**
  * 一个执行体实际跑在什么上面。
  *
  * 与注册表装的是同一份目录，所以界面不可能描述一个模型拿不到的工具。
- * `model: null` 表示这个执行体跟随公司默认。
+ * `model: null` 表示这个执行体跟随工作台默认。
  */
 export interface WorkerStackView {
   workerId: string;
@@ -574,24 +562,23 @@ export interface WorkerStackView {
   model: ModelRef | null;
   modelLabel: string;
   defaultModel: ModelRef | null;
-  policy: EmployeeToolPolicy;
-  extensions: EmployeeToolExtensionView[];
+  policy: ToolPolicy;
+  extensions: ToolExtensionView[];
 }
 
 export interface WorkerStackInput {
   /** Omit to leave unchanged; `null` clears the override and inherits the default. */
   model?: ModelRef | null;
   /** Omit to leave unchanged; the whole policy is replaced when present. */
-  policy?: EmployeeToolPolicy;
+  policy?: ToolPolicy;
 }
 
 /**
- * 只剩一个方法：部门树已经被界面删掉了（docs/v2/00-audit.md §4），
- * onboarding 还需要它来显示"当前有几个人"。其余组织/招聘通道随之删除。
- * B4 删掉 org/ 之后，这里会换成 `workers()`。
+ * 执行体名单：onboarding 仍然要回答"现在有几个执行体"，组织树已经被界面删掉了
+ * （docs/v2/00-audit.md §4），所以这里只返回 worker 行本身。
  */
-export interface OrgBridge {
-  list(): Promise<DepartmentNode[]>;
+export interface WorkersBridge {
+  list(): Promise<Worker[]>;
 }
 
 export interface ArtifactsBridge {
@@ -601,142 +588,12 @@ export interface ArtifactsBridge {
   saveAs(taskId: string, relPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
 }
 
-/** ── 预算中心 (§8) ───────────────────────────────────────────────────────── */
-
-export interface BudgetView {
-  scope: BudgetScope;
-  scopeId: string;
-  /** Resolved name (公司 / 员工 / 部门 / 项目) — never a raw id. */
-  label: string;
-  periodKey: string;
-  limitTokens: number;
-  usedTokens: number;
-  reservedTokens: number;
-  availableTokens: number;
-  state: BudgetState;
-  warnAt: number;
-  hardStopAt: number;
-  /** §8.3 straight-line projection to the end of the month. */
-  projectedTokens: number;
-  willExceed: boolean;
-}
-
-export interface BudgetAlertView {
-  id: string;
-  scope: BudgetScope;
-  scopeId: string;
-  label: string;
-  level: 'warn' | 'stop';
-  usedTokens: number;
-  limitTokens: number;
-  ratio: number;
-  periodKey: string;
-  createdAt: number;
-}
-
-/** A person taken off a project by a budget stop (§5.6: 停任职不停员工). */
-export interface PausedAssignmentView {
-  projectId: string;
-  projectName: string;
-  employeeId: string;
-  employeeName: string;
-  reason: string;
-  pausedAt?: number;
-}
-
-export interface BudgetOverview {
-  generatedAt: number;
-  periodKey: string;
-  budgets: BudgetView[];
-  alerts: BudgetAlertView[];
-  paused: PausedAssignmentView[];
-}
-
-/**
- * 薪酬视图 (§8): what each person actually cost this month, in money.
- *
- * Not a second ledger — a read model over `budget_ledger` (the employee axis only)
- * and `budget` (the cap). `budgetUsd` and `projectedUsd` are conversions at the
- * *observed* price, so they are absent/zero until the person has spent anything.
- */
-export interface PayrollLine {
-  employeeId: string;
-  name: string;
-  title: string;
-  level: string;
-  departmentId: string;
-  departmentName: string;
-  status: string;
-  tokensUsed: number;
-  spentUsd: number;
-  limitTokens: number;
-  /** The token cap in money, at the observed rate; unset when there is no spend. */
-  budgetUsd?: number;
-  /** Straight-line projection to period end — a projection, not a fact. */
-  projectedUsd: number;
-  /** Share of the company's spend this period, 0..1. */
-  share: number;
-}
-
-export interface PayrollOverview {
-  generatedAt: number;
-  periodKey: string;
-  lines: PayrollLine[];
-  totalSpentUsd: number;
-  totalProjectedUsd: number;
-  headcount: number;
-}
-
-/**
- * One cost centre: what this department or project spent this month.
- *
- * Read from its own ledger axis (`scope='department'` / `scope='project'`), never by
- * summing employee rows: a single run writes one row per axis with identical numbers,
- * so adding them would bill the same work several times.
- */
-export interface CostCenterLine {
-  id: string;
-  name: string;
-  kind: 'department' | 'project';
-  spentUsd: number;
-  tokensUsed: number;
-  /** Share of the company's total spend this month, 0..1. */
-  share: number;
-  /** People seated in the department / assigned to the project. */
-  headcount: number;
-  limitTokens: number;
-  /** The cap in money, at the observed rate; unset when there is no spend to price. */
-  budgetUsd?: number;
-  /** Straight-line projection to period end — a projection, not a fact. */
-  projectedUsd: number;
-}
-
-/**
- * Cost centres plus two **reconciliation lines**.
- *
- * The department and project axes only exist when they were known at settle time, so
- * their totals are usually smaller than the employee total. The gap is spend that
- * cannot be attributed — a fact, not an error — and hiding it would leave two reports
- * that never reconcile.
- */
-export interface CostCentersOverview {
-  generatedAt: number;
-  periodKey: string;
-  departments: CostCenterLine[];
-  projects: CostCenterLine[];
-  /** Total charged on the employee axis this month: the denominator for `share`. */
-  totalSpentUsd: number;
-  /** Spend that no department axis recorded. */
-  unattributedDepartmentUsd: number;
-  /** Spend that no project axis recorded. */
-  unattributedProjectUsd: number;
-}
 
 /**
  * The company row + its profile preferences (§1.3: one company per install).
  *
- * The name lives in `company.name`, the industry in `company.industry`; the rest
- * (vision / brand colour / how the boss is addressed) has no column and lives in
+ * The name lives in `company.name`, the industry in `company.domain`; the rest
+ * (vision / brand colour / how you is addressed) has no column and lives in
  * `app_setting`. The renderer treats this as the single source of truth — it keeps
  * no copy in localStorage.
  */
@@ -835,12 +692,13 @@ export interface OpcBridge {
   decisions: DecisionsBridge;
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
-  org: OrgBridge;
+  workers: WorkersBridge;
   capabilities: CapabilitiesBridge;
   extensions: ExtensionsBridge;
   skills: SkillsBridge;
   facts: FactsBridge;
   memory: MemoryBridge;
+  router: RouterBridge;
   billing: BillingBridge;
   threads: ThreadsBridge;
   diagnostics: {
@@ -851,13 +709,13 @@ export interface OpcBridge {
 /**
  * v2 注意力队列（docs/v2/01-core.md）。
  *
- * 老板打开应用看到的不是会话列表，而是"有什么事需要我"。一个 report 的级别
+ * 你打开应用看到的不是会话列表，而是"有什么事需要我"。一个 report 的级别
  * 决定它出现在这里还是只留在记录里：silent 永远不进来。
  */
 export interface AttentionEntry {
   id: string;
   threadId: string;
-  /** 「整理 Q3 财报」——老板认的是这件事，不是 id。 */
+  /** 「整理 Q3 财报」——你认的是这件事，不是 id。 */
   threadTitle: string;
   level: 'decide' | 'notify' | 'silent';
   title: string;
@@ -867,17 +725,17 @@ export interface AttentionEntry {
 
 export interface ThreadsBridge {
   /**
-   * 老板丢一个目标进来：开一条工作线 + 一条 manual 事件，立刻推一次 Router。
+   * 你丢一个目标进来：开一条工作线 + 一条 manual 事件，立刻推一次 Router。
    * 不直接建任务——"这件事值不值得做、该给谁做"仍然是 Router 的决定。
    */
   start(goal: string): Promise<WorkThread>;
   /** 未读、且级别不是 silent 的汇报，decide 永远排在前面。 */
   queue(): Promise<AttentionEntry[]>;
-  /** 最近的工作线；静默完成的活也在这里，否则老板没法确认它真的在干。 */
+  /** 最近的工作线；静默完成的活也在这里，否则你没法确认它真的在干。 */
   list(limit?: number): Promise<WorkThread[]>;
   markRead(reportId: string): Promise<void>;
   /**
-   * 老板在队列上做的那两个动作：认可（`approve`）或带着意见重做（`rework`）。
+   * 你在队列上做的那两个动作：认可（`approve`）或带着意见重做（`rework`）。
    * 这是唯一一处「人判定对不对」的入口——系统自己不宣称验收。
    */
   decide(input: {
@@ -886,6 +744,6 @@ export interface ThreadsBridge {
     decision: 'approve' | 'rework';
     note?: string;
   }): Promise<WorkThread>;
-  /** 关掉一条工作线（老板手动收尾）。 */
+  /** 关掉一条工作线（你手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;
 }

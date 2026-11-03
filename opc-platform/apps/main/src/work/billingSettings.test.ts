@@ -74,7 +74,7 @@ describe('BillingSettingsService', () => {
     db.close();
   });
 
-  it('does not overwrite a value the boss already chose', () => {
+  it('does not overwrite a value you already chose', () => {
     const { db, service } = fresh();
     service.ensureDefaults();
     service.update({ usdCnyRate: 7.1, displayCurrency: 'USD' });

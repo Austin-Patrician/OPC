@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
 import { Router, composeInput, spill, threadKeyOf, type RouterDeps } from './router';
+import type { SemanticScreenResult, SemanticScreener } from './semanticGate';
 
 /**
  * 调度循环。
@@ -13,6 +14,7 @@ import { Router, composeInput, spill, threadKeyOf, type RouterDeps } from './rou
  *
  *   - 程序层把噪声挡在模型之前（§3.1 Fast Path）
  *   - 已经订阅的事件直通给执行体，不花 Router 一个 token（§3.2 Fast Path）
+ *   - 语义门（可选的分类器）只判"值不值得占用上下文"，判失败就全放行
  *   - 剩下的事件和未播报的汇报合成**一条**输入（§2.1 批处理）
  *   - 交不进去时回滚标记，宁可重讲一次也不丢（宁可重复不可丢失）
  */
@@ -48,32 +50,39 @@ function make(overrides: Partial<RouterDeps> = {}) {
 }
 
 describe('调度循环', () => {
-  it('队列空的时候一个 token 都不花', () => {
+  it('队列空的时候一个 token 都不花', async () => {
     const { router, delivered } = make();
-    const report = router.tick();
+    const report = await router.tick();
     expect(delivered).toHaveLength(0);
-    expect(report).toEqual({ dropped: 0, passthrough: 0, routed: 0, reports: 0, failed: 0 });
+    expect(report).toEqual({
+      dropped: 0,
+      gated: 0,
+      passthrough: 0,
+      routed: 0,
+      reports: 0,
+      failed: 0,
+    });
   });
 
-  it('程序层丢掉的噪声见不到 Router', () => {
+  it('程序层丢掉的噪声见不到 Router', async () => {
     threads.enqueueEvent({ kind: 'im.typing', source: 'im' });
     const { router, delivered } = make({
       prefilter: (event) => (event.kind === 'im.typing' ? 'drop' : 'keep'),
     });
 
-    const report = router.tick();
+    const report = await router.tick();
     expect(report.dropped).toBe(1);
     expect(delivered).toHaveLength(0);
     expect(threads.listThreads()).toHaveLength(0);
   });
 
-  it('一批事件合成一条输入，不是一条一个调用', () => {
+  it('一批事件合成一条输入，不是一条一个调用', async () => {
     for (const text of ['第一件', '第二件', '第三件']) {
-      threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text } });
+      threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text } });
     }
     const { router, delivered } = make();
 
-    const report = router.tick();
+    const report = await router.tick();
     expect(report.routed).toBe(3);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain('新事件（3）');
@@ -81,7 +90,7 @@ describe('调度循环', () => {
     expect(delivered[0]).toContain('第三件');
   });
 
-  it('已订阅的线上再来事件，直通给执行体，不经过 Router', () => {
+  it('已订阅的线上再来事件，直通给执行体，不经过 Router', async () => {
     const thread = threads.createThread({
       title: '季度财报',
       goal: '整理 Q3 财报',
@@ -96,7 +105,7 @@ describe('调度循环', () => {
     });
 
     const { router, delivered, passed } = make();
-    const report = router.tick();
+    const report = await router.tick();
 
     expect(report.passthrough).toBe(1);
     expect(report.routed).toBe(0);
@@ -104,7 +113,7 @@ describe('调度循环', () => {
     expect(passed).toHaveLength(1);
   });
 
-  it('没订阅的线仍然走 Router——直通是优化，不是正确性', () => {
+  it('没订阅的线仍然走 Router——直通是优化，不是正确性', async () => {
     const thread = threads.createThread({
       title: '季度财报',
       goal: '整理 Q3 财报',
@@ -118,7 +127,7 @@ describe('调度循环', () => {
     });
 
     const { router, delivered, passed } = make();
-    const report = router.tick();
+    const report = await router.tick();
 
     expect(thread.id).toBeTruthy();
     expect(report.passthrough).toBe(0);
@@ -127,7 +136,7 @@ describe('调度循环', () => {
     expect(delivered).toHaveLength(1);
   });
 
-  it('终态的线不再接手过路事件——那些是新工作', () => {
+  it('终态的线不再接手过路事件——那些是新工作', async () => {
     const thread = threads.createThread({
       title: '旧事',
       goal: '旧事',
@@ -144,29 +153,29 @@ describe('调度循环', () => {
     });
 
     const { router, passed } = make();
-    const report = router.tick();
+    const report = await router.tick();
     expect(passed).toHaveLength(0);
     expect(report.routed).toBe(1);
   });
 
-  it('汇报会被带进上下文，而且只讲一次', () => {
+  it('汇报会被带进上下文，而且只讲一次', async () => {
     const thread = threads.createThread({ title: '整理 Q3 财报', goal: '整理' });
     threads.addReport({ threadId: thread.id, level: 'silent', title: '做完了', body: '产出 report.md' });
 
     const { router, delivered } = make();
-    const first = router.tick();
+    const first = await router.tick();
     expect(first.reports).toBe(1);
     expect(delivered[0]).toContain('执行体汇报（1');
     expect(delivered[0]).toContain('产出 report.md');
 
     // 第二轮没有新东西：讲过的不会再讲一遍。
-    const second = router.tick();
+    const second = await router.tick();
     expect(second.reports).toBe(0);
     expect(delivered).toHaveLength(1);
   });
 
-  it('交不进去就回滚：宁可重复一遍，不可丢一次', () => {
-    threads.enqueueEvent({ source: 'im', kind: 'boss_message', payload: { text: '在吗' } });
+  it('交不进去就回滚：宁可重复一遍，不可丢一次', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
     const thread = threads.createThread({ title: '线', goal: '线' });
     threads.addReport({ threadId: thread.id, level: 'notify', title: '进展' });
 
@@ -179,14 +188,69 @@ describe('调度循环', () => {
       },
     });
 
-    const failed = router.tick();
+    const failed = await router.tick();
     expect(failed.routed).toBe(0);
     expect(failed.failed).toBe(1);
 
     // 事件回到 pending，汇报回到未播报。
-    const retried = router.tick();
+    const retried = await router.tick();
     expect(retried.routed).toBe(1);
     expect(retried.reports).toBe(1);
+  });
+});
+
+describe('语义门（§3.1 Slow Path 的前半）', () => {
+  /** 只判前 N 条：模拟"分类器说这几条是噪声"。 */
+  const dropFirst =
+    (count: number): SemanticScreener =>
+    async (events): Promise<SemanticScreenResult> => ({
+      keep: events.slice(count),
+      dropped: events.slice(0, count),
+    });
+
+  it('被门判掉的噪声既不见 Router，也不花 Router 的上下文', async () => {
+    for (const text of ['心跳', '在吗']) {
+      threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text } });
+    }
+    const { router, delivered } = make({ semantic: dropFirst(1) });
+
+    const report = await router.tick();
+    expect(report.gated).toBe(1);
+    expect(report.routed).toBe(1);
+    expect(delivered[0]).toContain('在吗');
+    expect(delivered[0]).not.toContain('心跳');
+  });
+
+  it('门自己炸了就全放行——省钱的层没有丢活的权力', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+    const { router, delivered } = make({
+      semantic: () => Promise.reject(new Error('分类器没配')),
+    });
+
+    const report = await router.tick();
+    expect(report.gated).toBe(0);
+    expect(report.routed).toBe(1);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('门报告"这批判不了"时也是全放行，但要说一句为什么', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+    const { router, delivered } = make({
+      semantic: async (events) => ({ keep: [...events], dropped: [], error: '没有决策模型' }),
+    });
+
+    const report = await router.tick();
+    expect(report.routed).toBe(1);
+    expect(report.gated).toBe(0);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('没开语义门时根本不调用它——所以"关掉"就是真的没花钱', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
+    const { router, delivered } = make();
+    const report = await router.tick();
+    expect(report.routed).toBe(1);
+    expect(delivered).toHaveLength(1);
   });
 });
 
@@ -226,7 +290,7 @@ describe('上下文打包（Inline & Spill）', () => {
         {
           id: 'evt-2',
           source: 'im',
-          kind: 'boss_message',
+          kind: 'user_message',
           payload: { text: '整'.repeat(2_000), threadKey: 'im:topic-1' },
           threadId: null,
           triage: 'pending',
@@ -240,12 +304,18 @@ describe('上下文打包（Inline & Spill）', () => {
     expect(text).toContain('recall evt-2');
   });
 
+  it('工作台的规矩每轮都带进来——规矩只有干活的人知道是不够的', () => {
+    const text = composeInput([], [], ['文档放 README 里就够了', '别单开 wiki']);
+    expect(text).toContain('工作台的规矩（2');
+    expect(text).toContain('别单开 wiki');
+  });
+
   it('没有 threadKey 的事件永远不并线', () => {
     expect(
       threadKeyOf({
         id: 'e',
         source: 'im',
-        kind: 'boss_message',
+        kind: 'user_message',
         payload: { text: '在吗' },
         threadId: null,
         triage: 'pending',

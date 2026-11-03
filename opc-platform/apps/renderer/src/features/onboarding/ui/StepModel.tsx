@@ -176,7 +176,7 @@ export function StepModel() {
       }));
   }, [selected, selectedConfig]);
 
-  /** Writes provider + models into SQLite the first time the boss touches it. */
+  /** Writes provider + models into SQLite the first time you touches it. */
   const ensureProvider = async (provider: DisplayProvider) => {
     if (configured.has(provider.id)) return;
     await models.saveProvider({

@@ -3,7 +3,7 @@ import type { MemoryService } from './memoryService';
 
 export interface ConversationSlice {
   conversationId: string;
-  employeeId: string;
+  ownerId: string;
   messages: { senderId: string; text: string }[];
 }
 
@@ -28,7 +28,7 @@ export async function consolidateConversation(
 ): Promise<{ written: number; skipped?: string }> {
   const messages = conversation.messages.filter((message) => (message.text ?? '').trim().length > 0);
   const runId = options.runs?.start({
-    employeeId: conversation.employeeId,
+    ownerId: conversation.ownerId,
     conversationIds: [conversation.conversationId],
     episodeCount: messages.length,
   });
@@ -53,7 +53,7 @@ export async function consolidateConversation(
       const content = lesson.content.trim();
       if (content.length < 6) continue;
       await memory.remember({
-        employeeId: conversation.employeeId,
+        ownerId: conversation.ownerId,
         kind: lesson.kind,
         content,
         scope: { type: 'personal' },

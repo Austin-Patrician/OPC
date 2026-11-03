@@ -24,15 +24,11 @@ const extension = (name: string, overrides: Partial<CapabilityExtension> = {}): 
 });
 
 const agent = (id: string, extensions: CapabilityExtension[], tools: CapabilityTool[]): AgentCapability => ({
-  employeeId: id,
+  workerId: id,
   name: id,
-  role: '工程师',
-  level: 'P5',
+  template: 'code',
+  status: 'idle',
   model: '',
-  avatar: '',
-  departmentId: 'd1',
-  departmentName: '工程部',
-  isHead: false,
   skills: [],
   extensions,
   tools,
@@ -51,7 +47,7 @@ describe('groupExtensions', () => {
     expect(groups[0]!.tools.map((entry) => entry.name)).toEqual(['read', 'bash']);
   });
 
-  it('keeps the widest hook/task/section counts across employees', () => {
+  it('keeps the widest hook/task/section counts across execution bodies', () => {
     const groups = groupExtensions([
       agent('a', [extension('opc.sandbox', { hooks: 1 })], []),
       agent('b', [extension('opc.sandbox', { hooks: 2, sections: 1 })], []),

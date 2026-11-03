@@ -7,7 +7,7 @@ import { resolveWorkerModelRef } from './workerModel';
  * 模型跟着执行体走。
  *
  * §2.2：执行体通常配置能力最强的模型。一条工作线的运行环境在创建那一刻就定了，
- * 包括用哪个模型——所以「执行体自己的模型 → 公司默认」是 v2 的语义，不只是实现
+ * 包括用哪个模型——所以「执行体自己的模型 → 工作台默认」是 v2 的语义，不只是实现
  * 细节。中间那层「某个人的模型覆盖」已经随 `employee` 一起消失。
  */
 function config(available: { providerId: string; modelId: string }[]): ModelConfigService {
@@ -30,7 +30,7 @@ function worker(overrides: Partial<Worker> = {}): Worker {
     template: 'research',
     skills: [],
     threadId: 'th-1',
-    employeeId: null,
+    ownerId: null,
     modelProvider: null,
     modelId: null,
     policyJson: '{}',
@@ -56,7 +56,7 @@ describe('resolveWorkerModelRef', () => {
     ).toEqual({ providerId: 'worker-provider', modelId: 'small' });
   });
 
-  it('没配就用公司默认', () => {
+  it('没配就用工作台默认', () => {
     const modelConfig = config([{ providerId: 'default', modelId: 'big' }]);
     expect(resolveWorkerModelRef({ worker: worker(), modelConfig })).toEqual({
       providerId: 'default',

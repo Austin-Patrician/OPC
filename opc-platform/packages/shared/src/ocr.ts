@@ -10,7 +10,7 @@
 export type OcrDetail = 'text' | 'lines';
 
 /**
- * What the boss decided in 设置 → 运行时. `ocr_image` reads this at call time, so
+ * What you decided in 设置 → 运行时. `ocr_image` reads this at call time, so
  * a change applies to the next picture rather than the next restart.
  */
 export interface OcrSettings {

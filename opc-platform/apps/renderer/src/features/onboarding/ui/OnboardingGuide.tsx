@@ -31,7 +31,7 @@ export function OnboardingGuide() {
 /**
  * The first-run guide.
  *
- * 三步：偏好 → 模型引擎 → 公司身份，然后一页总结。所有写入都走设置页用的同一套 IPC，
+ * 三步：偏好 → 模型引擎 → 工作台身份，然后一页总结。所有写入都走设置页用的同一套 IPC，
  * 所以关掉向导不会留下一个假的配置。
  */
 function OnboardingDialog() {
@@ -138,17 +138,11 @@ function OnboardingDialog() {
       case 'model':
         return <StepModel />;
       case 'company':
-        return (
-          <StepCompany
-            departmentCount={data.departmentCount}
-            agentCount={data.agentCount}
-          />
-        );
+        return <StepCompany workerCount={data.workerCount} />;
       case 'done':
         return (
           <StepDone
-            departments={data.departments}
-            agentCount={data.agentCount}
+            workers={data.workers}
             providers={data.providers}
             defaults={data.defaults}
             thinking={data.thinking}
@@ -169,9 +163,8 @@ function OnboardingDialog() {
 
       {phase !== 'wizard' ? (
         <WelcomeHero
-          departments={data.departments}
+          workers={data.workers}
           providers={data.providers}
-          agentCount={data.agentCount}
           leaving={phase === 'leaving'}
           onStart={start}
           onSkip={skipAll}

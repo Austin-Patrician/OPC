@@ -58,7 +58,7 @@ export function ToolsSection({
         {agents.length > 0 ? (
           <ul className="divide-y divide-line">
             {agents.map((agent) => (
-              <AgentRow key={agent.employeeId} agent={agent} />
+              <AgentRow key={agent.workerId} agent={agent} />
             ))}
           </ul>
         ) : (
@@ -136,22 +136,18 @@ function AgentRow({ agent }: { agent: AgentCapability }) {
         aria-expanded={open}
         className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover"
       >
-        <Avatar name={agent.name} src={agent.avatar || undefined} size="sm" />
+        <Avatar name={agent.name} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="truncate text-sm-plus font-medium text-ink">{agent.name}</span>
-            {agent.isHead ? (
-              <span className="rounded bg-accent-soft px-1.5 py-0.5 text-3xs font-medium text-accent-ink">
-                {t('capabilities.head')}
-              </span>
-            ) : null}
-            <span className="text-3xs text-ink-quaternary">{agent.departmentName}</span>
+            <span className="rounded bg-accent-soft px-1.5 py-0.5 text-3xs font-medium text-accent-ink">
+              {t(`capabilities.templates.${agent.template}`)}
+            </span>
+            <span className="text-3xs text-ink-quaternary">
+              {t(`capabilities.statuses.${agent.status}`)}
+            </span>
           </div>
           <div className="mt-0.5 truncate text-xs text-ink-tertiary">
-            {agent.role}
-            <span className="mx-1 text-ink-quaternary">·</span>
-            {agent.level}
-            <span className="mx-1 text-ink-quaternary">·</span>
             <code className="font-mono text-3xs">{agent.model || '—'}</code>
           </div>
         </div>

@@ -4,6 +4,7 @@ import type {
   LinkType,
   TaskAcceptance,
   TaskStatus,
+  TaskSteering,
   WorkTask,
 } from '@opc/shared/domain';
 import crypto from 'node:crypto';
@@ -53,7 +54,7 @@ export interface TaskStatusPatch {
   error?: string | null;
 }
 
-type Reviewer = 'auto' | 'manager' | 'boss';
+type Reviewer = 'auto' | 'system' | 'user';
 
 interface TaskRow {
   id: string;
@@ -70,6 +71,8 @@ interface TaskRow {
   issue_key: string | null;
   priority: string | null;
   labels: string | null;
+  /** JSON `TaskSteering[]`: 你中途改的方向（V32）。 */
+  steering: string | null;
   due_at: number | null;
   is_review: number;
   depth: number;
@@ -172,7 +175,7 @@ export class TaskRepository {
   isBlocked = (taskId: string): boolean =>
     this.linksOf(taskId).some((link) => link.status !== 'accepted' && link.status !== 'delivered');
 
-  /** Priority / labels / due date: the fields the boss edits after dispatch. */
+  /** Priority / labels / due date: the fields you edits after dispatch. */
   setIssueMeta = (
     taskId: string,
     patch: { priority?: WorkTask['priority']; labels?: string[]; dueAt?: number | null },
@@ -253,7 +256,7 @@ export class TaskRepository {
   /**
    * The most recent task on a line of work.
    *
-   * When the boss approves or asks for a rework from the attention queue, the
+   * When you approves or asks for a rework from the attention queue, the
    * newest task is the one they are looking at — the thread's earlier tasks are
    * history, and a rework created a new one rather than reopening the old.
    */
@@ -287,6 +290,11 @@ export class TaskRepository {
       row.id,
     ) as { at: number; text: string }[];
 
+    // 一行坏 JSON 不该让整张任务卡读不出来：丢掉坏的，留下好的。
+    const steering = parseJson<TaskSteering[]>(row.steering ?? '[]', []).filter(
+      (entry): entry is TaskSteering => typeof entry?.note === 'string',
+    );
+
     return {
       id: row.id,
       title: row.title,
@@ -298,6 +306,8 @@ export class TaskRepository {
       priority: (row.priority as WorkTask['priority']) ?? 'P2',
       blockedBy: this.linksOf(row.id),
       labels: JSON.parse(row.labels || '[]') as string[],
+      // 只有真有话说时才带上这个字段：空数组会让"没人改过方向"和"改过又撤回"分开。
+      ...(steering.length > 0 ? { steering } : {}),
       dueAt: row.due_at ?? undefined,
       parentTaskId: row.parent_task_id ?? undefined,
       projectGroupId: row.project_group_id ?? undefined,
@@ -401,6 +411,29 @@ export class TaskRepository {
       text,
     );
     this.touch(taskId, now);
+  };
+
+  /**
+   * 你中途改的方向，追加在任务上。
+   *
+   * 追加而不是覆盖：一段活的中间可能被改两次方向，两次都是真的发生过的事；只有
+   * 需要"当前口径"的地方（提示词）才把它整体按顺序读出来。
+   */
+  addSteering = (taskId: string, note: string): TaskSteering[] => {
+    const text = note.trim();
+    if (!text) return [];
+    const row = this.statement('SELECT steering FROM task WHERE id = ?').get(taskId) as
+      | { steering: string | null }
+      | undefined;
+    if (!row) throw new Error(`任务不存在：${taskId}`);
+
+    const next = [...parseJson<TaskSteering[]>(row.steering ?? '[]', []), { note: text, at: Date.now() }];
+    this.statement('UPDATE task SET steering = ?, updated_at = ? WHERE id = ?').run(
+      JSON.stringify(next),
+      Date.now(),
+      taskId,
+    );
+    return next;
   };
 
   addAcceptance = (

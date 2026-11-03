@@ -17,7 +17,6 @@ export interface ChatTransport {
 
 export const EMPTY_SNAPSHOT: ChatSnapshot = {
   agents: [],
-  departments: [],
   conversations: [],
   typingByConversation: {},
 };

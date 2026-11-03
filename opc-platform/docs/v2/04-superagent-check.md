@@ -75,6 +75,16 @@ chat.sendMessage
 原文 7.1 的实验正是在量这件事：带 Subagent 工具的单 Session，p95 = 29.5 分钟；
 双层架构 p95 = 15.7 分钟。**方向反了，不是因为实现糙，是因为层次压扁了。**
 
+### 这一条已经关掉（P0）
+
+1. **聊天只剩一条会话**：`ensureAssistant` 是唯一的入口，对面永远是 Router；
+   `openDirect(agentId)` 整个删了，连同 `pickResponders` / `buildReply` /
+   `replyWithModel`（那句「你是「X」，岗位是 Y」的 systemPrompt）。
+   现在 `sendMessage` 不管落在哪条会话上，都只是给 Router 的一条 Trigger。
+2. **验证它的探针改了**：`OPC_CHAT_PERSIST_PROBE` 以前靠 `openDirect` 造一条
+   执行体私聊、再等它回话——那等于用一个用例给违规行为背书。现在它在库里装一个
+   执行体，然后断言**这个执行体没有开过口**（`workerSilent`）。
+
 ## 2. 我之前说错的那一条
 
 上一轮我提：「**助手 = 默认执行体那一个 worker**，其余 worker 只在工作线上下文出现」。

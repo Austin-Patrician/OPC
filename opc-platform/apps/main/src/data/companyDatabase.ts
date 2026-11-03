@@ -26,7 +26,6 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   const db = new Database(file);
   applyPragmas(db);
   repairAcceptanceTemplateConstraint(db);
-  repairMemoryScopeConstraint(db);
   repairLegacyColumns(db);
   repairDepartmentParentConstraint(db);
   repairEmploymentEventKindConstraint(db);
@@ -34,7 +33,7 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   // After the steps: a fresh database only gets its `job` table inside V14, and the
   // reshape below has to see whatever shape that left behind.
   repairJobCatalogue(db);
-  retireOrgOwnership(db);
+  repairOwnershipColumns(db);
   return db;
 }
 
@@ -115,62 +114,6 @@ export function repairAcceptanceTemplateConstraint(db: CompanyDatabase): boolean
   }
   return true;
 }
-
-
-/**
- * 记忆的作用域早期只允许 personal / org / department / project。
- *
- * v2 里记忆跟着**工作线**走，所以合法值多了 `thread`。`CREATE TABLE IF NOT
- * EXISTS` 会把老安装的旧 CHECK 留在原地——第一次写一条线程记忆就会撞
- * "CHECK constraint failed"。同样的重建手法：外键关掉、在迁移事务外重建、幂等。
- */
-export function repairMemoryScopeConstraint(db: CompanyDatabase): boolean {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'employee_memory'")
-    .get() as { sql: string } | undefined;
-  if (!row?.sql) return false;
-
-  const scopes = ['personal', 'org', 'department', 'project', 'thread'];
-  const scopeCheck = /CHECK\s*\(\s*scope_type\s+IN\s*\([^)]*\)\s*\)/i.exec(row.sql);
-  if (!scopeCheck) return false;
-  if (scopes.every((scope) => scopeCheck[0].includes(`'${scope}'`))) return false;
-
-  const indexes = (
-    db
-      .prepare(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'employee_memory' AND sql IS NOT NULL",
-      )
-      .all() as { name: string; sql: string }[]
-  ).filter((index) => !/^sqlite_autoindex/.test(index.name));
-
-  const rebuilt = row.sql
-    .replace(/^CREATE TABLE\s+["']?employee_memory["']?/i, 'CREATE TABLE employee_memory_rebuild')
-    .replace(
-      scopeCheck[0],
-      `CHECK (scope_type IN (${scopes.map((scope) => `'${scope}'`).join(',')}))`,
-    );
-  if (!rebuilt.includes("'personal'") || !rebuilt.includes("'project'")) {
-    return false;
-  }
-
-  db.pragma('foreign_keys = OFF');
-  try {
-    db.exec('BEGIN');
-    db.exec(rebuilt);
-    db.exec('INSERT INTO employee_memory_rebuild SELECT * FROM employee_memory');
-    db.exec('DROP TABLE employee_memory');
-    db.exec('ALTER TABLE employee_memory_rebuild RENAME TO employee_memory');
-    for (const index of indexes) db.exec(index.sql);
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw new Error(`重建 employee_memory 表以允许 thread 作用域失败：${String(error)}`, { cause: error });
-  } finally {
-    db.pragma('foreign_keys = ON');
-  }
-  return true;
-}
-
 /**
  * Gives `department.parent_id` its self-referencing foreign key.
  *
@@ -377,6 +320,14 @@ function declaredTables(sql: string): { table: string; columns: ColumnSpec[] }[]
  */
 const REBUILDABLE = new Set(['budget_reservation', 'budget_ledger']);
 
+/**
+ * 后来被改名/删掉的列，重放 `ADD COLUMN` 时必须跳过。
+ *
+ * V33 把 `employee_id` 改成了 `owner_id`；而下面那段重放逻辑的条件正是"这一列不存在"，
+ * 于是改名会被它当成"缺列"，每次打开都把旧列加回来。
+ */
+const RETIRED_COLUMNS = new Set(['worker.employee_id', 'consolidation_run.employee_id']);
+
 export function repairLegacyColumns(db: CompanyDatabase): string[] {
   const repaired: string[] = [];
   const rebuilt: string[] = [];
@@ -389,6 +340,9 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
     let match: RegExpExecArray | null;
     while ((match = addColumn.exec(sql)) !== null) {
       const [, table, column, definition] = match;
+      // 后来被**改名**掉的列不该在这里复活：这段代码会把历史上每一条 ADD COLUMN
+      // 重放一遍，而重放的前提是"没有这一列"——改名正好制造了这个前提。
+      if (RETIRED_COLUMNS.has(`${table}.${column}`)) continue;
       const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(table);
       if (!exists) continue;
       const present = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -452,7 +406,7 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
 }
 
 /**
- * 岗位从"部门里的一个坑"变成公司级职务（V21）。
+ * 岗位从"部门里的一个坑"变成可复用的职务模板（V21）。
  *
  * Written as a repair rather than a migration step because SQLite has no conditional
  * DDL: this has to run on a database whose `job` table still has `department_id` (old
@@ -607,14 +561,14 @@ function ensureCompanyRow(db: CompanyDatabase): void {
     `INSERT INTO company (id, name, settings, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING`,
-  ).run(COMPANY_ID, '我的公司', JSON.stringify(DEFAULT_COMPANY_SETTINGS), now, now);
+  ).run(COMPANY_ID, '我的工作台', JSON.stringify(DEFAULT_COMPANY_SETTINGS), now, now);
 }
 
 
 /**
  * 老库里的任务归属于一个人，新库里归属于一个执行体。
  *
- * `task.employee_id → owner_id`、`employee_memory.employee_id → owner_id`，
+ * `task.employee_id → owner_id`、`memory.employee_id → owner_id`，
  * 两张表都重建一次：列名改掉，指向 `employee` 的外键一并去掉——那个表要没了。
  * 手法和上面几个 repair 一样（外键关掉、迁移事务外、幂等），因为 SQLite 改不了列名
  * 与约束。
@@ -664,7 +618,17 @@ CREATE TABLE task_rebuild (
   FOREIGN KEY (review_of_task_id) REFERENCES task(id)
 )`;
 
-export function retireOrgOwnership(db: CompanyDatabase): void {
+/**
+ * 老库里的任务/记忆归属于「一个人」，新库归属于「一个执行体」。
+ *
+ * 这条升级路径没有别的用例覆盖，而它一旦错就是"打开应用就崩"——所以造一个旧形状的
+ * 库（`employee_id` + 指向 employee 的外键），再打开，然后确认三件事：列名换了、
+ * 行还在、外键没了。
+ *
+ * 名字里的 org 已经去掉：它修的是**归属列**，不是组织。V33 之后记忆表叫 `memory`，
+ * 但这张重建只在迁移**之前**跑（那时表还叫 `memory`），所以 SQL 保持旧名字。
+ */
+export function repairOwnershipColumns(db: CompanyDatabase): void {
   const columns = (table: string): string[] => {
     const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
     return rows.map((row) => row.name);
@@ -711,48 +675,12 @@ export function retireOrgOwnership(db: CompanyDatabase): void {
     }
   }
 
-  if (columns('employee_memory').includes('employee_id')) {
-    db.pragma('foreign_keys = OFF');
-    try {
-      db.exec('BEGIN');
-      db.exec(`
-        CREATE TABLE employee_memory_rebuild (
-          id               TEXT PRIMARY KEY,
-          owner_id         TEXT NOT NULL,
-          kind             TEXT NOT NULL,
-          content          TEXT NOT NULL,
-          scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','org','department','project','thread')),
-          scope_id         TEXT,
-          embedding        BLOB,
-          embedding_model  TEXT,
-          source_type      TEXT NOT NULL CHECK (source_type IN ('task','conversation','consolidation','manual')),
-          source_id        TEXT,
-          valid_from       INTEGER NOT NULL,
-          valid_until      INTEGER,
-          strength         REAL NOT NULL DEFAULT 1.0,
-          recall_count     INTEGER NOT NULL DEFAULT 0,
-          last_recalled_at INTEGER,
-          is_archived      INTEGER NOT NULL DEFAULT 0,
-          created_at       INTEGER NOT NULL,
-          updated_at       INTEGER NOT NULL
-        );
-        INSERT INTO employee_memory_rebuild
-          SELECT id, employee_id, kind, content, scope_type, scope_id, embedding, embedding_model,
-                 source_type, source_id, valid_from, valid_until, strength, recall_count,
-                 last_recalled_at, is_archived, created_at, updated_at
-            FROM employee_memory;
-        DROP TABLE employee_memory;
-        ALTER TABLE employee_memory_rebuild RENAME TO employee_memory;
-        CREATE INDEX IF NOT EXISTS idx_memory_scope ON employee_memory(owner_id, scope_type, scope_id);
-        CREATE INDEX IF NOT EXISTS idx_memory_thread ON employee_memory(scope_type, scope_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_memory_recent ON employee_memory(owner_id, created_at DESC);
-      `);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw new Error(`重建 employee_memory 表以改用 owner_id 失败：${String(error)}`, { cause: error });
-    } finally {
-      db.pragma('foreign_keys = ON');
+  // 记忆表只需要改列名：约束与索引都不是这次的关注点，而重建会丢掉默认值。
+  // 两种形状都要认：迁移之前表还叫 `employee_memory`，之后叫 `memory`；
+  // 它们都可能是被手工改回旧列名的库。
+  for (const table of ['employee_memory', 'memory']) {
+    if (columns(table).includes('employee_id')) {
+      db.exec(`ALTER TABLE ${table} RENAME COLUMN employee_id TO owner_id`);
     }
   }
 }

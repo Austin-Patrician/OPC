@@ -48,7 +48,7 @@ export interface CreateWorkerInput {
   skills?: readonly string[];
   threadId?: string | null;
   /** Who fills this execution body (an employee id during the migration). */
-  employeeId?: string | null;
+  ownerId?: string | null;
   modelProvider?: string | null;
   modelId?: string | null;
 }
@@ -93,7 +93,7 @@ interface WorkerRow {
   template: WorkerTemplate;
   skills: string;
   thread_id: string | null;
-  employee_id: string | null;
+  owner_id: string | null;
   model_provider: string | null;
   model_id: string | null;
   tool_policy: string;
@@ -175,7 +175,7 @@ export class ThreadRepository {
     return row ? toThread(row) : null;
   }
 
-  /** Newest activity first; the boss's list is ordered by "what moved last". */
+  /** Newest activity first; the your list is ordered by "what moved last". */
   listThreads(input: { state?: ThreadState; limit?: number } = {}): WorkThread[] {
     const limit = input.limit ?? 50;
     const rows = input.state
@@ -212,7 +212,7 @@ export class ThreadRepository {
     return this.mustGetThread(id);
   }
 
-  /** The only write that changes who is allowed to interrupt the boss. */
+  /** The only write that changes who is allowed to interrupt you. */
   setAttention(id: string, attention: AttentionLevel): WorkThread {
     this.statement('UPDATE thread SET attention = ?, last_activity_at = ? WHERE id = ?').run(
       attention,
@@ -232,7 +232,7 @@ export class ThreadRepository {
    *
    * Returns false when the thread has no ceiling or is still under it, true when
    * this charge crossed it — the caller decides whether crossing means "stop" or
-   * "ask the boss". Nothing here silently refuses a charge: the ledger must not
+   * "ask you". Nothing here silently refuses a charge: the ledger must not
    * disagree with the tokens actually spent.
    */
   charge(id: string, tokens: number): boolean {
@@ -255,7 +255,7 @@ export class ThreadRepository {
       template: input.template ?? ('research' as WorkerTemplate),
       skills: JSON.stringify(input.skills ?? []),
       thread_id: input.threadId ?? null,
-      employee_id: input.employeeId ?? null,
+      owner_id: input.ownerId ?? null,
       model_provider: input.modelProvider ?? null,
       model_id: input.modelId ?? null,
       status: 'idle' as WorkerStatus,
@@ -264,8 +264,8 @@ export class ThreadRepository {
       retired_at: null,
     };
     this.statement(
-      `INSERT INTO worker (id, name, template, skills, thread_id, employee_id, model_provider, model_id, status, spent_tokens, created_at, retired_at)
-       VALUES (@id, @name, @template, @skills, @thread_id, @employee_id, @model_provider, @model_id, @status, @spent_tokens, @created_at, @retired_at)`,
+      `INSERT INTO worker (id, name, template, skills, thread_id, owner_id, model_provider, model_id, status, spent_tokens, created_at, retired_at)
+       VALUES (@id, @name, @template, @skills, @thread_id, @owner_id, @model_provider, @model_id, @status, @spent_tokens, @created_at, @retired_at)`,
     ).run(row);
     return toWorker(row as WorkerRow);
   }
@@ -279,22 +279,24 @@ export class ThreadRepository {
    */
   ensureWorker(input: {
     threadId: string;
-    employeeId: string;
+    ownerId: string;
     name: string;
     template?: WorkerTemplate;
+    skills?: readonly string[];
     /** Pinned when the worker is created: a line of work keeps its runtime. */
     modelProvider?: string | null;
     modelId?: string | null;
   }): Worker {
     const existing = this.statement(
-      "SELECT * FROM worker WHERE thread_id = ? AND employee_id = ? AND status != 'retired' ORDER BY created_at LIMIT 1",
-    ).get(input.threadId, input.employeeId) as WorkerRow | undefined;
+      "SELECT * FROM worker WHERE thread_id = ? AND owner_id = ? AND status != 'retired' ORDER BY created_at LIMIT 1",
+    ).get(input.threadId, input.ownerId) as WorkerRow | undefined;
     if (existing) return toWorker(existing);
     return this.createWorker({
       name: input.name,
       threadId: input.threadId,
-      employeeId: input.employeeId,
+      ownerId: input.ownerId,
       ...(input.template ? { template: input.template } : {}),
+      ...(input.skills ? { skills: input.skills } : {}),
       modelProvider: input.modelProvider ?? null,
       modelId: input.modelId ?? null,
     });
@@ -310,6 +312,19 @@ export class ThreadRepository {
     const rows = this.statement(
       "SELECT * FROM worker WHERE thread_id = ? AND status != 'retired' ORDER BY created_at",
     ).all(threadId) as WorkerRow[];
+    return rows.map(toWorker);
+  }
+
+  /**
+   * Every live execution body, newest first.
+   *
+   * 界面上已经没有组织架构了，但"现在有几个执行体"仍然要回答——onboarding 和
+   * Router 选人都读这里。退休的 worker 不参与派活，所以默认不返回。
+   */
+  listAllWorkers(): Worker[] {
+    const rows = this.statement(
+      "SELECT * FROM worker WHERE status != 'retired' ORDER BY created_at DESC",
+    ).all() as WorkerRow[];
     return rows.map(toWorker);
   }
 
@@ -364,7 +379,7 @@ export class ThreadRepository {
    * Records the verdict of the semantic layer.
    *
    * `accepted` must name the thread it belongs to; `dropped` and `merged` may
-   * leave it null. A dropped event is never deleted — the boss has to be able to
+   * leave it null. A dropped event is never deleted — you has to be able to
    * see what the system decided to ignore.
    */
   triageEvent(id: string, triage: Exclude<TriageState, 'pending'>, threadId: string | null = null): TriggerEvent {
@@ -403,9 +418,9 @@ export class ThreadRepository {
   }
 
   /**
-   * The boss's queue: unread, most urgent first.
+   * The your queue: unread, most urgent first.
    *
-   * The ordering is the product: a `decide` row costs the boss a decision, so it
+   * The ordering is the product: a `decide` row costs you a decision, so it
    * outranks every `notify` no matter how old. `silent` is deliberately absent —
    * it is a record, not an interruption.
    */
@@ -422,7 +437,7 @@ export class ThreadRepository {
   /**
    * The same queue, joined to the line of work it came from.
    *
-   * The boss's screen never shows a report id; it shows "整理 Q3 财报
+   * The your screen never shows a report id; it shows "整理 Q3 财报
    * 需要你拍板". Without the join the UI would have to fetch every thread just to
    * put a title on a row.
    */
@@ -486,7 +501,7 @@ export class ThreadRepository {
     this.statement('UPDATE worker SET tool_policy = ? WHERE id = ?').run(policy, workerId);
   }
 
-  /** 这个执行体自己的模型覆盖；空表示跟随公司默认。 */
+  /** 这个执行体自己的模型覆盖；空表示跟随工作台默认。 */
   setWorkerModel(workerId: string, provider: string | null, modelId: string | null): void {
     this.statement('UPDATE worker SET model_provider = ?, model_id = ? WHERE id = ?').run(
       provider,
@@ -557,13 +572,13 @@ export class ThreadRepository {
     return rows.map((row) => ({ threadId: row.thread_id, workerId: row.worker_id }));
   }
 
-  // ── 汇报播报（Router 对老板说过了）──────────────────────────────────────
+  // ── 汇报播报（Router 对你说过了）──────────────────────────────────────
 
   /**
    * 还没被 Router 拿去说过的汇报。
    *
-   * 和 `listQueue` 不同：那是"老板还没读的"，这是"我还没讲的"。两者都需要——
-   * 一条 silent 汇报老板永远不必读，但 Router 要把它并进那一轮的上下文里，否则
+   * 和 `listQueue` 不同：那是"你还没读的"，这是"我还没讲的"。两者都需要——
+   * 一条 silent 汇报你永远不必读，但 Router 要把它并进那一轮的上下文里，否则
    * 它下一次回答"怎么样了"时对事实一无所知。
    */
   listUnannouncedReports(limit = 50): WorkReport[] {
@@ -633,7 +648,7 @@ function toWorker(row: WorkerRow): Worker {
     template: row.template,
     skills: parseList(row.skills),
     threadId: row.thread_id,
-    employeeId: row.employee_id,
+    ownerId: row.owner_id,
     modelProvider: row.model_provider,
     modelId: row.model_id,
     policyJson: row.tool_policy ?? '{}',

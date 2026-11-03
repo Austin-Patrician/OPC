@@ -26,7 +26,7 @@ export function TaskCard({ task }: { task: WorkTask }) {
   const [decided, setDecided] = useState<WorkTaskModel | null>(null);
   const current = decided ?? task;
   const decide = async (decision: 'approve' | 'reject') => {
-    const updated = await window.opc!.work.bossDecision(task.id, decision);
+    const updated = await window.opc!.work.userDecision(task.id, decision);
     setDecided(updated);
   };
   const evidence = task.acceptance?.evidence;
@@ -80,22 +80,22 @@ export function TaskCard({ task }: { task: WorkTask }) {
 
       {current.status === 'accepted' ? (
         <div className="mt-2 flex items-center justify-end gap-2 border-t border-line pt-2 text-2xs">
-          <span className="mr-auto text-ink-quaternary">{t('task.bossVerdict')}</span>
+          <span className="mr-auto text-ink-quaternary">{t('task.userVerdict')}</span>
           <button
             type="button"
-            data-testid="boss-reject"
+            data-testid="user-reject"
             onClick={() => void decide('reject')}
             className="rounded px-2 py-0.5 text-ink-tertiary transition-colors hover:bg-danger/10 hover:text-danger"
           >
-            {t('task.bossReject')}
+            {t('task.userReject')}
           </button>
           <button
             type="button"
-            data-testid="boss-approve"
+            data-testid="user-approve"
             onClick={() => void decide('approve')}
             className="rounded px-2 py-0.5 text-accent transition-colors hover:bg-accent-soft"
           >
-            {t('task.bossApprove')}
+            {t('task.userApprove')}
           </button>
         </div>
       ) : null}

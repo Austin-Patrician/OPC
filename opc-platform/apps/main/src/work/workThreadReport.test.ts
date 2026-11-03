@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppPaths } from '../env';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
-import { OrgService } from '../org/orgService';
 import { TaskRepository } from '../data/taskRepository';
 import { UNVERIFIED_GATE } from './acceptanceGate';
 import { WorkService } from './workService';
@@ -24,7 +23,6 @@ import { WorkService } from './workService';
 let dir: string;
 let db: CompanyDatabase;
 let paths: AppPaths;
-let org: OrgService;
 let work: WorkService;
 let threads: ThreadRepository;
 let assigneeId: string;
@@ -46,7 +44,6 @@ beforeEach(() => {
     mkdirSync(target, { recursive: true });
   }
 
-  org = new OrgService(db);
   threads = new ThreadRepository(db);
   // 任务归属是一个**执行体**，不是一个人（§2.2）。
   const home = threads.createThread({ title: '测试台', goal: '测试' });
@@ -56,7 +53,6 @@ beforeEach(() => {
     db,
     paths,
     upsertTaskCard: () => undefined,
-    org,
   });
 });
 
@@ -91,7 +87,7 @@ describe('task → thread reporting', () => {
     expect(updated?.state).toBe('done');
     expect(updated?.spentTokens).toBeGreaterThanOrEqual(0);
 
-    // Recorded, but not in the boss's face: the queue stays empty.
+    // Recorded, but not in the your face: the queue stays empty.
     expect(threads.listQueue()).toHaveLength(0);
   });
 
@@ -130,12 +126,12 @@ describe('a task dispatched without a line of work', () => {
 
 
 /**
- * steering 层：老板在队列上的两个动作。
+ * steering 层：你在队列上的两个动作。
  *
  * 这是系统唯一一处「人判定对不对」的入口——没有可执行闸门的活，系统自己
  * 判不了，所以才把它交出来。
  */
-describe('boss steering', () => {
+describe('user steering', () => {
   async function needsJudgement() {
     const thread = threads.createThread({ title: '整理财报', goal: '整理财报' });
     const created = work.createTask({
@@ -162,7 +158,7 @@ describe('boss steering', () => {
     expect(queue[0]?.body).toContain('判定不了对错');
   });
 
-  it('closes the line when the boss approves', async () => {
+  it('closes the line when you approve', async () => {
     const { thread, taskId } = await needsJudgement();
     const result = work.decideThread(thread.id, 'approve');
 
@@ -216,7 +212,7 @@ describe('an explicitly chosen worker', () => {
 
   it('is the execution body recorded on the task', () => {
     const thread = threads.createThread({ title: '写一个返回 ok 的服务' });
-    const worker = threads.ensureWorker({ threadId: thread.id, employeeId: assigneeId, name: '李雷', template: 'code' });
+    const worker = threads.ensureWorker({ threadId: thread.id, ownerId: assigneeId, name: '李雷', template: 'code' });
     const created = work.createTask({ ...base, assigneeId, threadId: thread.id, workerId: worker.id });
     if (!created.ok) throw new Error(created.error.message);
     expect(created.task.workerId).toBe(worker.id);
@@ -224,7 +220,7 @@ describe('an explicitly chosen worker', () => {
 
   it('is ignored when it belongs to another line of work', () => {
     const elsewhere = threads.createThread({ title: '别的线索' });
-    const foreign = threads.ensureWorker({ threadId: elsewhere.id, employeeId: assigneeId, name: '李雷' });
+    const foreign = threads.ensureWorker({ threadId: elsewhere.id, ownerId: assigneeId, name: '李雷' });
     const mine = threads.createThread({ title: '我的线索' });
 
     const created = work.createTask({ ...base, assigneeId, threadId: mine.id, workerId: foreign.id });

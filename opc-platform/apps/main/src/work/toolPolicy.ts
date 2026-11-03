@@ -1,4 +1,4 @@
-import type { EmployeeToolPolicy } from '@opc/shared/domain';
+import type { ToolPolicy } from '@opc/shared/domain';
 
 /**
  * The one place that decides what a stored tool policy means.
@@ -9,7 +9,7 @@ import type { EmployeeToolPolicy } from '@opc/shared/domain';
  * install", which keeps new extensions available to existing employees.
  */
 
-export const EMPTY_TOOL_POLICY: EmployeeToolPolicy = {
+export const EMPTY_TOOL_POLICY: ToolPolicy = {
   disabledExtensions: [],
   disabledTools: [],
 };
@@ -24,7 +24,7 @@ function cleanNames(value: unknown): string[] {
 }
 
 /** Tolerates legacy / hand-edited JSON instead of throwing on a bad row. */
-export function normalizeToolPolicy(value: unknown): EmployeeToolPolicy {
+export function normalizeToolPolicy(value: unknown): ToolPolicy {
   if (!value || typeof value !== 'object') return { ...EMPTY_TOOL_POLICY };
   const raw = value as Record<string, unknown>;
   return {
@@ -33,7 +33,7 @@ export function normalizeToolPolicy(value: unknown): EmployeeToolPolicy {
   };
 }
 
-export function parseToolPolicy(json: string | null | undefined): EmployeeToolPolicy {
+export function parseToolPolicy(json: string | null | undefined): ToolPolicy {
   if (!json) return { ...EMPTY_TOOL_POLICY };
   try {
     return normalizeToolPolicy(JSON.parse(json));
@@ -42,17 +42,17 @@ export function parseToolPolicy(json: string | null | undefined): EmployeeToolPo
   }
 }
 
-export function isExtensionEnabled(policy: EmployeeToolPolicy, extensionName: string): boolean {
+export function isExtensionEnabled(policy: ToolPolicy, extensionName: string): boolean {
   return !policy.disabledExtensions.includes(extensionName);
 }
 
-export function isToolEnabled(policy: EmployeeToolPolicy, toolName: string): boolean {
+export function isToolEnabled(policy: ToolPolicy, toolName: string): boolean {
   return !policy.disabledTools.includes(toolName);
 }
 
 /** Effective state used by the UI and the registry alike. */
 export function isToolActive(
-  policy: EmployeeToolPolicy,
+  policy: ToolPolicy,
   extensionName: string,
   toolName: string,
 ): boolean {
@@ -69,7 +69,7 @@ export function isToolActive(
  */
 export function filterExtensionTools<T extends { tools?: readonly { name: string }[] }>(
   extension: T,
-  policy: EmployeeToolPolicy,
+  policy: ToolPolicy,
 ): T {
   if (policy.disabledTools.length === 0 || !extension.tools) return extension;
   const disabled = new Set(policy.disabledTools);

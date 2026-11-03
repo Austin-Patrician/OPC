@@ -26,8 +26,8 @@ import type {
  * });
  *
  * // 2. Data this process owns: no TTL, memory only, explicit invalidation.
- * const roster = await cache.getOrLoad('org.roster', 'all', loadRoster, { tags: ['org'] });
- * cache.invalidateTag('org'); // after a hire / fire / transfer
+ * const roster = await cache.getOrLoad('task.list', 'all', loadRoster, { tags: ['tasks'] });
+ * cache.invalidateTag('tasks'); // after a task changes
  * ```
  *
  * The second form is safe only because the writer and the invalidator are the same

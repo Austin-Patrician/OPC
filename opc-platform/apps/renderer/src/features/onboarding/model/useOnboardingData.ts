@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AppInfo } from '@opc/shared/ipc';
-import type { DepartmentNode, ModelDefaults, ProviderConfig } from '@opc/shared/domain';
+import type { ModelDefaults, ProviderConfig, Worker } from '@opc/shared/domain';
 
 /**
- * Everything the guide shows that already exists in the product: the seeded
- * organisation, configured providers, the company budget row and the app version.
+ * Everything the guide shows that already exists in the product: the live
+ * execution bodies, configured providers and the app version.
  *
- * Read-only: every write goes through the same bridge call the settings / org
- * pages use, and then this hook is reloaded, so the guide never invents state.
+ * Read-only: every write goes through the same bridge call the settings pages
+ * use, and then this hook is reloaded, so the guide never invents state.
  *
- * The talent market used to be read here. It is gone (docs/v2/00-audit.md §5.4):
- * a personal assistant does not interview its workers, it instantiates them.
+ * The organisation tree used to be read here. It is gone (docs/v2/00-audit.md
+ * §4): a fresh install seeds one executor, not a demo department. The talent
+ * market went with it (§5.4): a personal assistant does not interview its
+ * workers, it instantiates them.
  */
 export interface OnboardingData {
-  departments: DepartmentNode[];
+  workers: Worker[];
   providers: ProviderConfig[];
   defaults: ModelDefaults;
   thinking: string;
@@ -21,7 +23,7 @@ export interface OnboardingData {
 }
 
 const EMPTY: OnboardingData = {
-  departments: [],
+  workers: [],
   providers: [],
   defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
   thinking: 'medium',
@@ -40,15 +42,15 @@ export function useOnboardingData() {
       return;
     }
     try {
-      const [departments, providers, defaults, thinking, info] = await Promise.all([
-        bridge.org.list(),
+      const [workers, providers, defaults, thinking, info] = await Promise.all([
+        bridge.workers.list(),
         bridge.models.list(),
         bridge.models.getDefaults(),
         bridge.models.getThinking(),
         bridge.app.getInfo(),
       ]);
       setData({
-        departments,
+        workers,
         providers,
         defaults,
         thinking,
@@ -62,20 +64,17 @@ export function useOnboardingData() {
     }
   }, []);
 
-  /** Cheap refresh after a limit change or an org edit inside the guide. */
-  const refreshOrg = useCallback(async () => {
+  /** Cheap refresh after a limit change or a worker edit inside the guide. */
+  const refreshWorkers = useCallback(async () => {
     const bridge = window.opc;
     if (!bridge) return;
-    const departments = await bridge.org.list();
-    setData((previous) => ({ ...previous, departments }));
+    const workers = await bridge.workers.list();
+    setData((previous) => ({ ...previous, workers }));
   }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  const departmentCount = data.departments.length;
-  const agentCount = data.departments.reduce((total, node) => total + node.members.length, 0);
-
-  return { ...data, departmentCount, agentCount, loading, error, reload, refreshOrg };
+  return { ...data, workerCount: data.workers.length, loading, error, reload, refreshWorkers };
 }

@@ -16,23 +16,22 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 34;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
 
 /**
- * The one human in the company.
+ * 这个工作台里唯一的那个人。
  *
- * `'boss'` was a magic string spread through `employment_event.actor`,
- * `evaluation.reviewer`, `acceptance.reviewer` and message sender ids. It is now the
- * primary key of a real `app_user` row, so "who did this" resolves to a person with a
- * name and a portrait instead of to a literal.
+ * `'boss'` 曾经是一个散落在 `employment_event.actor`、`evaluation.reviewer`、
+ * `acceptance.reviewer` 与消息 senderId 里的魔法字符串。现在它是 `app_user` 那一行的
+ * 主键，所以"这是谁做的"能解析成一张有名字和头像的脸，而不是一个字面量。
  *
- * The id stays stable on purpose: it is already written into existing rows, and
- * renaming the boss must not rewrite history.
+ * 这个 id 一直是稳定字面值：它已经写进验收记录里了。V33 把它从 `boss` 改成 `user`
+ * 时，把历史记录一起改了——因为改的是称呼，不是历史事实。
  */
-export const BOSS_USER_ID = 'boss';
+export const USER_ID = 'user';
 
 const V1 = String.raw`
 -- ── 系统 ────────────────────────────────────────────────────────────────
@@ -1089,7 +1088,7 @@ VALUES (
  *
  * - `model_ref` 存结构化的 `{ providerId, modelId }`（JSON；空串 = 继承公司默认）。
  *   `model` 继续保留为人类可读快照，列表页不用为了显示模型名去连 models 服务。
- * - `tool_policy` 存 `EmployeeToolPolicy`（JSON，禁用名单）。默认空对象 = 当前运行环境
+ * - `tool_policy` 存 `ToolPolicy`（JSON，禁用名单）。默认空对象 = 当前运行环境
  *   能装什么就装什么，所以新扩展不会被老员工静默漏掉。
  *
  * 两张列都只追加、不改写历史：老员工升级后 `model_ref=''`，继续用全局默认，行为不变。
@@ -1388,7 +1387,195 @@ const V30 = `
 ALTER TABLE worker ADD COLUMN tool_policy TEXT NOT NULL DEFAULT '{}';
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30];
+/**
+ * V31：组织架构与员工体系整体退场。
+ *
+ * v2 里干活的是**执行体**（`worker`），不是员工。部门、岗位、汇报线、招聘、面试、
+ * 绩效考核、员工包、雇佣事件、项目组——这一整套在界面上早已没有入口，运行时也不再
+ * 读它们；留下表只是在每次打开数据库时多背一份包袱。
+ *
+ * 顺序从子表到父表：`position` / `job` 引用 `department`，`assignment` 引用
+ * `project_group`，先删引用方，外键检查才过得去。
+ *
+ * `department_job` 是 `repairJobCatalogue()` 动态建出来的关联表（`docs/v2/01-core.md`
+ * 的 12 张清单里没列），它同样属于这个集群，一并删掉，否则会成为一个没有父表的孤儿。
+ */
+const V31 = `
+DROP TABLE IF EXISTS assignment;
+DROP TABLE IF EXISTS project_group;
+DROP TABLE IF EXISTS position;
+DROP TABLE IF EXISTS relationship;
+DROP TABLE IF EXISTS evaluation;
+DROP TABLE IF EXISTS interview;
+DROP TABLE IF EXISTS employee_package;
+DROP TABLE IF EXISTS employment_event;
+DROP TABLE IF EXISTS agent_candidate;
+DROP TABLE IF EXISTS department_job;
+DROP TABLE IF EXISTS job;
+DROP TABLE IF EXISTS employee;
+DROP TABLE IF EXISTS department;
+`;
+
+/**
+ * V32：任务记住老板中途改的方向。
+ *
+ * §8.2 说「让用户在后台执行过程中随时介入」是双层架构里最值得探索的一项。介入要
+ * 生效，得先有个地方**存住**那句话——`brief` 是派活时说的话，往里追加会污染原始
+ * 交代；所以单独一列。`produce` 每次尝试都重新从库里读任务，重试与返工自然继承它。
+ *
+ * 存 JSON 而不是另开一张 `task_steering` 表：它只被整体读、从不单独查，也不参与
+ * 任何 join。
+ */
+const V32 = `
+ALTER TABLE task ADD COLUMN steering TEXT NOT NULL DEFAULT '[]';
+`;
+
+/**
+ * V33：「组织 / 老板 / 员工」这三个词从库里退场。
+ *
+ * v2 早就按"一个助手的个人工作台"在跑，但表和列还姓 old world：`employee_memory`、
+ * `org_fact`、`worker.employee_id`、`acceptance.reviewer='boss'`。留着它们，每读一行
+ * 代码都要先在脑子里翻译一次——而翻译出来的东西（部门、项目、汇报线）在库里已经
+ * 没有对应的表了。
+ *
+ * 三件事，全是**改名**，不是改行为：
+ *
+ * 1. `employee_memory` → `memory`。作用域收敛成 `personal | thread`：`department` /
+ *    `project` 两张表 V31 就删了，那些行落到 `personal`（"我的经验"是唯一还成立的读法）；
+ *    `org` 也落到 `personal`。旧行一条不丢。
+ * 2. `org_fact` → `fact`，`org` → `global`。它一直是"这个工作台里都算数的事"，
+ *    从来没有真的按组织切分过；`department` / `project` 同样落到 `global`。
+ * 3. 称呼：`worker.employee_id` 与 `consolidation_run.employee_id` → `owner_id`；
+ *    `acceptance.reviewer` 的 `manager | boss` → `system | user`（连同 `evidence`
+ *    里记的 `command: ["boss", …]`）；`app_user.id = 'boss'` → `'user'`，
+ *    默认称呼 `老板` → `我`。
+ *
+ * CHECK 约束改不了，所以三张表（`memory` / `fact` / `acceptance` / `app_user`）是
+ * 重建后搬数据，再删旧表。别名与列名都在同一个迁移里改完，中间没有半旧半新的状态。
+ */
+const V33 = `
+CREATE TABLE memory (
+  id               TEXT PRIMARY KEY,
+  owner_id         TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  scope_type       TEXT NOT NULL CHECK (scope_type IN ('personal','thread')),
+  scope_id         TEXT,
+  embedding        BLOB,
+  embedding_model  TEXT,
+  source_type      TEXT NOT NULL CHECK (source_type IN ('task','conversation','consolidation','manual')),
+  source_id        TEXT,
+  valid_from       INTEGER NOT NULL,
+  valid_until      INTEGER,
+  strength         REAL NOT NULL DEFAULT 1.0,
+  recall_count     INTEGER NOT NULL DEFAULT 0,
+  last_recalled_at INTEGER,
+  is_archived      INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+INSERT INTO memory (id, owner_id, kind, content, scope_type, scope_id, embedding, embedding_model,
+                    source_type, source_id, valid_from, valid_until, strength, recall_count,
+                    last_recalled_at, is_archived, created_at, updated_at)
+SELECT id, owner_id, kind, content,
+       CASE scope_type WHEN 'thread' THEN 'thread' ELSE 'personal' END,
+       scope_id, embedding, embedding_model, source_type, source_id, valid_from, valid_until,
+       strength, recall_count, last_recalled_at, is_archived, created_at, updated_at
+  FROM employee_memory;
+DROP TABLE employee_memory;
+CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory(owner_id, scope_type, scope_id);
+CREATE INDEX IF NOT EXISTS idx_memory_thread ON memory(scope_type, scope_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_recent ON memory(owner_id, created_at DESC);
+
+CREATE TABLE fact (
+  id           TEXT PRIMARY KEY,
+  company_id   TEXT NOT NULL,
+  scope_type   TEXT NOT NULL CHECK (scope_type IN ('global','thread')),
+  scope_id     TEXT NOT NULL DEFAULT '',
+  subject      TEXT NOT NULL,
+  predicate    TEXT NOT NULL,
+  object       TEXT NOT NULL DEFAULT '',
+  statement    TEXT NOT NULL,
+  source_type  TEXT NOT NULL,
+  source_id    TEXT,
+  valid_from   INTEGER NOT NULL,
+  valid_until  INTEGER,
+  confidence   REAL NOT NULL DEFAULT 1.0,
+  is_archived  INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+INSERT INTO fact (id, company_id, scope_type, scope_id, subject, predicate, object, statement,
+                  source_type, source_id, valid_from, valid_until, confidence, is_archived,
+                  created_at, updated_at)
+SELECT id, company_id,
+       CASE scope_type WHEN 'thread' THEN 'thread' ELSE 'global' END,
+       scope_id, subject, predicate, object, statement, source_type, source_id, valid_from,
+       valid_until, confidence, is_archived, created_at, updated_at
+  FROM org_fact;
+DROP TABLE org_fact;
+CREATE INDEX IF NOT EXISTS idx_fact_scope ON fact(company_id, scope_type, scope_id, valid_from DESC);
+
+ALTER TABLE worker RENAME COLUMN employee_id TO owner_id;
+ALTER TABLE consolidation_run RENAME COLUMN employee_id TO owner_id;
+DROP INDEX IF EXISTS idx_worker_employee;
+CREATE INDEX IF NOT EXISTS idx_worker_owner ON worker(owner_id);
+DROP INDEX IF EXISTS idx_consol_emp;
+CREATE INDEX IF NOT EXISTS idx_consol_owner ON consolidation_run(owner_id, started_at DESC);
+
+CREATE TABLE acceptance_v33 (
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT NOT NULL,
+  verdict     TEXT NOT NULL CHECK (verdict IN ('pass','fail')),
+  reason      TEXT NOT NULL DEFAULT '',
+  evidence    TEXT NOT NULL DEFAULT '{}',
+  reviewer    TEXT NOT NULL DEFAULT 'auto' CHECK (reviewer IN ('auto','system','user')),
+  created_at  INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES task(id)
+);
+INSERT INTO acceptance_v33 (id, task_id, verdict, reason, evidence, reviewer, created_at)
+SELECT id, task_id, verdict, reason,
+       REPLACE(REPLACE(evidence, '"boss"', '"user"'), '"manager"', '"system"'),
+       CASE reviewer WHEN 'boss' THEN 'user' WHEN 'manager' THEN 'system' ELSE reviewer END,
+       created_at
+  FROM acceptance;
+DROP TABLE acceptance;
+ALTER TABLE acceptance_v33 RENAME TO acceptance;
+CREATE INDEX IF NOT EXISTS idx_acceptance_task ON acceptance(task_id, created_at);
+
+CREATE TABLE app_user_v33 (
+  id         TEXT PRIMARY KEY CHECK (id = 'user'),
+  name       TEXT NOT NULL,
+  avatar     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+INSERT INTO app_user_v33 (id, name, avatar, created_at, updated_at)
+SELECT 'user', CASE WHEN name = '老板' THEN '我' ELSE name END, avatar, created_at, updated_at
+  FROM app_user;
+DROP TABLE app_user;
+ALTER TABLE app_user_v33 RENAME TO app_user;
+
+UPDATE message SET payload = REPLACE(payload, '"senderId":"boss"', '"senderId":"user"')
+ WHERE payload LIKE '%"senderId":"boss"%';
+`;
+
+/**
+ * V34：`industry` / `vision` 也换掉。
+ *
+ * 这两个字段是"公司资料"页留下来的：一个行业、一个愿景。产品现在是**一个助手的
+ * 个人工作台**，所以它们是同一件事的两种问法——「你在做什么」和「一句话目标」。
+ * 词换了，值不动（`company.domain` 里存的 id 只有渲染层认得，换的是列名）。
+ *
+ * `profile.vision` 是 `app_setting` 里的一行，所以是搬键而不是改名。`UPDATE OR REPLACE`
+ * 是为了防"两个键都存在"的库：新键赢，旧键消失，而不是让主键冲突把升级卡死。
+ */
+const V34 = `
+ALTER TABLE company RENAME COLUMN industry TO domain;
+UPDATE OR REPLACE app_setting SET key = 'profile.goal' WHERE key = 'profile.vision';
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

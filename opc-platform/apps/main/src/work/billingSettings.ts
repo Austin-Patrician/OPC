@@ -130,7 +130,7 @@ export class BillingSettingsService {
   };
 
   /**
-   * Seed missing keys only. An upgrade must not overwrite a boss who already
+   * Seed missing keys only. An upgrade must not overwrite a user who already
    * chose 7.2 yesterday; `INSERT OR IGNORE` is the whole behaviour.
    */
   ensureDefaults = (): void => {

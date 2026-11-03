@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { bossName } from '@/entities/company/model/options';
+import { userName } from '@/entities/company/model/options';
 import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompany';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
@@ -16,7 +16,7 @@ interface TitleBarProps {
  * 24px macOS-style title bar. Window controls follow the host platform, so the
  * same bundle looks native on Windows and Linux instead of faking traffic lights.
  *
- * The only identity in the chrome is the boss's avatar: clicking it opens the
+ * The only identity in the chrome is the your avatar: clicking it opens the
  * name/company/role card. It hangs over the chrome's bottom edge, above the
  * navigation rail's first row. On macOS the real traffic lights sit in that same
  * corner, so the avatar drops just under them instead of being pushed right.
@@ -32,7 +32,7 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
   const [identityOpen, setIdentityOpen] = useState(false);
   const identityRef = useRef<HTMLDivElement>(null);
 
-  const boss = bossName(profile, t('company.bossFallback'));
+  const user = userName(profile, t('company.userFallback'));
   // Both read per render: `bootstrap()` sets the `<html>` dataset just before
   // React mounts, so a module-scope read would be stale on the very first paint.
   const platform = getPlatform();
@@ -114,13 +114,13 @@ export function TitleBar({ onOpenSettings }: TitleBarProps) {
               onClick={() => setIdentityOpen((open) => !open)}
               className="flex rounded-full outline-none transition hover:ring-2 hover:ring-accent/40 focus-visible:ring-2 focus-visible:ring-accent"
             >
-              <Avatar name={boss} src={profile.bossAvatar} size="xs" className="size-7" />
+              <Avatar name={user} src={profile.userAvatar} size="xs" className="size-7" />
             </button>
 
             {identityOpen ? (
               <IdentityPopover
                 profile={profile}
-                onRename={(name) => void update({ bossName: name })}
+                onRename={(name) => void update({ userName: name })}
               />
             ) : null}
           </div>

@@ -29,7 +29,7 @@ export interface ToolGroup {
   agents: number;
 }
 
-/** Union of what every agent installed, in the order the first agent had them. */
+/** Union of what every execution body installed, in the order the first one had them. */
 export function groupExtensions(agents: readonly AgentCapability[]): ExtensionGroup[] {
   const groups = new Map<string, ExtensionGroup>();
 
@@ -44,7 +44,7 @@ export function groupExtensions(agents: readonly AgentCapability[]): ExtensionGr
         sections: 0,
       };
       group.agents += 1;
-      // A registry can differ per employee, so take the widest shape seen.
+      // A registry can differ per execution body, so take the widest shape seen.
       group.hooks = Math.max(group.hooks, extension.hooks);
       group.tasks = Math.max(group.tasks, extension.tasks);
       group.sections = Math.max(group.sections, extension.sections);

@@ -10,6 +10,7 @@ import type {
   ProviderDraft,
   RuntimeProfileDraft,
   BillingSettingsPatch,
+  TriagePolicyPatch,
   WorkThread,
 } from '@opc/shared/domain';
 import { BrowserWindow, dialog, ipcMain } from 'electron';
@@ -19,12 +20,12 @@ import { getAppInfo } from '../appInfo';
 import type { ChatService } from '../chat/chatService';
 import { runDiagnostics } from '../diagnostics/report';
 import type { OcrSettings } from '@opc/shared/ocr';
-import type { OrgFactService } from '../memory/orgFactService';
+import type { FactService } from '../memory/factService';
+import type { TriagePolicyStore } from '../router/triagePolicy';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { AuthService } from '../models/authService';
 import type { CompanyService } from '../company/companyService';
-import type { OrgService } from '../org/orgService';
 import { readImageArtifact } from '../work/artifacts';
 import type { ModelConfigService } from '../models/modelConfigService';
 import type { DecisionService } from '../models/decisionService';
@@ -48,23 +49,24 @@ interface RegisterOptions {
   company: CompanyService;
   /** 网络代理：保存即生效，失败会作为 IPC 错误抛回设置页。 */
   network: NetworkProxyService;
-  /** 全局基础运行环境（Node / Python），所有员工共用。 */
+  /** 全局基础运行环境（Node / Python），所有执行体共用。 */
   runtime: RuntimeService;
   /** 随应用分发的引擎（OCR）：读的是磁盘，不是偏好。 */
   bundled: { inspect: () => Promise<BundledRuntime[]> };
-  /** OCR 开关与输出粒度，和 Node/Python 一样是公司级选择。 */
+  /** OCR 开关与输出粒度，和 Node/Python 一样是工作台级选择。 */
   ocrSettings: { get: () => OcrSettings; set: (next: OcrSettings) => OcrSettings };
   /** 计费口径：定价策略、展示币种、手工汇率（设置 → 通用 → 计费）。 */
   billingSettings: BillingSettingsService;
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
-  org: OrgService;
   /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
   threads: ThreadRepository;
-  /** 老板丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
+  /** 你丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
   startGoal: (goal: string) => Promise<WorkThread>;
-  facts: OrgFactService;
+  facts: FactService;
   consolidationRuns: ConsolidationRunStore;
+  /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
+  triage: TriagePolicyStore;
   /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
@@ -80,7 +82,6 @@ export function registerIpc({
   decisions,
   auth,
   workspaceRoot,
-  org,
   threads,
   startGoal,
   facts,
@@ -93,6 +94,7 @@ export function registerIpc({
   billingSettings,
   piExtensions,
   piSkills,
+  triage,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -421,7 +423,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.org.list, () => org.list());
+  ipcMain.handle(IPC.workers.list, () => threads.listAllWorkers());
   ipcMain.handle(IPC.capabilities.list, () => work.capabilities());
   ipcMain.handle(IPC.extensions.list, () => piExtensions.list());
   ipcMain.handle(
@@ -445,31 +447,30 @@ export function registerIpc({
     await work.invalidateAllHarnesses();
     return catalog;
   });
-  ipcMain.handle(IPC.memory.consolidationRuns, (_event, employeeId: unknown) =>
-    consolidationRuns.list(20, typeof employeeId === 'string' ? employeeId : undefined),
+  ipcMain.handle(IPC.memory.consolidationRuns, (_event, ownerId: unknown) =>
+    consolidationRuns.list(20, typeof ownerId === 'string' ? ownerId : undefined),
   );
+
+  // 两层过滤的策略：读一份、写一份。写的是部分更新，没提到的字段保持原值——
+  // 表单只提交它改过的那几行，不整份覆盖。
+  ipcMain.handle(IPC.router.getTriage, () => triage.get());
+  ipcMain.handle(IPC.router.setTriage, (_event, patch: unknown) => {
+    if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+      throw new Error('router:setTriage 参数非法');
+    }
+    return triage.set(patch as TriagePolicyPatch);
+  });
 
   ipcMain.handle(IPC.facts.list, (_event, filter: unknown) => {
     const parsed = (typeof filter === 'object' && filter !== null ? filter : {}) as {
-      employeeId?: unknown;
-      departmentId?: unknown;
-      projectId?: unknown;
+      threadId?: unknown;
     };
-    if (typeof parsed.departmentId === 'string' && parsed.departmentId) {
-      return facts.current([{ type: 'department' as const, id: parsed.departmentId }], 50);
+    // 只有两层：这条线自己的规定，或者整个工作台的规定。中间那两层（部门/项目）
+    // 在库里已经没有对应的表了，留着参数只会让人以为它们还有用。
+    if (typeof parsed.threadId === 'string' && parsed.threadId) {
+      return facts.current([{ type: 'thread' as const, id: parsed.threadId }], 50);
     }
-    if (typeof parsed.projectId === 'string' && parsed.projectId) {
-      return facts.current([{ type: 'project' as const, id: parsed.projectId }], 50);
-    }
-    const member =
-      typeof parsed.employeeId === 'string'
-        ? org.list().flatMap((department) => department.members).find((entry) => entry.id === parsed.employeeId)
-        : undefined;
-    const scopes = [
-      { type: 'org' as const },
-      ...(member?.departmentId ? [{ type: 'department' as const, id: member.departmentId }] : []),
-    ];
-    return facts.current(scopes, 50);
+    return facts.current([{ type: 'global' as const }], 50);
   });
   ipcMain.handle(IPC.facts.write, (_event, input: unknown) => {
     if (typeof input !== 'object' || input === null) throw new Error('facts:write 参数非法');
@@ -478,22 +479,22 @@ export function registerIpc({
       throw new Error('facts:write 需要 scopeType / subject / object');
     }
     const written = facts.write({
-      scopeType: scopeType as 'org' | 'department' | 'project',
+      scopeType: scopeType === 'thread' ? 'thread' : 'global',
       scopeId: typeof scopeId === 'string' ? scopeId : undefined,
       subject,
       object,
       statement: typeof statement === 'string' ? statement : undefined,
     });
     return facts.current(
-      written.scopeType === 'org'
-        ? [{ type: 'org' as const }]
+      written.scopeType === 'global'
+        ? [{ type: 'global' as const }]
         : [{ type: written.scopeType, id: written.scopeId }],
       50,
     );
   });
 
   // ── v2: 注意力队列 ─────────────────────────────────────────────────────
-  // 老板打开应用看到的是"有什么事需要我"，不是会话列表。silent 的汇报永远不进
+  // 你打开应用看到的是"有什么事需要我"，不是会话列表。silent 的汇报永远不进
   // 队列——干完活不打扰是产品承诺，也是一条测试（router.test.ts）。
   ipcMain.handle(IPC.threads.start, (_event, goal: unknown) => {
     if (typeof goal !== 'string' || goal.trim().length === 0) {
@@ -523,7 +524,7 @@ export function registerIpc({
       typeof draft.note === 'string' ? draft.note : undefined,
     );
     if (!result.ok) throw new Error(result.error);
-    // The boss answered: the row leaves the queue either way. A rework will come
+    // You answered: the row leaves the queue either way. A rework will come
     // back with its own report when the second attempt lands.
     threads.markReportRead(draft.reportId);
     return result.thread;
@@ -640,11 +641,11 @@ export function registerIpc({
   ipcMain.handle(IPC.work.listTasks, (_event, limit: unknown) =>
     work.listTasks(typeof limit === 'number' ? limit : undefined),
   );
-  ipcMain.handle(IPC.work.bossDecision, (_event, taskId: unknown, decision: unknown, reason: unknown) => {
+  ipcMain.handle(IPC.work.userDecision, (_event, taskId: unknown, decision: unknown, reason: unknown) => {
     if (typeof taskId !== 'string' || (decision !== 'approve' && decision !== 'reject')) {
-      throw new Error('work:bossDecision 参数非法');
+      throw new Error('work:userDecision 参数非法');
     }
-    return work.bossDecision(taskId, decision, typeof reason === 'string' ? reason : undefined);
+    return work.userDecision(taskId, decision, typeof reason === 'string' ? reason : undefined);
   });
   ipcMain.handle(IPC.work.subtasks, (_event, taskId: unknown) => {
     if (typeof taskId !== 'string') throw new Error('work:subtasks 参数非法');
@@ -671,7 +672,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.listTasks);
     ipcMain.removeHandler(IPC.work.setIssueMeta);
     ipcMain.removeHandler(IPC.work.linkTasks);
-    ipcMain.removeHandler(IPC.work.bossDecision);
+    ipcMain.removeHandler(IPC.work.userDecision);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
     ipcMain.removeHandler(IPC.app.getInfo);
@@ -690,7 +691,7 @@ export function registerIpc({
 function isCompanyPatch(value: unknown): value is CompanyProfilePatch {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  const fields = ['name', 'industry', 'vision', 'colorId', 'bossName', 'logo', 'bossAvatar'] as const;
+  const fields = ['name', 'domain', 'goal', 'colorId', 'userName', 'logo', 'userAvatar'] as const;
   // Every present field must be a string; `undefined` means "leave as is".
   return fields.every((field) => candidate[field] === undefined || typeof candidate[field] === 'string');
 }

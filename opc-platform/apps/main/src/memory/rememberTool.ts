@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import { defineExtension, defineTool, type ToolExecutionResult } from '@earendil-works/pi-durable';
 
 export interface RememberToolDeps {
-  employeeId: string;
+  ownerId: string;
   /** Current task, so the memory points back at where it came from. */
   taskId: () => string | undefined;
   remember: (input: {

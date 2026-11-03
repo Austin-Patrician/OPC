@@ -2,14 +2,20 @@ import path from 'node:path';
 import type { Context } from '@earendil-works/chord/context';
 import type { Harness, Registry } from '@earendil-works/pi-durable';
 import { createRegistry } from '@earendil-works/pi-durable';
-import type { ModelRef, WorkReport } from '@opc/shared/domain';
+import type { ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
+import { ROUTER_ID } from '../chat/chatService';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import { TaskRepository } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
+import type { FactService } from '../memory/factService';
+import type { MemoryService } from '../memory/memoryService';
+import type { DecisionService } from '../models/decisionService';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { Router } from './router';
 import { RouterSession } from './routerSession';
 import { createRouterTools, type LineSummary } from './routerTools';
+import { createDecisionGate, keepAll, type SemanticScreener } from './semanticGate';
+import { createFastPath } from './triage';
 import type { OpenLineInput, OpenLineResult } from './workDispatch';
 
 /**
@@ -21,7 +27,7 @@ import type { OpenLineInput, OpenLineResult } from './workDispatch';
  * 一套只属于它的工具、自己的模型与 thinking、自己的压缩策略。进程重启后它记得
  * 之前发生过什么。它没有 bash、没有文件读写——按 §2.1，Router 是序点不是人手。
  *
- * 同时它**不是**聊天窗口：老板看不到它的推理，只看到 `reply_to_boss` 说出去的话。
+ * 同时它**不是**聊天窗口：你看不到它的推理，只看到 `reply_to_user` 说出去的话。
  * 这个区分就是 v1 那个"单会话阻塞"和 v2 双层架构的分界线。
  */
 
@@ -36,10 +42,25 @@ export interface RouterHostDeps {
   context: () => Promise<Context>;
   /** 派活：开线 + 建任务 + 启动，立刻返回。 */
   openLine: (input: OpenLineInput) => OpenLineResult;
-  /** 对老板说话。 */
+  /** 对你说话。 */
   reply: (text: string) => void;
-  /** 中途改方向。 */
-  steer?: (threadId: string, note: string) => { ok: boolean; reason?: string };
+  /** 中途改方向。`live` 是"真的插进正在跑的会话"的条数。 */
+  steer?: (
+    threadId: string,
+    note: string,
+  ) => Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
+  /** 两层过滤怎么配（§3.1）；每一轮都重新读，改完立刻生效。 */
+  policy: () => TriagePolicy;
+  /** 语义门用的分类器。没配（或没模型）时这一层自然关掉。 */
+  decisions?: DecisionService;
+  /**
+   * Router 的记忆。它读写的 `ownerId` 是 `ROUTER_ID`——归档会话巩固出来的记忆
+   * 也落在那个 id 上（`chatService` 用 `memberIds[0]` 当 owner），所以写的人和
+   * 读的人是同一个。这正是 §2.1 说的"Router 是全局序点…和记忆"。
+   */
+  memory?: MemoryService;
+  /** 工作台的规矩：`fact` 的 global 那几条，每轮带进 Router 的上下文。 */
+  facts?: FactService;
 }
 
 export interface RouterHost {
@@ -54,7 +75,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const threads = new ThreadRepository(deps.db);
   const tasks = new TaskRepository(deps.db);
 
-  /** Router 的模型：跟设置走的公司默认。轻量即可（§2.1）。 */
+  /** Router 的模型：跟设置走的工作台默认。轻量即可（§2.1）。 */
   const model = (): ModelRef | null => deps.modelConfig?.getDefaults().llm ?? null;
 
   let harnessPromise: Promise<Harness> | null = null;
@@ -179,12 +200,48 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     return { ok: true };
   };
 
-  const askBoss = (threadId: string | null, question: string) => {
+  const askUser = (threadId: string | null, question: string) => {
     const target = threadId ?? threads.listActiveThreads(1)[0]?.id ?? null;
-    if (!target) return { ok: false, reason: '没有可以挂靠的线；用 reply_to_boss 直接说话' };
+    if (!target) return { ok: false, reason: '没有可以挂靠的线；用 reply_to_user 直接说话' };
     threads.addReport({ threadId: target, level: 'decide', title: '需要你拍板', body: question });
     threads.setAttention(target, 'decide');
     return { ok: true };
+  };
+
+  /**
+   * Router 自己的记忆。
+   *
+   * 它记的是**关于你的事**：你的偏好、你否决过的方向、你要求过的格式。这些不属于
+   * 任何一条工作线，所以落在 `personal`（owner 是 `router`）。
+   *
+   * 这条链路以前是断的：归档会话巩固出来的记忆写着 `owner_id = 'router'`，而唯一
+   * 会读记忆的人是执行体（读自己的 id）。也就是说，记得这件事的库、和会去回忆的人，
+   * 从来不是同一个。现在 Router 有了读的入口，写和读终于指向同一个 owner。
+   */
+  const remember = async (text: string) => {
+    if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
+    const content = text.trim();
+    if (!content) return { ok: false, reason: '内容是空的' };
+    const id = await deps.memory.remember({
+      ownerId: ROUTER_ID,
+      kind: 'preference',
+      content,
+      scope: { type: 'personal' },
+      sourceType: 'manual',
+    });
+    return { ok: true, id };
+  };
+
+  const recallMemory = async (query: string) => {
+    if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
+    const lines = threads.listActiveThreads(5).map((thread) => ({ type: 'thread' as const, id: thread.id }));
+    const found = await deps.memory.retrieve({
+      ownerId: ROUTER_ID,
+      query,
+      scopes: [{ type: 'personal' }, ...lines],
+      limit: 5,
+    });
+    return { ok: true as const, items: found.map((item) => item.content) };
   };
 
   function registry(): Registry {
@@ -196,20 +253,50 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         recall,
         lines,
         steerLine: (threadId, note) =>
-          deps.steer?.(threadId, note) ?? { ok: false, reason: '这个环境不支持中途改方向' },
-        askBoss,
+          deps.steer?.(threadId, note) ??
+          Promise.resolve({
+            ok: false,
+            reason: '这个环境不支持中途改方向',
+            live: 0,
+            queued: 0,
+          }),
+        askUser,
         closeLine,
+        remember,
+        recallMemory,
       }),
     );
     return built;
   }
 
+  /** 程序层：策略由设置决定，每一轮重新读。 */
+  const fastPath = createFastPath({ policy: () => deps.policy() });
+
+  /**
+   * 语义门：开了 `decision` 就先用分类器筛一遍噪声，关着就全部交给 Router。
+   *
+   * 这里每轮重新读策略，所以"在设置里把语义层换成分类器"不需要重启，下一轮生效。
+   * 分类器没配时自动退回 `keepAll`——那不是错误，只是这一层没启用。
+   */
+  const gate = deps.decisions
+    ? createDecisionGate({
+        decisions: deps.decisions,
+        threshold: () => deps.policy().noiseThreshold,
+      })
+    : null;
+
+  const semantic: SemanticScreener = async (events) =>
+    deps.policy().semantic === 'decision' && gate ? gate(events) : keepAll(events);
+
+  /** 工作台的规矩：Router 也得知道这些，否则"规矩"只有干活的人知道。 */
+  const rules = (): string[] =>
+    deps.facts ? deps.facts.current([{ type: 'global' }], 12).map((fact) => fact.statement) : [];
+
   const router = new Router({
     threads,
-    // 程序层：只挡真正不是活的源。有语义层（Router 会话）在后面，这里不必聪明。
-    prefilter: (event) => (event.source === 'manual' || event.source === 'folder' || event.source === 'im'
-      ? 'keep'
-      : 'drop'),
+    prefilter: fastPath,
+    semantic,
+    rules,
     deliver: (text) => session.deliver(text),
     /**
      * 直通（§3.2 Fast Path）：这条事件流的归属已经确定，程序直接发给盯它的执行体，
@@ -218,6 +305,10 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
      *
      * 事件自己的内容要带过去：直通省掉的是"判断"，不是"信息"。否则同一个话题里
      * 第二条事件到达时，执行体看到的还是第一条的目标。
+     *
+     * `workerId` 也带过去：归属已定的意思是**连人也定了**。不带它，`openLine` 会
+     * 按目标从全库重新挑一次——单执行体的机器上看不出来，多执行体的机器上就是
+     * 同一件事被两个人各干一半。
      */
     passthrough: (intent) => {
       const payload = intent.event.payload;
@@ -228,6 +319,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         goal: fresh?.trim() || intent.thread.goal || intent.thread.title,
         title: intent.thread.title,
         threadKey: intent.thread.threadKey,
+        workerId: intent.workerId,
       });
     },
   });

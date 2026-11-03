@@ -5,7 +5,7 @@ import type { ThreadRepository } from '../data/threadRepository';
  * 进展监督 —— 三层验收里的第 ① 层。
  *
  * 判的不是「交付物对不对」，而是「它还在往前走吗」。这个区别很重要：判错了
- * 最多是提前叫老板一声，不会把一个好交付物判成坏交付物。
+ * 最多是提前叫你一声，不会把一个好交付物判成坏交付物。
  *
  * Super-agent 的 Watchdog 讲的是同一件事：异常通常不是进程崩了，而是模型在
  * 无效循环里转圈、或者慢慢偏离了目标 (docs/v2/01-core.md §9)。
@@ -105,7 +105,7 @@ export interface WatchdogDeps {
  * The loop. Runs on a timer, costs nothing when everything is healthy.
  *
  * It **surfaces**, it does not kill: a diagnosis becomes a `decide` report on the
- * line of work, and the boss decides. Killing a run that is about to succeed is
+ * line of work, and you decides. Killing a run that is about to succeed is
  * exactly the kind of clever automation this project's P6 forbids.
  */
 export class Watchdog {
@@ -134,7 +134,7 @@ export class Watchdog {
       spoken += 1;
 
       // A task with no line of work has nowhere to report to; the ledger still
-      // shows it, so nothing is hidden — it just cannot reach the boss's queue.
+      // shows it, so nothing is hidden — it just cannot reach the your queue.
       if (task.threadId) {
         this.deps.threads.addReport({
           threadId: task.threadId,

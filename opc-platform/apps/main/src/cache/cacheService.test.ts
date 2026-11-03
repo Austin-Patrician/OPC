@@ -127,13 +127,13 @@ describe('memory tier', () => {
 
   it('invalidates by tag without touching unrelated entries', () => {
     const cache = createCacheService();
-    cache.set('org.roster', 'all', 'roster', { tags: ['org'] });
-    cache.set('org.departments', 'all', 'departments', { tags: ['org'] });
+    cache.set('task.list', 'all', 'roster', { tags: ['tasks'] });
+    cache.set('task.detail', 'all', 'departments', { tags: ['tasks'] });
     cache.set('model.catalog', 'provider-a', 'models');
 
-    expect(cache.invalidateTag('org')).toBe(2);
-    expect(cache.get('org.roster', 'all')).toBeUndefined();
-    expect(cache.get('org.departments', 'all')).toBeUndefined();
+    expect(cache.invalidateTag('tasks')).toBe(2);
+    expect(cache.get('task.list', 'all')).toBeUndefined();
+    expect(cache.get('task.detail', 'all')).toBeUndefined();
     expect(cache.get('model.catalog', 'provider-a')?.value).toBe('models');
   });
 
@@ -206,12 +206,12 @@ describe('disk tier', () => {
   it('keeps a memory-only write from resurrecting the old disk copy', () => {
     const dir = tempDir();
     const first = createCacheService({ directory: dir });
-    first.set('org.roster', 'all', 'disk', { persist: true });
-    first.set('org.roster', 'all', 'memory');
+    first.set('task.list', 'all', 'disk', { persist: true });
+    first.set('task.list', 'all', 'memory');
     first.close();
 
     const second = createCacheService({ directory: dir });
-    expect(second.get('org.roster', 'all')).toBeUndefined();
+    expect(second.get('task.list', 'all')).toBeUndefined();
     second.close();
   });
 
@@ -270,18 +270,18 @@ describe('disk tier', () => {
   it('invalidates a tag on disk, including across a restart', () => {
     const dir = tempDir();
     const first = createCacheService({ directory: dir });
-    first.set('org.roster', 'all', 'roster', { persist: true, tags: ['org'] });
-    first.set('org.departments', 'all', 'departments', { persist: true, tags: ['org'] });
+    first.set('task.list', 'all', 'roster', { persist: true, tags: ['tasks'] });
+    first.set('task.detail', 'all', 'departments', { persist: true, tags: ['tasks'] });
     first.set('model.catalog', 'p1', 'models', { persist: true, tags: ['models'] });
     first.close();
 
     const second = createCacheService({ directory: dir });
-    expect(second.invalidateTag('org')).toBe(2);
+    expect(second.invalidateTag('tasks')).toBe(2);
     second.close();
 
     const third = createCacheService({ directory: dir });
-    expect(third.get('org.roster', 'all')).toBeUndefined();
-    expect(third.get('org.departments', 'all')).toBeUndefined();
+    expect(third.get('task.list', 'all')).toBeUndefined();
+    expect(third.get('task.detail', 'all')).toBeUndefined();
     expect(third.get('model.catalog', 'p1')?.value).toBe('models');
     third.close();
   });
@@ -326,7 +326,7 @@ describe('disk tier', () => {
   it('reports bytes and entry counts per namespace', () => {
     const cache = createCacheService({ directory: tempDir() });
     cache.set('model.catalog', 'p1', { a: 1 }, { persist: true });
-    cache.set('org.roster', 'all', 'roster');
+    cache.set('task.list', 'all', 'roster');
     cache.get('model.catalog', 'p1');
     cache.get('model.catalog', 'missing');
 

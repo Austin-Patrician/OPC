@@ -7,7 +7,7 @@ import { buttonClass, PageHeader, Section, StatusBadge } from '@/features/settin
 import { cn } from '@/shared/lib/cn';
 
 /**
- * 注意力队列 —— 老板打开应用看到的第一个页面。
+ * 注意力队列 —— 你打开应用看到的第一个页面。
  *
  * 这一页是 v2 的全部主张：**跟进单位是工作线，不是会话**。上面是"需要我处理的
  * 事"（decide 永远排在 notify 之前），下面是"机器在干什么"——静默完成的活必须
@@ -35,7 +35,7 @@ export function AttentionPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
   const [starting, setStarting] = useState(false);
-  /** Which row is asking for a rework note, and what the boss typed. */
+  /** Which row is asking for a rework note, and what you typed. */
   const [reworkId, setReworkId] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -97,7 +97,7 @@ export function AttentionPage() {
   };
 
   /**
-   * 老板的判定。这是系统唯一一处「人说了算」的入口——`decide` 的活系统自己
+   * 你的判定。这是系统唯一一处「人说了算」的入口——`decide` 的活系统自己
    * 判不了，所以才在这里。
    */
   const decide = async (entry: AttentionEntry, decision: 'approve' | 'rework', text?: string) => {
@@ -152,7 +152,7 @@ export function AttentionPage() {
         }
       />
 
-      {/* 这一页不只是看板：老板在这里丢目标，不需要知道"会话"这个概念。 */}
+      {/* 这一页不只是看板：你在这里丢目标，不需要知道"会话"这个概念。 */}
       <div className="mb-5 rounded-xl border border-line bg-surface p-3">
         <textarea
           value={goal}

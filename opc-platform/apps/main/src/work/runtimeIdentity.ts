@@ -16,12 +16,12 @@ export interface RuntimeIdentity {
   /** Cache key and `agents/<key>.sqlite`. Stable for the life of the worker. */
   runtimeKey: string;
   /** Whose tool policy, skills and model this runtime uses. */
-  employeeId: string;
+  ownerId: string;
 }
 
 export function runtimeIdentityFor(task: Pick<WorkTask, 'workerId' | 'assigneeId'>): RuntimeIdentity {
   return {
     runtimeKey: task.workerId ?? task.assigneeId,
-    employeeId: task.assigneeId,
+    ownerId: task.assigneeId,
   };
 }

@@ -23,7 +23,7 @@ export function App() {
       <ThemeSync />
       <Routes>
         <Route element={<AppShell />}>
-          {/* 老板打开应用先看到"有什么事需要我"，不是会话列表。 */}
+          {/* 你打开应用先看到"有什么事需要我"，不是会话列表。 */}
           <Route index element={<Navigate to="/attention" replace />} />
           <Route path="attention" element={<AttentionPage />} />
           <Route path="chat" element={<ChatPage />} />

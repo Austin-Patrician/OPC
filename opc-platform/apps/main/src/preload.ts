@@ -131,16 +131,19 @@ const bridge: OpcBridge = {
     },
   },
   memory: {
-    consolidationRuns: (employeeId?: string) =>
-      ipcRenderer.invoke(IPC.memory.consolidationRuns, employeeId),
+    consolidationRuns: (ownerId?: string) =>
+      ipcRenderer.invoke(IPC.memory.consolidationRuns, ownerId),
   },
   facts: {
-    list: (filter?: { employeeId?: string; departmentId?: string; projectId?: string }) =>
-      ipcRenderer.invoke(IPC.facts.list, filter),
+    list: (filter?: { threadId?: string }) => ipcRenderer.invoke(IPC.facts.list, filter),
     write: (input: unknown) => ipcRenderer.invoke(IPC.facts.write, input),
   },
-  org: {
-    list: () => ipcRenderer.invoke(IPC.org.list),
+  router: {
+    getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
+    setTriage: (patch: unknown) => ipcRenderer.invoke(IPC.router.setTriage, patch),
+  },
+  workers: {
+    list: () => ipcRenderer.invoke(IPC.workers.list),
   },
   artifacts: {
     read: (taskId: string, relPath: string) => ipcRenderer.invoke(IPC.artifacts.read, taskId, relPath),
@@ -217,8 +220,8 @@ const bridge: OpcBridge = {
     listTasks: (limit?: number) => ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,
     createTask: (input: CreateTaskInput) => ipcRenderer.invoke(IPC.work.createTask, input),
     runTask: (taskId: string) => ipcRenderer.invoke(IPC.work.runTask, taskId),
-    bossDecision: (taskId: string, decision: 'approve' | 'reject', reason?: string) =>
-      ipcRenderer.invoke(IPC.work.bossDecision, taskId, decision, reason) as Promise<WorkTask>,
+    userDecision: (taskId: string, decision: 'approve' | 'reject', reason?: string) =>
+      ipcRenderer.invoke(IPC.work.userDecision, taskId, decision, reason) as Promise<WorkTask>,
     setIssueMeta: (taskId: string, patch: unknown) =>
       ipcRenderer.invoke(IPC.work.setIssueMeta, taskId, patch) as Promise<WorkTask>,
     linkTasks: (fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates') =>

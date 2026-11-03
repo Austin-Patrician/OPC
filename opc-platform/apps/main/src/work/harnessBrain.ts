@@ -1,7 +1,7 @@
 import type { WorkTask } from '@opc/shared/domain';
 import type { Context } from '@earendil-works/chord/context';
 import type { ModelRef } from '@opc/shared/domain';
-import type { Harness } from '@earendil-works/pi-durable';
+import type { Harness, Conversation } from '@earendil-works/pi-durable';
 
 interface UsageLike {
   models?: Record<string, { input: number; output: number; cost?: { total?: number } }>;
@@ -37,7 +37,47 @@ export class HarnessBrain implements TaskBrain {
   readonly name = 'pi-agent';
   readonly maxAttempts = Number(process.env.OPC_MAX_ATTEMPTS ?? 3);
 
+  /**
+   * 正在跑的会话，按任务记着。
+   *
+   * 存在的唯一理由是「你中途改方向」：改方向要**现在**生效，而不是等这一轮跑完
+   * ——跑到一半才发现方向错了，等它跑完就白跑了。会话一结束就从表里去掉，所以
+   * 这张表永远是"正在跑的"，不是缓存。
+   */
+  private readonly live = new Map<string, Conversation>();
+
   constructor(private readonly deps: HarnessBrainDeps) {}
+
+  /**
+   * 把一句话插进正在跑的活。
+   *
+   * `whenBusy: 'steer'` 是运行时自带的能力（pi 的 inbox）：会话忙的时候这句话排进
+   * `pi.inbox`，在下一个 boundary（一次工具调用结束）被放进上下文，不需要我们去打断
+   * generation。§4.1 的"全双工"在这里是白拿的。
+   *
+   * 返回 `false` 表示这条活此刻没有在跑的会话——那就只能走持久化那条路（写进
+   * `task.steering`，下一次尝试读到）。
+   */
+  interject = async (taskId: string, text: string): Promise<boolean> => {
+    const conversation = this.live.get(taskId);
+    if (!conversation) return false;
+    const note = text.trim();
+    if (!note) return false;
+
+    const ctx = await this.deps.context();
+    const submission = await conversation.submit(
+      {
+        type: 'input',
+        content: `用户中途改了方向（优先于原来的说明）：${note}`,
+        whenBusy: 'steer',
+        entry: { kind: 'opc.steering', data: { source: 'user' } },
+      },
+      ctx,
+    );
+    // 不等它 settle：steer 只在下一个 boundary 才落位，等它等于等到这一轮跑完。
+    void submission.wait(ctx).catch(() => undefined);
+    return true;
+  };
 
   async execute(context: {
     task: WorkTask;
@@ -84,43 +124,53 @@ export class HarnessBrain implements TaskBrain {
     log(`交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`);
     if (feedback) log(`修复上下文：${feedback.reason}`);
 
-    const submission = await conversation.submit(
-      { type: 'input', content: buildPrompt(task, feedback) },
-      ctx,
-    );
-    const settled = await submission.wait(ctx);
-
-    const after = await harness.usage(ctx);
-    // pi reports tokens; money is our own arithmetic against the configured price,
-    // so a provider without a pricing table still yields a predictable 0.
-    const delta = diffUsage(before, after);
-    const spent = delta.input + delta.output;
-    const price = this.deps.price(model);
-    // pi already applies cache rates and context tiers; only fall back to plain
-    // arithmetic when it reports no cost (e.g. a provider without prices).
-    const piCost = diffCost(before, after);
-    const costUsd =
-      piCost > 0
-        ? piCost
-        : (delta.input / 1_000_000) * price.inputUsdPerM +
-          (delta.output / 1_000_000) * price.outputUsdPerM;
-    if (spent > 0 || costUsd > 0) {
-      reportUsage?.({ input: 0, output: 0, total: spent, costUsd });
-      log(
-        costUsd > 0
-          ? `模型用量：${spent} tokens · $${costUsd.toFixed(4)}`
-          : `模型用量：${spent} tokens（未配置价格）`,
+    this.live.set(task.id, conversation);
+    try {
+      const submission = await conversation.submit(
+        { type: 'input', content: buildPrompt(task, feedback) },
+        ctx,
       );
-    }
+      const settled = await submission.wait(ctx);
 
-    if (settled.status !== 'done') {
-      throw new Error(`pi 循环未完成（${settled.status}）`);
+      const after = await harness.usage(ctx);
+      // pi reports tokens; money is our own arithmetic against the configured price,
+      // so a provider without a pricing table still yields a predictable 0.
+      const delta = diffUsage(before, after);
+      const spent = delta.input + delta.output;
+      const price = this.deps.price(model);
+      // pi already applies cache rates and context tiers; only fall back to plain
+      // arithmetic when it reports no cost (e.g. a provider without prices).
+      const piCost = diffCost(before, after);
+      const costUsd =
+        piCost > 0
+          ? piCost
+          : (delta.input / 1_000_000) * price.inputUsdPerM +
+            (delta.output / 1_000_000) * price.outputUsdPerM;
+      if (spent > 0 || costUsd > 0) {
+        reportUsage?.({ input: 0, output: 0, total: spent, costUsd });
+        log(
+          costUsd > 0
+            ? `模型用量：${spent} tokens · $${costUsd.toFixed(4)}`
+            : `模型用量：${spent} tokens（未配置价格）`,
+        );
+      }
+
+      if (settled.status !== 'done') {
+        throw new Error(`pi 循环未完成（${settled.status}）`);
+      }
+    } finally {
+      // 一定要在这里删：留着它，下一次"插话"会插进一条已经结束的会话。
+      this.live.delete(task.id);
     }
     log('pi 循环结束');
   }
 }
 
-function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
+/**
+ * 一次尝试的提示词。导出是因为它是**契约**：你改的方向、工作台规定、验收反馈各自
+ * 以什么顺序、什么口吻进到执行体眼前，是这套系统对外承诺的一部分，值得单独测。
+ */
+export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
   const lines = [
     `你在工作目录里完成一个任务，必须真的用工具创建文件，不要只回复说明。`,
     '',
@@ -135,8 +185,14 @@ function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
     '3. 确认无误后立即结束，不要输出大段解释。',
   ];
 
+  // 你改的方向排在"要求"之后：它是后说的，而且与原说明冲突时以它为准。
+  if (task.steering && task.steering.length > 0) {
+    lines.push('', '用户在做这件事的过程中改了方向（**与上面的说明冲突时，以这里为准**）：');
+    for (const entry of task.steering) lines.push(`- ${entry.note}`);
+  }
+
   if (task.facts && task.facts.length > 0) {
-    lines.push('', '公司与部门规定（必须遵守，优先级高于你的习惯）：');
+    lines.push('', '工作台的规定（必须遵守，优先级高于你的习惯）：');
     for (const fact of task.facts) lines.push(`- ${fact.statement}`);
   }
 

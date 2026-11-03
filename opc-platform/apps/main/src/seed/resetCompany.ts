@@ -1,9 +1,9 @@
 import type { CompanyDatabase } from '../data/companyDatabase';
 
 /**
- * Wipes business data (people, org, work, chats, budgets) but keeps settings,
+ * Wipes business data (work, chats, memories, executors) but keeps settings,
  * model providers and credentials. Used to start from a clean company; the
- * first-run seed then creates the two-department company again.
+ * first-run seed then creates the one default executor again.
  */
 export function resetCompany(db: CompanyDatabase): Record<string, number> {
   const tables = [
@@ -11,11 +11,11 @@ export function resetCompany(db: CompanyDatabase): Record<string, number> {
     'artifact',
     'task_step',
     'task',
-    'position',
-    'employee',
-    'department',
-    'employee_memory',
-    'agent_candidate',
+    'report',
+    'event',
+    'worker',
+    'thread',
+    'memory',
     'conversation',
     'message',
   ];

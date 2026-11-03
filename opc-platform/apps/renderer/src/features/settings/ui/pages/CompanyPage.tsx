@@ -4,11 +4,11 @@ import { useTranslation } from 'react-i18next';
 import type { CompanyProfile, CompanyProfilePatch } from '@opc/shared/domain';
 import {
   BRAND_COLORS,
-  INDUSTRIES,
+  DOMAINS,
   brandColor,
   colorLabelKey,
   companyName,
-  industryLabelKey,
+  domainLabelKey,
 } from '@/entities/company/model/options';
 import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
@@ -17,14 +17,14 @@ import { cn } from '@/shared/lib/cn';
 import { buttonClass, PageHeader, Row, Section, TextField } from '../kit';
 
 const NAME_MAX = 40;
-const BOSS_MAX = 20;
-const VISION_MAX = 60;
+const USER_MAX = 20;
+const GOAL_MAX = 60;
 
 /** Matches `CompanyService.clampImage`: 500 KB of binary ≈ 683 K base64 chars. */
 const IMAGE_MAX_BYTES = 500 * 1024;
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
 
-type ImageField = 'logo' | 'bossAvatar';
+type ImageField = 'logo' | 'userAvatar';
 
 /**
  * Logo uploader used for both identities. The preview doubles as the picker (hover
@@ -108,9 +108,9 @@ function LogoPicker({
 }
 
 /**
- * Settings → 通用 → 公司与称呼.
+ * 设置 → 工作台与称呼。
  *
- * One form, one save: name, industry, vision, brand colour and both uploaded
+ * 一个表单、一次保存：名字、你在做什么、一句话目标、配色，以及两张上传的
  * identities are drafts until the header's 保存 runs. Nothing here writes on blur
  * or on every keystroke, so a half-edited name never reaches the title bar.
  *
@@ -125,37 +125,37 @@ export function CompanyPage() {
   const status = useCompany((state) => state.status);
 
   const [nameDraft, setNameDraft] = useState(profile.name);
-  const [bossDraft, setBossDraft] = useState(profile.bossName);
-  const [visionDraft, setVisionDraft] = useState(profile.vision);
-  const [industryDraft, setIndustryDraft] = useState(profile.industry);
+  const [userDraft, setUserDraft] = useState(profile.userName);
+  const [goalDraft, setGoalDraft] = useState(profile.goal);
+  const [domainDraft, setDomainDraft] = useState(profile.domain);
   const [colorDraft, setColorDraft] = useState(profile.colorId);
   const [logoDraft, setLogoDraft] = useState(profile.logo ?? '');
-  const [bossAvatarDraft, setBossAvatarDraft] = useState(profile.bossAvatar ?? '');
+  const [userAvatarDraft, setUserAvatarDraft] = useState(profile.userAvatar ?? '');
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<{ field: ImageField; message: string } | null>(null);
 
   useEffect(() => setNameDraft(profile.name), [profile.name]);
-  useEffect(() => setBossDraft(profile.bossName), [profile.bossName]);
-  useEffect(() => setVisionDraft(profile.vision), [profile.vision]);
-  useEffect(() => setIndustryDraft(profile.industry), [profile.industry]);
+  useEffect(() => setUserDraft(profile.userName), [profile.userName]);
+  useEffect(() => setGoalDraft(profile.goal), [profile.goal]);
+  useEffect(() => setDomainDraft(profile.domain), [profile.domain]);
   useEffect(() => setColorDraft(profile.colorId), [profile.colorId]);
   useEffect(() => setLogoDraft(profile.logo ?? ''), [profile.logo]);
-  useEffect(() => setBossAvatarDraft(profile.bossAvatar ?? ''), [profile.bossAvatar]);
+  useEffect(() => setUserAvatarDraft(profile.userAvatar ?? ''), [profile.userAvatar]);
 
   const dirty =
     nameDraft !== profile.name ||
-    bossDraft !== profile.bossName ||
-    visionDraft !== profile.vision ||
-    industryDraft !== profile.industry ||
+    userDraft !== profile.userName ||
+    goalDraft !== profile.goal ||
+    domainDraft !== profile.domain ||
     colorDraft !== profile.colorId ||
     logoDraft !== (profile.logo ?? '') ||
-    bossAvatarDraft !== (profile.bossAvatar ?? '');
+    userAvatarDraft !== (profile.userAvatar ?? '');
 
   const color = brandColor(colorDraft);
   const displayName = companyName({ ...profile, name: nameDraft }, t('company.fallbackName'));
-  const bossDisplay = bossDraft.trim() || t('company.bossFallback');
+  const userDisplay = userDraft.trim() || t('company.userFallback');
 
   const pickImage = (field: ImageField, file: File | undefined) => {
     if (!file) return;
@@ -173,7 +173,7 @@ export function CompanyPage() {
     reader.onload = () => {
       if (typeof reader.result !== 'string') return;
       if (field === 'logo') setLogoDraft(reader.result);
-      else setBossAvatarDraft(reader.result);
+      else setUserAvatarDraft(reader.result);
       setSavedNotice(false);
       setSaveError(null);
     };
@@ -183,12 +183,12 @@ export function CompanyPage() {
 
   const syncDrafts = (next: CompanyProfile) => {
     setNameDraft(next.name);
-    setBossDraft(next.bossName);
-    setVisionDraft(next.vision);
-    setIndustryDraft(next.industry);
+    setUserDraft(next.userName);
+    setGoalDraft(next.goal);
+    setDomainDraft(next.domain);
     setColorDraft(next.colorId);
     setLogoDraft(next.logo ?? '');
-    setBossAvatarDraft(next.bossAvatar ?? '');
+    setUserAvatarDraft(next.userAvatar ?? '');
   };
 
   const discardChanges = () => {
@@ -202,12 +202,12 @@ export function CompanyPage() {
     if (!dirty || saving) return;
     const patch: CompanyProfilePatch = {};
     if (nameDraft.trim() !== profile.name) patch.name = nameDraft.trim();
-    if (bossDraft.trim() !== profile.bossName) patch.bossName = bossDraft.trim();
-    if (visionDraft.trim() !== profile.vision) patch.vision = visionDraft.trim();
-    if (industryDraft !== profile.industry) patch.industry = industryDraft;
+    if (userDraft.trim() !== profile.userName) patch.userName = userDraft.trim();
+    if (goalDraft.trim() !== profile.goal) patch.goal = goalDraft.trim();
+    if (domainDraft !== profile.domain) patch.domain = domainDraft;
     if (colorDraft !== profile.colorId) patch.colorId = colorDraft;
     if (logoDraft !== (profile.logo ?? '')) patch.logo = logoDraft;
-    if (bossAvatarDraft !== (profile.bossAvatar ?? '')) patch.bossAvatar = bossAvatarDraft;
+    if (userAvatarDraft !== (profile.userAvatar ?? '')) patch.userAvatar = userAvatarDraft;
 
     // Only whitespace changed: nothing to write, just normalise the form.
     if (Object.keys(patch).length === 0) {
@@ -291,23 +291,23 @@ export function CompanyPage() {
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-xl font-bold tracking-tight">{displayName}</span>
                 <span className="shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-2xs">
-                  {industryDraft
-                    ? t(industryLabelKey(industryDraft))
-                    : t('onboarding.company.cardIndustryEmpty')}
+                  {domainDraft
+                    ? t(domainLabelKey(domainDraft))
+                    : t('onboarding.company.cardDomainEmpty')}
                 </span>
               </div>
               <div
                 className={cn(
                   'mt-1 truncate text-sm',
-                  visionDraft.trim() ? 'text-white/70' : 'text-white/35',
+                  goalDraft.trim() ? 'text-white/70' : 'text-white/35',
                 )}
               >
-                {visionDraft.trim() || t('settings.company.visionPlaceholder')}
+                {goalDraft.trim() || t('settings.company.goalPlaceholder')}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2 rounded-full bg-white/10 py-1 pr-3 pl-1">
-              <Avatar name={bossDisplay} src={bossAvatarDraft || undefined} size="xs" status="online" />
-              <span className="max-w-[8rem] truncate text-sm font-medium">{bossDisplay}</span>
+              <Avatar name={userDisplay} src={userAvatarDraft || undefined} size="xs" status="online" />
+              <span className="max-w-[8rem] truncate text-sm font-medium">{userDisplay}</span>
             </div>
           </div>
         </section>
@@ -349,17 +349,17 @@ export function CompanyPage() {
             />
           </Row>
 
-          <Row label={t('settings.company.industry')}>
+          <Row label={t('settings.company.domain')}>
             <div className="flex flex-wrap justify-end gap-1.5">
-              {INDUSTRIES.map((industry) => {
-                const active = industryDraft === industry.id;
+              {DOMAINS.map((domain) => {
+                const active = domainDraft === domain.id;
                 return (
                   <button
-                    key={industry.id}
+                    key={domain.id}
                     type="button"
                     aria-pressed={active}
                     onClick={() => {
-                      setIndustryDraft(active ? '' : industry.id);
+                      setDomainDraft(active ? '' : domain.id);
                       setSavedNotice(false);
                     }}
                     className={cn(
@@ -369,22 +369,22 @@ export function CompanyPage() {
                         : 'border-line bg-surface text-ink-secondary hover:border-line-strong',
                     )}
                   >
-                    {t(industryLabelKey(industry.id))}
+                    {t(domainLabelKey(domain.id))}
                   </button>
                 );
               })}
             </div>
           </Row>
 
-          <Row label={t('settings.company.vision')}>
+          <Row label={t('settings.company.goal')}>
             <TextField
-              ariaLabel={t('settings.company.vision')}
-              value={visionDraft}
+              ariaLabel={t('settings.company.goal')}
+              value={goalDraft}
               onChange={(next) => {
-                setVisionDraft(next.slice(0, VISION_MAX));
+                setGoalDraft(next.slice(0, GOAL_MAX));
                 setSavedNotice(false);
               }}
-              placeholder={t('settings.company.visionPlaceholder')}
+              placeholder={t('settings.company.goalPlaceholder')}
               className="w-[20rem]"
             />
           </Row>
@@ -416,30 +416,30 @@ export function CompanyPage() {
           </Row>
         </Section>
 
-        <Section title={t('settings.company.bossTitle')} description={t('settings.company.bossDesc')}>
-          <Row label={t('settings.company.boss')} hint={t('settings.company.bossHint')}>
+        <Section title={t('settings.company.userTitle')} description={t('settings.company.userDesc')}>
+          <Row label={t('settings.company.user')} hint={t('settings.company.userHint')}>
             <TextField
-              ariaLabel={t('settings.company.boss')}
-              value={bossDraft}
+              ariaLabel={t('settings.company.user')}
+              value={userDraft}
               onChange={(next) => {
-                setBossDraft(next.slice(0, BOSS_MAX));
+                setUserDraft(next.slice(0, USER_MAX));
                 setSavedNotice(false);
               }}
-              placeholder={t('onboarding.company.bossPlaceholder')}
+              placeholder={t('onboarding.company.userPlaceholder')}
               className="w-[16rem]"
             />
           </Row>
 
-          <Row label={t('settings.company.bossAvatar')} hint={t('settings.company.bossAvatarHint')}>
+          <Row label={t('settings.company.userAvatar')} hint={t('settings.company.userAvatarHint')}>
             <LogoPicker
-              preview={<Avatar name={bossDisplay} src={bossAvatarDraft || undefined} size="lg" />}
-              hasImage={Boolean(bossAvatarDraft)}
+              preview={<Avatar name={userDisplay} src={userAvatarDraft || undefined} size="lg" />}
+              hasImage={Boolean(userAvatarDraft)}
               rounded="rounded-full"
               label={t('settings.company.imageUpload')}
-              error={imageError?.field === 'bossAvatar' ? imageError.message : null}
-              onPick={(file) => pickImage('bossAvatar', file)}
+              error={imageError?.field === 'userAvatar' ? imageError.message : null}
+              onPick={(file) => pickImage('userAvatar', file)}
               onClear={() => {
-                setBossAvatarDraft('');
+                setUserAvatarDraft('');
                 setImageError(null);
                 setSavedNotice(false);
               }}

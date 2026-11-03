@@ -3,7 +3,7 @@ import type { WorkerTemplate } from '@opc/shared/domain';
 /**
  * 派活的时候，谁来做？
  *
- * 在这之前这一步是「第一个在职员工」，也就是说公司里有几个人时，谁接到活看运气。
+ * 在这之前这一步是「第一个在职员工」，也就是说名单里有几个执行体时，谁接到活看运气。
  * 这个文件把它换成一条可解释的规则：**按模板匹配技能**。
  *
  * 纯函数，不碰数据库、不调模型——所以「为什么是他」可以在测试里被钉住，
@@ -11,7 +11,7 @@ import type { WorkerTemplate } from '@opc/shared/domain';
  */
 
 export interface WorkerCandidate {
-  employeeId: string;
+  ownerId: string;
   name: string;
   skills: readonly string[];
 }
@@ -20,8 +20,8 @@ export interface WorkerCandidate {
  * 每个模板希望执行体具备什么。
  *
  * 不是评分卡，是关键词：命中越多越合适，一个都不命中也不淘汰——
- * 人少的时候总得有人干，只是排在最后。真正的技能目录属于 worker 自己，
- * 等 B4 删掉 employee 之后这里会变成 `worker.skills` 的直接比较。
+ * 人少的时候总得有人干，只是排在最后。技能目录属于 worker 自己，
+ * 调用方传进来的就是 `worker.skills`。
  */
 const TEMPLATE_SKILLS: Record<WorkerTemplate, readonly string[]> = {
   code: [
@@ -59,7 +59,7 @@ const TEMPLATE_SKILLS: Record<WorkerTemplate, readonly string[]> = {
  *
  * `hint` is free text from the goal (the thread title, usually): tapping it in
  * lets "写一个抓取脚本" land on the person who lists Python without asking the
- * boss to tag anything.
+ * user to tag anything.
  */
 export function pickWorker(
   candidates: readonly WorkerCandidate[],

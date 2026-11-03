@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   BRAND_COLORS,
-  INDUSTRIES,
+  DOMAINS,
   brandColor,
   colorLabelKey,
-  industryLabelKey,
+  domainLabelKey,
 } from '@/entities/company/model/options';
 import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
@@ -17,23 +17,22 @@ const inputClass =
 
 /** Matches the caps in `CompanyService`, so the counter never lies. */
 const NAME_MAX = 40;
-const BOSS_MAX = 20;
+const USER_MAX = 20;
 const VISION_MAX = 60;
 
 interface StepCompanyProps {
-  departmentCount: number;
-  agentCount: number;
+  workerCount: number;
 }
 
 /**
- * 公司身份：名字、称呼、行业、品牌色。
+ * 工作台身份：名字、称呼、你在做什么、配色。
  *
  * 每一个字段都走 `window.opc.company`（名字/行业落 `company` 行，其余落
  * `app_setting`）。右栏是那份已存状态的实时预览，不是一张图。
  *
  * 这里曾经还有一整块「预算天花板」——预算删掉之后它也没了。
  */
-export function StepCompany({ departmentCount, agentCount }: StepCompanyProps) {
+export function StepCompany({ workerCount }: StepCompanyProps) {
   const { t } = useTranslation();
   const profile = useCompanyProfile();
   const update = useCompany((state) => state.update);
@@ -43,13 +42,13 @@ export function StepCompany({ departmentCount, agentCount }: StepCompanyProps) {
   // Text fields keep a local draft and commit on blur/Enter: one row per edit
   // instead of one per keystroke, and the caret never jumps.
   const [nameDraft, setNameDraft] = useState(profile.name);
-  const [bossDraft, setBossDraft] = useState(profile.bossName);
-  const [visionDraft, setVisionDraft] = useState(profile.vision);
+  const [userDraft, setUserDraft] = useState(profile.userName);
+  const [goalDraft, setGoalDraft] = useState(profile.goal);
 
   // Follow the stored profile when it arrives (or changes from another window).
   useEffect(() => setNameDraft(profile.name), [profile.name]);
-  useEffect(() => setBossDraft(profile.bossName), [profile.bossName]);
-  useEffect(() => setVisionDraft(profile.vision), [profile.vision]);
+  useEffect(() => setUserDraft(profile.userName), [profile.userName]);
+  useEffect(() => setGoalDraft(profile.goal), [profile.goal]);
 
   const onCardMove = (event: PointerEvent<HTMLDivElement>) => {
     const element = cardRef.current;
@@ -112,65 +111,65 @@ export function StepCompany({ departmentCount, agentCount }: StepCompanyProps) {
             </div>
 
             <div>
-              <label htmlFor="onb-boss-name" className="text-base font-semibold text-ink">
-                {t('onboarding.company.bossLabel')}
+              <label htmlFor="onb-user-name" className="text-base font-semibold text-ink">
+                {t('onboarding.company.userLabel')}
               </label>
               <div className="relative mt-2">
                 <input
-                  id="onb-boss-name"
-                  value={bossDraft}
-                  maxLength={BOSS_MAX}
-                  onChange={(event) => setBossDraft(event.target.value)}
+                  id="onb-user-name"
+                  value={userDraft}
+                  maxLength={USER_MAX}
+                  onChange={(event) => setUserDraft(event.target.value)}
                   onBlur={() => {
-                    if (bossDraft !== profile.bossName) void update({ bossName: bossDraft });
+                    if (userDraft !== profile.userName) void update({ userName: userDraft });
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') event.currentTarget.blur();
                   }}
-                  placeholder={t('onboarding.company.bossPlaceholder')}
+                  placeholder={t('onboarding.company.userPlaceholder')}
                   autoComplete="off"
                   className={`${inputClass} h-12 pr-14 pl-4 text-[1.0625rem] font-medium`}
                 />
                 <span className="absolute top-1/2 right-4 -translate-y-1/2 text-xs-plus tabular-nums text-ink-quaternary">
-                  {Array.from(bossDraft).length}/{BOSS_MAX}
+                  {Array.from(userDraft).length}/{USER_MAX}
                 </span>
               </div>
-              <p className="mt-1 text-2xs text-ink-quaternary">{t('onboarding.company.bossHint')}</p>
+              <p className="mt-1 text-2xs text-ink-quaternary">{t('onboarding.company.userHint')}</p>
             </div>
           </div>
 
           <div>
-            <label htmlFor="onb-company-vision" className="text-base font-semibold text-ink">
-              {t('onboarding.company.visionLabel')}{' '}
+            <label htmlFor="onb-company-goal" className="text-base font-semibold text-ink">
+              {t('onboarding.company.goalLabel')}{' '}
               <span className="text-xs-plus font-normal text-ink-tertiary">{t('onboarding.company.optional')}</span>
             </label>
             <input
-              id="onb-company-vision"
-              value={visionDraft}
+              id="onb-company-goal"
+              value={goalDraft}
               maxLength={VISION_MAX}
-              onChange={(event) => setVisionDraft(event.target.value)}
+              onChange={(event) => setGoalDraft(event.target.value)}
               onBlur={() => {
-                if (visionDraft !== profile.vision) void update({ vision: visionDraft });
+                if (goalDraft !== profile.goal) void update({ goal: goalDraft });
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') event.currentTarget.blur();
               }}
-              placeholder={t('onboarding.company.visionPlaceholder')}
+              placeholder={t('onboarding.company.goalPlaceholder')}
               autoComplete="off"
               className={`${inputClass} mt-2 h-10 px-3.5 text-base-plus`}
             />
           </div>
 
-          <Block title={t('onboarding.company.industryTitle')}>
+          <Block title={t('onboarding.company.domainTitle')}>
             <div className="flex flex-wrap gap-2">
-              {INDUSTRIES.map((industry) => {
-                const active = profile.industry === industry.id;
+              {DOMAINS.map((domain) => {
+                const active = profile.domain === domain.id;
                 return (
                   <button
-                    key={industry.id}
+                    key={domain.id}
                     type="button"
                     aria-pressed={active}
-                    onClick={() => void update({ industry: active ? '' : industry.id })}
+                    onClick={() => void update({ domain: active ? '' : domain.id })}
                     className={cn(
                       'h-9 cursor-pointer rounded-full border px-3.5 text-sm-plus transition-all',
                       active
@@ -178,7 +177,7 @@ export function StepCompany({ departmentCount, agentCount }: StepCompanyProps) {
                         : 'border-line bg-surface text-ink-secondary hover:border-line-strong',
                     )}
                   >
-                    {t(industryLabelKey(industry.id))}
+                    {t(domainLabelKey(domain.id))}
                   </button>
                 );
               })}
@@ -242,14 +241,14 @@ export function StepCompany({ departmentCount, agentCount }: StepCompanyProps) {
             </div>
             <div className="relative mt-auto min-w-0">
               <div className="truncate text-[1.1875rem] font-bold tracking-tight">{displayName}</div>
-              <div className={cn('mt-1 truncate text-sm', visionDraft.trim() ? 'text-white/70' : 'text-white/30')}>
-                {visionDraft.trim() || t('onboarding.company.cardVisionPlaceholder')}
+              <div className={cn('mt-1 truncate text-sm', goalDraft.trim() ? 'text-white/70' : 'text-white/30')}>
+                {goalDraft.trim() || t('onboarding.company.cardGoalPlaceholder')}
               </div>
               <div className="mt-3 flex items-center justify-between gap-2 text-2xs text-white/50">
                 <span className="flex h-5 shrink-0 items-center gap-1 rounded-full bg-white/10 px-2">
-                  {profile.industry ? t(industryLabelKey(profile.industry)) : t('onboarding.company.cardIndustryEmpty')}
+                  {profile.domain ? t(domainLabelKey(profile.domain)) : t('onboarding.company.cardDomainEmpty')}
                   <span className="text-white/30">·</span>
-                  {t('onboarding.company.cardOrg', { departments: departmentCount, agents: agentCount })}
+                  {t('onboarding.company.cardWorkers', { count: workerCount })}
                 </span>
                 <span className="shrink-0 font-mono">
                   EST. {now.getFullYear()}.{String(now.getMonth() + 1).padStart(2, '0')}

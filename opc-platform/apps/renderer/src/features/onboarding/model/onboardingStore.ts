@@ -5,7 +5,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  * First-run guide state.
  *
  * `status` is the only persisted field: it answers "does this install still owe
- * the boss an onboarding". `reopened` is deliberately ephemeral — the settings
+ * you an onboarding". `reopened` is deliberately ephemeral — the settings
  * entry flips it for the current session and nothing about it survives a restart.
  */
 export const ONBOARDING_STORAGE_KEY = 'opc.onboarding.v1';

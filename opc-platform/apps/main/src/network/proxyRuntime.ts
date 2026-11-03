@@ -12,7 +12,7 @@ import {
 import { createNetworkClient, type NetworkClient, type NetworkFetch } from './networkClient';
 
 /**
- * Applies the boss's proxy to every outgoing request the app can make.
+ * Applies your proxy to every outgoing request the app can make.
  *
  * There are exactly three exits from this process, and each needs its own switch:
  *

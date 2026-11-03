@@ -13,7 +13,7 @@ import { loadPiExtension, type LoadedPiExtension } from './shim';
  *   1. Scanning never imports. Listing a directory is safe; importing a module
  *      runs its author's code, so it happens only for enabled + trusted entries.
  *   2. Enabling is company-wide. Per-employee opt-out stays where it already
- *      lives: `EmployeeToolPolicy.disabledExtensions`, keyed by our registry name.
+ *      lives: `ToolPolicy.disabledExtensions`, keyed by our registry name.
  *
  * Loading is cached by mtime, so `/reload`-style edits on disk are picked up on
  * the next scan without restarting the app.

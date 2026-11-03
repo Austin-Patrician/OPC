@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { threadOutcomeFor } from './threadOutcome';
 
 /**
- * The mapping that decides whether the boss hears about a finished task.
+ * The mapping that decides whether you hears about a finished task.
  *
  * This is the product promise in one function: finishing quietly is the default,
  * and everything that interrupts has a reason written next to it.
@@ -44,8 +44,8 @@ describe('threadOutcomeFor', () => {
     expect(outcome?.report?.level).toBe('silent');
   });
 
-  it('stays quiet when the boss already signed it off', () => {
-    // `delivered` is only reachable through `bossDecision`: asking again would be
+  it('stays quiet when you already signed it off', () => {
+    // `delivered` is only reachable through `userDecision`: asking again would be
     // asking the same person the same question twice.
     const outcome = threadOutcomeFor(task({ status: 'delivered' }));
     expect(outcome?.state).toBe('done');
@@ -64,7 +64,7 @@ describe('threadOutcomeFor', () => {
 
   it('says nothing while a manager is still signing off', () => {
     const outcome = threadOutcomeFor(task({ status: 'review' }));
-    // The line waits, but the boss is not interrupted once per review round.
+    // The line waits, but you is not interrupted once per review round.
     expect(outcome?.state).toBe('waiting');
     expect(outcome?.report).toBeNull();
   });

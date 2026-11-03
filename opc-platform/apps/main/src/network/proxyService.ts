@@ -9,7 +9,7 @@ import {
 } from './proxyConfig';
 
 /**
- * Persistence for the boss's proxy choice, in `app_setting` — the same table the
+ * Persistence for your proxy choice, in `app_setting` — the same table the
  * company profile and model defaults use, so no schema migration is needed and the
  * choice travels with a database copy.
  *

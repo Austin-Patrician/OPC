@@ -10,19 +10,18 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DepartmentNode, ProviderConfig } from '@opc/shared/domain';
+import type { ProviderConfig, Worker, WorkerTemplate } from '@opc/shared/domain';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { LLM_PROVIDERS, PI_CHAT_PROVIDER_TOTAL } from '@/shared/providers/catalog';
-import { bossName, companyName } from '@/entities/company/model/options';
+import { userName, companyName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { Kbd } from './onboardingUi';
 
 interface WelcomeHeroProps {
-  departments: DepartmentNode[];
+  workers: Worker[];
   providers: ProviderConfig[];
-  agentCount: number;
   leaving: boolean;
   onStart: () => void;
   onSkip: () => void;
@@ -30,17 +29,19 @@ interface WelcomeHeroProps {
 
 const FEATURED = ['anthropic', 'openai', 'google', 'deepseek'] as const;
 
+/** Translated names for the three execution templates. */
+const templateKey = (template: WorkerTemplate) => `onboarding.welcome.template.${template}`;
+
 /**
  * The editorial welcome stage: hero copy, then a miniature of the real product.
  *
- * Everything in the miniature is read from live data — department name, the two
- * agents that actually exist, the imported market candidates, the providers the
- * boss has configured — so the preview cannot drift from the app behind it.
+ * Everything in the miniature is read from live data — the executors that
+ * actually exist and the providers you has configured — so the preview
+ * cannot drift from the app behind it.
  */
 export function WelcomeHero({
-  departments,
+  workers,
   providers,
-  agentCount,
   leaving,
   onStart,
   onSkip,
@@ -63,11 +64,11 @@ export function WelcomeHero({
     element.style.setProperty('--py', ((event.clientY - rect.top) / rect.height - 0.5).toFixed(3));
   };
 
-  const department = departments[0];
-  const lead = department?.members[0];
-  const second = department?.members[1] ?? lead;
+  const lead = workers[0];
+  const second = workers[1];
+  const skillCount = new Set(workers.flatMap((worker) => worker.skills)).size;
   const displayName = companyName(profile, t('company.fallbackName'));
-  const boss = bossName(profile, t('company.bossFallback'));
+  const user = userName(profile, t('company.userFallback'));
   const featured = LLM_PROVIDERS.filter((provider) => FEATURED.includes(provider.id as (typeof FEATURED)[number]));
 
   return (
@@ -173,12 +174,12 @@ export function WelcomeHero({
                   <span className="size-2.5 shrink-0 rounded-full border border-[#dea123] bg-[#ffbd2e]" />
                   <span className="size-2.5 shrink-0 rounded-full border border-[#1aab29] bg-[#27c93f]" />
                   <span className="ml-2 truncate text-xs-plus font-semibold text-ink">
-                    {department ? department.name : t('onboarding.welcome.windowDept')}
+                    {t('onboarding.welcome.windowWorkspace')}
                   </span>
                 </div>
                 <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full bg-success/10 px-2 text-2xs font-medium text-success">
                   <span className="size-1.5 rounded-full bg-success" />
-                  {t('onboarding.welcome.windowOnDuty', { count: agentCount })}
+                  {t('onboarding.welcome.windowOnDuty', { count: workers.length })}
                 </span>
               </div>
 
@@ -189,17 +190,17 @@ export function WelcomeHero({
                     <span className="underline decoration-white/60">brief.md</span>
                     {t('onboarding.welcome.founderMsgTail')}
                   </div>
-                  <Avatar name={boss} size="xs" className="size-7" />
+                  <Avatar name={user} size="xs" className="size-7" />
                 </div>
 
                 {lead ? (
                   <div className="flex items-start gap-2.5">
-                    <Avatar name={lead.name} src={lead.avatar || undefined} size="xs" className="size-7" />
+                    <Avatar name={lead.name} size="xs" className="size-7" />
                     <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-line bg-panel px-3.5 py-2.5">
                       <div className="flex items-center gap-1.5">
                         <span className="text-xs-plus font-semibold text-ink">{lead.name}</span>
                         <span className="rounded border border-line bg-surface px-1.5 text-3xs text-ink-tertiary">
-                          {lead.role}
+                          {t(templateKey(lead.template))}
                         </span>
                       </div>
                       <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-line bg-surface px-3 py-2">
@@ -210,7 +211,7 @@ export function WelcomeHero({
                           </span>
                         </div>
                         <span className="shrink-0 font-mono text-2xs text-accent-ink">
-                          {lead.skills[0] ?? lead.title}
+                          {lead.skills[0] ?? t(templateKey(lead.template))}
                         </span>
                       </div>
                     </div>
@@ -220,11 +221,11 @@ export function WelcomeHero({
                 {second ? (
                   <div className="flex items-center justify-between px-1 pt-1 text-xs-plus text-ink-tertiary">
                     <div className="flex min-w-0 items-center gap-2">
-                      <Avatar name={second.name} src={second.avatar || undefined} size="xs" className="!size-5" />
+                      <Avatar name={second.name} size="xs" className="!size-5" />
                       <span className="truncate">
                         {t('onboarding.welcome.waitingDispatch', {
                           name: second.name,
-                          department: department?.name ?? '',
+                          template: t(templateKey(second.template)),
                         })}
                       </span>
                     </div>
@@ -265,12 +266,12 @@ export function WelcomeHero({
 
                 <div className="mt-3 grid grid-cols-3 gap-2 border-t border-line pt-3 text-center">
                   <div>
-                    <div className="text-lg font-bold tabular-nums text-ink">{departments.length}</div>
-                    <div className="text-3xs text-ink-quaternary">{t('onboarding.welcome.statDepartments')}</div>
+                    <div className="text-lg font-bold tabular-nums text-ink">{workers.length}</div>
+                    <div className="text-3xs text-ink-quaternary">{t('onboarding.welcome.statWorkers')}</div>
                   </div>
                   <div>
-                    <div className="text-lg font-bold tabular-nums text-ink">{agentCount}</div>
-                    <div className="text-3xs text-ink-quaternary">{t('onboarding.welcome.statAgents')}</div>
+                    <div className="text-lg font-bold tabular-nums text-ink">{skillCount}</div>
+                    <div className="text-3xs text-ink-quaternary">{t('onboarding.welcome.statSkills')}</div>
                   </div>
                   <div>
                     <div className="text-lg font-bold tabular-nums text-ink">{providers.length}</div>

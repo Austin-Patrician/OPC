@@ -125,7 +125,7 @@ describe('event', () => {
     expect(() => threads.triageEvent(event.id, 'accepted')).toThrow(/threadId/);
   });
 
-  it('records a dropped event instead of deleting it, so the boss can see what was ignored', () => {
+  it('records a dropped event instead of deleting it, so you can see what was ignored', () => {
     const event = threads.enqueueEvent({ kind: 'im.message', source: 'im' });
     threads.triageEvent(event.id, 'dropped');
     const row = db.prepare('SELECT triage, triaged_at FROM event WHERE id = ?').get(event.id) as {
@@ -189,28 +189,28 @@ describe('schema version', () => {
 describe('ensureWorker', () => {
   it('reuses the worker for the same person on the same thread', () => {
     const thread = threads.createThread({ title: '整理财报' });
-    const first = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-1', name: '李雷' });
-    const again = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-1', name: '李雷' });
+    const first = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
+    const again = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
     expect(again.id).toBe(first.id);
     expect(threads.listWorkers(thread.id)).toHaveLength(1);
   });
 
   it('gives two people on one thread two runtimes', () => {
     const thread = threads.createThread({ title: '整理财报' });
-    const a = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-1', name: '李雷' });
-    const b = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-2', name: '韩梅梅' });
+    const a = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
+    const b = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-2', name: '韩梅梅' });
     expect(a.id).not.toBe(b.id);
     // Two workers on one thread is legal; sharing one harness would not be.
     expect(threads.listWorkers(thread.id)).toHaveLength(2);
-    expect(a.employeeId).toBe('emp-1');
-    expect(b.employeeId).toBe('emp-2');
+    expect(a.ownerId).toBe('emp-1');
+    expect(b.ownerId).toBe('emp-2');
   });
 
   it('makes a new worker after the old one is retired', () => {
     const thread = threads.createThread({ title: '整理财报' });
-    const first = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-1', name: '李雷' });
+    const first = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
     threads.retireWorker(first.id);
-    const again = threads.ensureWorker({ threadId: thread.id, employeeId: 'emp-1', name: '李雷' });
+    const again = threads.ensureWorker({ threadId: thread.id, ownerId: 'emp-1', name: '李雷' });
     expect(again.id).not.toBe(first.id);
   });
 });

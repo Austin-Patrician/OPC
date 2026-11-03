@@ -20,7 +20,7 @@ export const UNVERIFIED_GATE: readonly string[] = ['node', '-e', 'process.exit(0
  * Whether this task's acceptance meant anything.
  *
  * The knowledge lives on the task, not on whoever dispatched it: a rework the
- * boss asks for later has to reach the same conclusion, and so does a task
+ * user asks for later has to reach the same conclusion, and so does a task
  * resumed after a restart. Anywhere else and the two paths drift apart.
  */
 export function isUnverified(task: Pick<WorkTask, 'acceptanceCommand'>): boolean {

@@ -20,7 +20,7 @@
  *    what makes a cached value safe to drop at any time.
  *
  * The intended split in this app: derived *external* data (model lists, OCR text,
- * fetched pages) is persisted with a TTL; data this process itself writes (org
+ * fetched pages) is persisted with a TTL; data this process itself writes (task
  * roster, company profile) is memory-only and invalidated on write.
  */
 
@@ -35,7 +35,7 @@ export interface CacheOptions {
   readonly staleMs?: number;
   /** Mirror this value to disk. Default false: memory only. */
   readonly persist?: boolean;
-  /** Invalidation groups. `invalidateTag('org')` drops every entry carrying it. */
+  /** Invalidation groups. `invalidateTag('tasks')` drops every entry carrying it. */
   readonly tags?: readonly string[];
 }
 

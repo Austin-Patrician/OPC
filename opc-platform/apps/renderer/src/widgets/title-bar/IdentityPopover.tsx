@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CompanyProfile } from '@opc/shared/domain';
-import { bossName, companyName } from '@/entities/company/model/options';
+import { userName, companyName } from '@/entities/company/model/options';
 
 /** Matches the cap in `CompanyService.update`. */
 const BOSS_NAME_MAX = 20;
@@ -22,21 +22,21 @@ interface IdentityPopoverProps {
  */
 export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
   const { t } = useTranslation();
-  const boss = bossName(profile, t('company.bossFallback'));
+  const user = userName(profile, t('company.userFallback'));
   const company = companyName(profile, t('company.fallbackName'));
 
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(profile.bossName);
+  const [draft, setDraft] = useState(profile.userName);
 
   const startEdit = () => {
-    setDraft(profile.bossName);
+    setDraft(profile.userName);
     setEditing(true);
   };
 
   const commit = () => {
     setEditing(false);
     const next = draft.trim();
-    if (next && next !== profile.bossName) onRename(next);
+    if (next && next !== profile.userName) onRename(next);
   };
 
   return (
@@ -55,8 +55,8 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
                 autoFocus
                 value={draft}
                 maxLength={BOSS_NAME_MAX}
-                aria-label={t('titleBar.bossName')}
-                placeholder={t('titleBar.bossNamePlaceholder')}
+                aria-label={t('titleBar.userName')}
+                placeholder={t('titleBar.userNamePlaceholder')}
                 onChange={(event) => setDraft(event.target.value)}
                 onBlur={commit}
                 onKeyDown={(event) => {
@@ -71,12 +71,12 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
               />
             ) : (
               <>
-                <span className="truncate text-sm text-ink">{boss}</span>
+                <span className="truncate text-sm text-ink">{user}</span>
                 <button
                   type="button"
                   onClick={startEdit}
-                  title={t('titleBar.renameBoss')}
-                  aria-label={t('titleBar.renameBoss')}
+                  title={t('titleBar.renameUser')}
+                  aria-label={t('titleBar.renameUser')}
                   className="shrink-0 rounded p-1 text-ink-quaternary opacity-0 transition hover:text-ink focus-visible:opacity-100 group-hover/name:opacity-100"
                 >
                   <Pencil className="size-3" />

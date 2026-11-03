@@ -1,6 +1,24 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { openCompanyDatabase } from './companyDatabase';
+import { MIGRATIONS, SCHEMA_VERSION } from './schema';
+
+/**
+ * Build the file an installation stopped at `steps` migrations would have, then
+ * let it continue through the normal open path. Winding `user_version` back on a
+ * current file is not the same thing: v31 drops the org tables, so a later
+ * migration that reads them (v24 reads `project_group`) would hit nothing.
+ */
+function seedAtVersion(file: string, steps: number, seed?: (db: Database.Database) => void): void {
+  const legacy = new Database(file);
+  try {
+    for (let index = 0; index < steps; index += 1) legacy.exec(MIGRATIONS[index]!);
+    seed?.(legacy);
+    legacy.pragma(`user_version = ${steps}`);
+  } finally {
+    legacy.close();
+  }
+}
 
 /**
  * Regression for the launch crash: an install created by an older build has tables
@@ -24,29 +42,32 @@ describe('opening an upgraded database', () => {
     `);
     legacy.close();
 
+    // The repair path still has to run for those tables — v2 indexes `company_id`
+    // long before v31 removes them — so the failure mode this pins is the crash,
+    // not a column that outlives the table.
     const db = openCompanyDatabase(file);
-    const departmentColumns = (db.prepare('PRAGMA table_info(department)').all() as { name: string }[]).map(
-      (entry) => entry.name,
-    );
-    expect(departmentColumns).toContain('company_id');
-    expect(Number(db.pragma('user_version', { simple: true }))).toBeGreaterThan(0);
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION);
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]
+    ).map((entry) => entry.name);
+    expect(tables).not.toContain('department');
+    expect(tables).not.toContain('employee');
     db.close();
   });
 
   it('moves pre-existing classifier-only custom providers to the Decision page', () => {
     const file = `/tmp/opc-legacy-scope-${Date.now()}.db`;
-    const db = openCompanyDatabase(file);
-    const insert = db.prepare(
-      `INSERT INTO model_provider (id, name, base_url, api, is_custom, models, created_at, updated_at)
-       VALUES (?, ?, 'https://relay.test/v1', 'openai-completions', ?, ?, 0, 0)`,
-    );
-    // Written by the build before `scope` existed: everything defaulted to 'llm'.
-    insert.run('custom-classifier', 'Jev relay', 1, JSON.stringify([{ id: 'jev', capability: 'classifier' }]));
-    insert.run('custom-chat', 'Chat relay', 1, JSON.stringify([{ id: 'gpt', capability: 'chat' }]));
-    insert.run('custom-empty', 'Empty relay', 1, '[]');
-    insert.run('typesafe', 'TypeSafe', 0, JSON.stringify([{ id: 'jev-latest', capability: 'classifier' }]));
-    db.pragma('user_version = 21');
-    db.close();
+    seedAtVersion(file, 21, (db) => {
+      const insert = db.prepare(
+        `INSERT INTO model_provider (id, name, base_url, api, is_custom, models, created_at, updated_at)
+         VALUES (?, ?, 'https://relay.test/v1', 'openai-completions', ?, ?, 0, 0)`,
+      );
+      // Written by the build before `scope` existed: everything defaulted to 'llm'.
+      insert.run('custom-classifier', 'Jev relay', 1, JSON.stringify([{ id: 'jev', capability: 'classifier' }]));
+      insert.run('custom-chat', 'Chat relay', 1, JSON.stringify([{ id: 'gpt', capability: 'chat' }]));
+      insert.run('custom-empty', 'Empty relay', 1, '[]');
+      insert.run('typesafe', 'TypeSafe', 0, JSON.stringify([{ id: 'jev-latest', capability: 'classifier' }]));
+    });
 
     const upgraded = openCompanyDatabase(file);
     const scopes = Object.fromEntries(
@@ -83,7 +104,7 @@ describe('retireOrgOwnership', () => {
     const fresh = openCompanyDatabase(file);
     fresh.exec('ALTER TABLE task RENAME COLUMN owner_id TO employee_id');
     fresh.exec('ALTER TABLE task RENAME COLUMN owner_name TO employee_name');
-    fresh.exec('ALTER TABLE employee_memory RENAME COLUMN owner_id TO employee_id');
+    fresh.exec('ALTER TABLE memory RENAME COLUMN owner_id TO employee_id');
     fresh.exec(`
       INSERT INTO task (id, title, brief, deliverable_spec, employee_id, employee_name,
                         is_review, depth, est_tokens, acceptance_command, acceptance_template,
@@ -99,7 +120,7 @@ describe('retireOrgOwnership', () => {
       (row) => row.name,
     );
     const memoryColumns = (
-      db.prepare('PRAGMA table_info(employee_memory)').all() as { name: string }[]
+      db.prepare('PRAGMA table_info(memory)').all() as { name: string }[]
     ).map((row) => row.name);
 
     expect(taskColumns).toContain('owner_id');

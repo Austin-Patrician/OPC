@@ -1,7 +1,6 @@
 import type {
   Agent,
   Conversation,
-  ConversationKind,
   ConversationStatus,
   Message,
   WorkTask,
@@ -44,13 +43,11 @@ const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
 /**
  * v2 的聊天只有一条会话，对面是 Router。
  *
- * `agents` / `departments` 是 v1 的（"和谁聊""在哪个部门群"）。它们现在是可选的、
- * 且没有人会填：留着是因为 `ChatSnapshot` 仍要一个形状，不是因为还有人在用。
- * 等快照自己也瘦下来，这两个字段就删了。
+ * `agents` 是 v1 留下的（"和谁聊"）：现在是可选的、没有人会填，留着只是因为
+ * `ChatSnapshot` 仍要一个形状。部门那一份（"在哪个部门群"）已经随组织一起删了。
  */
 export interface ChatServiceSeed {
   agents?: Agent[];
-  departments?: ChatSnapshot['departments'];
   conversations: Conversation[];
 }
 
@@ -70,29 +67,24 @@ export class ChatService {
    */
   consolidate?: (input: {
     conversationId: string;
-    employeeId: string;
+    ownerId: string;
     messages: { senderId: string; text: string }[];
   }) => Promise<{ written: number; skipped?: string }>;
 
-  /** Injected by bootstrap; the only way an agent can actually answer. */
-  replyWithModel?: (input: { agent: Agent; text: string; history: Message[] }) => Promise<string>;
   /**
-   * Injected by bootstrap: 老板说的话，交给调度层当成一条 Trigger（§3）。
+   * Injected by bootstrap: 你说的话，交给调度层当成一条 Trigger（§3）。
    *
-   * 注意方向：**这里不再生成回复**。聊天是信道，不是大脑。老板说什么进 Router，
+   * 注意方向：**这里不生成回复**。聊天是信道，不是大脑。你说什么进 Router，
    * Router 决定是自己接住还是派活；要说话时通过 `appendRouterMessage` 送回来。
-   * 原来那条"挑一个 agent 用它的岗位人设回答"的路径就是 v1 的残留，删了。
    */
-  onBossMessage?: (input: { conversationId: string; text: string }) => void;
+  onUserMessage?: (input: { conversationId: string; text: string }) => void;
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private activeConversationId: string | null = null;
 
   constructor(seed: ChatServiceSeed & { db?: CompanyDatabase }) {
     this.db = seed.db;
     this.snapshot = {
       agents: seed.agents ?? [],
-      departments: seed.departments ?? [],
       conversations: this.db ? this.loadConversations(seed.conversations) : seed.conversations,
       typingByConversation: {},
     };
@@ -149,7 +141,7 @@ export class ChatService {
   };
 
   /**
-   * 老板和 Router 之间唯一的那条会话。
+   * 你和 Router 之间唯一的那条会话。
    *
    * v2 之后没有「会话列表」——用户感觉始终只和一个 Agent 打交道，而那个人是
    * **Router**。这里不再需要挑一个人来当门面：Router 常驻，所以「还没有可用的
@@ -177,37 +169,22 @@ export class ChatService {
     return conversation.id;
   };
 
-  openDirect = (agentId: string, displayName?: string): string => {
-    const existing = this.snapshot.conversations.find(
-      // `memberIds.length === 1` keeps boss↔agent threads apart from peer threads,
-      // which carry both participants.
-      (conversation) =>
-        conversation.kind === 'dm' &&
-        conversation.memberIds.length === 1 &&
-        conversation.memberIds[0] === agentId,
-    );
-    if (existing) return existing.id;
-
-    const agent = this.snapshot.agents.find((item) => item.id === agentId);
-    const title = agent?.name ?? displayName ?? agentId;
-    const conversation: Conversation = {
-      id: `dm-${agentId}`,
-      title,
-      kind: 'dm',
-      memberIds: [agentId],
-      messages: [],
-      lastMessage: '还没有对话',
-      timestamp: formatClock(),
-    };
-    this.commit({ conversations: [conversation, ...this.snapshot.conversations] });
-    return conversation.id;
-  };
+  /**
+   * **删掉的一整条路**：`openDirect(agentId)`。
+   *
+   * 它曾经给某个执行体开一条私聊，然后 `pickResponders` 把它拉进来、用它的岗位
+   * 人设回答你。这正是 §2.2 禁止的事——Worker 的推理和工具调用不该直接出现在
+   * 人类面前——而且它把双层架构悄悄压回单层：你的每句话都落进某个执行体的上下文，
+   * Router 完全不在人机路径上。
+   *
+   * 现在聊天只有一条会话（`ensureAssistant`），对面永远是 Router。
+   */
 
   /**
    * An employee's own message, appended to the transcript.
    *
    * This is the only way an agent writes into a conversation: the message table
-   * stays the single source of truth (§P1), and the boss sees the exchange in the
+   * stays the single source of truth (§P1), and you sees the exchange in the
    * same list as everything else. Each agent message is one *turn* — the counter the
    * turn limit is enforced against (§7.3 ②) — and posting warms a cooling thread.
    */
@@ -235,7 +212,7 @@ export class ChatService {
       ...item,
       turnCount: (item.turnCount ?? 0) + 1,
       // Work arriving in a cooling thread means it is live again; `escalated` is
-      // left alone on purpose — only the boss may lift that (§7.5).
+      // left alone on purpose — only you may lift that (§7.5).
       ...(item.status === 'cooling' ? { status: 'open' as const, statusChangedAt: Date.now() } : {}),
     }));
     return message;
@@ -251,7 +228,7 @@ export class ChatService {
   };
 
   /**
-   * Escalation (§7.3 ②): the thread stops auto-replying and waits for the boss.
+   * Escalation (§7.3 ②): the thread stops auto-replying and waits for you.
    * Idempotent, because the same overrun is seen by both the sender and the runner.
    */
   escalateConversation = (conversationId: string): boolean => {
@@ -278,8 +255,8 @@ export class ChatService {
   };
 
   /**
-   * The boss's intervention lifts an escalation and resets the turn budget, which is
-   * exactly the doc's `escalated →(老板处理)→ open`.
+   * The your intervention lifts an escalation and resets the turn budget, which is
+   * exactly the doc's `escalated →(你处理)→ open`.
    */
   reopenConversation = (conversationId: string): boolean => {
     const state = this.turnState(conversationId);
@@ -335,12 +312,12 @@ export class ChatService {
   consolidateConversation = async (conversationId: string): Promise<{ written: number; skipped?: string }> => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation || !this.consolidate) return { written: 0, skipped: '未启用巩固' };
-    const employeeId = conversation.memberIds[0];
-    if (!employeeId) return { written: 0, skipped: '没有绑定员工' };
+    const ownerId = conversation.memberIds[0];
+    if (!ownerId) return { written: 0, skipped: '这条会话还没有归属' };
     const messages = conversation.messages
       .filter((message) => message.kind === 'text' && message.text)
       .map((message) => ({ senderId: message.senderId, text: message.text ?? '' }));
-    return this.consolidate({ conversationId, employeeId, messages });
+    return this.consolidate({ conversationId, ownerId, messages });
   };
 
   /**
@@ -425,7 +402,7 @@ export class ChatService {
     });
   };
 
-  sendMessage = ({ conversationId, text, mentionIds }: SendMessageInput): void => {
+  sendMessage = ({ conversationId, text }: SendMessageInput): void => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
 
@@ -444,34 +421,23 @@ export class ChatService {
       { read: true },
     );
 
-    // §7.5: 老板介入即解除升级/冷却。The boss answering *is* the resolution.
+    // §7.5: 你介入即解除升级/冷却。You answering *is* the resolution.
     if (conversation.status && conversation.status !== 'open') {
       this.reopenConversation(conversation.id);
     }
 
-    // 和 Router 说话：这不是"发给某个人"，是这条信道上的一个 Trigger。
-    if (conversation.kind === 'dm' && conversation.memberIds[0] === ROUTER_ID) {
-      this.onBossMessage?.({ conversationId: conversation.id, text });
-      return;
-    }
-
-    const responders = this.pickResponders(conversation, mentionIds);
-    if (responders.length === 0) return;
-
-    this.setTyping(conversationId, responders.map((agent) => agent.name));
-
-    this.later(760, async () => {
-      const [first] = responders;
-      if (!first) return;
-
-      const reply = await this.buildReply(first, text);
-      this.appendReply(conversation, first, reply);
-      this.setTyping(conversationId, []);
-    });
+    // 对面永远是 Router（§2 双层架构）。
+    //
+    // v1 在这里会「挑一个 agent 用它的岗位人设回答」，那条路已经删了：Worker 只向
+    // Router 汇报，不直接对人说话。所以不管这句话落在哪条会话上，它都只是一条
+    // Trigger——写成"发给某个人"就等于又有了第二个人在回答你。
+    //
+    // `mentionIds`（@ 某人）随之失去意义：这里没有人可以被叫来，能接话的只有 Router。
+    this.onUserMessage?.({ conversationId: conversation.id, text });
   };
 
   /**
-   * Router 对老板说话。
+   * Router 对你说话。
    *
    * 整个系统里只有这一个地方能让人看见 Router 的结论（§2.2：执行体不直接与人
    * 交互，由 Router 统一回复）。所以它只有一个入口，而且不经过任何"挑谁来回"的
@@ -483,21 +449,8 @@ export class ChatService {
     this.appendReply(conversation, ROUTER_FACE, text);
   };
 
-  /** Routing facts the comm layer needs; no members = not a conversation we route. */
-  conversationInfo = (
-    conversationId: string,
-  ): { kind: ConversationKind; departmentId?: string; memberIds: readonly string[] } | undefined => {
-    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
-    if (!conversation) return undefined;
-    return {
-      kind: conversation.kind,
-      ...(conversation.departmentId ? { departmentId: conversation.departmentId } : {}),
-      memberIds: conversation.memberIds,
-    };
-  };
-
   /**
-   * Inserts or refreshes the task card in the assignee's DM, so the boss watches
+   * Inserts or refreshes the task card in the assignee's DM, so you watches
    * the same object move from running → accepted without polling.
    */
   upsertTaskCard = (task: WorkTask): void => {
@@ -535,62 +488,10 @@ export class ChatService {
   };
 
   dispose = (): void => {
-    this.timers.forEach((timer) => clearTimeout(timer));
-    this.timers.clear();
     this.listeners.clear();
   };
 
   // ── internals ──────────────────────────────────────────────────────────
-
-  private later(delayMs: number, run: () => void): void {
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      run();
-    }, delayMs);
-    this.timers.add(timer);
-  }
-
-  private pickResponders(conversation: Conversation, mentionIds?: string[]): Agent[] {
-    const members = conversation.memberIds
-      .map((id) => this.snapshot.agents.find((agent) => agent.id === id))
-      .filter((agent): agent is Agent => Boolean(agent));
-
-    if (mentionIds?.length) {
-      const mentioned = members.filter((agent) => mentionIds.includes(agent.id));
-      if (mentioned.length > 0) return mentioned.slice(0, 2);
-    }
-
-    if (conversation.kind === 'dm') {
-      const primary = members.find((agent) => agent.id === conversation.primaryAgentId);
-      return primary ? [primary] : members.slice(0, 1);
-    }
-
-    return members.slice(0, 2);
-  }
-
-  /**
-   * A reply must come from a model. Without one there is no honest answer to give,
-   * so say exactly that instead of inventing a plausible-sounding plan.
-   */
-  private async buildReply(speaker: Speaker, text: string): Promise<string> {
-    return this.buildAgentReply(speaker as Agent, text);
-  }
-
-  private async buildAgentReply(agent: Agent, text: string): Promise<string> {
-    if (this.replyWithModel) {
-      try {
-        const answer = await this.replyWithModel({
-          agent,
-          text,
-          history: this.snapshot.conversations.flatMap((item) => item.messages).filter((message) => message.kind === 'text'),
-        });
-        if (answer.trim()) return answer.trim();
-      } catch (error) {
-        return `（模型调用失败：${error instanceof Error ? error.message : String(error)}）`;
-      }
-    }
-    return `（还没配置可用模型，我无法回答「${text.slice(0, 30)}」这类问题。到 设置 → 模型 配好 provider 后，我会直接用模型回你。）`;
-  }
 
   private appendReply(conversation: Conversation, speaker: Speaker, text: string): void {
     this.appendMessage(
@@ -639,12 +540,6 @@ export class ChatService {
         item.id === conversationId ? update(item) : item,
       ),
     });
-  }
-
-  private setTyping(conversationId: string, names: string[]): void {    const next: Record<string, readonly string[]> = { ...this.snapshot.typingByConversation };
-    if (names.length > 0) next[conversationId] = names;
-    else delete next[conversationId];
-    this.commit({ typingByConversation: next });
   }
 
   private commit(patch: Partial<ChatSnapshot>): void {
