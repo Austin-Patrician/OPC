@@ -640,6 +640,18 @@ async function bootstrap(): Promise<void> {
         })),
       update: (id: string, content: string) => memory.update(id, content),
       forget: (id: string) => memory.forget(id),
+      // 谁知道自己的记忆归谁：活的执行体、活的线、再加上这个人。
+      // `'router'` 不在里面——那是 P0 之前的旧归属，也该被问一句。
+      orphans: () =>
+        memory.orphanOwners(
+          new Set([
+            USER_MEMORY_OWNER,
+            ...threads.listAllWorkers().map((worker) => worker.id),
+            ...threads.listActiveThreads(200).map((thread) => thread.id),
+          ]),
+        ),
+      claim: (ownerId: string) => memory.claim(ownerId),
+      discard: (ownerId: string) => memory.discardOwner(ownerId),
     },
     triggers: {
       status: triggerStatus,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { MemoryView } from '@opc/shared/ipc';
+import type { MemoryView, OrphanMemoryGroup } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section } from '../kit';
 
 /**
@@ -21,19 +21,28 @@ import { buttonClass, PageHeader, Section } from '../kit';
 export function MemoryPage() {
   const { t } = useTranslation();
   const [items, setItems] = useState<MemoryView[] | null>(null);
+  const [orphans, setOrphans] = useState<OrphanMemoryGroup[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = () =>
-    window
-      .opc!.memory.list()
-      .then(setItems)
-      .catch(() => setItems([]));
+    Promise.all([
+      window.opc!.memory.list().then(setItems).catch(() => setItems([])),
+      window.opc!.memory.orphans().then(setOrphans).catch(() => setOrphans([])),
+    ]).then(() => undefined);
 
   useEffect(() => {
     void load();
   }, []);
+
+  const settleOrphan = (ownerId: string, action: 'claim' | 'discard') => {
+    setBusy(ownerId);
+    void window
+      .opc!.memory[action](ownerId)
+      .then(() => load())
+      .finally(() => setBusy(null));
+  };
 
   const forget = (id: string) => {
     setBusy(id);
@@ -134,6 +143,54 @@ export function MemoryPage() {
       />
 
       <div className="space-y-4">
+        {orphans.length > 0 ? (
+          <Section
+            title={t('settings.memory.orphanTitle')}
+            description={t('settings.memory.orphanDesc')}
+          >
+            <ul className="divide-y divide-line/60" data-testid="memory-orphans">
+              {orphans.map((group) => (
+                <li key={group.ownerId} className="space-y-2 px-4 py-3">
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-mono text-2xs text-ink-quaternary">
+                        {group.ownerId} · {t('settings.memory.orphanCount', { count: group.count })}
+                      </p>
+                      <ul className="mt-1 space-y-0.5">
+                        {group.samples.map((sample, index) => (
+                          <li key={index} className="truncate text-sm text-ink-secondary">
+                            · {sample}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <button
+                        type="button"
+                        className={buttonClass.primary}
+                        data-testid={`memory-claim-${group.ownerId}`}
+                        disabled={busy === group.ownerId}
+                        onClick={() => settleOrphan(group.ownerId, 'claim')}
+                      >
+                        {t('settings.memory.claim')}
+                      </button>
+                      <button
+                        type="button"
+                        className={buttonClass.danger}
+                        data-testid={`memory-discard-${group.ownerId}`}
+                        disabled={busy === group.ownerId}
+                        onClick={() => settleOrphan(group.ownerId, 'discard')}
+                      >
+                        {t('settings.memory.discard')}
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        ) : null}
+
         <Section title={t('settings.memory.standingTitle')} description={t('settings.memory.standingDesc')}>
           {items === null ? (
             <p className="px-4 py-3 text-xs text-ink-quaternary">{t('common.loading')}</p>

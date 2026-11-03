@@ -100,6 +100,9 @@ export const IPC = {
     list: 'memory:list',
     update: 'memory:update',
     forget: 'memory:forget',
+    orphans: 'memory:orphans',
+    claim: 'memory:claim',
+    discard: 'memory:discard',
   },
   router: {
     getTriage: 'router:getTriage',
@@ -528,6 +531,19 @@ export interface MemoryView {
   scopeType: string;
 }
 
+/**
+ * 一组没有归属的记忆。
+ *
+ * 真实存在过的坑：早期版本把记忆挂在执行体名下，那些执行体早就不在了，于是有一批记忆
+ * 谁也读不到。V33 明确决定不在迁移里猜归属——代价就是这个。出口不是再猜一次，
+ * 是问用户一句：这些是以前记的，还要吗。
+ */
+export interface OrphanMemoryGroup {
+  ownerId: string;
+  count: number;
+  samples: string[];
+}
+
 export interface MemoryBridge {
   /** Recent consolidation runs — the audit trail of "下班反思". */
   consolidationRuns(ownerId?: string): Promise<ConsolidationRunView[]>;
@@ -537,6 +553,12 @@ export interface MemoryBridge {
   update(id: string, content: string): Promise<boolean>;
   /** 撤掉一条。归档，不是销毁。 */
   forget(id: string): Promise<boolean>;
+  /** 挂在已经不存在的归属上的那些，按归属分组。 */
+  orphans(): Promise<OrphanMemoryGroup[]>;
+  /** 收下：归到「关于你」名下。返回搬过去的条数。 */
+  claim(ownerId: string): Promise<number>;
+  /** 丢掉：归档整组。返回条数。 */
+  discard(ownerId: string): Promise<number>;
 }
 
 /**

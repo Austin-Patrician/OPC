@@ -9,6 +9,7 @@ import {
   type MemoryCandidate,
   type MemoryVolatility,
 } from './memoryScore';
+import { USER_MEMORY_OWNER } from './owners';
 
 export interface MemoryScope {
   /**
@@ -79,6 +80,13 @@ export const PROMOTE_AFTER = 3;
  * 写代码都相关，靠检索捞它基本捞不到（它和任务标题字面上几乎不重叠）。
  */
 export const MAX_PROCEDURAL = 12;
+
+/** 一组没归属的记忆：谁的、几条、长什么样。 */
+export interface OrphanGroup {
+  ownerId: string;
+  count: number;
+  samples: string[];
+}
 
 export interface MemoryServiceOptions {
   /** 一条记忆升进常驻层时通知外面（组合根用它去说话）。 */
@@ -360,6 +368,86 @@ export class MemoryService {
       .prepare('UPDATE memory SET content = ?, updated_at = ? WHERE id = ? AND is_archived = 0')
       .run(text, Date.now(), id);
     return result.changes > 0;
+  };
+
+  /**
+   * 挂在一个**已经不存在的归属**上的记忆。
+   *
+   * 这不是历史包袱的清理，是一个真实存在过的坑：V33 把 `owner_id` 从"员工"换成"执行体"
+   * 时，明确决定**不在迁移里猜**——宁可让旧数据显示不全，也不把一条记忆归到一个猜出来的
+   * 人身上。代价现在出现了：真实库上 289 条记忆挂在 `agent-8669…` 上，那个 id 既不是
+   * 现在的执行体，也不是 `'user'`，**没有任何代码路径读得到它们**。
+   *
+   * 正确出口不是再猜一次，是问一句：这些是以前记的，还要吗。
+   *
+   * `known` 由调用方给（活的执行体 + 活的线 + 用户自己），因为仓储层不认识那些表。
+   */
+  orphanOwners = (known: ReadonlySet<string>, limit = 20): OrphanGroup[] => {
+    const rows = this.db
+      .prepare(
+        `SELECT owner_id, COUNT(*) AS n FROM memory
+          WHERE is_archived = 0 AND valid_until IS NULL
+          GROUP BY owner_id
+          ORDER BY n DESC`,
+      )
+      .all() as { owner_id: string; n: number }[];
+
+    return rows
+      .filter((row) => !known.has(row.owner_id))
+      .slice(0, limit)
+      .map((row) => ({
+        ownerId: row.owner_id,
+        count: row.n,
+        samples: (
+          this.db
+            .prepare(
+              `SELECT content FROM memory
+                WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL
+                ORDER BY created_at DESC LIMIT 3`,
+            )
+            .all(row.owner_id) as { content: string }[]
+        ).map((entry) => entry.content),
+      }));
+  };
+
+  /**
+   * 认领：把这些记忆归到这个人名下。
+   *
+   * 主题键要特殊处理：同一条主题上只许有一条活着的（V39 的唯一索引），而两边可能各有
+   * 一条。这时候**让被认领的那条丢掉主题**——它的主题是旧版本里没有的，丢掉不损失信息，
+   * 而冲突时把认领的目标覆盖掉才是灾难。
+   */
+  claim = (ownerId: string, target = USER_MEMORY_OWNER): number => {
+    const now = Date.now();
+    const move = this.db.prepare(
+      `UPDATE memory SET owner_id = ?, updated_at = ?
+        WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL`,
+    );
+    try {
+      return this.db.transaction(() => move.run(target, now, ownerId).changes)();
+    } catch {
+      // 主题键撞上了：把要搬过去的那些的主题清掉再搬。
+      return this.db.transaction(() => {
+        this.db
+          .prepare(
+            `UPDATE memory SET subject = NULL, updated_at = ?
+              WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL`,
+          )
+          .run(now, ownerId);
+        return move.run(target, now, ownerId).changes;
+      })();
+    }
+  };
+
+  /** 丢掉：归档。记录还在，只是不再出现在任何答案里。 */
+  discardOwner = (ownerId: string): number => {
+    const now = Date.now();
+    return this.db
+      .prepare(
+        `UPDATE memory SET is_archived = 1, valid_until = ?, updated_at = ?
+          WHERE owner_id = ? AND is_archived = 0 AND valid_until IS NULL`,
+      )
+      .run(now, now, ownerId).changes;
   };
 
   /**

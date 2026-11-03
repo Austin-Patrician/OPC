@@ -136,6 +136,9 @@ const bridge: OpcBridge = {
     list: () => ipcRenderer.invoke(IPC.memory.list),
     update: (id: string, content: string) => ipcRenderer.invoke(IPC.memory.update, id, content),
     forget: (id: string) => ipcRenderer.invoke(IPC.memory.forget, id),
+    orphans: () => ipcRenderer.invoke(IPC.memory.orphans),
+    claim: (ownerId: string) => ipcRenderer.invoke(IPC.memory.claim, ownerId),
+    discard: (ownerId: string) => ipcRenderer.invoke(IPC.memory.discard, ownerId),
   },
   facts: {
     list: (filter?: { threadId?: string }) => ipcRenderer.invoke(IPC.facts.list, filter),

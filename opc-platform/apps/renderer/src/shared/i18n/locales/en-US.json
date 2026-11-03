@@ -622,7 +622,12 @@
       "content": "Memory content",
       "forget": "Remove",
       "observedTimes": "asked {{count}} times",
-      "footnote": "Every entry carries its source and date — something you can trace is something you can trust. Anything asked for three times moves into the standing layer on its own, and tells you when it does."
+      "footnote": "Every entry carries its source and date — something you can trace is something you can trust. Anything asked for three times moves into the standing layer on its own, and tells you when it does.",
+      "orphanTitle": "From before (unclaimed)",
+      "orphanDesc": "These memories hang off an execution body that no longer exists — nothing reads them today. Claiming files them under “about you”; discarding archives them (the rows stay, they just stop showing up).",
+      "orphanCount": "{{count}} entries",
+      "claim": "Claim",
+      "discard": "Discard"
     }
   },
   "notFound": {

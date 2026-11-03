@@ -2,6 +2,7 @@ import {
   IPC,
   type SendMessageInput,
   type MemoryView,
+  type OrphanMemoryGroup,
   type TriggerPatch,
   type TriggerStatus,
 } from '@opc/shared/ipc';
@@ -78,6 +79,9 @@ interface RegisterOptions {
     list: () => MemoryView[];
     update: (id: string, content: string) => boolean;
     forget: (id: string) => boolean;
+    orphans: () => OrphanMemoryGroup[];
+    claim: (ownerId: string) => number;
+    discard: (ownerId: string) => number;
   };
   /** 触发源：外部平台推进来的那扇门。 */
   triggers: {
@@ -478,6 +482,19 @@ export function registerIpc({
       throw new Error('memory:update 参数非法');
     }
     return memories.update(id, content);
+  });
+  ipcMain.handle(IPC.memory.orphans, () => memories.orphans());
+  ipcMain.handle(IPC.memory.claim, (_event, ownerId: unknown) => {
+    if (typeof ownerId !== 'string' || ownerId.trim().length === 0) {
+      throw new Error('memory:claim 参数非法');
+    }
+    return memories.claim(ownerId);
+  });
+  ipcMain.handle(IPC.memory.discard, (_event, ownerId: unknown) => {
+    if (typeof ownerId !== 'string' || ownerId.trim().length === 0) {
+      throw new Error('memory:discard 参数非法');
+    }
+    return memories.discard(ownerId);
   });
   ipcMain.handle(IPC.memory.forget, (_event, id: unknown) => {
     if (typeof id !== 'string' || id.trim().length === 0) {
