@@ -87,11 +87,16 @@ describe('WorkService.capabilities', () => {
       'opc.sandbox',
       'opc.limits',
       'opc.recall',
+      'opc.escalate',
+      'opc.handback',
     ]);
-    // `recall` 是只读的读库工具：执行体要能顺着 id 回到源头，而不是只相信转述（§3.3）。
+    // 三个「嘴」之外的执行体能力：`recall` 回源头（§3.3），`escalate` 请示、
+    // `hand_back` 交回（§2.2 / §3.2）——它们以前都不在，执行体卡住时只能猜或失败。
     expect(agent.tools.map((tool) => tool.name).sort()).toEqual([
       'bash',
       'edit',
+      'escalate',
+      'hand_back',
       'read',
       'recall',
       'write',

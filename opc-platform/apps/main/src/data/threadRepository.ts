@@ -522,7 +522,7 @@ export class ThreadRepository {
     const rows = this.statement(
       `SELECT * FROM report
         WHERE read_at IS NULL AND level != 'silent'
-        ORDER BY CASE level WHEN 'decide' THEN 0 ELSE 1 END, created_at DESC
+        ORDER BY CASE level WHEN 'decide' THEN 0 ELSE 1 END, created_at DESC, rowid DESC
         LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);
@@ -541,7 +541,7 @@ export class ThreadRepository {
          FROM report r
          JOIN thread t ON t.id = r.thread_id
         WHERE r.read_at IS NULL AND r.level != 'silent'
-        ORDER BY CASE r.level WHEN 'decide' THEN 0 ELSE 1 END, r.created_at DESC
+        ORDER BY CASE r.level WHEN 'decide' THEN 0 ELSE 1 END, r.created_at DESC, r.rowid DESC
         LIMIT ?`,
     ).all(limit) as (ReportRow & { thread_title: string; thread_state: ThreadState })[];
     return rows.map((row) => ({
@@ -563,7 +563,7 @@ export class ThreadRepository {
   /** 一条线的汇报，最新在前。Router 讲"最近怎么样"时只看这几条。 */
   listReportsOf(threadId: string, limit = 5): WorkReport[] {
     const rows = this.statement(
-      'SELECT * FROM report WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?',
+      'SELECT * FROM report WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
     ).all(threadId, limit) as ReportRow[];
     return rows.map(toReport);
   }
@@ -685,7 +685,7 @@ export class ThreadRepository {
     const rows = this.statement(
       `SELECT * FROM report
         WHERE announced_at IS NULL ${options.includeSilent ? '' : "AND level != 'silent'"}
-        ORDER BY created_at ASC LIMIT ?`,
+        ORDER BY created_at ASC, rowid ASC LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);
   }

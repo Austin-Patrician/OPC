@@ -53,6 +53,11 @@ import { createRememberToolExtension } from '../memory/rememberTool';
 import { buildRecords, type RecordSource } from './records';
 import { ensureDir, listWorkspaceFiles } from './workspace';
 import { createInvestigateToolExtension } from './investigateTool';
+import {
+  createEscalateToolExtension,
+  createHandBackToolExtension,
+  escalationLevel,
+} from './escalateTool';
 import { buildSubagentPrompt, readAnswerFile, type SubagentAnswer } from './subagent';
 import { priceUsage } from './usage';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
@@ -170,6 +175,14 @@ export class WorkService {
    * 管线（`memory/extraction.ts`）有机会把它们变成记忆。
    */
   private readonly signals: SignalStore;
+  /**
+   * 已经交回的线。
+   *
+   * 交回之后，这条任务的结束**不许**再改线的状态：线已经回到 `open` 等别人接手，
+   * 而一次"跑完了/跑挂了"的汇报会把它重新按成 done/failed——那等于交回没发生。
+   * 和 `reportedThreads` 一样是进程内的：它记的是"这一次运行里发生过什么"。
+   */
+  private readonly handedBack = new Set<string>();
   /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
@@ -1012,6 +1025,26 @@ export class WorkService {
         : { name: 'opc.investigate', essential: false, available: false, reason: 'no-llm' },
     );
 
+    // 请示与交回（E3）：执行体以前只有终局的嘴——卡住只能猜，或者失败。
+    slots.push({
+      name: 'opc.escalate',
+      essential: false,
+      available: true,
+      extension: createEscalateToolExtension({
+        taskId: () => currentTaskIdFor(personId),
+        escalate: (input) => this.escalateFor(input),
+      }),
+    });
+    slots.push({
+      name: 'opc.handback',
+      essential: false,
+      available: true,
+      extension: createHandBackToolExtension({
+        taskId: () => currentTaskIdFor(personId),
+        handBack: (input) => this.handBackFor(input),
+      }),
+    });
+
     // 拆解的前提是"还有别的执行体可派"。只有一个时工具根本不装；
     // 有两个以上时，谁都可以把活交给别人——这里已经没有汇报线了。
     const assignable = this.assignableTo(subject.id);
@@ -1233,6 +1266,79 @@ export class WorkService {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
   }
+
+  /**
+   * 请示：把一句"我定不了"投到线上（E3）。
+   *
+   * 等级由宿主决定，不由模型决定：**同一件事问第二次就不再插队**。第一次是 `decide`
+   * ——他会放下手上的事；第二次是 `notify`——你看得见，但它不插队。一个执行体在同一件
+   * 事上请示两次，说明它不该接这件事。
+   *
+   * 它落一条 `report`，不是落一条进度。进度走步骤流：每一步都汇报，Router 就变成日志
+   * 消费者了（§3.2 只接收两种东西：没有归属的新事件，和要开口的汇报）。
+   */
+  escalateFor = (input: {
+    taskId: string;
+    question: string;
+    tried: string;
+    suggestion: string;
+  }): { level: 'decide' | 'notify' } => {
+    const task = this.repository.getTask(input.taskId);
+    if (!task?.threadId) throw new Error('这条任务不在任何工作线上，没有可请示的地方');
+
+    const previous = task.steps.filter((step) => step.text.startsWith('请示：')).length;
+    const level = escalationLevel(previous);
+    this.repository.addStep(input.taskId, `请示：${input.question}`);
+
+    const body = [
+      input.question,
+      input.tried ? `试过：${input.tried}` : '',
+      input.suggestion ? `建议：${input.suggestion}` : '',
+      `（${task.title} · ${task.id}）`,
+    ]
+      .filter((line) => line.length > 0)
+      .join('\n');
+    this.threads.addReport({
+      threadId: task.threadId,
+      level,
+      title: `请示：${input.question}`,
+      body,
+    });
+    // 在等人做决定，这条线就不再是"在跑"。
+    if (level === 'decide') this.threads.setState(task.threadId, 'waiting');
+
+    const updated = this.repository.getTask(input.taskId);
+    if (updated) this.emit(updated);
+    return { level };
+  };
+
+  /**
+   * 交回：这条线不该由我做（原文 §3.2）。
+   *
+   * 三件事：退订（后续事件不再直通给它）、线回到 `open`（等别人接或等人重新分派）、
+   * 留一条 `decide` 说明原因。**它不是失败**——失败要花掉一次尝试和一笔预算，而"这不是
+   * 我该做的"是一次成功的判断。
+   */
+  handBackFor = (input: { taskId: string; reason: string }): { ok: boolean; reason?: string } => {
+    const task = this.repository.getTask(input.taskId);
+    if (!task) return { ok: false, reason: '未知任务' };
+    if (!task.threadId) return { ok: false, reason: '这条任务不在任何工作线上' };
+
+    this.threads.unsubscribe(task.threadId, task.workerId ?? task.assigneeId);
+    this.threads.setState(task.threadId, 'open');
+    this.handedBack.add(task.id);
+    this.repository.addStep(task.id, `交回：${input.reason}`);
+    this.threads.addReport({
+      threadId: task.threadId,
+      level: 'decide',
+      title: task.title,
+      body: `我把这件事交回了：${input.reason}\n（${task.id}）`,
+    });
+
+    const updated = this.repository.getTask(task.id);
+    if (updated) this.emit(updated);
+    return { ok: true };
+  };
 
   /**
    * 子代理真的跑一次（原文 §2.2）。
@@ -1460,6 +1566,8 @@ export class WorkService {
   private reportToThread(taskId: string): void {
     const task = this.repository.getTask(taskId);
     if (!task) return;
+    // 交回过的任务不再改线的状态：线已经回到 open 等别人接手，一条"跑完了"会把它按回去。
+    if (this.handedBack.has(task.id)) return;
     const outcome = threadOutcomeFor(task);
     if (!outcome) return;
     if (this.reportedThreads.get(task.id) === task.status) return;

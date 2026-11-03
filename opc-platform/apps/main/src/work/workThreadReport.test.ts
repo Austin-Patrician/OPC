@@ -162,6 +162,109 @@ describe('原始记录', () => {
   });
 });
 
+/**
+ * 执行体只有终局的那张嘴（E3）。
+ *
+ * 请示与交回补上的是第三条路：以前它卡住只能猜（跑完一个你不想要的东西）或者失败
+ * （一次尝试 + 一笔钱 + Router 一次复盘）。
+ *
+ * 这一组用例里最要紧的两条：**同一件事请示第二次不插队**，以及**交回之后线不被按回去**
+ * ——后者要是漏了，交回就等于没发生：那条线会在任务结束时被改成 done。
+ */
+describe('请示与交回', () => {
+  function openTask() {
+    const thread = threads.createThread({ title: '写一个返回 ok 的服务' });
+    const created = work.createTask({
+      title: '写一个返回 ok 的服务',
+      brief: '用 node 内置 http',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return { thread, task: created.task };
+  }
+
+  it('第一次请示插队，第二次只记在线上', () => {
+    const { thread, task } = openTask();
+    const ask = (question: string) =>
+      work.escalateFor({ taskId: task.id, question, tried: '两个都试过', suggestion: '选稳的' });
+
+    expect(ask('A 快 B 稳，要哪个').level).toBe('decide');
+    expect(ask('还是那个问题：A 快 B 稳').level).toBe('notify');
+
+    // 新的在前：第二次（notify）排在上面。
+    const reports = threads.listReportsOf(thread.id, 10);
+    expect(reports.map((report) => report.level)).toEqual(['notify', 'decide']);
+    // 第一次之后线就停在"等人决定"，不是"在跑"。
+    expect(threads.getThread(thread.id)?.state).toBe('waiting');
+    // 两次请示都记在步骤流里：等级是算出来的，不是模型说的。
+    expect(task.id).toBeTruthy();
+    const steps = work.listTasks().find((entry) => entry.id === task.id)?.steps ?? [];
+    expect(steps.filter((step) => step.text.startsWith('请示：'))).toHaveLength(2);
+  });
+
+  it('请示里带上你试过什么、建议怎么办', () => {
+    const { thread, task } = openTask();
+    work.escalateFor({
+      taskId: task.id,
+      question: '缺验收标准，什么算做完',
+      tried: '读了 README，没有判定命令',
+      suggestion: '按"返回 ok"判定',
+    });
+
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(report?.body).toContain('试过：读了 README');
+    expect(report?.body).toContain('建议：按"返回 ok"判定');
+  });
+
+  it('进度不进 Router：正常干完的活只留一条 silent 记录', async () => {
+    const { thread, task } = await (async () => {
+      const opened = openTask();
+      return { thread: opened.thread, task: await work.runTaskAndWait(opened.task.id) };
+    })();
+    expect(task.status).toBe('accepted');
+
+    // 步骤很多，但它们是步骤——不是汇报。
+    expect(task.steps.length).toBeGreaterThan(2);
+    const reports = threads.listReportsOf(thread.id, 20);
+    expect(reports.every((report) => report.level === 'silent')).toBe(true);
+    expect(reports.some((report) => report.title.startsWith('请示'))).toBe(false);
+    // 队列空的：干完的活不打扰人。
+    expect(threads.listQueue()).toHaveLength(0);
+  });
+
+  it('交回：退订、线回 open、留一条说明', async () => {
+    const { thread, task } = openTask();
+    // 直通（§3.2）会在派活时订阅；这里手工订一次，为了看清"交回把它去掉了"。
+    threads.subscribe(thread.id, task.workerId ?? task.assigneeId);
+    expect(threads.subscribersOf(thread.id).length).toBeGreaterThan(0);
+
+    const result = work.handBackFor({ taskId: task.id, reason: '目标变了，这条线不该由我接' });
+    expect(result.ok).toBe(true);
+
+    expect(threads.subscribersOf(thread.id)).toHaveLength(0);
+    expect(threads.getThread(thread.id)?.state).toBe('open');
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(report?.level).toBe('decide');
+    expect(report?.body).toContain('目标变了');
+  });
+
+  it('交回之后，这条任务跑完也不许把线按回去', async () => {
+    const { thread, task } = openTask();
+    work.handBackFor({ taskId: task.id, reason: '不是执行类的工作' });
+
+    // 手上的活还是跑完了（改动不用回滚），但线要停在交回时的样子。
+    const finished = await work.runTaskAndWait(task.id);
+    expect(finished.status).toBe('accepted');
+    expect(threads.getThread(thread.id)?.state).toBe('open');
+    expect(threads.listReportsOf(thread.id, 10)).toHaveLength(1);
+  });
+});
+
 describe('task → thread reporting', () => {
   it('closes the line of work quietly when the work passes acceptance', async () => {
     const { thread, task } = await runOne();
