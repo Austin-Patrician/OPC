@@ -30,6 +30,22 @@ import { recallView } from './inline';
  * 推理可以很短，而活可以跑很久。
  */
 
+/**
+ * 一条被回忆起的记忆。
+ *
+ * 带 id 不是装饰：模型看到「他说文档放 README 里就够了」，如果不知道这条从哪来，
+ * 就没法核对、也没法顺着它去读全文。事件链路早就是这么做的（`recall <id>`）。
+ */
+export interface MemoryHit {
+  id: string;
+  kind: string;
+  content: string;
+  createdAt: number;
+  sourceType: string;
+  /** 相关度。用它判断「真对上了」与「我记得最牢的几条」，不要用排序分。 */
+  relevance: number;
+}
+
 export interface LineSummary {
   threadId: string;
   title: string;
@@ -75,14 +91,19 @@ export interface RouterToolDeps {
   /** 记一件关于你的事（偏好、否决过的方向、要求的格式）。 */
   remember(text: string): Promise<{ ok: boolean; id?: string; reason?: string }>;
 
-  /** 按一句话回想以前记过什么。 */
-  recallMemory(query: string): Promise<{ ok: boolean; items?: string[]; reason?: string }>;
+  /** 按一句话回想以前记过什么。带 id，别人才追得回出处。 */
+  recallMemory(query: string): Promise<{ ok: boolean; items?: MemoryHit[]; reason?: string }>;
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
   output: [{ type: 'text' as const, text }],
   ...(details ? { details } : {}),
 });
+
+/** 记忆里只存毫秒时间戳；给人看需要的是"哪一天"。 */
+function formatDay(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
 
 const fail = (text: string) => ({
   isError: true,
@@ -271,7 +292,10 @@ export function createRouterTools(deps: RouterToolDeps) {
         }),
         execute: async (args) => {
           const result = await deps.remember(args.text);
-          return result.ok ? ok('记住了。') : fail(`没记上：${result.reason ?? '未知原因'}`);
+          // id 放进 details 而不是正文：模型需要它去 recall，用户不需要在聊天里看到它。
+          return result.ok
+            ? ok('记住了。', { memoryId: result.id ?? null })
+            : fail(`没记上：${result.reason ?? '未知原因'}`);
         },
       }),
 
@@ -287,7 +311,18 @@ export function createRouterTools(deps: RouterToolDeps) {
           const result = await deps.recallMemory(args.query);
           if (!result.ok) return fail(`没想起来：${result.reason ?? '未知原因'}`);
           if (!result.items || result.items.length === 0) return ok('没有相关的记录。');
-          return ok(result.items.map((item) => `- ${item}`).join('\n'));
+
+          const lines = result.items.map(
+            (item) =>
+              `- ${item.id} · ${item.kind} · ${formatDay(item.createdAt)} · ${item.sourceType} · ${item.content}`,
+          );
+          // 一条都对不上时如实说，而不是把"我记得最牢的几条"伪装成"这就是你要的"。
+          const matched = result.items.some((item) => item.relevance > 0.02);
+          return ok(
+            (matched ? [] : ['（没有直接对得上的记录，以下按我记得的强度列出）'])
+              .concat(lines)
+              .join('\n'),
+          );
         },
       }),
 

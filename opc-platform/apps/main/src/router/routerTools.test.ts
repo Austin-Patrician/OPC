@@ -51,7 +51,21 @@ function host(
     },
     recallMemory: (query) =>
       Promise.resolve(
-        query.includes('没有') ? { ok: true, items: [] } : { ok: true, items: ['他说文档放 README 里'] },
+        query.includes('没有')
+          ? { ok: true, items: [] }
+          : {
+              ok: true,
+              items: [
+                {
+                  id: 'mem-1',
+                  kind: 'preference',
+                  content: '他说文档放 README 里',
+                  createdAt: 1_700_000_000_000,
+                  sourceType: 'consolidation',
+                  relevance: 0.4,
+                },
+              ],
+            },
       ),
   });
   const registry = createRegistry();

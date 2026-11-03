@@ -3,7 +3,7 @@ import type { Context } from '@earendil-works/chord/context';
 import type { Harness, Registry } from '@earendil-works/pi-durable';
 import { createRegistry } from '@earendil-works/pi-durable';
 import type { ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
-import { ROUTER_ID } from '../chat/chatService';
+import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import { TaskRepository } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
@@ -176,6 +176,18 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       ].join('\n');
     }
 
+    const remembered = deps.memory?.get(id);
+    if (remembered) {
+      const when = new Date(remembered.createdAt).toISOString().slice(0, 10);
+      return [
+        `memory ${remembered.id}（${remembered.kind}）`,
+        `记于 ${when} · 作用域 ${remembered.scopeType}` +
+          `${remembered.scopeId ? ` ${remembered.scopeId}` : ''} · 来源 ${remembered.sourceType}` +
+          `${remembered.sourceId ? ` ${remembered.sourceId}` : ''}`,
+        `内容：${remembered.content}`,
+      ].join('\n');
+    }
+
     const event = threads.getEvent(id);
     if (event) {
       return [
@@ -223,7 +235,9 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     const content = text.trim();
     if (!content) return { ok: false, reason: '内容是空的' };
     const id = await deps.memory.remember({
-      ownerId: ROUTER_ID,
+      // 挂在**这个人**名下，不是挂在 'router' 名下：一条「以后结论放前面」是关于他的，
+      // 执行体也得读得到。挂在自己名下的话，关于同一个人的偏好会被切成 N+1 份。
+      ownerId: USER_MEMORY_OWNER,
       kind: 'preference',
       content,
       scope: { type: 'personal' },
@@ -232,16 +246,41 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     return { ok: true, id };
   };
 
+  /**
+   * 回忆一次。
+   *
+   * 两处刻意的选择：
+   *
+   * 1. **跨三个归属域查**：这个人（`'user'`）+ 最近 5 条活跃线。只查人就查不到这单
+   *    踩过的坑，只查线就查不到他本人的要求，而这两样必须同时在场。
+   * 2. **`minRelevance: 0`**：显式回忆是「他明确问我在想什么」的时刻，这时候因为"不够相关"
+   *    而回一句"没有记录"，等于把库里的东西藏起来。宁可给出最相关的那几条，
+   *    让模型自己判断有没有用。
+   */
   const recallMemory = async (query: string) => {
     if (!deps.memory) return { ok: false, reason: '这个环境没有可用的记忆库' };
-    const lines = threads.listActiveThreads(5).map((thread) => ({ type: 'thread' as const, id: thread.id }));
+    const lines = threads.listActiveThreads(5);
+    const owners = recallOwners({});
+    for (const thread of lines) owners.push(thread.id);
+
     const found = await deps.memory.retrieve({
-      ownerId: ROUTER_ID,
+      owners,
       query,
-      scopes: [{ type: 'personal' }, ...lines],
+      scopes: [{ type: 'personal' }, ...lines.map((thread) => ({ type: 'thread' as const, id: thread.id }))],
       limit: 5,
+      minRelevance: 0,
     });
-    return { ok: true as const, items: found.map((item) => item.content) };
+    return {
+      ok: true as const,
+      items: found.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        content: item.content,
+        createdAt: item.createdAt,
+        sourceType: item.sourceType,
+        relevance: item.relevance,
+      })),
+    };
   };
 
   function registry(): Registry {

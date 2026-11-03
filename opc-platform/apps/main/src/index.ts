@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
-import { ChatService, ROUTER_ID } from './chat/chatService';
+import { ChatService } from './chat/chatService';
+import { USER_MEMORY_OWNER } from './memory/owners';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
 import { ConsolidationRunStore } from './memory/consolidationRun';
@@ -450,7 +451,12 @@ async function bootstrap(): Promise<void> {
     policy: () => triage.get(),
     /** 语义门用的分类器；没配模型时这一层自动关掉，不是错误。 */
     decisions: decisionService,
-    /** Router 的记忆：写读都在 `ROUTER_ID` 名下，和归档巩固落在同一个 owner 上。 */
+    /**
+     * Router 的记忆。
+     *
+     * 归属是**用户**（`'user'`），不是 `'router'`：一条「以后结论放前面」是关于他的，
+     * 执行体也得能读到。归档巩固写的是同一个归属，所以写的人和读的人终于是同一个。
+     */
     memory,
     /** 工作台的规矩：执行体的提示词里有，Router 也得有。 */
     facts,
@@ -1155,8 +1161,9 @@ if (!hasLock) {
           idempotentSecondSweep: again.length,
           archivedAt: row.archived_at !== null,
           consolidatedAt: row.consolidated_at !== null,
-          // 巩固的对象是**这条会话的对面**，现在那个对面是 Router（§2.2）。
-          memories: memory.listForOwner(ROUTER_ID).map((item) => item.content),
+          // 巩固出来的是**关于这个人**的记忆，所以它挂在用户身上，不挂在 Router 身上
+          // （`memory/owners.ts`）。这条断言以前是 `ROUTER_ID`——那正是被修掉的那个归属。
+          memories: memory.listForOwner(USER_MEMORY_OWNER).map((item) => item.content),
         }) + '\n',
       );
       app.exit(
@@ -1165,7 +1172,7 @@ if (!hasLock) {
           again.length === 0 &&
           row.consolidated_at !== null &&
           // 归档只是机械动作；这条链的意义是"归档之后真的变成了记忆"。
-          memory.countForOwner(ROUTER_ID) > 0
+          memory.countForOwner(USER_MEMORY_OWNER) > 0
           ? 0
           : 1,
       );
@@ -1205,7 +1212,7 @@ if (!hasLock) {
 
       const stored = memory.listForOwner(executor.id);
       const recalled = await memory.retrieve({
-        ownerId: executor.id,
+        owners: [executor.id],
         query: '这单怎么交付，文档放哪',
         scopes: [{ type: 'personal' }],
         limit: 2,
@@ -1255,7 +1262,7 @@ if (!hasLock) {
       });
 
       const recalled = await memory.retrieve({
-        ownerId: executor.id,
+        owners: [executor.id],
         query: '写一个健康检查服务，要能被 curl 验收',
         scopes: [{ type: 'personal' }],
         limit: 2,

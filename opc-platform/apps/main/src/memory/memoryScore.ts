@@ -68,12 +68,38 @@ export function lexicalScore(query: string, content: string): number {
  * semantic; lexical overlap and decayed strength break ties and keep fresh, often
  * used memories on top.
  */
-export function scoreCandidate(candidate: MemoryCandidate, query: string, now: number): number {
+/**
+ * 相关度：**这条记忆和这个问题有没有关系**。
+ *
+ * 它和下面的 `scoreCandidate` 是两件事，必须分开。混在一起的后果是真实的：
+ * 总分里有一项 `strength * 0.15`，于是一条排版新鲜、内容毫不相干的记忆也能拿到 0.15 分，
+ * 而过滤门槛是 0.02——**噪声过滤从来没有生效过**，自动召回每次都硬凑满 5 条。
+ */
+export function relevanceOf(candidate: MemoryCandidate, query: string): number {
   const lexical = lexicalScore(query, candidate.content);
   const semantic = candidate.similarity ?? 0;
+  return semantic * 0.55 + lexical * 0.3;
+}
+
+export function scoreCandidate(candidate: MemoryCandidate, query: string, now: number): number {
   const strength = decayedStrength(candidate.strength, candidate.lastRecalledAt, candidate.createdAt, now);
   const recallBonus = Math.min(0.1, candidate.recallCount * 0.02);
-  return semantic * 0.55 + lexical * 0.3 + strength * 0.15 + recallBonus;
+  return relevanceOf(candidate, query) + strength * 0.15 + recallBonus;
+}
+
+export interface RankOptions {
+  /**
+   * 强度门槛。**默认 0：衰减只影响排序，永不影响可达性。**
+   *
+   * 以前这里是 0.2，于是半衰期 30 天、90 天没被召回的条目会掉到 0.125 并被过滤掉——
+   * 一个不通知任何人的删除机制。第 91 天恰好需要它的那次，就是用户流失。
+   */
+  minStrength?: number;
+  /**
+   * **相关度**门槛。和强度不是一回事：它挡的是"跟你问的完全不相关"，这有正当理由。
+   * 显式回忆起话时传 0，让"一条都对不上"表现为"给出的最相关的几条"，而不是"没有记录"。
+   */
+  minRelevance?: number;
 }
 
 /** Applies scoring, drops noise, returns the top `limit`. */
@@ -82,15 +108,19 @@ export function rankMemories(
   query: string,
   limit: number,
   now: number,
-  minStrength = 0.2,
+  options: RankOptions = {},
 ): MemoryCandidate[] {
+  const minStrength = options.minStrength ?? 0;
+  const minRelevance = options.minRelevance ?? 0.02;
   return candidates
     .map((candidate) => ({
       candidate,
       score: scoreCandidate(candidate, query, now),
+      relevance: relevanceOf(candidate, query),
       strength: decayedStrength(candidate.strength, candidate.lastRecalledAt, candidate.createdAt, now),
     }))
-    .filter((entry) => entry.strength >= minStrength && entry.score > 0.02)
+    // `>=` 而不是 `>`：显式回忆传 0 时必须把「完全不相干」也放进来——那是它的用途。
+    .filter((entry) => entry.strength >= minStrength && entry.relevance >= minRelevance)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((entry) => entry.candidate);

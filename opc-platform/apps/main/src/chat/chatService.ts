@@ -6,6 +6,7 @@ import type {
   WorkTask,
 } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import { USER_MEMORY_OWNER } from '../memory/owners';
 import type { ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
 
 /** Minimal id helper (main process only; never a database key). */
@@ -312,7 +313,10 @@ export class ChatService {
   consolidateConversation = async (conversationId: string): Promise<{ written: number; skipped?: string }> => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation || !this.consolidate) return { written: 0, skipped: '未启用巩固' };
-    const ownerId = conversation.memberIds[0];
+    // 这条会话的对面是**这个人**，不是 Router。巩固出来的教训是关于他的，所以挂在
+    // 用户身上——挂在 Router 名下的话，只有 Router 读得到，干活的人永远看不到。
+    const counterpart = conversation.memberIds[0];
+    const ownerId = counterpart === ROUTER_ID ? USER_MEMORY_OWNER : counterpart;
     if (!ownerId) return { written: 0, skipped: '这条会话还没有归属' };
     const messages = conversation.messages
       .filter((message) => message.kind === 'text' && message.text)

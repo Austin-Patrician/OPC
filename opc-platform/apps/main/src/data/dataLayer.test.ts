@@ -339,7 +339,7 @@ describe('MemoryService', () => {
     });
 
     const ownLine = await memory.retrieve({
-      ownerId: worker.id,
+      owners: [worker.id],
       query: '冒烟脚本',
       scopes: [{ type: 'thread', id: mine }],
       limit: 3,
@@ -348,7 +348,7 @@ describe('MemoryService', () => {
 
     // 同一个执行体、另一条线：那条线的经验不该出现在这里。
     const otherLine = await memory.retrieve({
-      ownerId: worker.id,
+      owners: [worker.id],
       query: '冒烟脚本',
       scopes: [{ type: 'thread', id: theirs }],
       limit: 3,

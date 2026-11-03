@@ -2,7 +2,7 @@
 
 > 靶子：Super-agent 设计探索 §2.1（Router 是「序点、协调点和记忆」）+ CoALA 的五类记忆。
 > 前置：`05-router-real.md` §2.1 的「记忆」一行、`06-vocabulary.md` 的 V33。
-> 这份是**设计口径**，不是完成报告——第 10 节有分期，P0 之前一行代码都没动。
+> 这份是**设计口径**。第 10 节有分期；**P0 已落地**（见 §14），P1 之后还没动。
 
 ## 0. 三条结论
 
@@ -233,6 +233,10 @@ P2 要做的事，本质是把 `fact` 已经想清楚的三个字段（`subject`
 
 这一条同时解决 2.2 的问题一。
 
+> P0 只换了归属键，**没有新加 `worker` 这个 scope 值**（那要改 CHECK 约束，属于 P2）。
+> 所以现在 `personal` 有两个归属可能：`owner='user'` 是「关于这个人」，
+> `owner=<worker id>` 是「这个执行体自己的习惯」。靠 owner 区分，不靠 scope 猜。
+
 ---
 
 ## 5. 写入管线
@@ -385,7 +389,7 @@ A2 的反面就是：**用户看不见助手记得什么，就不会信任它**�
 
 | 期 | 做什么 | 为什么先做 |
 |---|---|---|
-| **P0** | ① 个人记忆收归 `owner = USER_ID`，执行体只读 ② 显式查询绕过衰减 ③ recall 返回带 id/类型/来源 | 三个都是修 bug 级别，改动小，直接止血 |
+| **P0** ✅ | ① 个人记忆收归 `owner = USER_ID`，执行体只读 ② 显式查询绕过衰减 ③ recall 返回带 id/类型/来源 | 三个都是修 bug 级别，改动小，直接止血 |
 | **P1** | L0 层（常驻 + 每轮注入 + 上限 20 + 不衰减） | 解决 A4，收益最直接 |
 | **P2** | 类型化（`kind` / `subject` / `volatility`）+ 确定性去重与取代 | 让后面所有东西有地方挂 |
 | **P3** | 免费信号接入（返工理由、steer note）+ 后置抽取管线 | 收益最大，但依赖 P2 |
@@ -443,3 +447,66 @@ A2 的反面就是：**用户看不见助手记得什么，就不会信任它**�
 | §2.2「执行体不直接与人类交互」 | 执行体对个人记忆**只读**，写入口只有 Router 与用户 |
 | `05-router-real.md` §2.1「Router 是序点、协调点**和记忆**」 | 这一版之前它只是「能读写一张表」；这一版之后它有常驻层、有类型、有出处 |
 | `fact`（工作台的规矩）与新记忆的关系 | `fact` 是**人写的**，改动少、需要审阅；记忆是**习得的**，需要去重与置信度。两者不合并，但 L0 的注入通道可以复用 `rules()` 那一条 |
+
+---
+
+## 14. P0 已落地（这一节是完成报告）
+
+三件事，都带着能复现原 bug 的用例。
+
+### ① 归属收归「这个人」
+
+新增 `memory/owners.ts`：`USER_MEMORY_OWNER`（`'user'`）+ `recallOwners()`。三个域并列：
+
+```
+'user'        关于这个人    ← Router 写，所有人读
+thread.id     关于这条线    ← 谁干谁写，换人还在
+worker.id     这个执行体自己的习惯
+```
+
+改到的写入口：
+
+| 位置 | 之前 | 现在 |
+|---|---|---|
+| `routerHost.remember` | `ownerId: ROUTER_ID` | `USER_MEMORY_OWNER` |
+| `chatService` 巩固 | `memberIds[0]`（助手会话是 `'router'`） | 助手会话映射到 `USER_MEMORY_OWNER` |
+| `workService` 验收通过 | `task.assigneeId` | `task.threadId ?? task.assigneeId` |
+| `workService` 的 `remember` 工具 | `personId` | `threadId ?? personId` |
+
+读取侧 `retrieve` 从 `ownerId: string` 改成 `owners: readonly string[]`——一个 owner 的接口
+做不到「既读人的偏好，又读这条线的经验」，而这两样必须同时在场。
+
+执行体现在读 `[user, 它的线程, 它自己]`，所以 Router 记下的偏好第一次能到干活的人手里。
+
+### ② 衰减只改排序
+
+`rankMemories` 的 `minStrength` 默认从 `0.2` 改成 `0`，并把「相关度」从「排序分」里拆出来：
+
+```
+relevance = semantic*0.55 + lexical*0.30      ← 门槛看这个
+score     = relevance + strength*0.15 + 加成   ← 排序看这个
+```
+
+拆开是因为一个**一直没被发现的 bug**：总分里带 `strength*0.15`，于是一条新鲜但毫不相干的
+记忆也能拿 0.15 分，而门槛是 0.02——**噪声过滤从来没有生效过**，自动召回每次都硬凑满 5 条。
+
+显式回忆（`recall_memory`）传 `minRelevance: 0`：一条都对不上时给出「我记得最牢的几条」
+并在输出里说明，而不是回一句"没有记录"。
+
+### ③ 可寻址
+
+`MemorySnippet` 补上 `scopeId / createdAt / sourceType / sourceId / relevance / strength`
+（`strength` 是**衰减后**的值）。`recall_memory` 的输出变成：
+
+```
+- mem-3f2a · preference · 2026-07-14 · consolidation · 文档放 README 里就够了，别单开 wiki
+```
+
+`recall <id>` 现在也能取记忆（和 thread / worker / task / event / report 一样），
+`remember` 把 id 放进工具结果的 `details` 里。
+
+### 还没解决的
+
+- **旧库里的孤儿行还是孤儿**。真实库上 289 条记忆挂在 `agent-8669…`，P0 只保证**新写的**
+  落在正确归属上。那些行的出口是 §8 的认领界面（P4），不是迁移里猜一个 owner。
+- 类型、去重、常驻层、程序性记忆注入，都还按 §10 的排期在后面。

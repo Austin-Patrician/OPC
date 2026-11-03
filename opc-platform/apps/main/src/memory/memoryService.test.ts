@@ -41,12 +41,12 @@ describe('thread-scoped memory', () => {
     });
 
     const here = await memory.retrieve({
-      ownerId,
+      owners: [ownerId],
       query: '财报 表格',
       scopes: [{ type: 'thread', id: 'th-1' }],
     });
     const elsewhere = await memory.retrieve({
-      ownerId,
+      owners: [ownerId],
       query: '财报 表格',
       scopes: [{ type: 'thread', id: 'th-2' }],
     });
@@ -65,7 +65,7 @@ describe('thread-scoped memory', () => {
     });
 
     const found = await memory.retrieve({
-      ownerId,
+      owners: [ownerId],
       query: '结论 证据',
       scopes: [{ type: 'personal' }],
     });
@@ -89,7 +89,7 @@ describe('thread-scoped memory', () => {
     });
 
     const both = await memory.retrieve({
-      ownerId,
+      owners: [ownerId],
       query: '千分位 附录',
       scopes: [{ type: 'thread', id: 'th-1' }, { type: 'personal' }],
     });

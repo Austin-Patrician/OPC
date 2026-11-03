@@ -40,6 +40,7 @@ import { HarnessBrain } from './harnessBrain';
 import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
+import { recallOwners } from '../memory/owners';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
@@ -230,7 +231,9 @@ export class WorkService {
         if (passed && task && this.deps.memory) {
           void this.deps.memory
             .remember({
-              ownerId: task.assigneeId,
+              // 线级的经验挂在**线**上，不挂在写它的那个人身上：换个人接手，这条线
+              // 踩过的坑还得在。没有线的活才落到执行体自己名下。
+              ownerId: task.threadId ?? task.assigneeId,
               kind: 'experience',
               content: `任务《${task.title}》通过验收。交付物：${task.artifacts
                 .map((artifact) => artifact.relPath)
@@ -266,12 +269,14 @@ export class WorkService {
         ? async (task) => {
             // 两个作用域就够了：这条线自己的经验，和这个执行体自己的习惯。
             // 中间那一层（部门）早就没了，也不该再有。
+            // 三个域并列：这个人的偏好、这条线的经验、这个执行体自己的习惯。
+            // 以前只查「这个执行体自己的」，于是 Router 记下的用户偏好，干活的人永远看不到。
             const scopes = [
-              ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
               { type: 'personal' as const },
+              ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
             ];
             const snippets = await this.deps.memory!.retrieve({
-              ownerId: task.assigneeId,
+              owners: recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
               query: `${task.title} ${task.brief}`,
               scopes,
               limit: 5,
@@ -905,7 +910,8 @@ export class WorkService {
             const taskId = currentTaskIdFor(personId);
             const threadId = taskId ? this.repository.getTask(taskId)?.threadId : undefined;
             return memory.remember({
-              ownerId: personId,
+              // 同上：线级的记忆属于那条线，不属于此刻干活的这个执行体。
+              ownerId: threadId ?? personId,
               kind,
               content,
               scope: threadId ? { type: 'thread', id: threadId } : { type: 'personal' },
