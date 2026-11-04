@@ -68,22 +68,25 @@ describe('Router 装起来能跑', () => {
     threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
 
     const report = await router.tick();
-    expect(report.routed).toBe(1);
+    // 新契约：会话 settle 失败时，Router 不能把事件伪装成已送达。
+    expect(report.routed).toBe(0);
+    expect(threads.listPendingEvents(10)).toHaveLength(1);
 
     // 没有模型，这一轮会失败；但必须在有限时间内结束，而不是挂在那里。
     await router.settle();
     expect(router.session.busy).toBe(false);
   }, 30_000);
 
-  it('会话失败之后调度循环还活着，事件也已经在队列外', async () => {
+  it('会话失败之后调度循环还活着，事件回到队列等待重试', async () => {
     const router = host();
     threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '在吗' } });
     await router.tick();
     await router.settle();
 
-    // 下一轮不该把同一条事件再交一次（routed ≠ pending）。
+    // 下一轮应该再次看到同一条事件，而不是静默丢掉。
     const again = await router.tick();
     expect(again.routed).toBe(0);
+    expect(threads.listPendingEvents(10)).toHaveLength(1);
   }, 30_000);
 
   it('程序层跟着策略走：名单模式挡住没登记的来源', async () => {
@@ -99,7 +102,7 @@ describe('Router 装起来能跑', () => {
 
     const report = await router.tick();
     expect(report.dropped).toBe(1);
-    expect(report.routed).toBe(1);
+    expect(report.routed).toBe(0);
   }, 30_000);
 
   it('同一个环境事件在一分钟内来两次，第二次是噪声', async () => {
@@ -109,6 +112,6 @@ describe('Router 装起来能跑', () => {
 
     const report = await router.tick();
     expect(report.dropped).toBe(1);
-    expect(report.routed).toBe(1);
+    expect(report.routed).toBe(0);
   }, 30_000);
 });

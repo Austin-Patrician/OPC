@@ -144,6 +144,11 @@ function normalizeGitHub(request: TriggerRequest): NormalizedTrigger[] {
           summary: `${repo} PR #${identity.externalId.split('#')[1]} ${action}：${pr.title ?? '（无标题）'}`,
           ...(clip(pr.body) ? { text: clip(pr.body)! } : {}),
           ...base,
+          replyTarget: {
+            adapterId: 'github',
+            source: 'github',
+            address: identity.key,
+          },
           // 合并或关闭：这个身份上不该再有新活。
           ...(action === 'closed' ? { terminal: true } : {}),
         },
@@ -164,6 +169,11 @@ function normalizeGitHub(request: TriggerRequest): NormalizedTrigger[] {
           summary: `${repo} ${isPullRequest ? 'PR' : 'issue'} #${issue.number} ${action}：${issue.title ?? ''}`,
           ...(clip(issue.body) ? { text: clip(issue.body)! } : {}),
           ...base,
+          replyTarget: {
+            adapterId: 'github',
+            source: 'github',
+            address: identity.key,
+          },
           ...(action === 'closed' ? { terminal: true } : {}),
         },
       ];
@@ -181,6 +191,11 @@ function normalizeGitHub(request: TriggerRequest): NormalizedTrigger[] {
           summary: `${repo} #${issue.number} 有新评论（${comment.user?.login ?? '某人'}）`,
           ...(clip(comment.body) ? { text: clip(comment.body)! } : {}),
           ...base,
+          replyTarget: {
+            adapterId: 'github',
+            source: 'github',
+            address: identity.key,
+          },
         },
       ];
     }
@@ -198,6 +213,11 @@ function normalizeGitHub(request: TriggerRequest): NormalizedTrigger[] {
           summary: `${repo} ${branch} 有 ${commits.length} 个新提交`,
           ...(subjects ? { text: subjects } : {}),
           ...base,
+          replyTarget: {
+            adapterId: 'github',
+            source: 'github',
+            address: identity.key,
+          },
         },
       ];
     }
@@ -216,6 +236,11 @@ function normalizeGitHub(request: TriggerRequest): NormalizedTrigger[] {
           identity,
           summary: `${repo} 的检查「${run.name ?? '未命名'}」${conclusion}`,
           ...base,
+          replyTarget: {
+            adapterId: 'github',
+            source: 'github',
+            address: identity.key,
+          },
         },
       ];
     }

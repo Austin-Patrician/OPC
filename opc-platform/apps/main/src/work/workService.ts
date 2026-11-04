@@ -7,6 +7,7 @@ import type {
   SubtaskDraft,
   TaskError,
   TaskRecord,
+  TaskTrace,
   WorkTask,
   WorkThread,
 } from '@opc/shared/domain';
@@ -41,6 +42,7 @@ import { HarnessBrain } from './harnessBrain';
 import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
+import { createTraceRecorder } from './trace';
 import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import { SignalStore } from '../memory/signals';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
@@ -54,9 +56,11 @@ import { buildRecords, type RecordSource } from './records';
 import { ensureDir, listWorkspaceFiles } from './workspace';
 import { createInvestigateToolExtension } from './investigateTool';
 import {
+  countEscalations,
   createEscalateToolExtension,
   createHandBackToolExtension,
   escalationLevel,
+  escalationTag,
 } from './escalateTool';
 import { buildSubagentPrompt, readAnswerFile, type SubagentAnswer } from './subagent';
 import { priceUsage } from './usage';
@@ -226,6 +230,8 @@ export class WorkService {
             };
           },
           onTokens: (taskId, tokens) => this.repository.addTokens(taskId, tokens),
+          // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它。
+          trace: (taskId) => createTraceRecorder({ repository: this.repository, taskId }),
         })
       : null;
 
@@ -434,6 +440,15 @@ export class WorkService {
   getTask = (taskId: string): WorkTask | undefined => this.repository.getTask(taskId);
 
   listSubtasks = (taskId: string): WorkTask[] => this.repository.listChildren(taskId);
+
+  /**
+   * 动作流（`09-worker-spec.md` W6）。
+   *
+   * 界面与 `recall task:<id>` 读它；**Router 的调度不读**——过程进 Router 的输入，
+   * 就等于让 Router 变成日志消费者。默认 40 条够答"它现在在干什么"。
+   */
+  listTrace = (taskId: string, limit = 40): TaskTrace[] =>
+    this.repository.listTrace(taskId, limit);
 
   listReviews = (taskId: string): WorkTask[] => this.repository.listReviews(taskId);
 
@@ -736,7 +751,13 @@ export class WorkService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.repository.addStep(taskId, message);
-      this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: message });
+      this.repository.setStatus(taskId, 'failed', {
+        finishedAt: Date.now(),
+        error: message,
+        // §3.7：这类失败**不消耗尝试也不该重试**——没模型、前置没做完，
+        // 再跑一百次也是同一个结果。分类让它不再伪装成"跑挂了"。
+        errorKind: 'blocked',
+      });
       const failed = this.repository.getTask(taskId);
       if (failed) this.emit(failed);
       return true;
@@ -1282,15 +1303,19 @@ export class WorkService {
     question: string;
     tried: string;
     suggestion: string;
+    /** 这件事叫什么。同一件事问第二次才降级；换一件事照样打断人。 */
+    subject?: string;
   }): { level: 'decide' | 'notify' } => {
     const task = this.repository.getTask(input.taskId);
     if (!task?.threadId) throw new Error('这条任务不在任何工作线上，没有可请示的地方');
 
-    const previous = task.steps.filter((step) => step.text.startsWith('请示：')).length;
+    // 数的是**同一件事**问过几次，不是这条任务问过几次（W-G5）。
+    const previous = countEscalations(task.steps, input.subject);
     // 静默线上的请示也不插队：这条线本来就是我自作主张开的，不能反过来向他要决定。
     const speculative = this.threads.getThread(task.threadId)?.speculative === true;
     const level = speculative ? 'notify' : escalationLevel(previous);
-    this.repository.addStep(input.taskId, `请示：${input.question}`);
+    const tag = escalationTag(input.subject);
+    this.repository.addStep(input.taskId, `请示${tag}：${input.question}`);
 
     const body = [
       input.question,

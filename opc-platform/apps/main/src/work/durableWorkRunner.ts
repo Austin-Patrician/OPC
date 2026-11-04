@@ -3,6 +3,8 @@ import type { Context } from '@earendil-works/chord/context';
 import type { Conversation, Harness, TaskId } from '@earendil-works/pi-durable';
 import path from 'node:path';
 import type { TaskRepository } from '../data/taskRepository';
+import { isUnverified } from './acceptanceGate';
+import { classifyTerminal, FAILURE_LABEL } from './failure';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { WorkTaskDefinition, type WorkTaskInput, type WorkTaskResult } from './workTaskDefinition';
 
@@ -90,6 +92,8 @@ export class DurableWorkRunner {
         this.deps.repository.setStatus(task.id, 'failed', {
           finishedAt: Date.now(),
           error: '中断的任务缺少 durable 记录',
+          // 起不来的一类：重跑也没有 durable 记录可续，得有人看一眼。
+          errorKind: 'blocked',
         });
         this.deps.onFinished(task.id, 'failed', null);
         this.deps.onTaskChanged(task.id);
@@ -144,17 +148,30 @@ export class DurableWorkRunner {
     }
 
     const accepted = outcome === 'completed' && result?.verdict === 'pass';
+    // 分类（§3.7）：同一个"失败"背后是四种不同处境，该做的事彼此矛盾。
+    const current = this.deps.repository.getTask(taskId);
+    const kind = classifyTerminal({
+      outcome,
+      ...(result ? { verdict: result.verdict } : {}),
+      unverified: current ? isUnverified(current) : false,
+    });
+    const label = kind ? FAILURE_LABEL[kind] : outcome;
     this.deps.repository.addStep(
       taskId,
       outcome === 'completed'
         ? accepted
           ? `任务完成（${result?.attempts ?? 1} 次尝试）`
           : `任务未通过（${result?.reason ?? '验收失败'}）`
-        : `任务结束：${outcome}`,
+        : `任务结束：${label}`,
     );
-    this.deps.repository.setStatus(taskId, accepted ? 'accepted' : 'rejected', {
+    // 被中止不是"没通过验收"：它的 status 是 `cancelled`，由 `threadOutcomeFor`
+    // 静默归档，而不是拿一条 `decide` 去打扰人。
+    const status: 'accepted' | 'rejected' | 'cancelled' =
+      accepted ? 'accepted' : kind === 'cancelled' ? 'cancelled' : 'rejected';
+    this.deps.repository.setStatus(taskId, status, {
       finishedAt: Date.now(),
-      error: accepted ? null : (result?.reason ?? outcome),
+      error: accepted ? null : (result?.reason ?? label),
+      errorKind: accepted ? null : kind,
     });
 
     this.deps.onTaskChanged(taskId);

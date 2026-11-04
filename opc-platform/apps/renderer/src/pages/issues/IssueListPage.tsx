@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, CircleDashed, Loader2, ShieldAlert, Stamp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { TaskStatus, WorkTask } from '@opc/shared/domain';
+import type { TaskStatus, TaskTrace, WorkTask } from '@opc/shared/domain';
+import { renderTrace } from '@opc/shared/trace';
 import { cn } from '@/shared/lib/cn';
 import { useMoney } from '@/entities/billing/model/useBilling';
 
@@ -689,6 +690,25 @@ function IssueDetail({
 }) {
   const { t } = useTranslation();
   const evidence = task.acceptance?.evidence;
+  /**
+   * 动作流（`09-worker-spec.md` W6）：它到底调了什么工具。
+   *
+   * 只在任务换人 / 换状态时重取：轨迹不推送，一轮跑完或每次状态迁移刷新一次就够。
+   * 想看更新一步按一下重新加载——这比给每条工具调用开一个事件便宜得多。
+   */
+  const [trace, setTrace] = useState<TaskTrace[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void window.opc?.work
+      .trace(task.id, 40)
+      .then((rows) => {
+        if (alive) setTrace(rows);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [task.id, task.status]);
 
   return (
     <aside className="flex w-[21rem] shrink-0 flex-col border-l border-line bg-surface">
@@ -845,6 +865,21 @@ function IssueDetail({
           </section>
         ) : null}
 
+        {trace.length > 0 ? (
+          <section data-testid="issue-trace">
+            <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
+              {t('issues.trace')}
+            </h3>
+            <ol className="space-y-0.5 font-mono text-3xs text-ink-secondary">
+              {renderTrace(trace).map((line, index) => (
+                <li key={`${index}-${line}`} className="truncate" title={line}>
+                  {line}
+                </li>
+              ))}
+            </ol>
+          </section>
+        ) : null}
+
         <section>
           <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
             {t('issues.activity')}
@@ -862,7 +897,18 @@ function IssueDetail({
         </section>
 
         {task.error ? (
-          <p className="rounded bg-danger/10 px-2 py-1.5 text-2xs text-danger">{task.error}</p>
+          <p className="rounded bg-danger/10 px-2 py-1.5 text-2xs text-danger">
+            {/* 哪一类失败（§3.7）：「起不来」和「运行中断」对人是两件事。 */}
+            {task.errorKind ? (
+              <span
+                data-testid="issue-failure-kind"
+                className="mr-1 rounded bg-danger/15 px-1 py-0.5 font-mono text-3xs"
+              >
+                {t(`task.failure.${task.errorKind}`)}
+              </span>
+            ) : null}
+            {task.error}
+          </p>
         ) : null}
       </div>
     </aside>

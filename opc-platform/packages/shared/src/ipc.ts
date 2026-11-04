@@ -21,6 +21,7 @@ import type {
   ModelDefaults,
   ModelOption,
   ModelRef,
+  ModelRole,
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
@@ -37,6 +38,7 @@ import type {
   SpeechSynthesizeResult,
   SpeechTranscribeInput,
   SpeechTranscribeResult,
+  TaskTrace,
   WorkTask,
 } from './domain';
 import type { OcrSettings } from './ocr';
@@ -83,6 +85,8 @@ export const IPC = {
     applyBuiltinPricing: 'models:applyBuiltinPricing',
     getThinking: 'models:getThinking',
     setThinking: 'models:setThinking',
+    getRouterThinking: 'models:getRouterThinking',
+    setRouterThinking: 'models:setRouterThinking',
   },
   speech: {
     transcribe: 'speech:transcribe',
@@ -141,6 +145,7 @@ export const IPC = {
     setIssueMeta: 'work:setIssueMeta',
     linkTasks: 'work:linkTasks',
     subtasks: 'work:subtasks',
+    trace: 'work:trace',
     createTask: 'work:createTask',
     runTask: 'work:runTask',
     taskEvent: 'work:taskChanged',
@@ -255,6 +260,13 @@ export interface WorkBridge {
   listTasks(limit?: number): Promise<WorkTask[]>;
   /** Direct subtasks of one task (the decomposition tree). */
   subtasks(taskId: string): Promise<WorkTask[]>;
+  /**
+   * 执行体的动作流（`09-worker-spec.md` W6）：它到底调了什么工具、成没成。
+   *
+   * 和 `steps` 分两档：`steps` 是写给人读的叙述，这里是真的动作。裁剪之后序号会
+   * 留空洞，界面据此显示「略去 N 步」。
+   */
+  trace(taskId: string, limit?: number): Promise<TaskTrace[]>;
   createTask(input: CreateTaskInput): Promise<CreateTaskResult>;
   /** Fire-and-forget: progress arrives through `onTaskChanged`. */
   runTask(taskId: string): Promise<void>;
@@ -306,7 +318,7 @@ export interface ModelsBridge {
   /** True only for providers pi can log into with OAuth; the rest use an API key. */
   supportsOauth(providerId: string): Promise<boolean>;
   getDefaults(): Promise<ModelDefaults>;
-  setDefault(role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null): Promise<ModelDefaults>;
+  setDefault(role: ModelRole, ref: ModelRef | null): Promise<ModelDefaults>;
   /** Imports an existing pi config as providers (explicit user action). */
   importFromPi(): Promise<{ imported: number; providers: ProviderConfig[] }>;
   getCompaction(): Promise<CompactionSettings>;
@@ -328,7 +340,12 @@ export interface ModelsBridge {
     price: { input: number; output: number; cacheRead: number; cacheWrite: number },
   ): Promise<ProviderConfig[]>;
   getThinking(): Promise<string>;
-  setThinking(level: string): Promise<string>;
+  /** `null` clears the explicit choice and falls back to the system default. */
+  setThinking(level: string | null): Promise<string>;
+  /** Router 的思考档位；没单独配时返回全局那一档。 */
+  getRouterThinking(): Promise<string>;
+  /** `null` clears it and follows the global level again. */
+  setRouterThinking(level: string | null): Promise<string>;
 }
 
 export interface AuthPromptRequest {

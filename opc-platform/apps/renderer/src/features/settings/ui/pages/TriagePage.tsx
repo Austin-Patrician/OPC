@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TriggerSource, TriagePolicy } from '@opc/shared/domain';
-import { DEFAULT_TRIAGE_POLICY } from '@opc/shared/domain';
+import { DEFAULT_TRIAGE_POLICY, isChatModelEnabled } from '@opc/shared/domain';
+import { useModels } from '@/features/models/model/useModels';
+import { useCatalog } from '@/features/models/model/useCatalog';
 import { cn } from '@/shared/lib/cn';
+import { ModelPicker, pickerGroups } from '@/shared/ui/ModelPicker';
 import { PageHeader, Row, Section, Segmented } from '../kit';
 import { TriggerSourceSection } from './TriggerSourceSection';
 
@@ -30,8 +33,33 @@ const THRESHOLDS = [0.5, 0.7, 0.9] as const;
 
 export function TriagePage() {
   const { t } = useTranslation();
+  const models = useModels();
+  const { catalog } = useCatalog();
   const [policy, setPolicy] = useState<TriagePolicy>(DEFAULT_TRIAGE_POLICY);
   const [loaded, setLoaded] = useState(false);
+
+  /**
+   * Router 的两档模型都在这一页配：会话本身用哪个（`default.router`），
+   * 语义预筛用哪个分类模型（`default.decision`）。
+   *
+   * 放在这一页而不是 LLM / Decision 页，是因为它们影响的是**调度成本**，
+   * 和阈值、判定标准是同一个决定；去两页配一个东西，等于让人记住两处设置。
+   * 可选项本身仍然来自那两页：这里只挑已经启用的行，不在这里启用新模型。
+   */
+  const routerGroups = pickerGroups(
+    models.providers,
+    (model) => model.capability === 'chat' && isChatModelEnabled(model),
+    catalog,
+  );
+
+  /** 与 `runtime.ts` 注册分类模型的条件一致：显式启用过的才算。 */
+  const classifierGroups = pickerGroups(
+    models.providers,
+    (model) => model.capability === 'classifier' && model.decisionEnabled === true,
+    catalog,
+  );
+
+  const effectiveRouterModel = models.defaults.router ?? models.defaults.llm;
 
   useEffect(() => {
     let alive = true;
@@ -75,6 +103,50 @@ export function TriagePage() {
       />
 
       <div className="space-y-4">
+        <Section title={t('settings.triage.modelTitle')} description={t('settings.triage.modelDesc')}>
+          <Row
+            label={t('settings.triage.routerModel')}
+            hint={t('settings.triage.routerModelHint')}
+            settingKey="default.router"
+          >
+            <div className="w-[22rem] max-w-full">
+              <ModelPicker
+                ariaLabel={t('settings.triage.routerModel')}
+                title={t('settings.triage.routerModel')}
+                testId="triage-router-model"
+                groups={routerGroups}
+                value={models.defaults.router}
+                thinking={models.routerThinking}
+                clearLabel={t('settings.triage.routerModelFollow')}
+                emptyLabel={t('settings.triage.routerModelFollow')}
+                onClear={() => void models.setDefault('router', null)}
+                onSelect={(selection) => {
+                  void models.setDefault('router', {
+                    providerId: selection.providerId,
+                    modelId: selection.modelId,
+                  });
+                  if (selection.thinking !== undefined) {
+                    void models.setRouterThinking(selection.thinking);
+                  }
+                }}
+              />
+              <p className="mt-1 text-2xs text-ink-quaternary">
+                {t('settings.triage.routerModelEffective', {
+                  model: effectiveRouterModel
+                    ? `${effectiveRouterModel.providerId}/${effectiveRouterModel.modelId}`
+                    : t('settings.triage.routerModelNone'),
+                })}
+              </p>
+            </div>
+          </Row>
+
+          {routerGroups.length === 0 ? (
+            <p className="border-t border-line px-4 py-3 text-xs leading-relaxed text-ink-tertiary">
+              {t('settings.triage.routerModelNoChoices')}
+            </p>
+          ) : null}
+        </Section>
+
         <Section title={t('settings.triage.fastTitle')} description={t('settings.triage.fastDesc')}>
           <Row label={t('settings.triage.mode')} settingKey="router.triage.fastPath">
             <Segmented
@@ -147,6 +219,40 @@ export function TriagePage() {
                 }))}
                 onChange={(next) => patch({ noiseThreshold: Number(next) })}
               />
+            </Row>
+          ) : null}
+
+          {policy.semantic === 'decision' ? (
+            <Row
+              label={t('settings.triage.classifier')}
+              hint={t('settings.triage.classifierHint')}
+              settingKey="default.decision"
+              disabled={models.loading}
+            >
+              <div className="w-[22rem] max-w-full">
+                <ModelPicker
+                  ariaLabel={t('settings.triage.classifier')}
+                  title={t('settings.triage.classifier')}
+                  testId="triage-classifier-model"
+                  groups={classifierGroups}
+                  value={models.defaults.decision}
+                  allowThinking={false}
+                  clearLabel={t('settings.triage.classifierNone')}
+                  emptyLabel={t('settings.triage.classifierNone')}
+                  onClear={() => void models.setDefault('decision', null)}
+                  onSelect={(selection) =>
+                    void models.setDefault('decision', {
+                      providerId: selection.providerId,
+                      modelId: selection.modelId,
+                    })
+                  }
+                />
+                {classifierGroups.length === 0 ? (
+                  <p className="mt-1 text-2xs text-ink-quaternary">
+                    {t('settings.triage.classifierNoChoices')}
+                  </p>
+                ) : null}
+              </div>
             </Row>
           ) : null}
 

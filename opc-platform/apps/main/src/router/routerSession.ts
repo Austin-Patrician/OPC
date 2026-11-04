@@ -88,11 +88,12 @@ export class RouterSession {
   /**
    * 把一段输入交给 Router。
    *
-   * 不 await 生成过程：调用方（调度循环）要立刻返回，好让下一次 tick 继续攒事件。
-   * 会话忙的时候 pi 会把这条输入排队，在下一个 boundary 一起处理——那就是批处理。
+   * 这里会 await 本轮 settle：只有确认 Router 会话真的接住了输入，调度层才可以把
+   * event/report 标记从可重试状态移走。新的事件在本轮期间由 Router 的单飞 tick
+   * 留在数据库，当前轮结束后自动触发下一轮；不能为了“立即返回”重新引入静默丢事件。
    */
-  deliver = (text: string): void => {
-    void this.run(text);
+  deliver = async (text: string): Promise<void> => {
+    await this.run(text);
   };
 
   private async run(text: string): Promise<void> {
@@ -104,16 +105,22 @@ export class RouterSession {
         { type: 'input', content: text },
         context as never,
       );
-      const settled = await submission.wait(context as never);
-      const ok = settled.status === 'done';
-      this.lastError = ok ? null : `Router 一轮未完成（${settled.status}）`;
-      if (!ok) console.error('[router]', this.lastError);
-      this.deps.onTurn?.({ ok, ...(ok ? {} : { error: this.lastError ?? undefined }) });
+       const settled = await submission.wait(context as never);
+       const ok = settled.status === 'done';
+       if (!ok) {
+         // A submission that settles as failed was not delivered. Throw it back to
+         // Router.tick so its routed/announced markers can be rolled back.
+         throw new Error(`Router 一轮未完成（${settled.status}）`);
+       }
+       this.lastError = null;
+       this.deps.onTurn?.({ ok: true });
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
-      // 不抛：Router 崩了不该让调度循环停摆，事件还在队列里，下一轮会重试。
+      // 抛回 Router.tick：tick 会撤销 routed/announced 标记，下一轮才能重试。
+      // 调度循环本身仍由 index.ts 的 pushTick 捕获，不会拖垮应用。
       console.error('[router] 一轮失败', error);
       this.deps.onTurn?.({ ok: false, error: this.lastError });
+      throw error;
     } finally {
       this.pending -= 1;
     }

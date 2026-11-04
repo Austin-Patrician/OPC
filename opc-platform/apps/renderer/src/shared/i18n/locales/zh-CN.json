@@ -165,7 +165,7 @@
       "title": "LLM 对话模型",
       "readyCount": "{{count}} 个 Provider 已就绪",
       "defaultTitle": "默认模型",
-      "defaultDesc": "新建 Agent 会话时使用的 Provider 与模型。",
+      "defaultDesc": "执行体使用的 Provider 与模型。助手在事件调度中默认跟随这里，也可以在“事件调度”页单独指定一个更轻的模型。",
       "defaultAuto": "自动选择",
       "thinking": "思考强度",
       "thinkingHint": "仅对支持推理的模型生效。",
@@ -591,10 +591,22 @@
       "threshold05": "更节省",
       "threshold07": "默认",
       "threshold09": "更保守",
-      "decisionHint": "分类模型使用 设置 → 模型 → Decision 中配置的模型。未配置时跳过这一步，事件全部交由助手处理。",
+      "decisionHint": "分类模型在上方选择，可选项来自 设置 → 模型 → Decision 中已启用的模型。未配置时跳过这一步，事件全部交由助手处理。",
       "prompt": "判定标准",
       "promptHint": "交给分类模型的判定标准。不同工作场景对噪声的定义不同（例如持续集成的结果，在一种场景下属于噪声，在另一种场景下属于需要知悉的事件），因此这里可编辑。留空则使用默认标准。",
-      "footnote": "两项筛选在判断失败时一律放行：规则未命中、模型未配置、调用失败或结果缺失，事件都会继续向上提交。因此这里的配置只影响成本，不影响事件是否被处理。被丢弃的事件仍保留在数据库中，可按事件 id 检索；当前暂无列表页面。"
+      "footnote": "两项筛选在判断失败时一律放行：规则未命中、模型未配置、调用失败或结果缺失，事件都会继续向上提交。因此这里的配置只影响成本，不影响事件是否被处理。被丢弃的事件仍保留在数据库中，可按事件 id 检索；当前暂无列表页面。",
+      "modelTitle": "模型",
+      "modelDesc": "调度判断由一个常驻的助手会话完成。它读的是事件批次，不需要和实际执行任务的执行体使用同一个模型。",
+      "routerModel": "助手会话模型",
+      "routerModelHint": "留空表示跟随执行体的默认模型。修改在下一轮调度时生效，不需要重启。",
+      "routerModelFollow": "跟随默认模型",
+      "routerModelEffective": "当前生效：{{model}}",
+      "routerModelNone": "尚未配置模型",
+      "routerModelNoChoices": "还没有可用的对话模型：请先在 设置 → 模型 → LLM 中配置密钥并启用模型。",
+      "classifier": "分类模型",
+      "classifierHint": "可选项来自 设置 → 模型 → Decision 中已启用的分类模型。",
+      "classifierNone": "未配置（跳过此步骤）",
+      "classifierNoChoices": "尚未启用分类模型：请在 设置 → 模型 → Decision 中启用一个，否则此步骤会被跳过。"
     },
     "trigger": {
       "title": "事件来源",
@@ -608,7 +620,8 @@
       "dingtalkHint": "钉钉机器人的加签密钥。群消息按会话归入同一工作线，单聊消息交由助手判断。",
       "configured": "已配置",
       "notConfigured": "未配置（该来源的请求将被拒绝）",
-      "portHint": "监听地址仅限本机；如需接收公网推送，需自行配置反向代理或隧道。修改端口后需重启应用生效。"
+      "portHint": "监听地址仅限本机；如需接收公网推送，需自行配置反向代理或隧道。修改端口后需重启应用生效。",
+      "down": "事件来源当前未监听：下面的密钥仍会保存，但外部推送在恢复监听前不会到达。"
     },
     "memory": {
       "title": "它记得什么",
@@ -691,7 +704,16 @@
     "subtasksEmpty": "暂无子任务",
     "userApprove": "通过",
     "userReject": "否决",
-    "userVerdict": "你的终审"
+    "userVerdict": "你的终审",
+    "failure": {
+      "retryable": "运行中断",
+      "rejected": "验收未通过",
+      "unverified": "无法判定",
+      "needs_decision": "等你拍板",
+      "handed_back": "已交回",
+      "blocked": "起不来",
+      "cancelled": "已取消"
+    }
   },
   "models": {
     "defaultLlm": "默认 LLM",
@@ -723,6 +745,12 @@
       "imageHint": "pi 的 image 模型类型；选为默认后用于交付视觉产物。",
       "video": "Video（视频）",
       "videoHint": "pi 目前没有视频模型类型或生成接口（只有 chat / image / classifier），所以这里不放假入口。等 pi 支持后再接。"
+    },
+    "picker": {
+      "search": "搜索模型",
+      "empty": "没有匹配的模型",
+      "thinking": "思考档位",
+      "defaultLevel": "默认"
     }
   },
   "issues": {
@@ -750,6 +778,7 @@
     "artifacts": "交付物",
     "evidence": "验收证据",
     "activity": "活动",
+    "trace": "动作",
     "mode": {
       "ledger": "台账",
       "board": "看板",

@@ -127,6 +127,46 @@ export interface TaskStep {
 }
 
 /**
+ * 执行体留在**过程**档里的一个动作（`09-worker-spec.md` W6）。
+ *
+ * 和 `TaskStep` 的分工是给谁看，不是详略：
+ *
+ * - `steps` 是**写给人读的叙述**：派了活、注入了几条记录、验收结论。一次尝试只有四条。
+ * - `trace` 是**模型真实做了什么**：调了哪个工具、带了什么参数摘要、成没成、用了多久。
+ *
+ * 为什么必须分开：结论进 `report`（Router 与你看），过程进 `trace`（界面、Watchdog、
+ * 事后复盘）。混成一档只有两种结局——Router 变成日志消费者，或者 Watchdog 什么也判不了。
+ * 所以 **Router 两档都不读**，它只读 `report` 和事件。
+ */
+export type TaskTraceKind = 'tool' | 'file' | 'decision' | 'usage' | 'error';
+
+export interface TaskTrace {
+  id: string;
+  taskId: string;
+  /**
+   * 单调递增。裁剪之后会留空洞——读的人据此得到「略去 N 步」，
+   * 而不是以为这一段什么都没发生。
+   */
+  seq: number;
+  at: number;
+  kind: TaskTraceKind;
+  /** 工具名或事件名：`bash` / `write` / `模型用量`。 */
+  name: string;
+  /** 参数摘要，一行；**不落全文**（长命令只留开头和长度）。 */
+  argsDigest: string;
+  /**
+   * `true` / `false` = 确认成功 / 失败；`null` = **没拿到结果行，不知道**。
+   *
+   * 第三态是必需的：pi 在两种情况下会发出 `tool_execution_end` 却不带结果——
+   * 工具任务 faulted，或者调用所在的运行结束了。前者是真失败，后者常常什么都没发生。
+   * 把"不知道"画成 ✗ 会让界面替系统撒谎，所以宁可留一个空档。
+   */
+  ok: boolean | null;
+  ms?: number;
+  tokens?: number;
+}
+
+/**
  * 你在活还没干完时改的一句话。
  *
  * 单独一个类型而不是裸 `string[]`：它以后大概会长出「谁说的」「针对哪一版交付」，
@@ -248,8 +288,38 @@ export interface WorkTask {
   /** Real spend in USD, from the model's price and pi's usage accounting. */
   costUsd: number;
   error?: string;
+  /**
+   * 这次停下**是哪一类**（`09-worker-spec.md` §3.7）。
+   *
+   * 只有一句 `error` 时，「缺模型」和「闸门没过」长得一模一样，于是前者会得到一个
+   * 永远不会好的重试、后者会被说成"跑挂了"。分类的作用不是好看，是决定**要不要重试**、
+   * **线该停在哪个状态**、**要不要打扰人**。
+   */
+  errorKind?: TaskFailureKind;
   steps: TaskStep[];
 }
+
+/**
+ * 任务停下（或差点停下）的七种原因。
+ *
+ * 前五种由任务自己判定并落库；后两种是**线的状态**而不是任务的失败——它们由线程
+ * 与汇报表达（`escalate` / `hand_back`），这里留着是为了让界面只有一套词。
+ */
+export type TaskFailureKind =
+  /** 模型 5xx / 超时 / 工具瞬时错：消耗尝试，值得再跑一次。 */
+  | 'retryable'
+  /** 闸门没过：带反馈重试，用尽尝试后停下。 */
+  | 'rejected'
+  /** 没有可执行闸门：跑完了也判不了对错，只能等人看。 */
+  | 'unverified'
+  /** 等拍板（`escalate`）：线挂在 `waiting`，不消耗尝试。 */
+  | 'needs_decision'
+  /** 交回（`hand_back`）：不该我做，不算失败。 */
+  | 'handed_back'
+  /** 起不来：没模型、前置未完成——重试一万次也不会好。 */
+  | 'blocked'
+  /** 被收线或被人取消。 */
+  | 'cancelled';
 
 /** ── 你是谁：工作台资料与称呼 ─────────────────────────────────────────── */
 
@@ -478,6 +548,15 @@ export interface CatalogModel {
   api: string;
   contextWindow?: number;
   reasoning?: boolean;
+  /**
+   * pi 自己算出来的可用思考档位（`getSupportedThinkingLevels`）。
+   *
+   * 不是猜的，也不是我们维护的映射表：`reasoning` 为 false 时是 `['off']`，
+   * 支持思考的模型会带上 `thinkingLevelMap` 里允许的那几档（`xhigh` / `max`
+   * 只有映射里明确写了才出现）。手填的、目录里没有的模型没有这个字段，
+   * 由界面退回默认三档。
+   */
+  thinkingLevels?: string[];
   vision?: boolean;
   price?: {
     input: number;
@@ -552,10 +631,38 @@ export interface ProviderConfig {
   updatedAt: number;
 }
 
+/**
+ * Which default slot a model can be written to.
+ *
+ * One list, because this union is repeated by the IPC bridge, the settings page
+ * and the service. When the two copies drift, the failure is a silently rejected
+ * write from the renderer — the kind of bug nobody notices until a setting
+ * refuses to stick.
+ */
+export type ModelRole = 'llm' | 'router' | 'image' | 'asr' | 'tts' | 'decision';
+
+export const MODEL_ROLES: readonly ModelRole[] = [
+  'llm',
+  'router',
+  'image',
+  'asr',
+  'tts',
+  'decision',
+];
+
 /** Which model plays which role. `null` = not configured. */
 export interface ModelDefaults {
-  /** Writes deliverables for tasks. */
+  /** Writes deliverables for tasks (the execution bodies). */
   llm: ModelRef | null;
+  /**
+   * Runs the Router conversation: receiving events, deciding what to open,
+   * talking to you.
+   *
+   * Separate from `llm` on purpose: the Router mostly reads short event
+   * batches, so a light model is often enough, while the execution bodies may
+   * need the strong one. `null` = follow `llm` (the historical behaviour).
+   */
+  router: ModelRef | null;
   image: ModelRef | null;
   /** Speech recognition (microphone input). */
   asr: ModelRef | null;
@@ -937,6 +1044,13 @@ export interface WorkThread {
   source: TriggerSource;
   /** 外面那个 id：`acme/api#12`、`oc_xxx:om_yyy`。没有身份的老线是 null。 */
   externalId: string | null;
+  /** 原始外部信道的回复地址；Worker 完成后 Router 仍可回到来源。 */
+  replyTarget?: {
+    adapterId: string;
+    source: TriggerSource;
+    address: string;
+    messageId?: string;
+  } | null;
   state: ThreadState;
   attention: AttentionLevel;
   /**
@@ -990,6 +1104,14 @@ export interface Worker {
 
 /** Where an event came from. v1 only wires `manual` and `folder` (§9). */
 export type TriggerSource = 'manual' | 'folder' | 'calendar' | 'github' | 'im';
+
+/** Stable address used to send a Router reply back to its source channel. */
+export interface TriggerReplyTarget {
+  adapterId: string;
+  source: TriggerSource;
+  address: string;
+  messageId?: string;
+}
 
 /**
  * The two-level filter of the Super-agent design: a program drops most noise
@@ -1089,6 +1211,8 @@ export interface WorkReport {
   level: AttentionLevel;
   title: string;
   body: string;
+  /** 原始信道地址；没有就是桌面 Router 会话。 */
+  replyTarget?: TriggerReplyTarget | null;
   createdAt: number;
   readAt: number | null;
 }

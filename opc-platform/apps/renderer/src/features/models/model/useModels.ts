@@ -4,6 +4,7 @@ import type {
   ModelDefaults,
   ModelOption,
   ModelRef,
+  ModelRole,
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
@@ -14,6 +15,8 @@ interface ModelsState {
   defaults: ModelDefaults;
   compaction: CompactionSettings;
   thinking: string;
+  /** Router 的思考档位；主进程会在没单独配时返回全局那一档。 */
+  routerThinking: string;
   loading: boolean;
   error: string | null;
 }
@@ -26,9 +29,10 @@ interface ModelsState {
 export function useModels() {
   const [state, setState] = useState<ModelsState>({
     providers: [],
-    defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
+    defaults: { llm: null, router: null, image: null, asr: null, tts: null, decision: null },
     compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 32_768 },
     thinking: 'medium',
+    routerThinking: 'medium',
     loading: true,
     error: null,
   });
@@ -38,13 +42,14 @@ export function useModels() {
   const load = useCallback(async () => {
     if (!bridge) return;
     try {
-      const [providers, defaults, compaction, thinking] = await Promise.all([
+      const [providers, defaults, compaction, thinking, routerThinking] = await Promise.all([
         bridge.list(),
         bridge.getDefaults(),
         bridge.getCompaction(),
         bridge.getThinking(),
+        bridge.getRouterThinking(),
       ]);
-      setState({ providers, defaults, compaction, thinking, loading: false, error: null });
+      setState({ providers, defaults, compaction, thinking, routerThinking, loading: false, error: null });
     } catch (error) {
       setState((previous) => ({
         ...previous,
@@ -116,13 +121,14 @@ export function useModels() {
       },
     ) => run(() => bridge?.addModel(providerId, input)),
     supportsOauth: (providerId: string) => bridge?.supportsOauth(providerId) ?? Promise.resolve(false),
-    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null) =>
+    setDefault: (role: ModelRole, ref: ModelRef | null) =>
       run(() => bridge?.setDefault(role, ref)),
     importFromPi: () => run(() => bridge?.importFromPi()),
     setModelContext: (providerId: string, modelId: string, contextWindow: number) =>
       run(() => bridge?.setModelContext(providerId, modelId, contextWindow)),
     setCompaction: (next: CompactionSettings) => run(() => bridge?.setCompaction(next)),
-    setThinking: (level: string) => run(() => bridge?.setThinking(level)),
+    setThinking: (level: string | null) => run(() => bridge?.setThinking(level)),
+    setRouterThinking: (level: string | null) => run(() => bridge?.setRouterThinking(level)),
     setModels: (providerId: string, models: ModelOption[]) =>
       run(() => bridge?.setModels(providerId, models)),
     applyBuiltinPricing: (providerId: string) => run(() => bridge?.applyBuiltinPricing(providerId)),

@@ -1,6 +1,7 @@
 import type { TriggerEvent, TriggerSource } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 import type { ThreadRepository } from '../data/threadRepository';
+import { unfinishedTasksOf } from '../router/threadBusy';
 import type { NormalizedTrigger } from './types';
 
 /**
@@ -48,6 +49,7 @@ export function ingestTrigger(
       via: meta.adapterId,
       ...(trigger.actor ? { author: trigger.actor } : {}),
       ...(key ? { threadKey: key } : {}),
+      ...(trigger.replyTarget ? { replyTarget: trigger.replyTarget } : {}),
     },
     dedupeKey: trigger.deliveryId ?? null,
   });
@@ -56,12 +58,9 @@ export function ingestTrigger(
   if (trigger.terminal && key) {
     const thread = deps.threads.threadByKey(key);
     if (thread) {
-      const busy = deps.tasks
-        .listByThread(thread.id, 20)
-        .some((task) => task.status === 'open' || task.status === 'running');
       // 手上还有活就不收线：先让那一轮跑完、汇报，收线由它自己触发。抢在前面收线
-      // 会让一个正在写的任务失去它的线索。
-      if (!busy) {
+      // 会让一个正在写的任务失去它的线索。同一条判据 `close_line` 也用。
+      if (unfinishedTasksOf(deps.tasks, thread.id).length === 0) {
         deps.threads.setState(thread.id, 'done');
         deps.threads.addReport({
           threadId: thread.id,

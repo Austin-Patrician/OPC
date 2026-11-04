@@ -6,6 +6,7 @@ import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { providerMeta } from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
+import { ModelPicker } from '@/shared/ui/ModelPicker';
 import { cn } from '@/shared/lib/cn';
 import {
   buttonClass,
@@ -448,33 +449,30 @@ export function DecisionPage() {
           </div>
         </div>
         <div className="w-[22rem] max-w-full shrink-0">
-          <SelectField
+          <ModelPicker
             ariaLabel={t('settings.decision.defaultTitle')}
-            value={defaultRef ? `${defaultRef.providerId}::${defaultRef.modelId}` : ''}
-            onChange={(next) => {
-              if (!next) {
-                void models.setDefault('decision', null);
-                return;
-              }
-              const [providerId = '', modelId = ''] = next.split('::');
-              const entry = selectableProviders.find((candidate) => candidate.id === providerId);
-              const model = entry?.models.find((candidate) => candidate.id === modelId);
-              if (entry && model) {
-                void models.setDefault('decision', { providerId: entry.id, modelId: model.id });
-              }
-            }}
-          >
-            <option value="">{t('settings.decision.noDefault')}</option>
-            {selectableProviders.map((entry) => (
-              <optgroup key={entry.id} label={entry.name}>
-                {entry.models.map((model) => (
-                  <option key={model.id} value={`${entry.id}::${model.id}`}>
-                    {model.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </SelectField>
+            title={t('settings.decision.defaultTitle')}
+            groups={selectableProviders.map((entry) => ({
+              providerId: entry.id,
+              providerName: entry.name,
+              models: entry.models.map((model) => ({
+                modelId: model.id,
+                modelName: model.name,
+                thinkingLevels: [],
+              })),
+            }))}
+            value={defaultRef}
+            allowThinking={false}
+            clearLabel={t('settings.decision.noDefault')}
+            emptyLabel={t('settings.decision.noDefault')}
+            onClear={() => void models.setDefault('decision', null)}
+            onSelect={(selection) =>
+              void models.setDefault('decision', {
+                providerId: selection.providerId,
+                modelId: selection.modelId,
+              })
+            }
+          />
           {selectableProviders.length === 0 ? (
             <p className="mt-1 text-2xs text-ink-quaternary">{t('settings.decision.noneEnabled')}</p>
           ) : null}

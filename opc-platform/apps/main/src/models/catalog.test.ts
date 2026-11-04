@@ -5,6 +5,33 @@ import { getCatalog } from './catalog';
  * pi only registers `openrouter-images`. The settings page still has to offer
  * OpenAI and Gemini out of the box, with a protocol the generator understands.
  */
+describe('getCatalog thinking levels', () => {
+  it('passes pi’s own supported levels through instead of guessing', async () => {
+    const catalog = await getCatalog();
+    const reasoning = catalog
+      .flatMap((provider) => provider.models)
+      .filter((model) => model.type === 'chat' && model.reasoning);
+
+    expect(reasoning.length).toBeGreaterThan(0);
+    const known = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+    for (const model of reasoning.slice(0, 20)) {
+      // 支持思考的模型一定至少有一档（`xhigh` / `max` 只有映射允许才出现）。
+      expect(model.thinkingLevels?.length ?? 0).toBeGreaterThan(0);
+      expect((model.thinkingLevels ?? []).every((level) => known.has(level))).toBe(true);
+    }
+  });
+
+  it('does not attach thinking levels to non-chat models', async () => {
+    const catalog = await getCatalog();
+    const image = catalog
+      .flatMap((provider) => provider.models)
+      .find((model) => model.type === 'image');
+
+    expect(image).toBeTruthy();
+    expect(image?.thinkingLevels).toBeUndefined();
+  });
+});
+
 describe('getCatalog image entries', () => {
   it('adds first-party OpenAI image models', async () => {
     const catalog = await getCatalog();

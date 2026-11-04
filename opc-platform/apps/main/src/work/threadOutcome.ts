@@ -1,5 +1,6 @@
-import type { AttentionLevel, TaskStatus, ThreadState, WorkTask } from '@opc/shared/domain';
+import type { AttentionLevel, TaskFailureKind, TaskStatus, ThreadState, WorkTask } from '@opc/shared/domain';
 import { isUnverified } from './acceptanceGate';
+import { FAILURE_ADVICE, FAILURE_LABEL } from './failure';
 
 /**
  * How a finished task speaks to its line of work.
@@ -60,7 +61,10 @@ export function threadOutcomeFor(
           report: {
             level: 'decide',
             title: task.title,
-            body: `做完了，但我没有可执行的验收条件，判定不了对错。${summarise(task)}`,
+            body: withAdvice(
+              'unverified',
+              `做完了，但我没有可执行的验收条件，判定不了对错。${summarise(task)}`,
+            ),
           },
         };
       }
@@ -79,27 +83,35 @@ export function threadOutcomeFor(
         report: { level: 'silent', title: task.title, body: summarise(task) },
       };
 
-    case 'rejected':
-      if (speculative) return silentArchive(task, `没通过验收：${task.acceptance?.reason ?? ''}`);
+    case 'rejected': {
+      const kind: TaskFailureKind = task.errorKind ?? 'rejected';
+      const reason = task.acceptance?.reason ?? task.error ?? '验收命令未通过';
+      if (speculative) return silentArchive(task, withAdvice(kind, `没通过验收：${reason}`));
       return {
         state: 'waiting',
         report: {
           level: 'decide',
           title: task.title,
-          body: `没通过验收：${task.acceptance?.reason ?? task.error ?? '验收命令未通过'}`,
+          body: withAdvice(kind, `没通过验收：${reason}`),
         },
       };
+    }
 
-    case 'failed':
-      if (speculative) return silentArchive(task, `跑挂了：${task.error ?? '未知错误'}`);
+    case 'failed': {
+      // 分类（§3.7）在这里第一次变成人看得见的东西：同样是 `failed`，
+      // 「没模型」和「运行时被打断」该做的事完全不同，所以话也不同。
+      const kind: TaskFailureKind = task.errorKind ?? 'retryable';
+      const reason = task.error ?? '未知错误';
+      if (speculative) return silentArchive(task, withAdvice(kind, `${FAILURE_LABEL[kind]}：${reason}`));
       return {
         state: 'failed',
         report: {
           level: 'decide',
           title: task.title,
-          body: `跑挂了：${task.error ?? '未知错误'}`,
+          body: withAdvice(kind, `${FAILURE_LABEL[kind]}：${reason}`),
         },
       };
+    }
 
     case 'review':
       // A manager is looking at it. You hears about it when the verdict is
@@ -121,6 +133,16 @@ function silentArchive(task: WorkTask, reason: string): ThreadOutcome {
     state: 'archived',
     report: { level: 'silent', title: task.title, body: `${reason}\n${summarise(task)}` },
   };
+}
+
+/**
+ * 原因 + **所以呢**。
+ *
+ * 只给原因的话，人会读到「运行中断」然后自己猜该不该再点一次；只给建议的话，人不知道
+ * 发生了什么。两行一起才是可执行的一句话——这也是 §3.7 存在的理由。
+ */
+function withAdvice(kind: TaskFailureKind, message: string): string {
+  return `${message}\n（${FAILURE_ADVICE[kind]}）`;
 }
 
 function summarise(task: WorkTask): string {

@@ -165,7 +165,7 @@ im:dingtalk:cidAAA           钉钉某个群会话
 | 常驻，承接所有入口的人类交互 | 一个 durable conversation，`Harness.root()` | `routerSession.ts` |
 | 全局序点、协调点、记忆 | 会话历史 + `list_lines` + `recall` + `remember` / `recall_memory` / `forget_memory` | 同上 |
 | **不直接执行具体任务** | 注册表里没有 bash / 读写文件 / 代码执行 | `routerTools.ts`（有测试锁住） |
-| 可以配轻量模型 | 工作台默认模型，`thinking` 默认 low | `routerHost.ts` |
+| 可以配轻量模型 | 设置 → 事件调度 → 助手会话模型与思考档位（`default.router` / `default.router.thinking`）；留空跟随执行体的默认模型与全局思考档位 | `routerHost.ts` + `routerModel.ts` |
 | 批处理 | 交给 pi 的 inbox：忙时排队，下一个 boundary 合成一次调用 | `routerSession.deliver` |
 | 「记忆」不只是上下文窗口 | 三层：常驻约束（每轮在场）、长期记忆（按相关度召回）、情景档案。归属是**用户**，不是 Router。见 `07-memory.md` | `routerHost.ts` + `memory/` |
 | 「规矩」不只执行体知道 | `fact` 的 global 几条每轮拼进输入 | `router.composeInput(rules)` |
@@ -181,8 +181,10 @@ im:dingtalk:cidAAA           钉钉某个群会话
 | 一线多 worker / 一个 worker 多条线 | `subscription(thread_id, worker_id)` |
 | **同一时刻只跑一个任务** | `work/ownerQueue.ts`（正确性：并发写同一 sqlite 会毒化会话） |
 
-**这一层已经对齐；缺口（看不见原始证据 / 没有子代理 / 只有终局的嘴 / 没有静默线）与分期
-见 `08-worker.md`。**
+**这一层已经对齐**：隔离、完整工具、不与人交互、汇报闭环、一线多执行体串行。
+执行体的完整规格（六条不变量、五个面、分期 E5–E8）见 `09-worker-spec.md`，落地与回溯见
+`08-worker.md`。Worker 层目前**没有遗留缺口**：动作流（W6）、失败分类（W-G2）、
+收线检查与请示归并（W-G4 / W-G5）都已落地；预算封顶判断为不做（只记账、不封顶）。
 
 ### §4.1 全双工
 
@@ -201,15 +203,18 @@ Router 这一轮推理到此结束，结果之后作为汇报回来。
 | 新的触发来源（日历、邮件、Linear） | `trigger/` 一个适配器 + 注册一行 | `router.ts` 一行不动 |
 | 新的 Router 动作（如"合并两条线"） | `routerTools.ts` 里加一个 `defineTool` | 调度循环、会话层 |
 | 新的执行体类型 | `WorkerTemplate` + `toolSlots` | Router |
-| 换模型 | 设置里换默认模型，下一轮生效 | 无 |
+| 换模型 | 设置里换默认模型；Router 可以单独一档（模型 + 思考档位，下一轮生效） | 无 |
 | 换过滤策略 / 判噪策略 | 设置 → 调度 | 重启、代码 |
+| 新的模型选择入口 | 用 `shared/ui/ModelPicker.tsx`：屏幕中间的模态、搜索、Provider 分组、行内思考档位 | 弹层样式、筛选、空态、Provider 分组 |
 
 ## 8. 还差什么（诚实清单）
 
 1. **触发源的 polling**：没有。只有 webhook；公网可达要靠隧道。
 2. **投机执行（§3.4）**：没有。它需要"后台有富余算力"的前提，单机串行跑 worker 时
    提前做只是抢同一个人的时间。
-3. **Watchdog 的模型层（§6）**：没有。程序层在，语义层没接。
+3. **Watchdog 的模型层（§6）**：没有。程序层在，语义层没接——但**判据已经就位**：
+   `task_trace` 现在记着执行体每一步真实动作（工具、参数摘要、成败三态、耗时），
+   所以「是不是在绕同一圈」「有没有实质进展」第一次有材料可判（`09-worker-spec.md` §3.4）。
 4. **计算/状态/环境分离（§5）**：不做。本地优先桌面应用三者天然合一；代价是「持久」
    只到进程级（`resumeInterrupted`），关机就停。
 5. **多 Router 分片（§2.1 后半）**：不做。单机事件量远没到瓶颈，过早分片会拿全局连续性

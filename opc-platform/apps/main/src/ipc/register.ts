@@ -20,6 +20,7 @@ import type {
   TriagePolicyPatch,
   WorkThread,
 } from '@opc/shared/domain';
+import { MODEL_ROLES, type ModelRole } from '@opc/shared/domain';
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -346,11 +347,13 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.models.getDefaults, () => models.getDefaults());
   ipcMain.handle(IPC.models.setDefault, (_event, role: unknown, ref: unknown) => {
-    if (role !== 'llm' && role !== 'image' && role !== 'asr' && role !== 'tts' && role !== 'decision') {
+    // 名单只有一份（`MODEL_ROLES`）：手写这串判断漏一个角色，界面上就是
+    // “改了但没保存”，而且不会报错。
+    if (typeof role !== 'string' || !MODEL_ROLES.includes(role as ModelRole)) {
       throw new Error('models:setDefault role 非法');
     }
     if (ref !== null && !isModelRef(ref)) throw new Error('models:setDefault ref 非法');
-    return models.setDefault(role, ref);
+    return models.setDefault(role as ModelRole, ref);
   });
   ipcMain.handle(IPC.models.importFromPi, () => models.importFromPi());
   ipcMain.handle(IPC.models.getCompaction, () => models.getCompaction());
@@ -654,8 +657,16 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.models.setThinking, (_event, level: unknown) => {
-    if (typeof level !== 'string') throw new Error('models:setThinking 参数非法');
+    if (level !== null && typeof level !== 'string') throw new Error('models:setThinking 参数非法');
     return models.setThinking(level);
+  });
+
+  ipcMain.handle(IPC.models.getRouterThinking, () => models.getRouterThinking());
+  ipcMain.handle(IPC.models.setRouterThinking, (_event, level: unknown) => {
+    if (level !== null && typeof level !== 'string') {
+      throw new Error('models:setRouterThinking 参数非法');
+    }
+    return models.setRouterThinking(level);
   });
 
   ipcMain.handle(IPC.models.setCompaction, (_event, next: unknown) => {
@@ -710,6 +721,11 @@ export function registerIpc({
     return work.listSubtasks(taskId);
   });
 
+  ipcMain.handle(IPC.work.trace, (_event, taskId: unknown, limit: unknown) => {
+    if (typeof taskId !== 'string') throw new Error('work:trace 参数非法');
+    return work.listTrace(taskId, typeof limit === 'number' ? limit : undefined);
+  });
+
   ipcMain.handle(IPC.work.createTask, (_event, input: unknown) => {
     if (!isCreateTaskInput(input)) throw new Error('work:createTask 参数非法');
     return work.createTask(input);
@@ -731,6 +747,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.setIssueMeta);
     ipcMain.removeHandler(IPC.work.linkTasks);
     ipcMain.removeHandler(IPC.work.userDecision);
+    ipcMain.removeHandler(IPC.work.trace);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
     ipcMain.removeHandler(IPC.app.getInfo);

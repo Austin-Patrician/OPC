@@ -91,6 +91,24 @@ describe('调度循环', () => {
     expect(delivered[0]).toContain('第三件');
   });
 
+  it('把原始信道回复地址带进 Router 输入', async () => {
+    threads.enqueueEvent({
+      source: 'github',
+      kind: 'issue_comment.created',
+      payload: {
+        text: '请回复到 PR',
+        replyTarget: {
+          adapterId: 'github',
+          source: 'github',
+          address: 'github:acme/api#12',
+        },
+      },
+    });
+    const { router, delivered } = make();
+    await router.tick();
+    expect(delivered[0]).toContain('原始信道回复地址（只能原样使用）：github:acme/api#12');
+  });
+
   it('已订阅的线上再来事件，直通给执行体，不经过 Router', async () => {
     const thread = threads.createThread({
       title: '季度财报',
@@ -112,6 +130,47 @@ describe('调度循环', () => {
     expect(report.routed).toBe(0);
     expect(delivered).toHaveLength(0);
     expect(passed).toHaveLength(1);
+  });
+
+  it('直通没有接住时不确认事件，退回 Slow Path', async () => {
+    const thread = threads.createThread({
+      title: '季度财报',
+      goal: '整理 Q3 财报',
+      threadKey: 'folder:inbox/q3.md',
+    });
+    const worker = threads.createWorker({ name: '执行体', threadId: thread.id });
+    threads.subscribe(thread.id, worker.id);
+    threads.enqueueEvent({
+      source: 'folder',
+      kind: 'file',
+      payload: { path: 'inbox/q3.md', threadKey: 'folder:inbox/q3.md' },
+    });
+
+    const { router, delivered, passed } = make({ passthrough: () => false });
+    const report = await router.tick();
+
+    expect(report.passthrough).toBe(0);
+    expect(report.routed).toBe(1);
+    expect(passed).toHaveLength(0);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('重入 tick 返回同一轮，不会把同一批事件交两次', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '只交一次' } });
+    let deliveries = 0;
+    const router = new Router({
+      threads,
+      deliver: async () => {
+        deliveries += 1;
+        await Promise.resolve();
+      },
+    });
+
+    const first = router.tick();
+    const second = router.tick();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(deliveries).toBe(1);
   });
 
   it('没订阅的线仍然走 Router——直通是优化，不是正确性', async () => {
@@ -198,6 +257,21 @@ describe('调度循环', () => {
     const retried = await router.tick();
     expect(retried.routed).toBe(1);
     expect(retried.reports).toBe(1);
+  });
+
+  it('异步交付失败也回滚 routed 和 announced', async () => {
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '网络失败' } });
+    const router = new Router({
+      threads,
+      deliver: async () => {
+        throw new Error('异步会话挂了');
+      },
+    });
+
+    const failed = await router.tick();
+    expect(failed.routed).toBe(0);
+    expect(failed.failed).toBe(1);
+    expect(threads.listPendingEvents(10)).toHaveLength(1);
   });
 });
 

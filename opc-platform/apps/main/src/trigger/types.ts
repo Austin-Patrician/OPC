@@ -1,4 +1,4 @@
-import type { TriggerSource } from '@opc/shared/domain';
+import type { TriggerReplyTarget, TriggerSource } from '@opc/shared/domain';
 import type { ThreadIdentity } from '../router/threadKey';
 
 /**
@@ -46,7 +46,17 @@ export interface NormalizedTrigger {
   deliveryId?: string;
   /** 这个信号表示那件事**结束了**（PR 合并、话题关闭）。 */
   terminal?: boolean;
+  /** 原始信道的回复地址。Router 只能在拿到它时才有机会回到来源平台。 */
+  replyTarget?: TriggerReplyTarget;
 }
+
+/**
+ * 外部信道的可回复地址。
+ *
+ * 这里只保存稳定的地址，不保存 access token。具体平台的发送器由应用边界注入；
+ * 没有发送器时 Router 必须退回桌面会话，不能伪称已经发到外部平台。
+ */
+export type { TriggerReplyTarget } from '@opc/shared/domain';
 
 export interface TriggerAdapter {
   /**

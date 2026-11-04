@@ -95,6 +95,12 @@
   if (!stored.workerId) throw new Error('任务没有执行体归属：v2 里 workerId 必须落库');
   if (!stored.threadId) throw new Error('任务没有工作线归属：v2 里每条任务都该有一条线');
 
+  // 动作流（W6）：接口必须真的接上，而且不能串任务。条数取决于这一轮有没有真跑 pi，
+  // 所以这里只报数字、不硬要求 > 0——用脚本化执行器跑时本来就没有工具调用。
+  const traceRows = await window.opc.work.trace(task.id, 20);
+  if (!Array.isArray(traceRows)) throw new Error('work.trace 没返回数组');
+  if (traceRows.some((row) => row.taskId !== task.id)) throw new Error('动作流串了别的任务');
+
   // 任务卡必须回到你眼前的那个会话（分配者的 DM，没有就落到第一条会话）。
   const cardVisible = (await window.opc.chat.getSnapshot()).conversations.some((item) =>
     item.messages.some((message) => message.kind === 'task' && message.task && message.task.id === task.id),
@@ -311,6 +317,44 @@
   const triageRestored = (await window.opc.router.getTriage()).fastPath;
   if (triageRestored !== 'noise') throw new Error('调度页改不回默认策略');
 
+  // 思考档位必须来自 pi 的 catalog（不是前端猜的默认三档）。
+  const catalogForThinking = await window.opc.models.getCatalog();
+  const thinkingSample = catalogForThinking
+    .flatMap((provider) => provider.models)
+    .find((model) => model.type === 'chat' && model.reasoning);
+  const catalogThinkingLevels = thinkingSample?.thinkingLevels?.length ?? 0;
+  if (catalogThinkingLevels === 0) throw new Error('catalog 没有带思考档位');
+
+  // Router 的模型档必须在这一页可选：没有它，`default.router` 就只能靠改库。
+  // 触发器现在是一个按钮（点开是模态列表），不再是原生 select。
+  const triageModelPicker = Boolean(document.querySelector('[data-testid="triage-router-model"]'));
+  if (!triageModelPicker) throw new Error('调度页没有 Router 模型入口');
+  // 点开必须真的出现模态（不是被滚动容器裁掉的下拉浮层），Esc 能关掉。
+  document
+    .querySelector('[data-testid="triage-router-model"]')
+    ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await wait(400);
+  const triagePickerOpen = Boolean(document.querySelector('[data-testid="model-picker"]'));
+  if (!triagePickerOpen) throw new Error('模型选择器没有打开模态');
+  const triagePickerRows = count('[data-testid="model-picker-row"]');
+  const triageThinkingButtons = count(
+    '[data-testid="model-picker-row"] button[aria-haspopup="listbox"]',
+  );
+  // 悬停后才出现的档位控件，也要能点开成选项列表。
+  let triageLevelMenuOpen = false;
+  if (triageThinkingButtons > 0) {
+    document
+      .querySelector('[data-testid="model-picker-row"] button[aria-haspopup="listbox"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await wait(300);
+    triageLevelMenuOpen = Boolean(document.querySelector('[data-testid="model-picker-levels"]'));
+    if (!triageLevelMenuOpen) throw new Error('思考档位菜单没有打开');
+  }
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  await wait(300);
+  const triagePickerClosed = !document.querySelector('[data-testid="model-picker"]');
+  if (!triagePickerClosed) throw new Error('模型选择器的 Esc 没有关掉模态');
+
   // ── 能力页：四个 tab 都在，且切换是 URL 决定的 ──────────────────────────
   await go('#/skills', 900);
   const capabilityTabs = count('[role="tablist"] [role="tab"]');
@@ -356,6 +400,7 @@
       workerId: stored.workerId ?? null,
       hasThread: Boolean(stored.threadId),
     },
+    traceRows: traceRows.length,
     task: finishedTask
       ? {
           status: finishedTask.status,
@@ -427,6 +472,12 @@
     triageGroups,
     triageSources,
     triageRestored,
+    triageModelPicker,
+    triagePickerOpen,
+    triagePickerRows,
+    triageThinkingButtons,
+    triageLevelMenuOpen,
+    catalogThinkingLevels,
 
     // 能力页 / 注意力页
     capabilityTabs,

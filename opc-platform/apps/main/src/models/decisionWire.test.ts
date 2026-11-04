@@ -41,6 +41,7 @@ const config = (): ProviderConfig => ({
 
 const defaults = (): ModelDefaults => ({
   llm: null,
+  router: null,
   image: null,
   asr: null,
   tts: null,

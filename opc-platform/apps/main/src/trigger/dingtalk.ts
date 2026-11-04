@@ -86,6 +86,12 @@ function normalizeDingTalk(request: TriggerRequest): NormalizedTrigger[] {
       ...(text ? { text } : {}),
       ...(who ? { actor: who } : {}),
       ...(payload.msgId ? { deliveryId: `dingtalk:${payload.msgId}` } : {}),
+      replyTarget: {
+        adapterId: 'dingtalk',
+        source: 'im',
+        address: `im:dingtalk:${conversationId}`,
+        ...(payload.msgId ? { messageId: payload.msgId } : {}),
+      },
     },
   ];
 }

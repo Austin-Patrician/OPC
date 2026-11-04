@@ -3,6 +3,7 @@ import type {
   ModelDefaults,
   ModelOption,
   ModelRef,
+  ModelRole,
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
@@ -37,16 +38,24 @@ export interface ApplyPricingResult {
 }
 
 const DEFAULT_LLM_KEY = 'default.llm';
+/** Router 会话单独一档：它读的是事件批次，通常不需要和干活的执行体同一个模型。 */
+const DEFAULT_ROUTER_KEY = 'default.router';
 const DEFAULT_IMAGE_KEY = 'default.image';
 const DEFAULT_ASR_KEY = 'default.asr';
 const DEFAULT_TTS_KEY = 'default.tts';
 const DEFAULT_DECISION_KEY = 'default.decision';
 const COMPACTION_KEY = 'compaction';
 const THINKING_KEY = 'default.thinking';
+/** Router 的思考档位单独一档；没配就跟随全局。 */
+const ROUTER_THINKING_KEY = 'default.router.thinking';
+
+/** pi 认的思考档位，`set*` 只接受这几个值。 */
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /** Every role key; deleting a provider must not leave a dangling default. */
 const DEFAULT_KEYS = [
   DEFAULT_LLM_KEY,
+  DEFAULT_ROUTER_KEY,
   DEFAULT_IMAGE_KEY,
   DEFAULT_ASR_KEY,
   DEFAULT_TTS_KEY,
@@ -351,13 +360,33 @@ export class ModelConfigService {
     return entries;
   };
 
-  getThinking = (): string => this.repository.getSetting(THINKING_KEY) ?? 'medium';
+  getThinking = (): string => this.repository.getSetting(THINKING_KEY) || 'medium';
 
-  setThinking = (level: string): string => {
-    const allowed = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-    const clean = allowed.includes(level) ? level : 'medium';
-    this.repository.setSetting(THINKING_KEY, clean);
-    return clean;
+  /** `null` = 清掉显式选择，回到系统默认（`medium`）。 */
+  setThinking = (level: string | null): string => {
+    if (level === null) this.repository.setSetting(THINKING_KEY, '');
+    else this.repository.setSetting(THINKING_KEY, THINKING_LEVELS.includes(level) ? level : 'medium');
+    return this.getThinking();
+  };
+
+  /**
+   * Router 的思考档位。
+   *
+   * 没单独配就跟随全局——和 `default.router` 跟随 `default.llm` 是同一条规则：
+   * 不配置不该改变已有行为，而"轻模型 + 低思考"只是可选搭配，不是默认假设。
+   */
+  getRouterThinking = (): string =>
+    this.repository.getSetting(ROUTER_THINKING_KEY) || this.getThinking();
+
+  /** `null` = 清掉 Router 自己的档位，回到跟随全局。 */
+  setRouterThinking = (level: string | null): string => {
+    if (level === null) this.repository.setSetting(ROUTER_THINKING_KEY, '');
+    else
+      this.repository.setSetting(
+        ROUTER_THINKING_KEY,
+        THINKING_LEVELS.includes(level) ? level : this.getThinking(),
+      );
+    return this.getRouterThinking();
   };
 
   getCompaction = (): CompactionSettings => {
@@ -457,15 +486,17 @@ export class ModelConfigService {
 
   getDefaults = (): ModelDefaults => ({
     llm: this.readRef(DEFAULT_LLM_KEY),
+    router: this.readRef(DEFAULT_ROUTER_KEY),
     image: this.readRef(DEFAULT_IMAGE_KEY),
     asr: this.readRef(DEFAULT_ASR_KEY),
     tts: this.readRef(DEFAULT_TTS_KEY),
     decision: this.readRef(DEFAULT_DECISION_KEY),
   });
 
-  setDefault = (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null): ModelDefaults => {
+  setDefault = (role: ModelRole, ref: ModelRef | null): ModelDefaults => {
     const key = {
       llm: DEFAULT_LLM_KEY,
+      router: DEFAULT_ROUTER_KEY,
       image: DEFAULT_IMAGE_KEY,
       asr: DEFAULT_ASR_KEY,
       tts: DEFAULT_TTS_KEY,

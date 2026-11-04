@@ -25,7 +25,7 @@ export interface OnboardingData {
 const EMPTY: OnboardingData = {
   workers: [],
   providers: [],
-  defaults: { llm: null, image: null, asr: null, tts: null, decision: null },
+  defaults: { llm: null, router: null, image: null, asr: null, tts: null, decision: null },
   thinking: 'medium',
   info: null,
 };

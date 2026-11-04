@@ -18,6 +18,7 @@ import type {
   CreateTaskInput,
   ModelDefaults,
   ModelRef,
+  ModelRole,
   ProviderConfig,
   ProviderDraft,
   ProviderTestResult,
@@ -35,6 +36,7 @@ import type {
   SpeechTranscribeResult,
   DecisionClassifyInput,
   DecisionClassifyResult,
+  TaskTrace,
   WorkTask,
 } from '@opc/shared/domain';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
@@ -197,7 +199,7 @@ const bridge: OpcBridge = {
     supportsOauth: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.supportsOauth, providerId) as Promise<boolean>,
     getDefaults: () => ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
-    setDefault: (role: 'llm' | 'image' | 'asr' | 'tts' | 'decision', ref: ModelRef | null) =>
+    setDefault: (role: ModelRole, ref: ModelRef | null) =>
       ipcRenderer.invoke(IPC.models.setDefault, role, ref),
     importFromPi: () => ipcRenderer.invoke(IPC.models.importFromPi),
     getCompaction: () => ipcRenderer.invoke(IPC.models.getCompaction) as Promise<CompactionSettings>,
@@ -214,7 +216,10 @@ const bridge: OpcBridge = {
     applyBuiltinPricing: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.applyBuiltinPricing, providerId),
     getThinking: () => ipcRenderer.invoke(IPC.models.getThinking) as Promise<string>,
-    setThinking: (level: string) => ipcRenderer.invoke(IPC.models.setThinking, level),
+    setThinking: (level: string | null) => ipcRenderer.invoke(IPC.models.setThinking, level),
+    getRouterThinking: () => ipcRenderer.invoke(IPC.models.getRouterThinking) as Promise<string>,
+    setRouterThinking: (level: string | null) =>
+      ipcRenderer.invoke(IPC.models.setRouterThinking, level) as Promise<string>,
   },
   speech: {
     transcribe: (input: SpeechTranscribeInput) =>
@@ -237,6 +242,8 @@ const bridge: OpcBridge = {
     linkTasks: (fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates') =>
       ipcRenderer.invoke(IPC.work.linkTasks, fromId, toId, type) as Promise<WorkTask>,
     subtasks: (taskId: string) => ipcRenderer.invoke(IPC.work.subtasks, taskId) as Promise<WorkTask[]>,
+    trace: (taskId: string, limit?: number) =>
+      ipcRenderer.invoke(IPC.work.trace, taskId, limit) as Promise<TaskTrace[]>,
     onTaskChanged: (listener: (task: WorkTask) => void) => {
       const handler = (_event: IpcRendererEvent, task: WorkTask) => listener(task);
       ipcRenderer.on(IPC.work.taskEvent, handler);

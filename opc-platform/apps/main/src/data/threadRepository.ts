@@ -2,6 +2,7 @@ import type {
   AttentionLevel,
   ThreadState,
   TriggerEvent,
+  TriggerReplyTarget,
   TriggerSource,
   TriageState,
   Worker,
@@ -47,6 +48,7 @@ export interface CreateThreadInput {
   budgetTokens?: number | null;
   /** 静默线：跑通了才说话，没跑通就当没发生（§3.4）。 */
   speculative?: boolean;
+  replyTarget?: TriggerReplyTarget | null;
 }
 
 /** `openThread` 的返回：这次是新开的，还是并进了已有的那条线。 */
@@ -98,6 +100,7 @@ interface ThreadRow {
   source: TriggerSource;
   external_id: string | null;
   thread_key: string | null;
+  reply_target: string | null;
   state: ThreadState;
   attention: AttentionLevel;
   speculative: number;
@@ -144,6 +147,7 @@ interface ReportRow {
   body: string;
   created_at: number;
   read_at: number | null;
+  thread_reply_target?: string | null;
 }
 
 /** States a finished thread can land in; both stop the router from resuming it. */
@@ -180,6 +184,7 @@ export class ThreadRepository {
       source: input.source ?? (identity?.source as TriggerSource | undefined) ?? 'manual',
       external_id: input.externalId ?? identity?.externalId ?? null,
       thread_key: input.threadKey ?? null,
+      reply_target: input.replyTarget ? JSON.stringify(input.replyTarget) : null,
       state: 'open' as ThreadState,
       attention: input.attention ?? ('silent' as AttentionLevel),
       speculative: input.speculative ? 1 : 0,
@@ -190,8 +195,8 @@ export class ThreadRepository {
       closed_at: null,
     };
     this.statement(
-      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, state, attention, speculative, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
-       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @state, @attention, @speculative, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
+      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, reply_target, state, attention, speculative, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
+       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @reply_target, @state, @attention, @speculative, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
     ).run(row);
     return toThread(row as ThreadRow);
   }
@@ -687,9 +692,10 @@ export class ThreadRepository {
    */
   listUnannouncedReports(limit = 50, options: { includeSilent?: boolean } = {}): WorkReport[] {
     const rows = this.statement(
-      `SELECT * FROM report
-        WHERE announced_at IS NULL ${options.includeSilent ? '' : "AND level != 'silent'"}
-        ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+      `SELECT report.*, thread.reply_target AS thread_reply_target
+         FROM report JOIN thread ON thread.id = report.thread_id
+        WHERE report.announced_at IS NULL ${options.includeSilent ? '' : "AND report.level != 'silent'"}
+         ORDER BY report.created_at ASC, report.rowid ASC LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);
   }
@@ -712,9 +718,20 @@ export class ThreadRepository {
   resetTriage(ids: readonly string[]): void {
     if (ids.length === 0) return;
     const run = this.statement(
-      "UPDATE event SET triage = 'pending', triaged_at = NULL, thread_id = NULL WHERE id = ?",
+      // Rollback only the router's claim. A manual goal may already carry its
+      // pre-created thread id; clearing it here would orphan the UI thread.
+      "UPDATE event SET triage = 'pending', triaged_at = NULL WHERE id = ?",
     );
     for (const id of ids) run.run(id);
+  }
+
+  /** Keep the newest trusted source address on a reused external thread. */
+  setReplyTarget(threadId: string, target: TriggerReplyTarget): void {
+    this.statement('UPDATE thread SET reply_target = ?, last_activity_at = ? WHERE id = ?').run(
+      JSON.stringify(target),
+      this.now(),
+      threadId,
+    );
   }
 
   // ── internals ───────────────────────────────────────────────────────────
@@ -739,6 +756,7 @@ function toThread(row: ThreadRow): WorkThread {
     threadKey: row.thread_key ?? null,
     source: row.source ?? 'manual',
     externalId: row.external_id ?? null,
+    replyTarget: parseReplyTarget(row.reply_target),
     state: row.state,
     attention: row.attention,
     speculative: row.speculative === 1,
@@ -748,6 +766,28 @@ function toThread(row: ThreadRow): WorkThread {
     lastActivityAt: row.last_activity_at,
     closedAt: row.closed_at,
   };
+}
+
+function parseReplyTarget(raw: string | null): TriggerReplyTarget | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<TriggerReplyTarget>;
+    if (
+      typeof value.adapterId !== 'string' ||
+      typeof value.source !== 'string' ||
+      typeof value.address !== 'string' ||
+      !value.address.trim()
+    ) return null;
+    return {
+      adapterId: value.adapterId,
+      source: value.source as TriggerSource,
+      address: value.address,
+      ...(typeof value.messageId === 'string' ? { messageId: value.messageId } : {}),
+    };
+  } catch {
+    return null;
+  }
+
 }
 
 function toWorker(row: WorkerRow): Worker {
@@ -788,6 +828,7 @@ function toReport(row: ReportRow): WorkReport {
     level: row.level,
     title: row.title,
     body: row.body,
+    replyTarget: parseReplyTarget(row.thread_reply_target ?? null),
     createdAt: row.created_at,
     readAt: row.read_at,
   };

@@ -5,6 +5,7 @@ import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { providerMeta } from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
+import { ModelPicker } from '@/shared/ui/ModelPicker';
 import { cn } from '@/shared/lib/cn';
 import {
   buttonClass,
@@ -13,7 +14,6 @@ import {
   SecretField,
   Section,
   Segmented,
-  SelectField,
   StatusBadge,
   TextField,
   Toggle,
@@ -337,33 +337,34 @@ export function VoicePage() {
           </div>
         </div>
         <div className="w-[22rem] max-w-full shrink-0">
-          <SelectField
+          <ModelPicker
             ariaLabel={roleLabel}
-            value={defaultRef ? `${defaultRef.providerId}::${defaultRef.modelId}` : ''}
-            onChange={(next) => {
-              if (!next) {
-                void models.setDefault(role, null);
-                return;
-              }
-              const [providerId = '', modelId = ''] = next.split('::');
-              const entry = selectableProviders.find((candidate) => candidate.id === providerId);
-              const model = entry?.models.find((candidate) => candidate.id === modelId);
-              if (entry && model) void models.setDefault(role, { providerId: entry.id, modelId: model.id });
-            }}
-          >
-            <option value="">
-              {role === 'asr' ? t('settings.voice.noDefault') : t('settings.voice.noDefaultTts')}
-            </option>
-            {selectableProviders.map((entry) => (
-              <optgroup key={entry.id} label={entry.name}>
-                {entry.models.map((model) => (
-                  <option key={model.id} value={`${entry.id}::${model.id}`}>
-                    {model.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </SelectField>
+            title={roleLabel}
+            groups={selectableProviders.map((entry) => ({
+              providerId: entry.id,
+              providerName: entry.name,
+              models: entry.models.map((model) => ({
+                modelId: model.id,
+                modelName: model.name,
+                thinkingLevels: [],
+              })),
+            }))}
+            value={defaultRef}
+            allowThinking={false}
+            clearLabel={
+              role === 'asr' ? t('settings.voice.noDefault') : t('settings.voice.noDefaultTts')
+            }
+            emptyLabel={
+              role === 'asr' ? t('settings.voice.noDefault') : t('settings.voice.noDefaultTts')
+            }
+            onClear={() => void models.setDefault(role, null)}
+            onSelect={(selection) =>
+              void models.setDefault(role, {
+                providerId: selection.providerId,
+                modelId: selection.modelId,
+              })
+            }
+          />
           {selectableProviders.length === 0 ? (
             <p className="mt-1 text-2xs text-ink-quaternary">{t('settings.voice.noneEnabled')}</p>
           ) : null}

@@ -14,6 +14,7 @@ import { createRouterTools } from './routerTools';
 function host(
   overrides: {
     steerLine?: () => Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
+    reply?: (text: string, target?: string) => void;
   } = {},
 ) {
   const calls: string[] = [];
@@ -26,7 +27,10 @@ function host(
       calls.push(`open:${input.goal}`);
       return { ok: true, threadId: 'th-1', workerId: 'w-1', taskId: 'task-1' };
     },
-    reply: (text) => replies.push(text),
+    reply: (text, target) => {
+      replies.push(text);
+      overrides.reply?.(text, target);
+    },
     recall: (id) => `thread ${id}`,
     lines: () => [
       {
@@ -134,6 +138,13 @@ describe('Router 的工具带', () => {
     const { registry, replies } = host();
     await run(registry, 'reply_to_user', { text: '三条线都在跑。' });
     expect(replies).toEqual(['三条线都在跑。']);
+  });
+
+  it('可以把受信任的原始信道地址交给回复出口', async () => {
+    const targets: (string | undefined)[] = [];
+    const { registry } = host({ reply: (_text, target) => targets.push(target) });
+    await run(registry, 'reply_to_user', { text: '回原处', reply_target: 'github:acme/api#12' });
+    expect(targets).toEqual(['github:acme/api#12']);
   });
 
   it('recall 按 id 往下跳，不需要模型先知道全貌', async () => {

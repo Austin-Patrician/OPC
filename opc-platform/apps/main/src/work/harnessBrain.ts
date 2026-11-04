@@ -5,6 +5,7 @@ import type { Harness, Conversation } from '@earendil-works/pi-durable';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
+import { attachTraceStream, type TraceRecorder } from './trace';
 import { priceUsage } from './usage';
 
 export interface HarnessBrainDeps {
@@ -20,6 +21,11 @@ export interface HarnessBrainDeps {
   /** USD per 1M tokens for the selected model. */
   price: (model: ModelRef) => { inputUsdPerM: number; outputUsdPerM: number };
   onTokens: (taskId: string, tokens: number) => void;
+  /**
+   * 动作流（`09-worker-spec.md` §3.4）。不给就是"这个任务没有轨迹"，
+   * 不影响执行——观测的缺陷不能变成一个失败的任务。
+   */
+  trace?: (taskId: string) => TraceRecorder | null;
 }
 
 /**
@@ -118,6 +124,17 @@ export class HarnessBrain implements TaskBrain {
     // The sandbox hook needs to know which directory this conversation may touch.
     registerSandboxWorkspace(conversation.id, workspaceDir);
 
+    // 动作流：从这一刻起，模型每调一个工具都会落一行。接不上就只是没有轨迹。
+    const recorder = this.deps.trace?.(task.id) ?? null;
+    const traceStream = recorder
+      ? await attachTraceStream({
+          harness,
+          conversationId: conversation.id,
+          context: ctx,
+          recorder,
+        })
+      : null;
+
     log(`交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`);
     if (feedback) log(`修复上下文：${feedback.reason}`);
 
@@ -140,14 +157,31 @@ export class HarnessBrain implements TaskBrain {
             ? `模型用量：${spent} tokens · $${costUsd.toFixed(4)}`
             : `模型用量：${spent} tokens（未配置价格）`,
         );
+        recorder?.record({
+          kind: 'usage',
+          name: '模型用量',
+          ok: true,
+          tokens: spent,
+          argsDigest: costUsd > 0 ? `$${costUsd.toFixed(4)}` : '',
+        });
       }
 
       if (settled.status !== 'done') {
         throw new Error(`pi 循环未完成（${settled.status}）`);
       }
+    } catch (error) {
+      // 失败也要留痕：这是事后回答"它为什么没干完"唯一的证据。
+      recorder?.record({
+        kind: 'error',
+        name: '执行失败',
+        ok: false,
+        argsDigest: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     } finally {
       // 一定要在这里删：留着它，下一次"插话"会插进一条已经结束的会话。
       this.live.delete(task.id);
+      await traceStream?.stop();
     }
     log('pi 循环结束');
   }

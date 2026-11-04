@@ -139,6 +139,12 @@ function normalizeFeishu(request: TriggerRequest): NormalizedTrigger[] {
       ...(text ? { text } : {}),
       ...(sender ? { actor: sender } : {}),
       ...(message.message_id ? { deliveryId: `feishu:${message.message_id}` } : {}),
+      replyTarget: {
+        adapterId: 'feishu',
+        source: 'im',
+        address: `im:feishu:${chatId}`,
+        ...(message.message_id ? { messageId: message.message_id } : {}),
+      },
     },
   ];
 }

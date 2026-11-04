@@ -19,6 +19,8 @@ export interface CatalogModel {
   api: string;
   contextWindow?: number;
   reasoning?: boolean;
+  /** pi 的 `getSupportedThinkingLevels()` 结果，见 shared/domain 的同名字段。 */
+  thinkingLevels?: string[];
   vision?: boolean;
   price?: CatalogPrice;
 }
@@ -39,6 +41,7 @@ interface BuiltinModelLike {
   baseUrl?: string;
   contextWindow?: number;
   reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null | undefined>;
   input?: string[];
   cost?: CatalogPrice;
 }
@@ -174,6 +177,26 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
 
   const { getBuiltinProviders, getBuiltinModels, getBuiltinImageModels, getBuiltinClassifierModels } =
     await import('@earendil-works/pi-ai/providers/all');
+  // 动态导入，和上面同一份理由：这个包只有 `import` 条件，主进程是 CJS，
+  // 静态 `import` 会被编译成 `require('@earendil-works/pi-ai/models')` 并报
+  // ERR_PACKAGE_PATH_NOT_EXPORTED。
+  const { getSupportedThinkingLevels } = await import('@earendil-works/pi-ai/models');
+
+  /**
+   * pi 的可用思考档位。
+   *
+   * `getSupportedThinkingLevels()` 看的是模型的 `reasoning` 与 `thinkingLevelMap`：
+   * 不支持思考给 `['off']`；支持的话 `off/minimal/low/medium/high` 默认可用，
+   * `xhigh` / `max` 只有在映射里明确写过才出现。这与真正发请求时的规则是同一份，
+   * 所以界面上能选的档位不会和运行时夹取的结果打架。
+   */
+  const supportedLevels = (model: BuiltinModelLike): string[] => {
+    try {
+      return getSupportedThinkingLevels(model as never);
+    } catch {
+      return [];
+    }
+  };
 
   const providers: CatalogProvider[] = [];
 
@@ -193,6 +216,9 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
       api: model.api,
       contextWindow: model.contextWindow,
       reasoning: model.reasoning,
+      // pi 自己知道每个模型能跑哪些思考档位——不要在这里另起一张表。
+      // 只有对话模型才有思考档位；图片 / 分类 / 语音模型不挂这个字段。
+      ...(type === 'chat' ? { thinkingLevels: supportedLevels(model) } : {}),
       vision: model.input?.includes('image') ?? false,
       price: model.cost,
     });

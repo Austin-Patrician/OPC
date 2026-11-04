@@ -30,6 +30,8 @@ export function openCompanyDatabase(file: string): CompanyDatabase {
   repairDepartmentParentConstraint(db);
   repairEmploymentEventKindConstraint(db);
   migrate(db);
+  // 改名迁移已经跑完，才谈得上"旧列是不是多余"。
+  dropRenamedColumns(db);
   // After the steps: a fresh database only gets its `job` table inside V14, and the
   // reshape below has to see whatever shape that left behind.
   repairJobCatalogue(db);
@@ -321,12 +323,47 @@ function declaredTables(sql: string): { table: string; columns: ColumnSpec[] }[]
 const REBUILDABLE = new Set(['budget_reservation', 'budget_ledger']);
 
 /**
- * 后来被改名/删掉的列，重放 `ADD COLUMN` 时必须跳过。
+ * 后来被改名掉的列。
  *
- * V33 把 `employee_id` 改成了 `owner_id`；而下面那段重放逻辑的条件正是"这一列不存在"，
- * 于是改名会被它当成"缺列"，每次打开都把旧列加回来。
+ * 两段重放逻辑（历史上每条 `ADD COLUMN`、以及 V1 里声明的列）的前提都是
+ * "这一列不存在"——改名正好制造了这个前提。不拦住的话，旧列会在每次打开数据库时
+ * 重新长出来：`worker.employee_id` 那样，`company.industry` 也一样。
+ *
+ * 已经被之前的版本加回来的旧列，这里顺手删掉：只在同一张表已经有新列时动手，
+ * `DROP COLUMN` 失败（旧版 SQLite / 列仍被索引引用）就保持原样，不影响启动。
  */
-const RETIRED_COLUMNS = new Set(['worker.employee_id', 'consolidation_run.employee_id']);
+const RENAMED_COLUMNS: readonly { table: string; from: string; to: string }[] = [
+  { table: 'worker', from: 'employee_id', to: 'owner_id' },
+  { table: 'consolidation_run', from: 'employee_id', to: 'owner_id' },
+  { table: 'company', from: 'industry', to: 'domain' },
+];
+
+/** `table.from` → 改名后的列名。 */
+const RENAMED_FROM = new Map(
+  RENAMED_COLUMNS.map(({ table, from, to }) => [`${table}.${from}`, { table, to }]),
+);
+
+function hasColumn(db: CompanyDatabase, table: string, column: string): boolean {
+  const exists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  if (!exists) return false;
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
+    (entry) => entry.name === column,
+  );
+}
+
+/**
+ * 重放 `ADD COLUMN` 前要不要跳过这一列。
+ *
+ * 改名后的库（新列已经在）不该再把旧列加回来；改名前的库（新列还没有）仍然需要
+ * 旧列，否则历史迁移里的 `RENAME COLUMN` 会报"没有这一列"。
+ */
+function isRetiredAlreadyRenamed(db: CompanyDatabase, table: string, column: string): boolean {
+  const renamed = RENAMED_FROM.get(`${table}.${column}`);
+  if (!renamed) return false;
+  return hasColumn(db, renamed.table, renamed.to);
+}
 
 export function repairLegacyColumns(db: CompanyDatabase): string[] {
   const repaired: string[] = [];
@@ -339,10 +376,11 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
   for (const sql of MIGRATIONS.slice(1)) {
     let match: RegExpExecArray | null;
     while ((match = addColumn.exec(sql)) !== null) {
-      const [, table, column, definition] = match;
+      const [, table = '', column = '', definition = ''] = match;
       // 后来被**改名**掉的列不该在这里复活：这段代码会把历史上每一条 ADD COLUMN
       // 重放一遍，而重放的前提是"没有这一列"——改名正好制造了这个前提。
-      if (RETIRED_COLUMNS.has(`${table}.${column}`)) continue;
+      // 但如果新列也还没有（这是在跑改名之前的历史迁移），旧列仍然要补上。
+      if (isRetiredAlreadyRenamed(db, table, column)) continue;
       const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(table);
       if (!exists) continue;
       const present = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -393,6 +431,7 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
 
     for (const column of columns) {
       if (present.has(column.name)) continue;
+      if (isRetiredAlreadyRenamed(db, table, column.name)) continue;
       const statement = `ALTER TABLE ${table} ADD COLUMN ${column.name} ${column.definition}`;
       try {
         db.exec(statement);
@@ -402,7 +441,30 @@ export function repairLegacyColumns(db: CompanyDatabase): string[] {
       repaired.push(`${table}.${column.name}`);
     }
   }
+
+  // 改名后被旧版重放逻辑加回来的旧列，由 `dropRenamedColumns` 在迁移之后删掉：
+  // 这里只负责"该补的列补上、不该补的列不补"。
   return [...repaired, ...rebuilt.map((table) => `rebuilt:${table}`)];
+}
+
+/**
+ * 删掉"改名之后又被旧版重放逻辑加回来"的旧列。
+ *
+ * 只在同一张表已经有新列时动手；`DROP COLUMN` 失败（旧版 SQLite / 列仍被索引
+ * 引用）就保持原样——多一个空列比启动失败好。
+ */
+export function dropRenamedColumns(db: CompanyDatabase): string[] {
+  const dropped: string[] = [];
+  for (const { table, from, to } of RENAMED_COLUMNS) {
+    if (!hasColumn(db, table, from) || !hasColumn(db, table, to)) continue;
+    try {
+      db.exec(`ALTER TABLE ${table} DROP COLUMN ${from}`);
+      dropped.push(`${table}.${from}`);
+    } catch {
+      // 见上。
+    }
+  }
+  return dropped;
 }
 
 /**
@@ -603,6 +665,7 @@ CREATE TABLE task_rebuild (
   tokens_used         INTEGER NOT NULL DEFAULT 0,
   cost_usd            REAL NOT NULL DEFAULT 0,
   error               TEXT,
+  error_kind          TEXT,
   started_at          INTEGER,
   finished_at         INTEGER,
   created_at          INTEGER NOT NULL,
@@ -649,7 +712,7 @@ export function repairOwnershipColumns(db: CompanyDatabase): void {
       'id', 'title', 'brief', 'deliverable_spec', 'parent_task_id', 'review_of_task_id',
       'is_review', 'depth', 'est_tokens', 'acceptance_command', 'acceptance_template',
       'status', 'workspace_rel_path', 'durable_task_id', 'attempts', 'tokens_used',
-      'cost_usd', 'error', 'started_at', 'finished_at', 'created_at', 'updated_at',
+      'cost_usd', 'error', 'error_kind', 'started_at', 'finished_at', 'created_at', 'updated_at',
       'issue_key', 'priority', 'labels', 'due_at', 'thread_id', 'worker_id',
     ].filter((name) => taskColumns.includes(name));
     const extra = carried.join(', ');

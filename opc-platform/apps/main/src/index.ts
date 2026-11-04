@@ -582,9 +582,9 @@ async function bootstrap(): Promise<void> {
   /**
    * 推一轮调度，不等它跑完。
    *
-   * `tick` 是 `async` 的（语义门可能是一次模型调用），但调用方都不该被它吊住：
-   * 你打完字要立刻看到自己的消息，20 秒的定时器也不该因为一次分类调用而漂移。
-   * 失败只记日志——事件还在队列里，下一轮会重试。
+   * `tick` 是 `async` 的（语义门和 Router 会话都可能等待），调用方不 await 它，所以
+   * 你打完字仍会立刻看到自己的消息；同一时间的后续触发由 Router 单飞并在当前轮结束
+   * 后自动补跑。失败只记日志，事件会回到队列等待重试。
    */
   const pushTick = (): void => {
     void goalRouter.tick().then(logTick, (error: unknown) => {

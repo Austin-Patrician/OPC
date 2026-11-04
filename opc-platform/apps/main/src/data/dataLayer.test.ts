@@ -70,6 +70,100 @@ function upgradeFrom(target: number, seed?: (legacy: Database.Database) => void)
 }
 
 describe('company.db', () => {
+  it('persists an external reply target on a thread for later reports', () => {
+    const threads = new ThreadRepository(db);
+    const target = {
+      adapterId: 'github',
+      source: 'github' as const,
+      address: 'github:acme/api#12',
+      messageId: 'comment-1',
+    };
+    const thread = threads.createThread({ title: '外部线', goal: '处理评论', replyTarget: target });
+
+    expect(threads.getThread(thread.id)?.replyTarget).toEqual(target);
+    threads.addReport({ threadId: thread.id, level: 'notify', title: '完成' });
+    expect(threads.listUnannouncedReports()[0]?.replyTarget).toEqual(target);
+  });
+
+  /**
+   * 动作流（`09-worker-spec.md` W6）。锁两件事：读写按发生顺序，以及**裁剪之后
+   * 序号留空洞**——那正是界面和 recall 用来写「略去 N 步」的依据。
+   */
+  it('keeps the head and tail of an action trace, and the gap survives the trim', () => {
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread({ title: 'trace', goal: 'trace' });
+    const worker = threads.createWorker({ name: '执行体', threadId: thread.id });
+    const tasks = new TaskRepository(db);
+    const created = tasks.createTask(
+      {
+        title: '改健康检查',
+        brief: 'x',
+        deliverableSpec: 'x',
+        assigneeId: worker.id,
+        estTokens: 100,
+        acceptanceCommand: ['true'],
+        acceptanceTemplate: 'http-ok',
+        threadId: thread.id,
+      },
+      'workspace/1',
+      'task-trace',
+    );
+    expect(created.id).toBe('task-trace');
+
+    for (let seq = 1; seq <= 300; seq += 1) {
+      tasks.appendTrace({
+        taskId: 'task-trace',
+        seq,
+        kind: 'tool',
+        name: 'bash',
+        argsDigest: `step ${seq}`,
+      });
+      tasks.pruneTrace('task-trace', 50, 200);
+    }
+
+    const rows = tasks.listTrace('task-trace', 500);
+    // 头 50 + 尾 200。
+    expect(rows).toHaveLength(250);
+    expect(rows[0]?.seq).toBe(1);
+    expect(rows.at(-1)?.seq).toBe(300);
+    // 中间那一段是真的没了，不是没发生过。
+    expect(rows.some((row) => row.seq === 75)).toBe(false);
+    // 顺序是发生顺序（旧 → 新），界面直接往下排。
+    expect(rows.map((row) => row.seq)).toEqual([...rows.map((row) => row.seq)].sort((a, b) => a - b));
+  });
+
+  /**
+   * 失败分类（§3.7）。落库是为了让界面与 Router 都能回答同一个问题：
+   * 这次停下是"再来一次就好"，还是"先把缺的东西补上"。
+   */
+  it('records the failure kind, and treats an unknown kind as unclassified', () => {
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread({ title: '失败分类', goal: 'g' });
+    const worker = threads.createWorker({ name: '执行体', threadId: thread.id });
+    const tasks = new TaskRepository(db);
+    tasks.createTask(
+      {
+        title: '起不来的一次',
+        brief: 'x',
+        deliverableSpec: 'x',
+        assigneeId: worker.id,
+        estTokens: 100,
+        acceptanceCommand: ['true'],
+        acceptanceTemplate: 'http-ok',
+        threadId: thread.id,
+      },
+      'workspace/2',
+      'task-kind',
+    );
+
+    tasks.setStatus('task-kind', 'failed', { error: '未配置默认 LLM', errorKind: 'blocked' });
+    expect(tasks.getTask('task-kind')?.errorKind).toBe('blocked');
+
+    // 手改坏的 / 将来删掉的种类：读回来当"没分类"，而不是猜一个。
+    db.prepare("UPDATE task SET error_kind = 'wat' WHERE id = 'task-kind'").run();
+    expect(tasks.getTask('task-kind')?.errorKind).toBeUndefined();
+  });
+
   it('applies the §4.1 pragmas and seeds one company row', () => {
     const probe = probeSqlite(db);
     expect(probe.integrity).toBe('ok');
@@ -195,6 +289,21 @@ describe('company.db', () => {
     expect(runColumns).toContain('owner_id');
     expect(workerColumns).not.toContain('employee_id');
     expect(runColumns).not.toContain('employee_id');
+  });
+
+  it('drops a renamed column that an older build re-added', () => {
+    const file = path.join(dir, 'company.db');
+    // 旧版 `repairLegacyColumns` 会把 V1 里声明的 `industry` 补回来（V34 已经把它
+    // 改名成 `domain`）。真实库就这么长出了两列；打开时应当收敛回一列。
+    db.exec('ALTER TABLE company ADD COLUMN industry TEXT');
+    db.close();
+    db = openCompanyDatabase(file);
+
+    const companyColumns = (
+      db.prepare('PRAGMA table_info(company)').all() as { name: string }[]
+    ).map((column) => column.name);
+    expect(companyColumns).toContain('domain');
+    expect(companyColumns).not.toContain('industry');
   });
 
   it('turns the stored user name and portrait into a single user row when upgrading to v18', () => {

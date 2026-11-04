@@ -360,6 +360,69 @@ describe('ModelConfigService provider scope', () => {
   });
 });
 
+describe('ModelConfigService.setDefault', () => {
+  it('keeps the Router model separate from the execution default', () => {
+    service.setDefault('llm', { providerId: 'openai', modelId: 'gpt-5.5' });
+    service.setDefault('router', { providerId: 'deepseek', modelId: 'chat' });
+
+    const defaults = service.getDefaults();
+    expect(defaults.llm).toEqual({ providerId: 'openai', modelId: 'gpt-5.5' });
+    expect(defaults.router).toEqual({ providerId: 'deepseek', modelId: 'chat' });
+
+    // 清空 Router 那一档只影响它自己：执行体仍然用主模型。
+    service.setDefault('router', null);
+    expect(service.getDefaults().router).toBeNull();
+    expect(service.getDefaults().llm).toEqual({ providerId: 'openai', modelId: 'gpt-5.5' });
+  });
+
+  it('deletes the Router default together with the provider it pointed at', () => {
+    service.saveProvider({
+      id: 'router-relay',
+      name: 'Router relay',
+      baseUrl: 'https://router.test/v1',
+      api: 'openai-completions',
+      isCustom: true,
+    });
+    service.setDefault('router', { providerId: 'router-relay', modelId: 'small-1' });
+
+    service.removeProvider('router-relay');
+
+    // 留着一个指向已删 provider 的默认值，下一轮调度会解析失败而不是回退。
+    expect(service.getDefaults().router).toBeNull();
+  });
+});
+
+describe('ModelConfigService router thinking', () => {
+  it('没单独配时跟随全局思考档位', () => {
+    service.setThinking('high');
+    expect(service.getRouterThinking()).toBe('high');
+  });
+
+  it('单独配了之后只影响 Router，不改全局', () => {
+    service.setThinking('high');
+    service.setRouterThinking('low');
+
+    expect(service.getRouterThinking()).toBe('low');
+    expect(service.getThinking()).toBe('high');
+  });
+
+  it('非法值不会写进库：退回当前全局档位', () => {
+    service.setThinking('medium');
+    expect(service.setRouterThinking('turbo')).toBe('medium');
+    expect(service.getRouterThinking()).toBe('medium');
+  });
+
+  it('null = 清掉覆盖：Router 回到跟随全局，全局回到系统默认', () => {
+    service.setThinking('high');
+    service.setRouterThinking('low');
+    expect(service.setRouterThinking(null)).toBe('high');
+
+    service.setThinking(null);
+    expect(service.getThinking()).toBe('medium');
+    expect(service.getRouterThinking()).toBe('medium');
+  });
+});
+
 describe('ModelConfigService.removeProvider', () => {
   const relay = {
     id: 'decision-relay',

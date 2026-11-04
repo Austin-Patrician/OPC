@@ -14,6 +14,7 @@ import {
 } from '@/shared/providers/catalog';
 import { providerIconUrl } from '@/shared/providers/visuals';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
+import { ModelPicker, pickerGroups } from '@/shared/ui/ModelPicker';
 import { cn } from '@/shared/lib/cn';
 import {
   buttonClass,
@@ -22,7 +23,6 @@ import {
   Section,
   SecretField,
   Segmented,
-  SelectField,
   StatusBadge,
   TextField,
   Toggle,
@@ -241,6 +241,12 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
         await models.setDefault('llm', null);
         setModelNotice(t('settings.llm.defaultCleared', { name: model.name }));
       }
+      // Router 的那一档引用的是同一个模型行。停用它却把 `default.router` 留着，
+      // 下一轮调度就会配置到一个已经不再注册的模型上——静默失败，最难查。
+      const router = models.defaults.router;
+      if (!enabled && router?.providerId === provider.id && router.modelId === model.id) {
+        await models.setDefault('router', null);
+      }
       await models.reload();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -259,9 +265,20 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
       provider.models.some((model) => model.id.toLowerCase().includes(needle)),
   );
 
-  const defaultValue = models.defaults.llm
-    ? `${models.defaults.llm.providerId}::${models.defaults.llm.modelId}`
-    : '';
+  /**
+   * 默认模型的候选：已配密钥、已启用的对话模型。Provider 之下没有可用模型时
+   * 整组不出现，这是 `pickerGroups` 的责任，页面不再自己拼 optgroup。
+   */
+  const llmGroups = useMemo(
+    () =>
+      pickerGroups(
+        models.providers,
+        (model) => model.capability === 'chat' && isChatModelEnabled(model),
+        catalog,
+      ),
+    [models.providers, catalog],
+  );
+
   const storedById = selectedConfig
     ? new Map(selectedConfig.models.map((model) => [model.id, model]))
     : new Map<string, ModelOption>();
@@ -441,31 +458,27 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
               </div>
             </div>
             <div className="w-[17.5rem] shrink-0">
-              <SelectField
+              <ModelPicker
                 ariaLabel={t('settings.llm.default')}
-                value={defaultValue}
-                onChange={(next) => {
-                  const [providerId = '', modelId = ''] = next.split('::');
-                  void models.setDefault('llm', providerId && modelId ? { providerId, modelId } : null);
+                title={t('settings.llm.default')}
+                groups={llmGroups}
+                value={models.defaults.llm}
+                thinking={models.thinking}
+                emptyLabel={t('settings.llm.defaultAuto')}
+                clearLabel={t('settings.llm.defaultAuto')}
+                onClear={() => void models.setDefault('llm', null)}
+                onSelect={(selection) => {
+                  // 选档位就等于同时改"默认模型"和全局思考等级；只点模型名
+                  // 不动思考等级——换模型不该顺手改掉一个人的推理偏好。
+                  void models.setDefault('llm', {
+                    providerId: selection.providerId,
+                    modelId: selection.modelId,
+                  });
+                  if (selection.thinking !== undefined) {
+                    void models.setThinking(selection.thinking);
+                  }
                 }}
-              >
-                <option value="">{t('settings.llm.defaultAuto')}</option>
-                {models.providers
-                  .filter((provider) => provider.hasKey)
-                  .map((provider) => (
-                    <optgroup key={provider.id} label={provider.name}>
-                      {provider.models
-                        // Only models that are actually registered with the
-                        // runtime can be the default.
-                        .filter((model) => model.capability === 'chat' && isChatModelEnabled(model))
-                        .map((model) => (
-                          <option key={model.id} value={`${provider.id}::${model.id}`}>
-                            {model.name}
-                          </option>
-                        ))}
-                    </optgroup>
-                  ))}
-              </SelectField>
+              />
             </div>
           </div>
           <div className="border-t border-line px-4 py-3">

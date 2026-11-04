@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 44;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1742,7 +1742,81 @@ const V40 = `
 ALTER TABLE thread ADD COLUMN speculative INTEGER NOT NULL DEFAULT 0;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40];
+/** V41：保存原始信道的回复地址，异步任务完成后 Router 仍能回到来源。 */
+const V41 = `
+ALTER TABLE thread ADD COLUMN reply_target TEXT;
+`;
+
+/**
+ * V42：执行体的**动作流**（`09-worker-spec.md` W6 / §3.4）。
+ *
+ * 在这之前，一次尝试只往 `task_step` 写四条系统旁白（交给 pi 循环 / 模型用量 / 循环结束），
+ * 工具调用、改了哪个文件全都不在库里。后果是三个消费方同时瞎：
+ * 界面上的进度是装饰、Watchdog 的"转圈"永远不触发、事后复盘只能看四句话。
+ *
+ * `seq` 是单调的，裁剪只删中间那一段，所以序号会留空洞——读的人据此说「略去 N 步」，
+ * 而不是把"被裁掉"误读成"什么都没发生"。
+ */
+const V42 = `
+CREATE TABLE IF NOT EXISTS task_trace (
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,
+  at          INTEGER NOT NULL,
+  kind        TEXT NOT NULL
+    CHECK (kind IN ('tool','file','decision','usage','error')),
+  name        TEXT NOT NULL,
+  args_digest TEXT NOT NULL DEFAULT '',
+  ok          INTEGER,
+  ms          INTEGER,
+  tokens      INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_trace_seq ON task_trace(task_id, seq);
+`;
+
+/**
+ * V43：`task_trace.ok` 要能是 `null`。
+ *
+ * 一开始把它写成了 `NOT NULL DEFAULT 1`，因为"成败"看起来必然是二值的。真实跑过一次
+ * 之后发现不是：pi 在工具任务 faulted、或者调用所在的运行结束时都会发一个**不带结果**的
+ * `tool_execution_end`，而我们没法区分这两件事。把"不知道"写成"成功"或"失败"都是让界面
+ * 替系统撒谎，所以这一列改成可空。
+ *
+ * SQLite 不能 ALTER 掉 NOT NULL，只能重建。这张表是纯观测数据、没有任何外键指过来，
+ * 重建的代价是丢掉已有的观测记录——比留一个隐形的写入失败便宜。
+ */
+const V43 = `
+DROP TABLE IF EXISTS task_trace;
+CREATE TABLE IF NOT EXISTS task_trace (
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,
+  at          INTEGER NOT NULL,
+  kind        TEXT NOT NULL
+    CHECK (kind IN ('tool','file','decision','usage','error')),
+  name        TEXT NOT NULL,
+  args_digest TEXT NOT NULL DEFAULT '',
+  ok          INTEGER,
+  ms          INTEGER,
+  tokens      INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_trace_seq ON task_trace(task_id, seq);
+`;
+
+/**
+ * V44：`task.error_kind`（`09-worker-spec.md` §3.7）。
+ *
+ * 在这之前只有一句 `error`，于是「没模型」和「闸门没过」长得一模一样：前者会得到一个
+ * 永远不会好的重试，后者被说成"跑挂了"。这一列存的是**哪一类**，它决定的不是措辞，
+ * 而是要不要重试、线停在哪个状态、要不要打扰人。
+ *
+ * 可空：老任务没有分类，读到 `undefined` 就按"没分类"处理，而不是猜一个。
+ */
+const V44 = `
+ALTER TABLE task ADD COLUMN error_kind TEXT;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

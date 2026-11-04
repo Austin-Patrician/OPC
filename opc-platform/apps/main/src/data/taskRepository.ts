@@ -3,8 +3,11 @@ import type {
   IssueLink,
   LinkType,
   TaskAcceptance,
+  TaskFailureKind,
   TaskStatus,
   TaskSteering,
+  TaskTrace,
+  TaskTraceKind,
   WorkTask,
 } from '@opc/shared/domain';
 import crypto from 'node:crypto';
@@ -52,6 +55,8 @@ export interface TaskStatusPatch {
   startedAt?: number;
   finishedAt?: number | null;
   error?: string | null;
+  /** 这次停下是哪一类（§3.7）；`null` = 没有失败，或者旧任务没分类。 */
+  errorKind?: TaskFailureKind | null;
 }
 
 type Reviewer = 'auto' | 'system' | 'user';
@@ -85,6 +90,7 @@ interface TaskRow {
   tokens_used: number;
   cost_usd: number;
   error: string | null;
+  error_kind: string | null;
   started_at: number | null;
   finished_at: number | null;
   created_at: number;
@@ -295,6 +301,9 @@ export class TaskRepository {
       (entry): entry is TaskSteering => typeof entry?.note === 'string',
     );
 
+    /** 库里的字符串只认那七个；手改坏的、将来删掉的，一律当"没分类"。 */
+    const errorKind = isFailureKind(row.error_kind) ? row.error_kind : undefined;
+
     return {
       id: row.id,
       title: row.title,
@@ -352,6 +361,7 @@ export class TaskRepository {
       tokensUsed: row.tokens_used,
       costUsd: row.cost_usd,
       ...(row.error ? { error: row.error } : {}),
+      ...(errorKind ? { errorKind } : {}),
       steps: steps.map((step) => ({ at: step.at, text: step.text })),
     };
   };
@@ -397,6 +407,10 @@ export class TaskRepository {
       assignments.push('error = ?');
       values.push(patch.error);
     }
+    if (patch.errorKind !== undefined) {
+      assignments.push('error_kind = ?');
+      values.push(patch.errorKind);
+    }
 
     values.push(taskId);
     this.statement(`UPDATE task SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
@@ -411,6 +425,89 @@ export class TaskRepository {
       text,
     );
     this.touch(taskId, now);
+  };
+
+  // ── trace：过程档（W6）──────────────────────────────────────────────────
+
+  /**
+   * 记一个**动作**。
+   *
+   * 和 `addStep` 的分工是给谁看：这个给界面、Watchdog、复盘看，`step` 是写给人读的叙述。
+   * 裁剪**不在这里**做——留多少条是策略（`work/trace.ts`），仓储只管读写。
+   */
+  appendTrace = (input: {
+    taskId: string;
+    seq: number;
+    kind: TaskTraceKind;
+    name: string;
+    argsDigest?: string;
+    ok?: boolean | null;
+    ms?: number;
+    tokens?: number;
+    at?: number;
+  }): TaskTrace => {
+    const at = input.at ?? Date.now();
+    const row: TaskTrace = {
+      id: `trace-${crypto.randomUUID()}`,
+      taskId: input.taskId,
+      seq: input.seq,
+      at,
+      kind: input.kind,
+      name: input.name,
+      argsDigest: input.argsDigest ?? '',
+      ok: input.ok === undefined ? null : input.ok,
+      ...(input.ms === undefined ? {} : { ms: input.ms }),
+      ...(input.tokens === undefined ? {} : { tokens: input.tokens }),
+    };
+    this.statement(
+      `INSERT INTO task_trace (id, task_id, seq, at, kind, name, args_digest, ok, ms, tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.id,
+      row.taskId,
+      row.seq,
+      row.at,
+      row.kind,
+      row.name,
+      row.argsDigest,
+      row.ok === null ? null : row.ok ? 1 : 0,
+      row.ms ?? null,
+      row.tokens ?? null,
+    );
+    this.touch(input.taskId, at);
+    return row;
+  };
+
+  /** 最近的 N 个动作，按发生顺序（旧 → 新）。 */
+  listTrace = (taskId: string, limit = 20): TaskTrace[] => {
+    const rows = this.statement(
+      'SELECT * FROM task_trace WHERE task_id = ? ORDER BY seq DESC LIMIT ?',
+    ).all(taskId, limit) as TraceRow[];
+    return rows.reverse().map(toTrace);
+  };
+
+  /** 下一个序号从库里续，所以重试/续跑不会把 seq 从头开始。 */
+  maxTraceSeq = (taskId: string): number => {
+    const row = this.statement('SELECT MAX(seq) AS seq FROM task_trace WHERE task_id = ?').get(
+      taskId,
+    ) as { seq: number | null } | undefined;
+    return row?.seq ?? 0;
+  };
+
+  /**
+   * 只留头 `head` 条与尾 `tail` 条，中间删掉。
+   *
+   * 返回**删掉的条数**：用例和探针靠它证明裁剪真的发生了，而不是靠读代码相信。
+   * 删掉的那一段在 `seq` 上留空洞，读的人据此说「略去 N 步」。
+   */
+  pruneTrace = (taskId: string, head: number, tail: number): number => {
+    const max = this.maxTraceSeq(taskId);
+    const cutoff = max - tail;
+    if (cutoff <= head) return 0;
+    const info = this.statement(
+      'DELETE FROM task_trace WHERE task_id = ? AND seq > ? AND seq <= ?',
+    ).run(taskId, head, cutoff) as { changes?: number } | undefined;
+    return info?.changes ?? 0;
   };
 
   /**
@@ -546,6 +643,49 @@ export class TaskRepository {
     this.statements.set(sql, prepared);
     return prepared;
   }
+}
+
+interface TraceRow {
+  id: string;
+  task_id: string;
+  seq: number;
+  at: number;
+  kind: TaskTraceKind;
+  name: string;
+  args_digest: string;
+  ok: number;
+  ms: number | null;
+  tokens: number | null;
+}
+
+function toTrace(row: TraceRow): TaskTrace {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    seq: row.seq,
+    at: row.at,
+    kind: row.kind,
+    name: row.name,
+    argsDigest: row.args_digest,
+    ok: row.ok === null ? null : row.ok === 1,
+    ...(row.ms === null ? {} : { ms: row.ms }),
+    ...(row.tokens === null ? {} : { tokens: row.tokens }),
+  };
+}
+
+const FAILURE_KINDS: readonly TaskFailureKind[] = [
+  'retryable',
+  'rejected',
+  'unverified',
+  'needs_decision',
+  'handed_back',
+  'blocked',
+  'cancelled',
+];
+
+/** 库里的字符串只认这七个；手改坏的、将来删掉的，一律当"没分类"。 */
+function isFailureKind(value: string | null): value is TaskFailureKind {
+  return value !== null && (FAILURE_KINDS as readonly string[]).includes(value);
 }
 
 function parseJson<T>(raw: string, fallback: T): T {

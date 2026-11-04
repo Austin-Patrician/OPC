@@ -1,5 +1,6 @@
 import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
+import type { TriggerReplyTarget } from '../trigger/types';
 import type { SemanticScreener } from './semanticGate';
 import { DEFAULT_INLINE_BUDGET, perItemBudget, spillText, type InlineBudget } from './inline';
 import { isValidThreadKey } from './threadKey';
@@ -71,14 +72,14 @@ export interface RouterDeps {
    */
   semantic?: SemanticScreener;
   /** 未订阅 → Slow Path：交给 Router 会话判断。 */
-  deliver: (text: string) => void;
+  deliver: (text: string, replyTargets?: readonly TriggerReplyTarget[]) => unknown | Promise<unknown>;
   /**
    * 已订阅 → Fast Path：直接发给盯这条线的执行体。
    *
    * 不存在时退化成"全部交给 Router"，功能不丢，只是贵一些——这也正好说明直通
    * 是优化而不是正确性。
    */
-  passthrough?: (intent: Intent) => void;
+  passthrough?: (intent: Intent) => unknown | Promise<unknown>;
   /** 工作台长期有效的规矩（`fact` 的 global 那几条），每轮带进上下文。 */
   rules?: () => readonly string[];
   /**
@@ -116,6 +117,8 @@ const DEFAULT_BATCH = 40;
 
 export class Router {
   private readonly batchSize: number;
+  private inFlight: Promise<TickReport> | null = null;
+  private rerunRequested = false;
 
   constructor(private readonly deps: RouterDeps) {
     this.batchSize = deps.batchSize ?? DEFAULT_BATCH;
@@ -130,7 +133,33 @@ export class Router {
    * `async` 只有一个原因：语义门是一次模型调用。程序层、直通、攒批仍然是同步的，
    * 所以"没有开语义门"的配置下这一轮只是多了一个 await 一个立即 resolve 的 Promise。
    */
-  tick = async (): Promise<TickReport> => {
+  tick = (): Promise<TickReport> => {
+    if (this.inFlight) {
+      this.rerunRequested = true;
+      return this.inFlight;
+    }
+    const run = this.runTick();
+    this.inFlight = run;
+    void run.then(
+      () => {
+        if (this.inFlight === run) this.inFlight = null;
+        this.scheduleRerun();
+      },
+      () => {
+        if (this.inFlight === run) this.inFlight = null;
+        this.scheduleRerun();
+      },
+    );
+    return run;
+  };
+
+  private scheduleRerun(): void {
+    if (!this.rerunRequested) return;
+    this.rerunRequested = false;
+    queueMicrotask(() => void this.tick());
+  }
+
+  private runTick = async (): Promise<TickReport> => {
     const report: TickReport = {
       dropped: 0,
       gated: 0,
@@ -153,12 +182,15 @@ export class Router {
 
         const intent = this.intentFor(event);
         if (intent && this.deps.passthrough) {
-          this.deps.passthrough(intent);
-          // 归属已经确定，这条事件不必再出现在 Router 的上下文里。
-          this.deps.threads.triageEvent(event.id, 'accepted', intent.thread.id);
-          this.deps.threads.touch(intent.thread.id);
-          report.passthrough += 1;
-          continue;
+          const accepted = await this.deps.passthrough(intent);
+          if (accepted !== false) {
+            // 归属已经确定，这条事件不必再出现在 Router 的上下文里。
+            this.deps.threads.triageEvent(event.id, 'accepted', intent.thread.id);
+            this.deps.threads.touch(intent.thread.id);
+            report.passthrough += 1;
+            continue;
+          }
+          // 直通没有真正创建任务：不要伪装成 accepted，继续走 Slow Path。
         }
 
         slow.push(event);
@@ -192,18 +224,19 @@ export class Router {
     // 先把它们标成"已经交给 Router 了"，再真的交。反过来的话，一次崩溃就会
     // 让同一批事件被讲两遍。
     // `routed` 而不是 `accepted`：交出去不等于归了线，归线是 Router 下一轮的事。
-    for (const event of slow) this.deps.threads.triageEvent(event.id, 'routed');
+    for (const event of slow) this.deps.threads.triageEvent(event.id, 'routed', event.threadId);
     this.deps.threads.markAnnounced(reports.map((row) => row.id));
     report.routed = slow.length;
 
     try {
-      this.deps.deliver(
+      await this.deps.deliver(
         composeInput(
           slow,
           reports,
           this.deps.rules?.() ?? [],
           this.deps.standing?.() ?? [],
         ),
+        collectReplyTargets(slow, reports),
       );
     } catch (error) {
       // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
@@ -279,6 +312,9 @@ export function composeInput(
       lines.push(
         `- ${event.id} · ${event.source}/${event.kind}` + (key ? ` · 并线键 ${key}` : ''),
       );
+      if (event.threadId) lines.push(`  已预建工作线：${event.threadId}（派活时使用 thread_id，不要新开线）`);
+      const replyTarget = replyTargetOf(event.payload);
+      if (replyTarget) lines.push(`  原始信道回复地址（只能原样使用）：${replyTarget}`);
       const body = bodyOf(event.payload);
       if (body) lines.push(indent(spillText(body, `recall ${event.id}`, perItem)));
     }
@@ -289,6 +325,7 @@ export function composeInput(
     lines.push(`## 执行体汇报（${reports.length}，都还没告诉用户）`);
     for (const report of reports) {
       lines.push(`- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.title}`);
+      if (report.replyTarget) lines.push(`  原始信道回复地址（只能原样使用）：${report.replyTarget.address}`);
       if (report.body.trim()) {
         lines.push(indent(spillText(report.body, `recall ${report.id}`, perItem)));
       }
@@ -302,6 +339,44 @@ export function composeInput(
   );
 
   return lines.join('\n');
+}
+
+/** Only targets explicitly present in this input may be selected by reply_to_user. */
+function collectReplyTargets(
+  events: readonly TriggerEvent[],
+  reports: readonly WorkReport[],
+): TriggerReplyTarget[] {
+  const found = new Map<string, TriggerReplyTarget>();
+  for (const event of events) {
+    const value = event.payload.replyTarget;
+    if (!value || typeof value !== 'object') continue;
+    const target = value as Partial<TriggerReplyTarget>;
+    if (
+      typeof target.adapterId !== 'string' ||
+      typeof target.source !== 'string' ||
+      typeof target.address !== 'string' ||
+      !target.address.trim()
+    ) {
+      continue;
+    }
+    found.set(target.address, {
+      adapterId: target.adapterId,
+      source: target.source,
+      address: target.address,
+      ...(typeof target.messageId === 'string' ? { messageId: target.messageId } : {}),
+    });
+  }
+  for (const report of reports) {
+    if (report.replyTarget) found.set(report.replyTarget.address, report.replyTarget);
+  }
+  return [...found.values()];
+}
+
+function replyTargetOf(payload: Record<string, unknown>): string | null {
+  const value = payload.replyTarget;
+  if (!value || typeof value !== 'object') return null;
+  const address = (value as { address?: unknown }).address;
+  return typeof address === 'string' && address.trim() ? address.trim() : null;
 }
 
 function indent(text: string): string {

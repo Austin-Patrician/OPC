@@ -65,10 +65,13 @@ export interface RouterToolDeps {
     threadKey?: string | null;
     /** 由哪个执行体干；不指定就按目标挑一个模板。 */
     template?: 'research' | 'code' | 'ops';
+    replyTarget?: string;
+    threadId?: string;
   }): { ok: true; threadId: string; workerId: string; taskId: string | null } | { ok: false; reason: string };
 
   /** 对你说话。这是 Router 唯一能让人看见它的方式。 */
-  reply(text: string): void;
+  /** `replyTarget` 是输入里提供的原始信道地址；不传则回桌面助手。 */
+  reply(text: string, replyTarget?: string): unknown | Promise<unknown>;
 
   /** 链式召回：返回一个对象的压缩视图 + 相邻对象的 id（Inline & Spill）。 */
   recall(id: string): string;
@@ -193,6 +196,12 @@ export function createRouterTools(deps: RouterToolDeps) {
                 '还不确定"的事上（例如群里有人报了个错）。它不会打扰他，所以也不要拿它派他明确要的活。',
             }),
           ),
+          reply_target: Type.Optional(
+            Type.String({ description: '可选：输入事件提供的原始信道地址，必须原样复制。' }),
+          ),
+          thread_id: Type.Optional(
+            Type.String({ description: '手工目标已预建的工作线 id；输入里出现时必须原样使用。' }),
+          ),
         }),
         execute: async (args) => {
           const result = deps.openLine({
@@ -201,6 +210,8 @@ export function createRouterTools(deps: RouterToolDeps) {
             ...(args.thread_key ? { threadKey: args.thread_key } : {}),
             ...(args.template ? { template: args.template } : {}),
             ...(args.speculative ? { speculative: true } : {}),
+            ...(args.reply_target ? { replyTarget: args.reply_target } : {}),
+            ...(args.thread_id ? { threadId: args.thread_id } : {}),
           });
           if (!result.ok) return fail(`没派出去：${result.reason}`);
           return ok(
@@ -217,11 +228,18 @@ export function createRouterTools(deps: RouterToolDeps) {
         description:
           '对用户说一句话。这是用户唯一能看到你的途径——不调用它，你等于没说话。' +
           '简短、具体、只说你知道的。',
-        parameters: Type.Object({
-          text: Type.String({ description: '要说的话。' }),
-        }),
-        execute: async (args) => {
-          deps.reply(args.text);
+          parameters: Type.Object({
+            text: Type.String({ description: '要说的话。' }),
+            reply_target: Type.Optional(
+              Type.String({
+                description:
+                  '可选：输入事件提供的原始信道地址。只有输入里明确出现过的地址才能使用；' +
+                  '没有就省略，回桌面助手。',
+              }),
+            ),
+          }),
+          execute: async (args) => {
+          await deps.reply(args.text, args.reply_target);
           return ok('已发出。');
         },
       }),
@@ -402,7 +420,10 @@ export function createRouterTools(deps: RouterToolDeps) {
 
       defineTool({
         name: 'close_line',
-        description: '收线：这件事结束了。写清最后的结果，那是这条线留给以后的记忆。',
+        description:
+          '收线：这件事结束了。写清最后的结果，那是这条线留给以后的记忆。' +
+          '**线上还有活没跑完时收不了**——先等它们结束（或者让它们失败），再收。' +
+          '收早了，那些任务会变成没人认领的后台任务，跑完也没有线可以汇报。',
         parameters: Type.Object({
           thread_id: Type.String(),
           summary: Type.String({ description: '结果是什么、交付物在哪。' }),

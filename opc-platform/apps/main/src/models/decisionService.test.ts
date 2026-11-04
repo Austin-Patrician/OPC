@@ -27,6 +27,7 @@ const provider = (models: ModelOption[], over: Partial<ProviderConfig> = {}): Pr
 
 const defaults = (over: Partial<ModelDefaults> = {}): ModelDefaults => ({
   llm: null,
+  router: null,
   image: null,
   asr: null,
   tts: null,

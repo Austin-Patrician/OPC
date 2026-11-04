@@ -5,6 +5,7 @@ import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { providerMeta } from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
+import { ModelPicker } from '@/shared/ui/ModelPicker';
 import { vendorProviderId } from '@/shared/providers/visuals';
 import { cn } from '@/shared/lib/cn';
 import {
@@ -13,7 +14,6 @@ import {
   PageHeader,
   SecretField,
   Section,
-  SelectField,
   StatusBadge,
   TextField,
   Toggle,
@@ -402,35 +402,31 @@ export function ImagePage() {
           </div>
         </div>
         <div className="w-[22rem] max-w-full shrink-0">
-          <SelectField
+          <ModelPicker
             ariaLabel={t('settings.image.defaultTitle')}
-            value={
-              models.defaults.image
-                ? `${models.defaults.image.providerId}::${models.defaults.image.modelId}`
-                : ''
-            }
-            onChange={(next) => {
-              if (!next) {
-                void models.setDefault('image', null);
-                return;
-              }
-              const [providerId = '', modelId = ''] = next.split('::');
-              const entry = selectableProviders.find((candidate) => candidate.id === providerId);
-              const image = entry?.images.find((candidate) => candidate.id === modelId);
+            title={t('settings.image.defaultTitle')}
+            groups={selectableProviders.map((entry) => ({
+              providerId: entry.id,
+              providerName: entry.name,
+              models: entry.images.map((model) => ({
+                modelId: model.id,
+                modelName: model.name,
+                thinkingLevels: [],
+              })),
+            }))}
+            value={models.defaults.image}
+            allowThinking={false}
+            clearLabel={t('settings.image.noDefault')}
+            emptyLabel={t('settings.image.noDefault')}
+            onClear={() => void models.setDefault('image', null)}
+            onSelect={(selection) => {
+              const entry = selectableProviders.find(
+                (candidate) => candidate.id === selection.providerId,
+              );
+              const image = entry?.images.find((candidate) => candidate.id === selection.modelId);
               if (entry && image) void setDefaultImage(entry, image);
             }}
-          >
-            <option value="">{t('settings.image.noDefault')}</option>
-            {selectableProviders.map((entry) => (
-              <optgroup key={entry.id} label={entry.name}>
-                {entry.images.map((model) => (
-                  <option key={model.id} value={`${entry.id}::${model.id}`}>
-                    {model.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </SelectField>
+          />
           {selectableProviders.length === 0 ? (
             <p className="mt-1 text-2xs text-ink-quaternary">{t('settings.image.noneEnabled')}</p>
           ) : null}

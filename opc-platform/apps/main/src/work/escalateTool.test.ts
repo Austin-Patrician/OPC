@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  countEscalations,
   createEscalateToolExtension,
   createHandBackToolExtension,
   escalationLevel,
+  escalationTag,
 } from './escalateTool';
 
 /**
@@ -29,7 +31,13 @@ function textOf(result: { output?: { text: string }[] }): string {
 
 function escalateTool(deps: {
   taskId?: string | undefined;
-  escalate?: (input: { taskId: string; question: string; tried: string; suggestion: string }) => {
+  escalate?: (input: {
+    taskId: string;
+    question: string;
+    tried: string;
+    suggestion: string;
+    subject?: string;
+  }) => {
     level: 'decide' | 'notify';
   };
 }): { tool: FakeTool; calls: unknown[] } {
@@ -53,6 +61,37 @@ describe('请示', () => {
     expect(escalationLevel(5)).toBe('notify');
   });
 
+  /**
+   * W-G5：等级要按"**同一件事**问过几次"数，不是"这条任务问过几次"。
+   *
+   * 以前按任务数：第一个问题降级之后，第二个真正的新问题也只能拿到 `notify`，
+   * 于是一件该打断他的事被静音了。subject 就是"这件事叫什么"。
+   */
+  it('同一件事第二次降级；换一件事照样插队', () => {
+    const steps = [
+      { text: '请示[deploy.target]：蓝绿还是滚动' },
+      { text: '请示：这条没有 subject' },
+    ];
+    expect(countEscalations(steps, 'deploy.target')).toBe(1);
+    expect(countEscalations(steps, 'acceptance')).toBe(0);
+    expect(countEscalations(steps, undefined)).toBe(1);
+    expect(countEscalations([], undefined)).toBe(0);
+  });
+
+  it('subject 归一：去空白、空格换连字符、封顶 40 字', () => {
+    expect(escalationTag('deploy.target')).toBe('[deploy.target]');
+    expect(escalationTag('  deploy  target ')).toBe('[deploy-target]');
+    expect(escalationTag(undefined)).toBe('');
+    expect(escalationTag('   ')).toBe('');
+    expect(escalationTag('x'.repeat(80))).toBe(`[${'x'.repeat(40)}]`);
+  });
+
+  it('没有 subject 的老请示与带 subject 的新请示互不干扰', () => {
+    const tagged = [{ text: '请示[deploy.target]：A' }];
+    expect(countEscalations(tagged, undefined)).toBe(0);
+    expect(countEscalations([{ text: '请示：老写法' }], 'deploy.target')).toBe(0);
+  });
+
   it('把问题、试过什么、建议一起交上去', async () => {
     const { tool, calls } = escalateTool({ taskId: 'task-1' });
     await tool.execute(
@@ -67,6 +106,18 @@ describe('请示', () => {
       tried: '两个都跑了一遍',
       suggestion: '选 B',
     });
+  });
+
+  it('把 subject 一起交上去：宿主靠它判断是不是同一件事', async () => {
+    const { tool, calls } = escalateTool({ taskId: 'task-1' });
+    await tool.execute({ question: '蓝绿还是滚动', subject: '  deploy.target  ' }, {}, {});
+    expect(calls[0]).toMatchObject({ subject: 'deploy.target' });
+  });
+
+  it('没写 subject 就不带这个字段：老调用方与老数据都不受影响', async () => {
+    const { tool, calls } = escalateTool({ taskId: 'task-1' });
+    await tool.execute({ question: '缺验收标准' }, {}, {});
+    expect(calls[0]).not.toHaveProperty('subject');
   });
 
   it('第一次和第二次说的话不一样：它得知道这句话有没有插队', async () => {

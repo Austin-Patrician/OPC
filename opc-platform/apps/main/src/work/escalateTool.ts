@@ -27,6 +27,35 @@ export function escalationLevel(previous: number): 'decide' | 'notify' {
   return previous === 0 ? 'decide' : 'notify';
 }
 
+/**
+ * 请示写进步骤流时的标签：`请示[deploy.target]：…`，没有 subject 就是 `请示：…`。
+ *
+ * 为什么要有 subject（§3.7 的 W-G5）：等级按"这条任务问过几次"来数，会把**两个不同的
+ * 问题**当成一件事——第一个问题降级之后，第二个真正的新问题也只能拿到 `notify`，
+ * 于是一件该打断你的事被静音了。subject 是"这件事叫什么"，判据从"问过几次"变成
+ * "**同一件事**问过几次"。
+ *
+ * 和记忆的 `subject` 是同一套想法：一个稳定的短名字，改主意时用同一个名字再记一遍。
+ */
+export function escalationTag(subject: string | undefined): string {
+  const name = (subject ?? '').trim().replace(/\s+/g, '-').slice(0, 40);
+  return name ? `[${name}]` : '';
+}
+
+/**
+ * 同一件事之前问过几次。
+ *
+ * 只有**同标签**的步骤才算：没写 subject 的老请示与带 subject 的新请示互不干扰，
+ * 否则升级前后会互相污染计数。
+ */
+export function countEscalations(
+  steps: readonly { text: string }[],
+  subject: string | undefined,
+): number {
+  const prefix = `请示${escalationTag(subject)}：`;
+  return steps.filter((step) => step.text.startsWith(prefix)).length;
+}
+
 export interface EscalateToolDeps {
   taskId: () => string | undefined;
   /**
@@ -38,6 +67,7 @@ export interface EscalateToolDeps {
     question: string;
     tried: string;
     suggestion: string;
+    subject?: string;
   }) => { level: 'decide' | 'notify' };
 }
 
@@ -50,9 +80,18 @@ export function createEscalateToolExtension(deps: EscalateToolDeps) {
         description:
           '把一件你定不了的事问到线上（给用户和调度那个常驻助手看）。只在真的卡住时用：' +
           '两种方案拿不准、缺一个只有他能给的信息、或者缺验收标准。' +
-          '每一个任务最多问两次，第二次不会插队。不要用它汇报进度——进度记在工作步骤里就行。',
+          '**同一件事**问第二次不会插队；换一件事照样会打断他——所以用 `subject` 说清这是哪件事' +
+          '（一个稳定的短名字，比如 deploy.target），不要每次都换名字。' +
+          '不要用它汇报进度——进度记在工作步骤里就行。',
         parameters: Type.Object({
           question: Type.String({ description: '要他定的是什么，一句话。' }),
+          subject: Type.Optional(
+            Type.String({
+              description:
+                '这件事叫什么，用稳定的短名字（如 deploy.target、acceptance、api.version）。' +
+                '同一件事再问一次要用同一个名字——改名等于换了一件事。',
+            }),
+          ),
           tried: Type.Optional(Type.String({ description: '你已经试过什么（一句话）。' })),
           suggestion: Type.Optional(Type.String({ description: '你倾向怎么办，以及为什么。' })),
         }),
@@ -77,6 +116,7 @@ export function createEscalateToolExtension(deps: EscalateToolDeps) {
             question,
             tried: args.tried?.trim() ?? '',
             suggestion: args.suggestion?.trim() ?? '',
+            ...(args.subject?.trim() ? { subject: args.subject.trim() } : {}),
           });
 
           return {
@@ -86,7 +126,7 @@ export function createEscalateToolExtension(deps: EscalateToolDeps) {
                 text:
                   level === 'decide'
                     ? '已经问到线上了，会插进他要处理的事里。等回话期间先做不依赖这个答案的部分。'
-                    : '又问了一次。这次不会插队，只是记在那条线上——同一件事问两次，说明该自己拿主意了。',
+                    : '这件事又问了一次。这次不会插队，只是记在那条线上——同一件事问两次，说明该自己拿主意了。',
               },
             ],
           };

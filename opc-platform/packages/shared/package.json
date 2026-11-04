@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./domain": "./src/domain.ts",
     "./ipc": "./src/ipc.ts",
-    "./ocr": "./src/ocr.ts"
+    "./ocr": "./src/ocr.ts",
+    "./trace": "./src/trace.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

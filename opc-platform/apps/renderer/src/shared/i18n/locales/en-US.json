@@ -165,7 +165,7 @@
       "title": "LLM models",
       "readyCount": "{{count}} providers ready",
       "defaultTitle": "Default model",
-      "defaultDesc": "Used when a new agent conversation starts.",
+      "defaultDesc": "The provider and model used by execution bodies. The assistant follows this by default when routing events, and can be given its own, lighter model on the Event routing page.",
       "defaultAuto": "Automatic",
       "thinking": "Thinking level",
       "thinkingHint": "Only applies to models that support reasoning.",
@@ -591,10 +591,22 @@
       "threshold05": "Lower cost",
       "threshold07": "Default",
       "threshold09": "Conservative",
-      "decisionHint": "The classification model is the one configured under Settings → Models → Decision. When it is not configured this stage is skipped and every event goes to the assistant.",
+      "decisionHint": "The classifier is chosen above; the choices are the classifiers enabled under Settings → Models → Decision. When none is configured this step is skipped and every event goes to the assistant.",
       "prompt": "Decision criteria",
       "promptHint": "The criteria given to the classification model. What counts as noise differs by workflow (CI results are noise in one setting and news in another), so this is editable. Leaving it empty falls back to the default criteria.",
-      "footnote": "Both stages fail open: a rule that does not match, a missing model, a failed call or a missing answer all let the event continue upward. These settings therefore change cost, not whether an event is handled. Dropped events remain in the database and are reachable by event id; there is no list view for them yet."
+      "footnote": "Both stages fail open: a rule that does not match, a missing model, a failed call or a missing answer all let the event continue upward. These settings therefore change cost, not whether an event is handled. Dropped events remain in the database and are reachable by event id; there is no list view for them yet.",
+      "modelTitle": "Models",
+      "modelDesc": "Routing decisions are made by a resident assistant conversation. It reads batches of events, so it does not need the same model as the execution bodies.",
+      "routerModel": "Assistant model",
+      "routerModelHint": "Leave empty to follow the execution bodies’ default model. A change takes effect on the next routing round, with no restart.",
+      "routerModelFollow": "Follow the default model",
+      "routerModelEffective": "In effect: {{model}}",
+      "routerModelNone": "No model configured",
+      "routerModelNoChoices": "No chat model is available yet: add a key and enable one under Settings → Models → LLM.",
+      "classifier": "Classifier model",
+      "classifierHint": "Choices come from the classifiers enabled under Settings → Models → Decision.",
+      "classifierNone": "Not configured (this step is skipped)",
+      "classifierNoChoices": "No classifier is enabled yet: enable one under Settings → Models → Decision, or this step will be skipped."
     },
     "trigger": {
       "title": "Event sources",
@@ -608,7 +620,8 @@
       "dingtalkHint": "The DingTalk bot signing secret. Group messages join one line per conversation; direct messages are left to the assistant.",
       "configured": "Configured",
       "notConfigured": "Not configured (requests from this source are rejected)",
-      "portHint": "The listener binds to localhost only; receiving internet pushes requires a reverse proxy or tunnel. A port change takes effect after a restart."
+      "portHint": "The listener binds to localhost only; receiving internet pushes requires a reverse proxy or tunnel. A port change takes effect after a restart.",
+      "down": "No source listener is running: secrets below are still saved, but pushes cannot arrive until it is back."
     },
     "memory": {
       "title": "What it remembers",
@@ -691,7 +704,16 @@
     "subtasksEmpty": "No subtasks yet",
     "userApprove": "Approve",
     "userReject": "Reject",
-    "userVerdict": "Your sign-off"
+    "userVerdict": "Your sign-off",
+    "failure": {
+      "retryable": "Run interrupted",
+      "rejected": "Acceptance failed",
+      "unverified": "Cannot judge",
+      "needs_decision": "Needs your call",
+      "handed_back": "Handed back",
+      "blocked": "Could not start",
+      "cancelled": "Cancelled"
+    }
   },
   "models": {
     "defaultLlm": "Default LLM",
@@ -723,6 +745,12 @@
       "imageHint": "pi's image model type; the default is used for visual deliverables.",
       "video": "Video",
       "videoHint": "pi has no video model type or generation API today (chat / image / classifier only), so this is not a fake entry."
+    },
+    "picker": {
+      "search": "Search models",
+      "empty": "No matching models",
+      "thinking": "Thinking effort",
+      "defaultLevel": "Default"
     }
   },
   "issues": {
@@ -750,6 +778,7 @@
     "artifacts": "Artifacts",
     "evidence": "Acceptance evidence",
     "activity": "Activity",
+    "trace": "What it did",
     "mode": {
       "ledger": "Ledger",
       "board": "Board",

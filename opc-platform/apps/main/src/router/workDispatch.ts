@@ -4,6 +4,7 @@ import type {
   CreateTaskResult,
   WorkerTemplate,
 } from '@opc/shared/domain';
+import type { TriggerReplyTarget } from '../trigger/types';
 import { inferTemplate } from '../work/workerPool';
 import { UNVERIFIED_GATE } from '../work/acceptanceGate';
 import type { ThreadRepository } from '../data/threadRepository';
@@ -42,6 +43,7 @@ export interface LineOpenerDeps {
 }
 
 export interface OpenLineInput {
+  threadId?: string;
   goal: string;
   title?: string;
   threadKey?: string | null;
@@ -62,6 +64,8 @@ export interface OpenLineInput {
    * Router 用它表达"这件事值得跑，但值不值得让他知道还不确定"。
    */
   speculative?: boolean;
+  /** 原始外部信道地址；异步汇报仍需能回到来源。 */
+  replyTarget?: TriggerReplyTarget | null;
 }
 
 export type OpenLineResult =
@@ -80,12 +84,18 @@ export function createLineOpener(deps: LineOpenerDeps) {
     //
     // `openThread` 而不是"查一次再建"：直通与 Router 会同时走到这里，两次查询之间
     // 那个窗口中两边都会建线（唯一索引会挡住第二条，但那样一等就是一次异常）。
-    const { thread } = deps.threads.openThread({
+    const existing = input.threadId ? deps.threads.getThread(input.threadId) : null;
+    if (input.threadId && !existing) return { ok: false, reason: `未知工作线：${input.threadId}` };
+    const { thread } = existing
+      ? { thread: existing }
+      : deps.threads.openThread({
       title: input.title?.trim() || firstLine(goal),
       goal,
       threadKey: input.threadKey ?? null,
       ...(input.speculative ? { speculative: true } : {}),
-    });
+      ...(input.replyTarget ? { replyTarget: input.replyTarget } : {}),
+      });
+    if (input.replyTarget) deps.threads.setReplyTarget(thread.id, input.replyTarget);
 
     const template = input.template ?? inferTemplate(`${thread.title} ${goal}`);
     // 归属已定的事件（直通）必须还给同一个执行体：`workerId` 存在就沿用它，

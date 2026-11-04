@@ -12,11 +12,15 @@ import type { MemoryKind, MemoryService } from '../memory/memoryService';
 import type { DecisionService } from '../models/decisionService';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { Router } from './router';
+import { pickRouterModel } from './routerModel';
 import { RouterSession } from './routerSession';
 import { createRouterTools, type LineSummary } from './routerTools';
 import { createDecisionGate, keepAll, type SemanticScreener } from './semanticGate';
-import { createFastPath } from './triage';
+import { bodyOf, createFastPath } from './triage';
+import { unfinishedReason, unfinishedTasksOf } from './threadBusy';
 import type { OpenLineInput, OpenLineResult } from './workDispatch';
+import type { TriggerReplyTarget } from '../trigger/types';
+import { renderTrace } from '../work/trace';
 
 /**
  * 把 Router 装起来。
@@ -43,7 +47,10 @@ export interface RouterHostDeps {
   /** 派活：开线 + 建任务 + 启动，立刻返回。 */
   openLine: (input: OpenLineInput) => OpenLineResult;
   /** 对你说话。 */
-  reply: (text: string) => void;
+  /** Desktop fallback; external sends can be injected without coupling Router to SDKs. */
+  reply: (text: string, target?: TriggerReplyTarget) => void | Promise<void>;
+  /** Optional platform sender. If absent, a targeted reply falls back to desktop and logs. */
+  externalReply?: (target: TriggerReplyTarget, text: string) => void | Promise<void>;
   /** 中途改方向。`live` 是"真的插进正在跑的会话"的条数。 */
   steer?: (
     threadId: string,
@@ -75,8 +82,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const threads = new ThreadRepository(deps.db);
   const tasks = new TaskRepository(deps.db);
 
-  /** Router 的模型：跟设置走的工作台默认。轻量即可（§2.1）。 */
-  const model = (): ModelRef | null => deps.modelConfig?.getDefaults().llm ?? null;
+  /**
+   * Router 的模型：显式配的 `router` 一档优先，没配就跟随执行体的默认模型。
+   *
+   * 每轮重新读（`RouterSession.reconfigure`），所以设置里换完下一轮生效，不用重启。
+   */
+  const model = (): ModelRef | null => pickRouterModel(deps.modelConfig?.getDefaults());
 
   let harnessPromise: Promise<Harness> | null = null;
   const harness = (): Promise<Harness> => {
@@ -88,13 +99,31 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     harness,
     context: () => deps.context() as Promise<unknown>,
     model,
-    thinking: () => deps.modelConfig?.getThinking() ?? 'low',
+    thinking: () => deps.modelConfig?.getRouterThinking() ?? 'low',
     cwd: () => deps.workspaceDir,
   });
 
+  // The target set belongs to the input currently being processed. Router tools can
+  // only select one of these exact addresses; arbitrary model-supplied destinations
+  // are never trusted.
+  let activeReplyTargets: readonly TriggerReplyTarget[] = [];
+
   // ── 工具背后的动作 ────────────────────────────────────────────────────
 
-  const reply = (text: string): void => deps.reply(text);
+  const reply = async (text: string, address?: string): Promise<void> => {
+    const target = address
+      ? activeReplyTargets.find((candidate) => candidate.address === address)
+      : undefined;
+    if (address && !target) throw new Error(`当前输入没有这个回复地址：${address}`);
+    if (target && deps.externalReply) {
+      await deps.externalReply(target, text);
+      return;
+    }
+    if (target) {
+      console.warn('[router] 没有外部回复器，目标信道回退到桌面会话', target.address);
+    }
+    await deps.reply(text);
+  };
 
   const lines = (state: 'active' | 'all' = 'active'): LineSummary[] => {
     const rows = state === 'active' ? threads.listActiveThreads(30) : threads.listThreads({ limit: 30 });
@@ -148,8 +177,11 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       ].join('\n');
     }
 
-    const task = tasks.getTask(id);
+    // `task:<id>` 与裸 id 等价：Router 从 `records` 里看到的是 `task-…`，
+    // 但它也可能照着别处的写法带上前缀。两种都认。
+    const task = tasks.getTask(id.startsWith('task:') ? id.slice('task:'.length) : id);
     if (task) {
+      const trace = tasks.listTrace(task.id, 12);
       return [
         `task ${task.id}「${task.title}」`,
         `状态 ${task.status} · 线 ${task.threadId ?? '（无）'} · 执行体 ${task.workerId ?? task.assigneeId}`,
@@ -157,6 +189,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         task.artifacts.length > 0
           ? `产出：${task.artifacts.map((artifact) => artifact.relPath).join('、')}`
           : '产出：无',
+        // 动作流（W6）：Router 只看汇报，但「它到底在干什么」必须答得出来。
+        trace.length > 0
+          ? `最近动作（trace，最后 ${trace.length} 步）：\n${renderTrace(trace)
+              .map((line) => `  - ${line}`)
+              .join('\n')}`
+          : '最近动作：无（这条任务没有动作记录）',
         task.error ? `错误：${task.error}` : '',
         task.acceptance
           ? `验收：${task.acceptance.verdict} · 退出码 ${task.acceptance.evidence.exitCode ?? 'null'} · ${task.acceptance.reason}`
@@ -203,6 +241,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const closeLine = (threadId: string, summary: string) => {
     const thread = threads.getThread(threadId);
     if (!thread) return { ok: false, reason: `未知的线：${threadId}` };
+
+    // 手上还有活就不收线（和外部结束信号同一条判据）。收了线，执行体会被 retire，
+    // 而任务还在后台跑——它的汇报之后会落到一条已经结束的线上。
+    const blocking = unfinishedTasksOf(tasks, threadId);
+    if (blocking.length > 0) return { ok: false, reason: unfinishedReason(blocking) };
+
     threads.setState(threadId, 'done');
     threads.addReport({ threadId, level: 'silent', title: thread.title, body: summary });
     for (const worker of threads.listWorkers(threadId)) {
@@ -314,7 +358,16 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     const built = createRegistry();
     built.install(
       createRouterTools({
-        openLine: deps.openLine,
+        openLine: (input) => {
+          const target = input.replyTarget
+            ? activeReplyTargets.find((candidate) => candidate.address === input.replyTarget) ?? null
+            : null;
+          if (input.replyTarget && !target) {
+            return { ok: false, reason: `当前输入没有这个回复地址：${input.replyTarget}` };
+          }
+          const { replyTarget: _rawTarget, ...rest } = input;
+          return deps.openLine({ ...rest, ...(target ? { replyTarget: target } : {}) });
+        },
         reply,
         recall,
         lines,
@@ -377,7 +430,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     semantic,
     rules,
     standing,
-    deliver: (text) => session.deliver(text),
+    deliver: (text, targets = []) => {
+      activeReplyTargets = targets;
+      return session.deliver(text).finally(() => {
+        activeReplyTargets = [];
+      });
+    },
     /**
      * 直通（§3.2 Fast Path）：这条事件流的归属已经确定，程序直接发给盯它的执行体，
      * 不经过 Router 的模型。它省的是 Router 的决策次数与读缓存 token（原文 7.1
@@ -386,21 +444,25 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
      * 事件自己的内容要带过去：直通省掉的是"判断"，不是"信息"。否则同一个话题里
      * 第二条事件到达时，执行体看到的还是第一条的目标。
      *
-     * `workerId` 也带过去：归属已定的意思是**连人也定了**。不带它，`openLine` 会
+      * `workerId` 也带过去：归属已定的意思是**连人也定了**。不带它，`openLine` 会
      * 按目标从全库重新挑一次——单执行体的机器上看不出来，多执行体的机器上就是
      * 同一件事被两个人各干一半。
      */
-    passthrough: (intent) => {
+     passthrough: (intent) => {
       const payload = intent.event.payload;
-      const fresh = ['text', 'goal', 'summary', 'brief', 'path']
-        .map((field) => payload[field])
-        .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-      deps.openLine({
+       const fresh = bodyOf(payload);
+      const result = deps.openLine({
         goal: fresh?.trim() || intent.thread.goal || intent.thread.title,
         title: intent.thread.title,
         threadKey: intent.thread.threadKey,
         workerId: intent.workerId,
+        ...(replyTargetFromPayload(payload) ? { replyTarget: replyTargetFromPayload(payload) } : {}),
       });
+      if (!result.ok) {
+        console.warn('[router] 直通失败，退回 Slow Path', intent.event.id, result.reason);
+        return false;
+      }
+      return true;
     },
   });
 
@@ -409,6 +471,24 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     session,
     tick: () => router.tick(),
     settle: () => session.settle(),
+  };
+}
+
+function replyTargetFromPayload(payload: Record<string, unknown>): TriggerReplyTarget | null {
+  const value = payload.replyTarget;
+  if (!value || typeof value !== 'object') return null;
+  const target = value as Partial<TriggerReplyTarget>;
+  if (
+    typeof target.adapterId !== 'string' ||
+    typeof target.source !== 'string' ||
+    typeof target.address !== 'string' ||
+    !target.address.trim()
+  ) return null;
+  return {
+    adapterId: target.adapterId,
+    source: target.source as TriggerReplyTarget['source'],
+    address: target.address,
+    ...(typeof target.messageId === 'string' ? { messageId: target.messageId } : {}),
   };
 }
 

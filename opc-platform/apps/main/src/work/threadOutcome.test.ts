@@ -63,6 +63,43 @@ describe('threadOutcomeFor', () => {
     expect(outcome?.report?.body).toContain('退出码 1');
   });
 
+  /**
+   * 分类（§3.7）在这里第一次变成人看得见的东西：同样是 `failed`，「没模型」和
+   * 「运行时被打断」该做的事完全相反——一个重试一万次也不会好，一个再点一次通常就好了。
+   */
+  it('「起不来」和「运行中断」说的不是一回事', () => {
+    const blocked = threadOutcomeFor(
+      task({ status: 'failed', error: '未配置默认 LLM 模型', errorKind: 'blocked' }),
+    );
+    expect(blocked?.state).toBe('failed');
+    expect(blocked?.report?.body).toContain('起不来');
+    expect(blocked?.report?.body).toContain('不是重试能解决的');
+
+    const retryable = threadOutcomeFor(
+      task({ status: 'failed', error: 'pi 循环未完成（unanswered）', errorKind: 'retryable' }),
+    );
+    expect(retryable?.report?.body).toContain('运行中断');
+    expect(retryable?.report?.body).toContain('再跑一次');
+  });
+
+  it('验收没过时把「所以该怎么办」也说出来', () => {
+    const outcome = threadOutcomeFor(
+      task({
+        status: 'rejected',
+        errorKind: 'rejected',
+        acceptance: { verdict: 'fail', reason: '退出码 1' } as never,
+      }),
+    );
+    expect(outcome?.report?.body).toContain('退出码 1');
+    expect(outcome?.report?.body).toContain('验收条件');
+  });
+
+  it('没分类的老任务仍然说人话：缺一个字段不能让正文变空', () => {
+    const outcome = threadOutcomeFor(task({ status: 'failed', error: 'boom' }));
+    expect(outcome?.report?.body).toContain('boom');
+    expect(outcome?.report?.level).toBe('decide');
+  });
+
   it('says nothing while a manager is still signing off', () => {
     const outcome = threadOutcomeFor(task({ status: 'review' }));
     // The line waits, but you is not interrupted once per review round.
