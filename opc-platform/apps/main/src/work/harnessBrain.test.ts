@@ -151,6 +151,56 @@ describe('执行体看到的提示词', () => {
     expect(buildPrompt(task())).not.toContain('原始记录');
   });
 
+  /**
+   * 子任务的产出（团队收口）。
+   *
+   * 它排在原始记录之后、"要求"之前：已经做完的那部分活既不是背景，也不是又一条要求。
+   * 最后那句"别照着重新做一遍"是给这一层用的——子任务各自有工作目录，父读不到里面的
+   * 东西，不说清楚模型会花几步去撞墙。
+   */
+  it('子任务的产出单独一段，排在原始记录之后、要求之前', () => {
+    const prompt = buildPrompt(
+      task({
+        records: [{ kind: 'event', id: 'ev-1', title: 'im/message', excerpt: '群里说报错' }],
+        children: [
+          {
+            id: 'task-c1',
+            title: '写 server.js',
+            status: 'accepted',
+            verdict: 'pass',
+            reason: '退出码 0（90ms）',
+            artifacts: ['server.js'],
+          },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('子任务的产出（你是这条线的收口人，交付物要把它们合进去）');
+    expect(prompt).toContain('- 写 server.js · task-c1 · 通过了验收');
+    expect(prompt).toContain('产物：server.js');
+    expect(prompt).toContain('结论：退出码 0（90ms）');
+    expect(prompt).toContain('别照着重新做一遍');
+
+    const at = (needle: string) => prompt.indexOf(needle);
+    expect(at('这件事的原始记录')).toBeLessThan(at('子任务的产出'));
+    expect(at('子任务的产出')).toBeLessThan(at('要求：'));
+  });
+
+  it('没有闸门的子任务被标出来，不被当成功', () => {
+    const prompt = buildPrompt(
+      task({
+        children: [
+          { id: 'task-c1', title: '查一下日志', status: 'accepted', verdict: null, reason: '', artifacts: [] },
+        ],
+      }),
+    );
+    expect(prompt).toContain('没有闸门能判它对不对');
+  });
+
+  it('没有子任务时不留空标题', () => {
+    expect(buildPrompt(task())).not.toContain('子任务的产出');
+  });
+
   it('改过两次就两条都在，按说的顺序', () => {
     const prompt = buildPrompt(
       task({

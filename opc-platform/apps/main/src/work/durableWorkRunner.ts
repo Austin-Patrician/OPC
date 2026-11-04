@@ -126,11 +126,14 @@ export class DurableWorkRunner {
       // `waitForTask` resolves immediately with the current record when the task is
       // not in this process's live set (the normal case right after `resume()`), so
       // poll until the committed state is actually terminal.
-      const deadline = Date.now() + timeoutMs;
+      const startedAt = Date.now();
       let record = await harness.waitForTask(durableId, context);
 
       while (record.state.status !== 'terminal') {
-        if (Date.now() > deadline) throw new Error('等待 durable 任务超时');
+        // 在等子任务的父，等的是**别人的算力**，不是自己的：额度按它的处境放宽。
+        // 否则一次正常的团队协作会被当成"卡住十分钟"判掉——那是这一层最不该犯的错。
+        const limit = this.deps.repository.listChildren(taskId).length > 0 ? 45 * 60_000 : timeoutMs;
+        if (Date.now() - startedAt > limit) throw new Error('等待 durable 任务超时');
         await new Promise((resolve) => setTimeout(resolve, 200));
         record = await harness.waitForTask(durableId, context);
       }

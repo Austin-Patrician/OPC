@@ -196,6 +196,24 @@ export interface TaskRecord {
   excerpt: string;
 }
 
+/**
+ * 一个子任务交给父的**产出**（原文 §2.2 的 Agent Team）。
+ *
+ * 收口的判据只能是产物，不能是"它说它做完了"：父要拿这些文件合成自己的交付物，
+ * 所以这里给的是**路径 + 结论**，不是一段叙述。
+ */
+export interface TaskChild {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  /** 闸门的结论；没跑完、或根本没有闸门时为 null——那不叫通过。 */
+  verdict: 'pass' | 'fail' | null;
+  /** 为什么没过 / 为什么结束。父汇总时唯一有用的就是这句。 */
+  reason: string;
+  /** 它自己工作目录里的产物，相对路径。父要合成的东西在这些里面。 */
+  artifacts: string[];
+}
+
 export interface WorkTask {
   id: string;
   title: string;
@@ -248,6 +266,13 @@ export interface WorkTask {
    * 有了它，执行体才能"顺着引用图往回走"，而不是只能相信 Router 的转述。
    */
   records?: TaskRecord[];
+  /**
+   * 子任务的产出（拆解过才有）。只在父汇总那一轮注入。
+   *
+   * 在这里而不是塞进 `records`：记录是"这件事的来由"，子任务产物是"这件事的一部分
+   * 已经做完了"。混在一起，父就分不清"谁说过什么"和"谁交了什么"。
+   */
+  children?: TaskChild[];
   /**
    * 常驻约束：用户要求过、一直有效的那几条。
    *

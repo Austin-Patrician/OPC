@@ -1,4 +1,5 @@
 import type {
+  AttentionLevel,
   TaskStatus,
   ToolPolicy,
   LinkType,
@@ -395,11 +396,18 @@ export class WorkService {
         return this.runner.run(taskId);
       },
       onError: (taskId, error) => {
-        this.repository.addStep(
-          taskId,
-          `启动失败：${error instanceof Error ? error.message : String(error)}`,
-        );
-        this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
+        // 记账这一步本身可能失败（库已经关了、盘满了），而它失败不该再抛一次：
+        // 一次没记上的失败会以 unhandled rejection 结束整个进程，而真正的问题是
+        // 原来那个 error——它就在下面这行里。
+        try {
+          this.repository.addStep(
+            taskId,
+            `启动失败：${error instanceof Error ? error.message : String(error)}`,
+          );
+          this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
+        } catch (recordError) {
+          console.error('记失败这一步也失败了', recordError);
+        }
         console.error('task run failed', error);
       },
     });
@@ -1603,10 +1611,25 @@ export class WorkService {
 
     const threadId = task.threadId;
     if (!threadId) return;
-    this.threads.setState(threadId, outcome.state);
+
+    /*
+     * 一条线的状态由它的**根任务**决定，不由子任务决定。
+     *
+     * 以前是任何任务跑完都改线状态，于是"谁先跑完谁说了算"：父还在等子，线已经是
+     * `done` 了；子再失败，线又变 `failed`——而你看到的是最后写进去的那一条，还以为
+     * 整件事挂了。团队只有一个收口人，那个人是根任务。
+     */
+    const isChild = Boolean(task.parentTaskId);
+    if (!isChild) this.threads.setState(threadId, outcome.state);
 
     if (outcome.report) {
-      this.threads.addReport({ threadId, ...outcome.report });
+      this.threads.addReport({
+        threadId,
+        ...outcome.report,
+        // 子任务的终局一律只留记录：它该由父先消化（父知道全局，你只知道这一条），
+        // 不该赶在父汇总之前占用你的一次注意。
+        ...(isChild ? { level: 'silent' as AttentionLevel } : {}),
+      });
       // Spend belongs to the line of work, not only to the person (§8 axis flip).
       if (this.threads.charge(threadId, task.tokensUsed) && !this.warnedThreads.has(threadId)) {
         this.warnedThreads.add(threadId);

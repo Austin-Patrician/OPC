@@ -14,6 +14,13 @@ import { runCommand } from './exec';
 import type { NetworkClient } from '../network/networkClient';
 import type { RuntimeService } from '../runtime/service';
 import { ensureDir, listWorkspaceFiles, writeFileWithin } from './workspace';
+import {
+  buildChildren,
+  JOIN_POLL_MS,
+  JOIN_TIMEOUT_MS,
+  MAX_JOINS,
+  unsettledChildren,
+} from './children';
 
 /** What travels into the durable task. Paths, not objects: input must be JSON. */
 export interface WorkTaskInput {
@@ -35,9 +42,18 @@ type WorkTaskState =
   | {
       phase: 'produce';
       attempt: number;
+      /** 已经收口几次。父可以再拆，但不许无限往返。 */
+      joined?: number;
       lastEvidence?: AcceptanceFeedback['evidence'];
       lastReason?: string;
     }
+  /**
+   * 等子任务交回（团队收口）。
+   *
+   * 等必须**持久**：一个进程在等另外几个进程的活，中途崩了要能接着等。所以这里是
+   * pi 的 `sleepUntil`，不是 `await new Promise`——后者在重启后什么都不会剩下。
+   */
+  | { phase: 'collect'; attempt: number; joined: number; since: number }
   | { phase: 'verify'; attempt: number };
 
 export interface WorkTaskResult {
@@ -123,7 +139,11 @@ function requireServices(): WorkTaskServices {
  * One work task, as a pi-durable state machine.
  *
  *   produce ──▶ verify ──(fail, attempts left)──▶ produce
- *                    └──(pass / out of attempts)──▶ terminal
+ *      │             └──(pass / out of attempts)──▶ terminal
+ *      └──(拆解过、子任务还没交回)──▶ collect ──(都回来了 / 等太久)──▶ produce
+ *
+ * `collect` 是"团队"和"一堆并行的任务"之间的差别：没有它，父不等子就走了，线也就
+ * 被第一个跑完的那个定义了。
  *
  * Every phase commits a checkpoint, so a crash mid-run resumes from the last
  * committed phase instead of restarting the whole pipeline or leaking its budget
@@ -269,6 +289,18 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         }
       }
 
+      // 子任务的产出。这是汇总那几轮的主料——父要拿它们合成自己的交付物，
+      // 而不是重新做一遍子任务做过的事。
+      const children = repository.listChildren(workTask.id);
+      if (children.length > 0) {
+        workTask.children = buildChildren(children);
+        logStep(task.input.workTaskId, `注入 ${children.length} 条子任务产出`, {
+          repository,
+          recordDurableStep,
+          onTaskChanged,
+        });
+      }
+
       const runBrain = async (selected: TaskBrain) =>
         selected.execute({
           task: workTask,
@@ -297,8 +329,66 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         await runBrain(requireServices().fallbackBrain);
       }
 
+      /*
+       * 拆解过的任务必须先收口（原文 §2.2 的 Agent Team）。判断放在**跑完之后**：
+       * 拆解是在这一轮里发生的，开跑之前它是零个子任务。
+       *
+       * `joined === 0` 时无条件收口一次，哪怕子任务都已经跑完了——不收口，这一轮就
+       * 没见过它们的产物，父的交付物会是一份**不含子任务成果**的东西，而它还会通过
+       * 验收。收口一次的真实用途不是等，是让下一轮看得见它们。
+       */
+      const joined = task.state.checkpoint.joined ?? 0;
+      const pending = unsettledChildren(children);
+      const mustJoinOnce = joined === 0 && children.length > 0;
+      if ((pending.length > 0 || mustJoinOnce) && joined < MAX_JOINS) {
+        logStep(
+          task.input.workTaskId,
+          pending.length > 0 ? `等 ${pending.length} 个子任务交回` : `收口 ${children.length} 个子任务`,
+          { repository, recordDurableStep, onTaskChanged },
+        );
+        await runtime.sleepUntil(
+          Date.now() + JOIN_POLL_MS,
+          { phase: 'collect', attempt, joined, since: Date.now() },
+          context,
+        );
+        return;
+      }
+
       await runtime.commit(
         () => ({ status: 'running', checkpoint: { ...task.state.checkpoint, phase: 'verify', attempt } }),
+        context,
+      );
+    },
+
+    /**
+     * 收口：等子任务。
+     *
+     * 只有两种结局，没有第三种：**都回来了**，或者**等太久了**。后者照样往下走，只是
+     * 把"还有几个没回来"记进步骤流——挂着不动的任务是最糟的账。
+     */
+    collect: async (task, runtime, context) => {
+      const { repository, recordDurableStep, onTaskChanged } = requireServices();
+      const { attempt, joined, since } = task.state.checkpoint;
+      const children = repository.listChildren(task.input.workTaskId);
+      const pending = unsettledChildren(children);
+      const step = (text: string) =>
+        logStep(task.input.workTaskId, text, { repository, recordDurableStep, onTaskChanged });
+
+      if (pending.length === 0) {
+        step(`子任务全部交回（${children.length} 个）`);
+      } else if (Date.now() - since > JOIN_TIMEOUT_MS) {
+        step(`等子任务超时（还有 ${pending.length} 个没跑完），先按已有的汇总`);
+      } else {
+        await runtime.sleepUntil(
+          Date.now() + JOIN_POLL_MS,
+          { phase: 'collect', attempt, joined, since },
+          context,
+        );
+        return;
+      }
+
+      await runtime.commit(
+        () => ({ status: 'running', checkpoint: { phase: 'produce', attempt, joined: joined + 1 } }),
         context,
       );
     },

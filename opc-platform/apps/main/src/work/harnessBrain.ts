@@ -6,6 +6,7 @@ import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { attachTraceStream, type TraceRecorder } from './trace';
+import { childStatusLabel } from './children';
 import { priceUsage } from './usage';
 
 export interface HarnessBrainDeps {
@@ -209,6 +210,26 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
       // 摘要本身是多行的（头 + 略去多少 + 尾），缩进两格才不会被当成并列条目。
       for (const line of record.excerpt.split('\n')) lines.push(`  ${line}`);
     }
+  }
+
+  /*
+   * 子任务的产出（团队收口）。排在原始记录之后、"要求"之前：它们是**已经做完的那部分
+   * 活**，不是又一条要求，也不是背景——父的交付物要把它们合成进去。
+   *
+   * 最后那句提醒是给这一层用的：子任务各自有工作目录，父读不到里面的东西（沙箱只放行
+   * 它自己那个可写根）。不说清楚，模型会以为自己能 `cat` 到，然后花几步撞墙。
+   */
+  if (task.children && task.children.length > 0) {
+    lines.push('', '子任务的产出（你是这条线的收口人，交付物要把它们合进去）：');
+    for (const child of task.children) {
+      lines.push(`- ${child.title} · ${child.id} · ${childStatusLabel(child.status)}`);
+      if (child.artifacts.length > 0) lines.push(`  产物：${child.artifacts.join('、')}`);
+      if (child.reason) lines.push(`  结论：${child.reason}`);
+      if (child.verdict === null) lines.push('  （没有闸门能判它对不对——别当它已经对了。）');
+    }
+    lines.push(
+      '  需要看某一份的内容就用 recall 取；它们的文件不在你的工作目录里，别照着重新做一遍。',
+    );
   }
 
   lines.push(

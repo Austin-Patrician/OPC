@@ -316,6 +316,147 @@ describe('静默线', () => {
   });
 });
 
+/**
+ * 团队收口（原文 §2.2：Worker 本身可以是一个 Agent Team）。
+ *
+ * 拆解以前只做了一半：子任务各自验收、各自汇报，父不等子就走了。于是三件事全押在
+ * "谁先跑完谁说了算"上——父跑得快就先 `done`、子再失败就变 `failed`，父的交付物里
+ * 也没有子的产物。
+ *
+ * 这里锁的是收口的三个面：**等**（`collect`）、**收**（子任务产出进提示词）、
+ * **谁说**（线的状态由根任务决定）。
+ */
+describe('团队收口', () => {
+  const repo = () => new TaskRepository(db);
+
+  /** 直接落一条子任务，不给它派活：这样"还没交回"是确定的状态，而不是抢时序。 */
+  function draftChild(parent: { id: string; threadId?: string; assigneeId: string }, title = '写 server.js') {
+    const childId = `task-child-${Math.random().toString(36).slice(2, 8)}`;
+    const child = repo().createTask(
+      {
+        title,
+        brief: '用 node 内置 http',
+        deliverableSpec: 'server.js 返回 ok',
+        assigneeId: parent.assigneeId,
+        estTokens: 1_000,
+        acceptanceCommand: ['node', '{checks}/verify.mjs'],
+        acceptanceTemplate: 'http-ok',
+        ...(parent.threadId ? { threadId: parent.threadId } : {}),
+      },
+      `tasks/${childId}`,
+      childId,
+      { parentTaskId: parent.id, depth: 1 },
+    );
+    return child;
+  }
+
+  function openParent() {
+    const thread = threads.createThread({ title: '做一件要两个人干的事' });
+    const created = work.createTask({
+      title: '做一件要两个人干的事',
+      brief: '先各写一半，再合成一份交付',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return { thread, task: created.task };
+  }
+
+  async function waitUntil(check: () => boolean, timeoutMs = 8_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error('等不到那个状态');
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  }
+
+  const stepsOf = (taskId: string) =>
+    (repo().getTask(taskId)?.steps ?? []).map((step) => step.text).join('\n');
+
+  it('父任务等子任务交回之后才去验收', async () => {
+    const { task } = openParent();
+    const child = draftChild(task);
+
+    const running = work.runTaskAndWait(task.id);
+    // 子任务还挂着：父要停在"等"，而不是拿着半个交付物去验收。
+    await waitUntil(() => stepsOf(task.id).includes('等 1 个子任务交回'));
+    expect(repo().getTask(task.id)?.status).toBe('running');
+
+    repo().setStatus(child.id, 'accepted');
+    const final = await running;
+
+    const steps = stepsOf(task.id);
+    expect(steps).toContain('子任务全部交回（1 个）');
+    expect(steps).toContain('注入 1 条子任务产出');
+    // 先收口，再验收。
+    expect(steps.indexOf('子任务全部交回')).toBeLessThan(steps.indexOf('自动验收通过'));
+    expect(final.status).toBe('accepted');
+  }, 30_000);
+
+  /**
+   * 收口一次的真实用途不是"等"，是**让下一轮看得见它们**。
+   *
+   * 子任务已经跑完的时候，父如果直接去验收，交付物就是一份不含子任务成果的东西——
+   * 而它还会通过验收（闸门只判它自己的目录）。所以拆解过的任务至少收口一次。
+   */
+  it('子任务早就跑完了也要收口一次：否则父交的是一份不含它们的东西', async () => {
+    const { task } = openParent();
+    const child = draftChild(task);
+    repo().setStatus(child.id, 'accepted');
+
+    const final = await work.runTaskAndWait(task.id);
+    const steps = stepsOf(task.id);
+
+    expect(steps).toContain('收口 1 个子任务');
+    expect(steps).toContain('注入 1 条子任务产出');
+    expect(steps).not.toContain('等 1 个子任务交回');
+    expect(final.status).toBe('accepted');
+  }, 30_000);
+
+  it('子任务的终局不动线的状态，也不进你的队列', async () => {
+    const { thread, task } = openParent();
+    const child = draftChild(task);
+    expect(threads.getThread(thread.id)?.state).toBe('open');
+
+    // 只跑子任务：父还没开始。
+    const finished = await work.runTaskAndWait(child.id);
+    expect(finished.status).toBe('accepted');
+
+    // 线还是 open——收口人是父，不是它。
+    expect(threads.getThread(thread.id)?.state).toBe('open');
+    // 也不占你的注意力：记录留着，等父汇总时再说。
+    expect(threads.listQueue()).toHaveLength(0);
+    const reports = threads.listReportsOf(thread.id, 10);
+    expect(reports.every((report) => report.level === 'silent')).toBe(true);
+  }, 30_000);
+
+  it('真的走一遍 decompose：父汇总之后才交出一份通过验收的活', async () => {
+    const { thread, task } = openParent();
+    const helper = threads.createWorker({ name: '林澈', threadId: thread.id });
+
+    const dispatched = work.decompose(task.id, assigneeId, [
+      {
+        title: '写 server.js',
+        brief: '用 node 内置 http',
+        deliverableSpec: 'server.js 返回 ok',
+        assigneeId: helper.id,
+        estTokens: 1_000,
+      },
+    ]);
+    expect(dispatched.ok).toBe(true);
+
+    const final = await work.runTaskAndWait(task.id);
+    expect(final.status).toBe('accepted');
+    expect(stepsOf(task.id)).toContain('注入 1 条子任务产出');
+    // 根任务说话：线是被父关掉的。
+    expect(threads.getThread(thread.id)?.state).toBe('done');
+  }, 60_000);
+});
+
 describe('task → thread reporting', () => {
   it('closes the line of work quietly when the work passes acceptance', async () => {
     const { thread, task } = await runOne();
@@ -420,6 +561,17 @@ describe('一个执行体同时只跑一个任务', () => {
  * 判不了，所以才把它交出来。
  */
 describe('user steering', () => {
+  /** 等一条任务自己跑完（返工是 fire-and-forget 的）。 */
+  async function settle(taskId: string, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const task = new TaskRepository(db).getTask(taskId);
+      if (task && !['open', 'running'].includes(task.status)) return task;
+      if (Date.now() > deadline) throw new Error(`任务 ${taskId} 没有在 ${timeoutMs}ms 内结束`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
   async function needsJudgement() {
     const thread = threads.createThread({ title: '整理财报', goal: '整理财报' });
     const created = work.createTask({
@@ -465,12 +617,10 @@ describe('user steering', () => {
     expect(latest?.threadId).toBe(thread.id);
     expect(latest?.brief).toContain('图表要标上单位');
 
-    // The second attempt runs on its own; let it settle before teardown.
-    for (let i = 0; i < 100 && latest && ['open', 'running'].includes(latest.status); i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const current = new TaskRepository(db).getTask(latest.id);
-      if (current) latest.status = current.status;
-    }
+    // 第二版自己跑，但**必须在收尾前跑完**：任务还在跑而库已经关掉，会以一条
+    // unhandled rejection 结束整个文件——那会让真正的失败混在一堆噪音里。
+    const settled = await settle(latest!.id);
+    expect(settled.status).toBe('accepted');
   });
 
   /**
@@ -525,6 +675,10 @@ describe('user steering', () => {
     expect(pending.map((signal) => signal.origin)).toEqual(['rework']);
     expect(pending[0]?.text).toBe('图表要标上单位，单位写在轴标题里');
     expect(pending[0]?.threadId).toBe(thread.id);
+
+    // 返工是 fire-and-forget 的：不把它跑完，收尾时库就关了，那条正在跑的任务
+    // 会以一条 unhandled rejection 结束整个文件。
+    await settle(new TaskRepository(db).latestForThread(thread.id)!.id);
   });
 
   it('把「中途改方向」也收进去——和返工理由是同一类证据', () => {
