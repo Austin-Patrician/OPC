@@ -14,6 +14,7 @@ import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { TriagePage } from './pages/TriagePage';
+import { McpPage } from './pages/McpPage';
 import { useTranslation } from 'react-i18next';
 import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
@@ -30,6 +31,7 @@ const PAGE_IDS = [
   'image',
   'voice',
   'decision',
+  'mcp',
   'network',
   'selfcheck',
   'about',
@@ -90,6 +92,7 @@ export function SettingsShell() {
         { id: 'image', label: 'Image' },
         { id: 'voice', label: 'Voice' },
         { id: 'decision', label: 'Decision' },
+        { id: 'mcp', label: 'MCP' },
       ],
     },
     {
@@ -145,6 +148,8 @@ export function SettingsShell() {
         return <VoicePage />;
       case 'decision':
         return <DecisionPage />;
+      case 'mcp':
+        return <McpPage />;
       case 'selfcheck':
         return <SelfCheckPage />;
       case 'network':

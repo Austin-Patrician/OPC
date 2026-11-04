@@ -35,6 +35,11 @@ import type { ConsolidationRunStore } from '../memory/consolidationRun';
 import type { AuthService } from '../models/authService';
 import type { CompanyService } from '../company/companyService';
 import { readImageArtifact } from '../work/artifacts';
+import { appPaths } from '../paths';
+import { closeAllMcpConnections } from '../mcp/connection';
+import { listServers, removeServer, saveServer, testServer } from '../mcp/settings';
+import { readMcpConfig } from '../mcp/config';
+import type { McpExposure, McpServerConfig } from '../mcp/contract';
 import type { ModelConfigService } from '../models/modelConfigService';
 import type { DecisionService } from '../models/decisionService';
 import type { SpeechService } from '../models/speechService';
@@ -590,6 +595,43 @@ export function registerIpc({
     threads.markReportRead(draft.reportId);
     return result.thread;
   });
+  /*
+   * MCP 的那一页（M2）。配置存在 `<userData>/mcp.json`——那是 MCP 生态的公共格式，
+   * 手写得、能进版本库；设置页只是它的编辑器，不是它的所有者。
+   *
+   * 改完之后必须做两件事：关掉旧连接（配置变了，那些进程已经没有意义），并把执行体的
+   * 注册表作废（工具是在建注册表时装的）。不然界面上改了、活里还是旧的。
+   */
+  const mcpOptions = () => ({ userDataDir: appPaths.userData });
+  const reloadMcp = async () => {
+    await closeAllMcpConnections();
+    await work.invalidateAllHarnesses();
+  };
+
+  ipcMain.handle(IPC.mcp.list, () => listServers(mcpOptions()));
+  ipcMain.handle(IPC.mcp.save, async (_event, raw: unknown) => {
+    const config = draftToMcpConfig(raw);
+    const result = saveServer(mcpOptions(), config);
+    await reloadMcp();
+    return result;
+  });
+  ipcMain.handle(IPC.mcp.remove, async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('mcp:remove 需要服务器名');
+    const result = removeServer(mcpOptions(), name.trim());
+    await reloadMcp();
+    return result;
+  });
+  ipcMain.handle(IPC.mcp.test, async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('mcp:test 需要服务器名');
+    const config = listServers(mcpOptions()).servers.find((server) => server.name === name.trim());
+    if (!config) throw new Error(`没有这个服务器：${name}`);
+    const full = readMcpConfig({ userDataDir: appPaths.userData }).servers.find(
+      (server) => server.name === name.trim(),
+    );
+    if (!full) throw new Error(`没有这个服务器：${name}`);
+    return testServer(full);
+  });
+
   ipcMain.handle(IPC.threads.answer, async (_event, raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) throw new Error('threads:answer 参数非法');
     const draft = raw as Record<string, unknown>;
@@ -848,4 +890,47 @@ function isRuntimeProfileDraft(value: unknown): value is RuntimeProfileDraft {
     typeof candidate.name === 'string' &&
     typeof candidate.binary === 'string'
   );
+}
+
+/**
+ * 界面送来的一行 → 服务器配置。
+ *
+ * `target` 是给手打的：stdio 那行是 `npx -y server-fs`，按空白切开；带空格的路径走
+ * `args`。名字只留字母数字、`_`、`-`——它会成为工具名的一部分。
+ */
+function draftToMcpConfig(raw: unknown): McpServerConfig {
+  if (typeof raw !== 'object' || raw === null) throw new Error('mcp:save 参数非法');
+  const draft = raw as Record<string, unknown>;
+  const name = typeof draft.name === 'string' ? draft.name.trim() : '';
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new Error('服务器名只能用字母、数字、_ 和 -（它会成为工具名的一部分）');
+  }
+  const target = typeof draft.target === 'string' ? draft.target.trim() : '';
+  if (!target) throw new Error('填一个命令或一个地址');
+
+  const exposure: McpExposure | undefined =
+    draft.exposure === 'deferred' || draft.exposure === 'direct' || draft.exposure === 'hidden'
+      ? draft.exposure
+      : undefined;
+  const common = {
+    name,
+    ...(draft.enabled === false ? { enabled: false } : {}),
+    ...(exposure ? { exposure } : {}),
+    ...(typeof draft.description === 'string' && draft.description.trim()
+      ? { description: draft.description.trim() }
+      : {}),
+  };
+
+  if (draft.transport === 'http') {
+    if (!/^https?:\/\//.test(target)) throw new Error('HTTP 服务器要一个 http(s) 地址');
+    return { ...common, url: target };
+  }
+
+  const explicitArgs = Array.isArray(draft.args)
+    ? draft.args.filter((item): item is string => typeof item === 'string')
+    : null;
+  const parts = explicitArgs ?? target.split(/\s+/);
+  const [command, ...args] = parts;
+  if (!command) throw new Error('填一个命令');
+  return { ...common, command, ...(args.length > 0 ? { args } : {}) };
 }

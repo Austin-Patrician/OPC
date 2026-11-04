@@ -641,6 +641,37 @@
       "orphanCount": "{{count}} entries",
       "claim": "Claim",
       "discard": "Discard"
+    },
+    "mcp": {
+      "title": "External capabilities",
+      "description": "Plug in what already exists out there: files, databases, code search, a browser. Their tools do not fill the context — it looks up the one it needs.",
+      "installed": "Connected servers",
+      "installedHint": "Declared in this machine's config. Test one to see whether it is reachable right now.",
+      "empty": "Nothing connected yet. Fill in a row below.",
+      "enabled": "On",
+      "disabled": "Off",
+      "counts": "{{tools}} tools · {{resources}} resources",
+      "test": "Test",
+      "testOk": "{{name}} is reachable: {{tools}} tools, {{resources}} resources.",
+      "testFailed": "{{name}} is not reachable: {{reason}}",
+      "add": "Add a server",
+      "addHint": "The command line splits on spaces: executable first, arguments after.",
+      "name": "Name",
+      "transport": "Transport",
+      "command": "Command",
+      "url": "URL",
+      "descriptionField": "What it offers, in a sentence (goes into the prompt)",
+      "descriptionPlaceholder": "e.g. search and read this repository",
+      "exposureField": "How its tools are exposed",
+      "exposure": {
+        "deferred": "Searched when needed (recommended)",
+        "direct": "Always in the tool list",
+        "hidden": "Registered, unreachable"
+      },
+      "save": "Save",
+      "saved": "Saved. It applies to the next piece of work, no restart.",
+      "removed": "{{name}} removed.",
+      "sources": "Read from: {{files}}"
     }
   },
   "notFound": {

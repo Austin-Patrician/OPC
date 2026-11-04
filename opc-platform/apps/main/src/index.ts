@@ -467,15 +467,16 @@ async function bootstrap(): Promise<void> {
   const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
   // 外部能力（MCP）：读 `<userData>/mcp.json`，再读 pi 的 `~/.pi/agent/mcp.json`。
   // 一个服务器连不上只会让它的工具不在，不影响别的、也不影响这个应用能不能开。
-  const mcp = readMcpConfig({ userDataDir: appPaths.userData });
-  if (mcp.servers.length > 0) {
-    console.warn(`[mcp] 读到 ${mcp.servers.length} 个服务器：${mcp.servers.map((s) => s.name).join('、')}`);
+  const readMcp = () => readMcpConfig({ userDataDir: appPaths.userData }).servers;
+  const mcpConfigured = readMcp();
+  if (mcpConfigured.length > 0) {
+    console.warn(`[mcp] 读到 ${mcpConfigured.length} 个服务器：${mcpConfigured.map((s) => s.name).join('、')}`);
   }
   work = new WorkService({
     db,
     paths: appPaths,
     upsertTaskCard: (task) => chat?.upsertTaskCard(task),
-    mcp: mcp.servers,
+    mcp: readMcp,
     modelConfig,
     images: imageService,
     speech: speechService,

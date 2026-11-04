@@ -71,16 +71,32 @@ OPC_MCP_PROBE=1 electron .
 写成探针而不是用例，因为它要证明的是"能连上真进程"——内存 transport 的用例证明不了
 子进程、stdin/stdout 的 JSON 行、以及退出时有没有漏进程。
 
-## 6. 还没做的（M2 / M3）
+## 6. M2 已落地：设置页
+
+一页在「设置 → 模型 → MCP」：列出服务器、点一下测试、加一台、删一台。
+
+**存储还是那个文件**（`<userData>/mcp.json`）。不用数据库的理由：这份配置是 MCP 生态的
+公共格式，手写得、能进版本库、换台机器拷过去就能用；设置页只是它的编辑器，不是它的所有者。
+
+三个实现判断：
+
+1. **改完不重启**。`WorkServiceDeps.mcp` 是一个**取值函数**而不是一份快照：`mcp: () =>
+   readMcpConfig(...).servers`。设置页保存之后 `closeAllMcpConnections()` +
+   `invalidateAllHarnesses()`，下一次建注册表就读到新的那几台。
+2. **"测试"用独立连接**，不碰共享池：点一下按钮不该在进程里留一条连接，也不该让一份
+   写错的配置污染正在干活的那一份。
+3. **删到一台不剩就把文件删掉**，而不是留一个 `{"mcpServers":{}}`——空文件会让人以为
+   哪里坏了。
+
+## 7. 还没做的（M3）
 
 | 缺口 | 为什么还没做 |
 |---|---|
-| 设置页（添加/删除服务器、连通性测试、按执行体开关） | 现在只读 `mcp.json`。能配的人手写得了，但"能配"和"好用"是两件事 |
 | OAuth（`pi-mcp/oauth`：PKCE + DCR + 回调） | 需要一条 token 存放路径（我们已有的 credential store）和一个回调页；先让不需要登录的服务器能用 |
 | 动作级审批（许可票） | 判据已经有了（`needsApproval`，读服务器自报的 `destructiveHint` / `openWorldHint`），缺的是"停下来等人批"的那条路 |
 | `tools/list_changed` 的热更新 | 现在目录在挂载时读一次。服务器换了工具要等下一次重开 |
 
-## 7. 一个构建上的坑，记下来
+## 8. 一个构建上的坑，记下来
 
 `@earendil-works/pi-mcp` 是 **ESM-only**（`exports` 里没有 `require` 条件），而主进程包是
 CommonJS。`require('@earendil-works/pi-mcp')` 会报 `No "exports" main defined`。

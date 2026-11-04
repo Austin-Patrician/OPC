@@ -138,7 +138,7 @@ export interface WorkServiceDeps {
    *
    * 挂载点在建注册表时：pi 的 deferred 工具是**注册表里的东西**，不是运行时凭空长出来的。
    */
-  mcp?: readonly McpServerConfig[];
+  mcp?: () => readonly McpServerConfig[];
   /** Structured decisions (Jev / System One); absent = no `decide` tool. */
   decisions?: DecisionService;
   memory?: MemoryService;
@@ -1227,8 +1227,11 @@ export class WorkService {
     registry.install(createTraceExtension());
 
     // 外部能力（MCP）。一个服务器连不上只记一条，不影响别的，也不影响这个执行体本身。
-    if (this.deps.mcp && this.deps.mcp.length > 0) {
-      const mount = await mountMcp({ servers: this.deps.mcp });
+    // 每次建注册表都现读配置：设置页改完 `mcp.json` 之后 `invalidateAllHarnesses()`
+    // 会让下一次建表读到新的那几台，不必重启。
+    const mcpServers = this.deps.mcp?.() ?? [];
+    if (mcpServers.length > 0) {
+      const mount = await mountMcp({ servers: mcpServers });
       if (mount.extension) registry.install(mount.extension);
       for (const server of mount.servers) {
         if (server.error) console.warn(`[mcp] ${server.name} 没连上：${server.error}`);

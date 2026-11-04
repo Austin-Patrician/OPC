@@ -126,6 +126,12 @@ export const IPC = {
     answer: 'threads:answer',
     close: 'threads:close',
   },
+  mcp: {
+    list: 'mcp:list',
+    save: 'mcp:save',
+    remove: 'mcp:remove',
+    test: 'mcp:test',
+  },
   workers: {
     list: 'workers:list',
   },
@@ -807,6 +813,7 @@ export interface OpcBridge {
   trigger: TriggerBridge;
   billing: BillingBridge;
   threads: ThreadsBridge;
+  mcp: McpBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
@@ -834,6 +841,46 @@ export interface AttentionEntry {
   title: string;
   body: string;
   createdAt: number;
+}
+
+/**
+ * 一个 MCP 服务器在界面上的一行。
+ *
+ * 形状和主进程的 `McpServerView` 一致，但**故意分开声明**：IPC 是两台机器之间的合同，
+ * 让它跟内部类型自动同步，等于让内部改名变成一次静默的协议变更。
+ */
+export interface McpServerView {
+  name: string;
+  transport: 'stdio' | 'http';
+  target: string;
+  enabled: boolean;
+  exposure: 'deferred' | 'direct' | 'hidden';
+  description?: string;
+  tools?: number;
+  resources?: number;
+  error?: string;
+}
+
+/** 一份可写回的服务器配置（界面里能编辑的那几个字段）。 */
+export interface McpServerDraft {
+  name: string;
+  transport: 'stdio' | 'http';
+  /** stdio：`npx -y server-fs`；http：URL。按空白切分，所以带空格的路径要写成数组形式。 */
+  target: string;
+  args?: string[];
+  enabled?: boolean;
+  exposure?: 'deferred' | 'direct' | 'hidden';
+  description?: string;
+}
+
+export interface McpBridge {
+  /** 当前生效的服务器清单，以及它读自哪几个文件。 */
+  list(): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  /** 写入或改一台。返回写入后的清单。 */
+  save(draft: McpServerDraft): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  remove(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  /** 连一次、报工具数。不改配置。 */
+  test(name: string): Promise<McpServerView>;
 }
 
 export interface ThreadsBridge {
