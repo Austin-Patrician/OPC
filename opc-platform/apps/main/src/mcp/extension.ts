@@ -6,10 +6,12 @@ import type { ContentBlock } from '@earendil-works/pi-mcp';
 import {
   exposureOf,
   isEnabled,
+  needsApproval,
   truncateMiddle,
   uniqueToolNames,
   type McpServerConfig,
 } from './contract';
+import { approvalHook } from './approval';
 import { sharedMcpConnection, type McpConnection } from './connection';
 
 /**
@@ -98,10 +100,16 @@ export async function mountMcp(input: {
   );
   const names = uniqueToolNames(flat.map((entry) => ({ server: entry.server, tool: entry.tool.name })));
 
+  /** 要人点头的那些：工具名 → 给人看的一行。空表就不装 hook。 */
+  const gated = new Map<string, string>();
   const tools = flat.map((entry, index) => {
     const name = names[index]!;
     const exposure = exposureOf(entry.config);
     const description = entry.tool.description ?? entry.tool.title ?? entry.tool.name;
+    // 服务器自己声明的后果（`destructiveHint` / `openWorldHint`）——不是我们猜的。
+    if (needsApproval(entry.tool.annotations)) {
+      gated.set(name, `[${entry.server}] ${entry.tool.title ?? entry.tool.name}`);
+    }
     return defineTool({
       name,
       // 说明里带服务器名：模型在 `tool_search` 的结果里要能看出"这是谁的 search"。
@@ -145,9 +153,11 @@ export async function mountMcp(input: {
     })
     .join('\n');
 
+  const approval = approvalHook(gated);
   const extension = defineExtension({
     name: 'opc.mcp',
     tools,
+    ...(approval ? { hooks: [approval] } : {}),
     // 一个短段落告诉模型"还有这些外部能力"。不列工具名：那正是 `deferred` 要避免的，
     // 列了就等于把 schema 的一半又塞回上下文。
     sections: [

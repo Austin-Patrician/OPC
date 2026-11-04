@@ -9,6 +9,7 @@ import type {
   TaskError,
   TaskRecord,
   TaskTrace,
+  WorkReport,
   WorkTask,
   WorkThread,
 } from '@opc/shared/domain';
@@ -68,6 +69,7 @@ import {
 } from './escalateTool';
 import { buildSubagentPrompt, type SubagentAnswer, type SubagentToolApi } from './subagent';
 import { createTraceExtension } from './trace';
+import { registerApprovalBridge } from '../mcp/approval';
 import { priceUsage } from './usage';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import { createRecallToolExtension, type RecallOutcome } from './recallTool';
@@ -245,6 +247,13 @@ export class WorkService {
           onTokens: (taskId, tokens) => this.repository.addTokens(taskId, tokens),
           // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它。
           trace: (taskId) => createTraceRecorder({ repository: this.repository, taskId }),
+          // 动作级审批（M3）：MCP 的 hook 按扩展装，桥按任务挂。
+          registerApproval: (conversationId, taskId) =>
+            registerApprovalBridge(conversationId, {
+              taskId: () => taskId,
+              hasPermit: (id, tool) => this.repository.hasMcpPermit(id, tool),
+              ask: (input) => this.askForApproval(input),
+            }),
         })
       : null;
 
@@ -260,6 +269,8 @@ export class WorkService {
       },
       onResumed: () => undefined,
       onFinished: (taskId, outcome, result) => {
+        // 放行条属于那条正在跑的活：活收尾了它就没有意义（下一次要重新问）。
+        this.repository.clearMcpPermits(taskId);
         const finishedEmployees: string[] = [];
         for (const [ownerId, running] of runningTaskByEmployee) {
           if (running === taskId) {
@@ -557,6 +568,47 @@ export class WorkService {
   };
 
   /**
+   * 它要做一件可能造成后果的事（M3）。
+   *
+   * 和 `escalateFor` 是同一张桌子上的两句话，但不是同一句：那个问的是"我该怎么做"，
+   * 这个问的是"我能不能做"。所以它落 `kind: 'approval'`，收件动词是**允许 / 不允许**，
+   * 而不是回答一句话。
+   *
+   * 等级一律 `decide`：拦住一次已经够贵了（它得换个做法或者停在那儿），再降级就等于
+   * 让人永远看不到自己被拦住过。
+   */
+  askForApproval = (input: { taskId: string; tool: string; title: string }): void => {
+    const task = this.repository.getTask(input.taskId);
+    if (!task?.threadId) return;
+    this.repository.addStep(task.id, `要你点头：${input.title}`);
+
+    // 同一件活、同一个工具只问一次：问第二遍是噪音（和 escalate 那条规则同一个理由）。
+    // 按 `subject` 判，不按标题：标题是写给人看的那句话。
+    const already = this.threads
+      .listQueueWithThread(200)
+      .some((report) => report.taskId === task.id && report.kind === 'approval' && report.subject === input.tool);
+    if (already) return;
+
+    this.threads.addReport({
+      threadId: task.threadId,
+      level: 'decide',
+      title: `要你点头：${input.title}`,
+      body: [
+        `它要调 ${input.tool}，这类工具会改动东西或者伸到外面去。`,
+        `（${task.title} · ${task.id}）`,
+        `允许之后，这件活里这个工具不再问你；换一件活会重新问。`,
+      ].join('\n'),
+      taskId: task.id,
+      // 放行要落回到**这个工具**上，所以它必须是一列，不是标题里的一段话。
+      subject: input.tool,
+      kind: 'approval',
+    });
+    this.threads.setState(task.threadId, 'waiting');
+    const updated = this.repository.getTask(task.id);
+    if (updated) this.emit(updated);
+  };
+
+  /**
    * 回答执行体的请示（W3）。
    *
    * 在这之前它没有收件动词：请示落到队列里，和"活干完了请你验收"长得一模一样，而你能
@@ -571,21 +623,29 @@ export class WorkService {
   answerFor = async (input: {
     reportId: string;
     text: string;
+    /** 审批行才有意义：允不允许。`question` 行不看它。 */
+    allow?: boolean;
   }): Promise<
     { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
   > => {
     const text = input.text.trim();
-    if (!text) return { ok: false, error: '回答不能是空的' };
+    // 审批行可以只点「允许」不写字；请示行必须有内容。
+    if (!text && input.allow === undefined) return { ok: false, error: '回答不能是空的' };
 
     const report = this.threads.getReport(input.reportId);
     if (!report) return { ok: false, error: `找不到这条请示：${input.reportId}` };
-    if (report.kind !== 'question') {
+    if (report.kind === 'report') {
       return { ok: false, error: '这条是汇报不是请示：要表态就用认可或返工' };
     }
     if (!report.taskId) return { ok: false, error: '这条请示没记下是哪件活问的' };
 
     const task = this.repository.getTask(report.taskId);
     if (!task) return { ok: false, error: '问这个问题的那件活已经不在了' };
+
+    if (report.kind === 'approval') {
+      if (!report.subject) return { ok: false, error: '这条审批没记下是哪个工具' };
+      return this.resolveApproval({ report, task, tool: report.subject, text, allow: input.allow === true });
+    }
 
     const question = report.title.replace(/^请示：/, '');
     this.threads.markReportRead(report.id);
@@ -611,6 +671,53 @@ export class WorkService {
       ));
 
     // 它不再"在等人做决定"了。
+    if (task.threadId) this.threads.setState(task.threadId, 'running');
+    const updated = this.repository.getTask(task.id);
+    if (updated) this.emit(updated);
+    return { ok: true, delivered: live ? 'live' : 'next-attempt' };
+  };
+
+  /**
+   * 你点了「允许」或「不允许」（M3）。
+   *
+   * 允许 = 落一张放行条（这件活 × 这个工具），并把这句话插进它正在跑的那个会话——
+   * 它被拦下时已经换了做法，不告诉它就等于放行条没人用。不允许 = 只告诉它别再试，
+   * 不落条：它该做的是换路子或者停下来，而不是过一会儿再问一遍。
+   */
+  private async resolveApproval(input: {
+    report: WorkReport;
+    task: WorkTask;
+    tool: string;
+    text: string;
+    allow: boolean;
+  }): Promise<
+    { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
+  > {
+    const { report, task, tool, text, allow } = input;
+    if (allow) this.repository.grantMcpPermit(task.id, tool);
+    this.threads.markReportRead(report.id);
+
+    const note = allow
+      ? `放行（${tool}）：${text || '可以'}`
+      : `不放行（${tool}）：${text || '不许'}`;
+    this.repository.addSteering(task.id, note, 'answer');
+    this.repository.addStep(task.id, allow ? `你允许了：${tool}` : `你不允许：${tool}`);
+
+    if (task.status !== 'open' && task.status !== 'running') {
+      // 已经收尾了：放行条留在库里没意义（活不会再来），但话要记下来。
+      return { ok: true, delivered: 'next-attempt' };
+    }
+
+    const live =
+      this.modelBrain !== null &&
+      (await this.modelBrain.interject(
+        task.id,
+        allow ? `${tool} 已经放行，可以重试了。` : `${tool} 没有放行，别再试它。`,
+        {
+          label: allow ? '他允许了这一步：' : '他没允许这一步：',
+          kind: 'answer',
+        },
+      ));
     if (task.threadId) this.threads.setState(task.threadId, 'running');
     const updated = this.repository.getTask(task.id);
     if (updated) this.emit(updated);

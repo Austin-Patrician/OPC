@@ -94,6 +94,8 @@ export interface AddReportInput {
   body?: string;
   /** 这条汇报是哪件活说的。空 = 这条线本身。 */
   taskId?: string | null;
+  /** 它关于哪个东西（审批时是工具名）。 */
+  subject?: string | null;
   /** `question` 是"要你回答一句"，收件动词因此不同。 */
   kind?: ReportKind;
 }
@@ -154,6 +156,7 @@ interface ReportRow {
   read_at: number | null;
   thread_reply_target?: string | null;
   task_id?: string | null;
+  subject?: string | null;
   kind?: ReportKind;
 }
 
@@ -517,13 +520,14 @@ export class ThreadRepository {
       title: input.title,
       body: input.body ?? '',
       task_id: input.taskId ?? null,
+      subject: input.subject ?? null,
       kind: input.kind ?? ('report' as ReportKind),
       created_at: this.now(),
       read_at: null,
     };
     this.statement(
-      `INSERT INTO report (id, thread_id, level, title, body, task_id, kind, created_at, read_at)
-       VALUES (@id, @thread_id, @level, @title, @body, @task_id, @kind, @created_at, @read_at)`,
+      `INSERT INTO report (id, thread_id, level, title, body, task_id, subject, kind, created_at, read_at)
+       VALUES (@id, @thread_id, @level, @title, @body, @task_id, @subject, @kind, @created_at, @read_at)`,
     ).run(row);
     this.touch(input.threadId);
     return toReport(row as ReportRow);
@@ -835,6 +839,7 @@ function toReport(row: ReportRow): WorkReport {
     id: row.id,
     threadId: row.thread_id,
     taskId: row.task_id ?? null,
+    subject: row.subject ?? null,
     kind: row.kind ?? 'report',
     level: row.level,
     title: row.title,

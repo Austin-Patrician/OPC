@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 46;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1832,7 +1832,56 @@ ALTER TABLE report ADD COLUMN kind TEXT NOT NULL DEFAULT 'report'
   CHECK (kind IN ('report','question'));
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45];
+/**
+ * V46：**动作级审批**（M3）。
+ *
+ * 两件事：
+ *
+ * 1. `report.kind` 多一种 `approval`——「这件事需要你点头」和「这个问题需要你回答」不是
+ *    同一句话。前者要的是**放行**，后者要的是**内容**；用一个框收两种东西，收件端就只能猜。
+ *    SQLite 改不了 CHECK 约束，所以这张表重建一次（数据原样搬过去）。
+ *    `subject` 记的是"这条汇报是关于哪个东西的"（审批时就是一个工具名）：收件端要能
+ *    把"允许"落回到**那个工具**上，而不能靠解析标题——标题是给人看的，随时会改文案。
+ * 2. `mcp_permit`：谁被放行了。键是（哪件活 × 哪个工具），**不是一次性**：你答了"可以"，
+ *    是"这件活用这个工具可以"，不是"这一次可以、下一次再问你一遍"——问第二遍正是 E3 里
+ *    那条"同一件事请示第二次就是噪音"。
+ */
+const V46 = `
+CREATE TABLE report_next (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES thread(id) ON DELETE CASCADE,
+  level TEXT NOT NULL DEFAULT 'notify'
+    CHECK (level IN ('decide','notify','silent')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  read_at INTEGER,
+  announced_at INTEGER,
+  task_id TEXT,
+  subject TEXT,
+  kind TEXT NOT NULL DEFAULT 'report'
+    CHECK (kind IN ('report','question','approval'))
+);
+INSERT INTO report_next
+  (id, thread_id, level, title, body, created_at, read_at, announced_at, task_id, subject, kind)
+SELECT id, thread_id, level, title, body, created_at, read_at, announced_at, task_id, NULL,
+       CASE WHEN kind = 'question' THEN 'question' ELSE 'report' END
+  FROM report;
+DROP TABLE report;
+ALTER TABLE report_next RENAME TO report;
+CREATE INDEX IF NOT EXISTS idx_report_queue ON report(read_at, level, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_unannounced ON report(announced_at, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mcp_permit (
+  task_id    TEXT NOT NULL,
+  tool       TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, tool)
+);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

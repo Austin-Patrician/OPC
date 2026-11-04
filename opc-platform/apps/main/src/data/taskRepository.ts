@@ -379,6 +379,33 @@ export class TaskRepository {
   listChildren = (taskId: string): WorkTask[] =>
     this.selectIds('SELECT id FROM task WHERE parent_task_id = ? ORDER BY created_at', taskId);
 
+  /**
+   * 放行一条：这件活用这个工具，从现在起可以。
+   *
+   * 不做成"一次性"：你答了"可以"，意思通常是"这件事上它用这个可以"，而不是
+   * "这一次可以、下一次再问我一遍"。问第二遍正是 E3 里那条"同一件事请示第二次就是噪音"。
+   * 过期时间兜住另一边：三天后不该还带着一张那时候的放行条。
+   */
+  grantMcpPermit = (taskId: string, tool: string, ttlMs = 30 * 60_000): void => {
+    const now = Date.now();
+    this.statement(
+      `INSERT INTO mcp_permit (task_id, tool, granted_at, expires_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(task_id, tool) DO UPDATE SET granted_at = excluded.granted_at, expires_at = excluded.expires_at`,
+    ).run(taskId, tool, now, now + ttlMs);
+  };
+
+  hasMcpPermit = (taskId: string, tool: string): boolean => {
+    const row = this.statement(
+      'SELECT expires_at FROM mcp_permit WHERE task_id = ? AND tool = ?',
+    ).get(taskId, tool) as { expires_at: number } | undefined;
+    return row !== undefined && row.expires_at > Date.now();
+  };
+
+  /** 任务收尾时清掉：放行条属于那条正在跑的活，不属于这个任务的历史。 */
+  clearMcpPermits = (taskId: string): void => {
+    this.statement('DELETE FROM mcp_permit WHERE task_id = ?').run(taskId);
+  };
+
   /** Sign-off tasks filed against this one; the count is the rework round counter. */
   listReviews = (taskId: string): WorkTask[] =>
     this.selectIds('SELECT id FROM task WHERE review_of_task_id = ? ORDER BY created_at', taskId);

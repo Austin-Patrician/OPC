@@ -659,7 +659,14 @@ export function registerIpc({
     const draft = raw as Record<string, unknown>;
     if (typeof draft.reportId !== 'string') throw new Error('threads:answer 需要 reportId');
     if (typeof draft.text !== 'string') throw new Error('threads:answer 需要 text');
-    const result = await work.answerFor({ reportId: draft.reportId, text: draft.text });
+    if (draft.allow !== undefined && typeof draft.allow !== 'boolean') {
+      throw new Error('threads:answer 的 allow 只能是 true / false');
+    }
+    const result = await work.answerFor({
+      reportId: draft.reportId,
+      text: draft.text,
+      ...(typeof draft.allow === 'boolean' ? { allow: draft.allow } : {}),
+    });
     if (!result.ok) throw new Error(result.error);
     return result.delivered;
   });

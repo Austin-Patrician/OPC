@@ -1216,6 +1216,8 @@
     "answerPlaceholder": "直接回答它所问的那件事",
     "answerLive": "回答已经插进它正在跑的活里，这一轮就能看到。",
     "answerNextAttempt": "回答记在那件活上了，它下一次尝试会看到。",
-    "answerNewTask": "那件活已经收尾了，所以带着你的回答新开了一件继续做。"
+    "answerNewTask": "那件活已经收尾了，所以带着你的回答新开了一件继续做。",
+    "allow": "允许",
+    "deny": "不允许"
   }
 }

@@ -418,6 +418,86 @@ describe('回答请示', () => {
   });
 });
 
+/**
+ * 动作级审批（M3）。
+ *
+ * 执行体要调一个会改动东西的 MCP 工具时，系统停下来问人——而且**必须由系统去问**：
+ * 模型被拦之后最常见的反应是换个说法继续，那条"我被拦了"的话如果只写在工具返回里，
+ * 你就永远看不到。
+ */
+describe('动作级审批', () => {
+  function openTask() {
+    const thread = threads.createThread({ title: '整理一下这个仓库' });
+    const created = work.createTask({
+      title: '整理一下这个仓库',
+      brief: '把过期的文件挪走',
+      deliverableSpec: '一份搬迁记录',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: [...UNVERIFIED_GATE],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return { thread, task: created.task };
+  }
+
+  it('要你点头：落一条 approval 汇报，线停在"等你"，工具名记在 subject 上', () => {
+    const { thread, task } = openTask();
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(report).toMatchObject({
+      kind: 'approval',
+      level: 'decide',
+      taskId: task.id,
+      subject: 'mcp__fs__write',
+    });
+    expect(threads.getThread(thread.id)?.state).toBe('waiting');
+    expect(threads.listQueueWithThread()[0]?.kind).toBe('approval');
+  });
+
+  it('同一件活、同一个工具只问一次：问第二遍是噪音', () => {
+    const { thread, task } = openTask();
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    expect(threads.listReportsOf(thread.id, 10)).toHaveLength(1);
+  });
+
+  it('允许：落一张放行条，线回到"在跑"，那一行离开队列', async () => {
+    const { thread, task } = openTask();
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    const [report] = threads.listReportsOf(thread.id, 5);
+
+    const result = await work.answerFor({ reportId: report!.id, text: '', allow: true });
+    expect(result.ok).toBe(true);
+    expect(new TaskRepository(db).hasMcpPermit(task.id, 'mcp__fs__write')).toBe(true);
+    expect(threads.getThread(thread.id)?.state).toBe('running');
+    expect(threads.listQueue()).toHaveLength(0);
+  });
+
+  it('不允许：不落条，而且告诉它别再试', async () => {
+    const { thread, task } = openTask();
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    const [report] = threads.listReportsOf(thread.id, 5);
+
+    await work.answerFor({ reportId: report!.id, text: '先别动那个目录', allow: false });
+    expect(new TaskRepository(db).hasMcpPermit(task.id, 'mcp__fs__write')).toBe(false);
+    const updated = new TaskRepository(db).getTask(task.id)!;
+    expect(updated.steering?.some((entry) => entry.note.includes('不放行'))).toBe(true);
+  });
+
+  it('放行条只对那件活有效：换一件活要重新问', async () => {
+    const first = openTask();
+    work.askForApproval({ taskId: first.task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    const [report] = threads.listReportsOf(first.thread.id, 5);
+    await work.answerFor({ reportId: report!.id, text: '', allow: true });
+
+    const second = openTask();
+    expect(new TaskRepository(db).hasMcpPermit(second.task.id, 'mcp__fs__write')).toBe(false);
+  });
+});
+
 describe('团队收口', () => {
   const repo = () => new TaskRepository(db);
 

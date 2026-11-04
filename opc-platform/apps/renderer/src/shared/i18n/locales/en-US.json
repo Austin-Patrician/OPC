@@ -1216,6 +1216,8 @@
     "answerPlaceholder": "Answer the one thing it asked",
     "answerLive": "Your answer went into the run that is going right now — it sees it this round.",
     "answerNextAttempt": "Your answer is recorded on that task; its next attempt will see it.",
-    "answerNewTask": "That task had already finished, so a new one picked it up with your answer."
+    "answerNewTask": "That task had already finished, so a new one picked it up with your answer.",
+    "allow": "Allow",
+    "deny": "Don't allow"
   }
 }

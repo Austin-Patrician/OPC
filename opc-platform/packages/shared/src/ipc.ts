@@ -836,7 +836,7 @@ export interface AttentionEntry {
    * `question` 是执行体卡住了在问你，收件动词是「回答」；
    * `report` 是结果给你看，收件动词是「认可 / 重做」。
    */
-  kind: 'report' | 'question';
+  kind: 'report' | 'question' | 'approval';
   /** 「整理 Q3 财报」——你认的是这件事，不是 id。 */
   threadTitle: string;
   level: 'decide' | 'notify' | 'silent';
@@ -923,7 +923,12 @@ export interface ThreadsBridge {
    * `new-task` 是那件活已经收尾、于是开了一件新活带上这个回答。界面上要说清是哪一种
    * ——"我答了，但它没收到"是最糟的一种沉默。
    */
-  answer(input: { reportId: string; text: string }): Promise<'live' | 'next-attempt' | 'new-task'>;
+  answer(input: {
+    reportId: string;
+    text: string;
+    /** 审批行才有意义：允不允许。请示行不看它。 */
+    allow?: boolean;
+  }): Promise<'live' | 'next-attempt' | 'new-task'>;
   /** 关掉一条工作线（你手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;
 }

@@ -1239,19 +1239,28 @@ export interface TriagePolicyPatch {
 
 /** A thread's word to you. The three levels are the whole interface. */
 /**
- * 汇报是两种不同的东西。
+ * 汇报是三种不同的东西，收件动词各不相同。
  *
- * - `report`：给你看的结果（验收过了/没过、静默线跑完了）；
- * - `question`：执行体**卡住**了，要你回答一句。它进队列的时候，收件动词是"回答"，
- *   不是"认可/返工"——那两个动作回答不了一句问句。
+ * - `report`：给你看的结果（验收过了/没过、静默线跑完了）→ 认可 / 返工；
+ * - `question`：执行体**卡住**了，要你回答一句 → 回答；
+ * - `approval`：它要做一件可能造成后果的事（改东西、往外发），要你**点头** → 允许 / 不允许。
+ *
+ * 后两种都不是"结果给你看"，但也不是同一件事：一个要的是**内容**，一个要的是**放行**。
+ * 用一个框收两种东西，收件端就只能猜它要什么。
  */
-export type ReportKind = 'report' | 'question';
+export type ReportKind = 'report' | 'question' | 'approval';
 
 export interface WorkReport {
   id: string;
   threadId: string;
   /** 这条汇报是哪件活说的。没有就是"这条线本身"（老数据、线的收尾）。 */
   taskId: string | null;
+  /**
+   * 这条汇报是关于**哪个东西**的：审批时是工具名。
+   *
+   * 单独一列而不是从标题里抠：标题是给人看的话，改一次文案就会让"允许"落错地方。
+   */
+  subject: string | null;
   kind: ReportKind;
   level: AttentionLevel;
   title: string;

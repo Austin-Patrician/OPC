@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowUp, Check, Inbox, Loader2, RefreshCw, RotateCcw, Sparkles } from 'lucide-react';
+import { ArrowUp, Check, Inbox, Loader2, RefreshCw, RotateCcw, Sparkles, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AttentionEntry } from '@opc/shared/ipc';
 import type { WorkThread } from '@opc/shared/domain';
@@ -131,12 +131,17 @@ export function AttentionPage() {
    * 它不是"认可/重做"的第三种说法：那两个是对**结果**表态，这个是对**问题**作答。
    * 送出去之后要如实说它去了哪——插进了正在跑的会话，还是记在那件活上等下一次尝试。
    */
-  const sendAnswer = async (entry: AttentionEntry) => {
+  const sendAnswer = async (entry: AttentionEntry, verdict?: { allow: boolean }) => {
     const text = reply.trim();
-    if (!text) return;
+    // 审批可以只点按钮不写字；请示必须写点什么。
+    if (!text && !verdict) return;
     setPendingId(entry.id);
     try {
-      const delivered = await window.opc!.threads.answer({ reportId: entry.id, text });
+      const delivered = await window.opc!.threads.answer({
+        reportId: entry.id,
+        text,
+        ...(verdict ? { allow: verdict.allow } : {}),
+      });
       setQueue((previous) => previous.filter((row) => row.id !== entry.id));
       setAnswerId(null);
       setReply('');
@@ -277,7 +282,28 @@ export function AttentionPage() {
                           作答是回答。以前它们共用一个按钮组，于是"选 A 还是 B"只能靠
                           「重做」写一句意见——那不是回答，那是重开一件活。
                         */}
-                        {entry.kind === 'question' ? (
+                        {entry.kind === 'approval' ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void sendAnswer(entry, { allow: true })}
+                              disabled={pendingId === entry.id}
+                              className={cn(buttonClass.primary, 'shrink-0')}
+                            >
+                              <Check className="size-3.5" />
+                              {t('attention.allow')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void sendAnswer(entry, { allow: false })}
+                              disabled={pendingId === entry.id}
+                              className={cn(buttonClass.secondary, 'shrink-0')}
+                            >
+                              <X className="size-3.5" />
+                              {t('attention.deny')}
+                            </button>
+                          </>
+                        ) : entry.kind === 'question' ? (
                           <button
                             type="button"
                             onClick={() => {

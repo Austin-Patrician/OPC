@@ -27,6 +27,11 @@ export interface HarnessBrainDeps {
    * 不影响执行——观测的缺陷不能变成一个失败的任务。
    */
   trace?: (taskId: string) => TraceRecorder | null;
+  /**
+   * 动作级审批（M3）。MCP 的 `beforeTool` 是按扩展装的，而"这条会话在跑哪件活"是按任务
+   * 知道的——这条回调是两者之间的桥。不给我就是"这个运行时没有要审批的东西"。
+   */
+  registerApproval?: (conversationId: unknown, taskId: string) => () => void;
 }
 
 /**
@@ -140,6 +145,7 @@ export class HarnessBrain implements TaskBrain {
     // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
     const recorder = this.deps.trace?.(task.id) ?? null;
     const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder) : null;
+    const stopApproval = this.deps.registerApproval?.(conversation.id, task.id) ?? null;
 
     log(`交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`);
     if (feedback) log(`修复上下文：${feedback.reason}`);
@@ -188,6 +194,7 @@ export class HarnessBrain implements TaskBrain {
       // 一定要在这里删：留着它，下一次"插话"会插进一条已经结束的会话。
       this.live.delete(task.id);
       stopTrace?.();
+      stopApproval?.();
     }
     log('pi 循环结束');
   }
