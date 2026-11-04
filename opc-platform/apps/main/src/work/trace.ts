@@ -1,4 +1,12 @@
-import type { AgentEvent, ConversationId, Harness } from '@earendil-works/pi-durable';
+import {
+  defineExtension,
+  hook,
+  ToolTask,
+  type Extension,
+  type HookApi,
+  type ToolExecutionResult,
+  type ToolHookCall,
+} from '@earendil-works/pi-durable';
 import type { TaskTraceKind } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 
@@ -99,129 +107,91 @@ export function digestArgs(args: Record<string, unknown> | undefined): string {
 /** 一串动作渲染给人和模型看；`seq` 的空洞折成一行「略去 N 步」。 */
 export { describeTrace, renderTrace } from '@opc/shared/trace';
 
-export interface TraceStream {
-  stop: () => Promise<void>;
+/**
+ * 会话 → 记录器。
+ *
+ * 记录器是**按任务**的（`seq` 从库里续），而 hook 是**按扩展**装的（一个执行体一份
+ * 注册表）。这张表是两者之间的桥：任务开跑时登记，结束时撤掉。放进模块级而不是闭包，
+ * 理由和 `investigateTool` 的 `inFlight` 一样——hook 拿不到那个任务的闭包。
+ */
+const recorders = new Map<string, TraceRecorder>();
+/** `callId` → 开始时间。`afterTool` 拿不到时长，只能自己掐表。 */
+const started = new Map<string, number>();
+
+/** 登记一个任务的记录器，返回撤销函数（任务结束必须调，否则表会一直长）。 */
+export function registerTraceRecorder(conversationId: unknown, recorder: TraceRecorder): () => void {
+  recorders.set(String(conversationId), recorder);
+  return () => {
+    recorders.delete(String(conversationId));
+  };
 }
 
 /**
- * 接上 pi 的事件流，把工具调用写进动作档。
+ * 动作流扩展：`hook(ToolTask, { beforeTool, afterTool })`。
  *
- * 返回 `null` 表示没接上（运行时版本、上下文、库路径都有可能）——那不是失败，
- * 只是这个任务没有轨迹。抛出去就等于用一个观测缺陷拖垮一件正在干的活。
- */
-export async function attachTraceStream(deps: {
-  harness: Harness;
-  conversationId: ConversationId;
-  context: unknown;
-  recorder: TraceRecorder;
-}): Promise<TraceStream | null> {
-  try {
-    const { watchEvents } = await import('@earendil-works/pi-durable');
-    const stream = await watchEvents(
-      deps.harness,
-      deps.conversationId as never,
-      deps.context as never,
-    );
-    /** toolCallId → 参数摘要。start 与 end 常常不在同一批事件里。 */
-    const pendingArgs = new Map<string, string>();
-
-    stream.start(async (events) => {
-      for (const event of events) applyAgentEvent(event, pendingArgs, deps.recorder);
-    });
-
-    return {
-      stop: async () => {
-        try {
-          await stream.stop();
-        } catch {
-          // 会话已经关了：没有要收的东西。
-        }
-      },
-    };
-  } catch (error) {
-    console.warn('[trace] 事件流没接上，这个任务不会有动作记录', error);
-    return null;
-  }
-}
-
-/**
- * 一条事件 → 一行动作。导出是为了用例能拿假事件驱动它，而不必开一个真 harness。
+ * 以前这里接的是 pi 的**事件流**（`watchEvents`），1.5.0 把它删了，理由写在它的
+ * CHANGELOG 里：渲染状态，而不是用事件把它拼出来。对我们来说 hook 反而更好——
+ * 一个工具调用正好一次 `afterTool`，不需要"start 先到、end 后到"的配对，也不会
+ * 因为崩在中间而留下一行永远等不到结尾的轨迹。
  *
- * `start` 只记参数摘要，`end` 才落一行：参数先到、结果后到，中间可能隔着一整批事件。
+ * 代价照实说：`afterTool` 不含时长，所以自己掐秒；pi 自己写的错误结果（参数非法、
+ * 被拦、被中止）也走这里，所以"工具没跑成"仍然看得见。
  */
-export function applyAgentEvent(
-  event: AgentEvent,
-  pendingArgs: Map<string, string>,
-  recorder: TraceRecorder,
-): void {
-  // 助手消息里带着完整的工具调用参数，这是比任务 checkpoint 更可靠的来源：
-  // checkpoint 在调用开始后会被清掉，`tool_execution_start` 就只剩一个空对象。
-  if (event.type === 'message_end') {
-    for (const message of event.entry.model ?? []) {
-      if (message.role !== 'assistant') continue;
-      for (const block of message.content) {
-        if (block.type !== 'toolCall') continue;
-        if (!pendingArgs.get(block.id)) {
-          pendingArgs.set(block.id, digestArgs(block.arguments as Record<string, unknown>));
-        }
-      }
-    }
-    return;
-  }
-
-  if (event.type === 'tool_execution_start') {
-    const digest = digestArgs(event.args as Record<string, unknown>);
-    // 已经有更完整的（来自助手消息）就不拿空对象覆盖它。
-    if (digest || !pendingArgs.get(event.toolCallId)) pendingArgs.set(event.toolCallId, digest);
-    return;
-  }
-
-  // 真正的"这一轮炸了"。`tool_execution_end` 缺结果时我们只知道"不知道"，
-  // 而这条事件给了确定的失败——包括工具任务 faulted 与运行被中止。
-  if (event.type === 'task_failed') {
-    recorder.record({ kind: 'error', name: event.kind, ok: false, argsDigest: event.message });
-    return;
-  }
-
-  if (event.type !== 'tool_execution_end') return;
-
-  const argsDigest = pendingArgs.get(event.toolCallId) ?? '';
-  pendingArgs.delete(event.toolCallId);
-  const outcome = readOutcome(event);
-  recorder.record({
-    kind: 'tool',
-    name: event.toolName,
-    argsDigest,
-    ok: outcome.ok,
-    ...(outcome.ms === undefined ? {} : { ms: outcome.ms }),
+export function createTraceExtension(): Extension {
+  return defineExtension({
+    name: 'opc.trace',
+    hooks: [
+      hook(ToolTask, {
+        beforeTool: (call: ToolHookCall, api: HookApi) => {
+          started.set(`${api.conversationId}:${call.id}`, Date.now());
+          return undefined;
+        },
+        afterTool: (
+          call: ToolHookCall,
+          result: ToolExecutionResult,
+          api: HookApi,
+        ) => {
+          const key = `${api.conversationId}:${call.id}`;
+          const at = started.get(key);
+          started.delete(key);
+          const recorder = recorders.get(String(api.conversationId));
+          // 没有登记 = 这条会话不是一件正在被记录的任务（子代理、探针、Router）。
+          if (!recorder) return undefined;
+          recorder.record(
+            traceRowFor(call, result, at === undefined ? undefined : Date.now() - at),
+          );
+          return undefined;
+        },
+      }),
+    ],
   });
 }
 
-/**
- * 这次调用成没成——**三态**。
- *
- * - 嵌套调用给 `result`；模型发起的调用给结果 `entry`，里面是 `role: 'toolResult'` 的消息；
- *   两者都能读成成功或失败。
- * - **两样都没有** = 工具任务 faulted / orphaned，或者调用所在的运行结束了。pi 不区分这两件事，
- *   我们也不假装区分：记 `null`（不知道）。把"不知道"画成失败，界面就在替系统撒谎。
- */
-function readOutcome(event: {
-  entry?: { model?: readonly { role: string; isError?: boolean; durationMs?: number }[] };
-  result?: { isError: boolean; durationMs?: number };
-}): { ok: boolean | null; ms?: number } {
-  if (event.result) {
-    return {
-      ok: !event.result.isError,
-      ...(event.result.durationMs === undefined ? {} : { ms: event.result.durationMs }),
-    };
-  }
-
-  const message = event.entry?.model?.find((item) => item.role === 'toolResult');
-  if (!message) return { ok: null };
+/** 一次工具调用 → 一行动作。纯函数，用例直接驱动它，不必开一个真 harness。 */
+export function traceRowFor(
+  call: ToolHookCall,
+  result: ToolExecutionResult,
+  ms?: number,
+): Parameters<TraceRecorder['record']>[0] {
   return {
-    ok: message.isError !== true,
-    ...(typeof message.durationMs === 'number' ? { ms: message.durationMs } : {}),
+    kind: 'tool',
+    // 嵌套调用（`executeTool`）标出来：它在时间线上不是模型的直接一步，
+    // 而是一次工具内部的分岔——看轨迹的人需要分得清这两件事。
+    name: call.parent ? `${call.name}（嵌套）` : call.name,
+    argsDigest: digestArgs(call.arguments as Record<string, unknown> | undefined),
+    ok: result.isError !== true,
+    ...(ms === undefined ? {} : { ms }),
+    ...(result.usage ? { tokens: usageTotal(result.usage) } : {}),
   };
+}
+
+/** 一次调用的 token 总和。读不出来就不给（0 和"不知道"不是一回事）。 */
+function usageTotal(usage: unknown): number | undefined {
+  const models = (usage as { models?: Record<string, { input?: number; output?: number }> }).models;
+  if (!models) return undefined;
+  let total = 0;
+  for (const entry of Object.values(models)) total += (entry.input ?? 0) + (entry.output ?? 0);
+  return total > 0 ? total : undefined;
 }
 
 function oneLine(text: string): string {

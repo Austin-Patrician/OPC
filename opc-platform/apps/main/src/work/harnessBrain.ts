@@ -5,7 +5,7 @@ import type { Harness, Conversation } from '@earendil-works/pi-durable';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
-import { attachTraceStream, type TraceRecorder } from './trace';
+import { registerTraceRecorder, type TraceRecorder } from './trace';
 import { childStatusLabel } from './children';
 import { priceUsage } from './usage';
 
@@ -136,16 +136,10 @@ export class HarnessBrain implements TaskBrain {
     // The sandbox hook needs to know which directory this conversation may touch.
     registerSandboxWorkspace(conversation.id, workspaceDir);
 
-    // 动作流：从这一刻起，模型每调一个工具都会落一行。接不上就只是没有轨迹。
+    // 动作流：从这一刻起，模型每调一个工具都会落一行（`opc.trace` 那个 hook 负责写）。
+    // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
     const recorder = this.deps.trace?.(task.id) ?? null;
-    const traceStream = recorder
-      ? await attachTraceStream({
-          harness,
-          conversationId: conversation.id,
-          context: ctx,
-          recorder,
-        })
-      : null;
+    const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder) : null;
 
     log(`交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`);
     if (feedback) log(`修复上下文：${feedback.reason}`);
@@ -193,7 +187,7 @@ export class HarnessBrain implements TaskBrain {
     } finally {
       // 一定要在这里删：留着它，下一次"插话"会插进一条已经结束的会话。
       this.live.delete(task.id);
-      await traceStream?.stop();
+      stopTrace?.();
     }
     log('pi 循环结束');
   }

@@ -83,6 +83,8 @@ describe('WorkService.capabilities', () => {
 
     expect(agent.extensions.map((extension) => extension.name)).toEqual([
       'opc.work',
+      // 动作流：所有工具调用的旁听者（`opc.trace`），不该由哪个工具自己负责。
+      'opc.trace',
       'coding-tools',
       'opc.sandbox',
       'opc.limits',

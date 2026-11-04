@@ -93,7 +93,7 @@ describe('getCatalog image entries', () => {
     const catalog = await getCatalog();
     const openrouter = catalog.find((provider) => provider.id === 'openrouter');
 
-    expect(openrouter?.counts.image).toBe(63);
+    expect(openrouter?.counts.image).toBe(64);
     expect(openrouter?.apis).toContain('openrouter-images');
   });
 });

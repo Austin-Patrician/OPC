@@ -1,21 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentEvent } from '@earendil-works/pi-durable';
+import type { ToolExecutionResult, ToolHookCall, ToolHooks } from '@earendil-works/pi-durable';
 import type { TaskTrace } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 import {
-  applyAgentEvent,
+  createTraceExtension,
   createTraceRecorder,
   digestArgs,
+  registerTraceRecorder,
   TRACE_HEAD,
   TRACE_TAIL,
+  traceRowFor,
   type TraceRecorder,
 } from './trace';
 
 /**
  * 动作流（`09-worker-spec.md` §3.4 / W6）。
  *
- * 用例只碰纯逻辑：参数怎么变成一行摘要、序号怎么续、pi 的三种结果形状分别读成什么。
- * 真事件流要开一个 harness，那是 `routerHost` / 探针那一层的事。
+ * 用例只碰纯逻辑：参数怎么变成一行摘要、序号怎么续、一次工具调用读成什么。
+ * 真 harness 那一层由探针和端到端用例覆盖。
+ *
+ * 1.5.0 删掉了 `watchEvents`（"渲染状态，而不是用事件把它拼出来"），所以这里从
+ * "把事件拼成动作"改成了"一次工具调用 → 一行动作"：一个调用正好一次 `afterTool`，
+ * 不再有 start/end 配对，也不会因为崩在中间留下一行等不到结尾的轨迹。
  */
 
 function fakeRepository(overrides: Partial<Record<'maxTraceSeq' | 'appendTrace' | 'pruneTrace', unknown>> = {}) {
@@ -106,95 +112,64 @@ describe('createTraceRecorder', () => {
   });
 });
 
-describe('applyAgentEvent', () => {
-  function collect() {
-    const rows: Parameters<TraceRecorder['record']>[0][] = [];
-    const recorder: TraceRecorder = { taskId: 'task-1', record: (input) => rows.push(input) };
-    const pending = new Map<string, string>();
-    return { rows, recorder, pending };
-  }
+describe('一次工具调用 → 一行动作', () => {
+  const call = (overrides: Partial<ToolHookCall> = {}): ToolHookCall =>
+    ({
+      id: 'call-1',
+      name: 'write',
+      arguments: { path: 'server.js', content: '…' },
+      ...overrides,
+    }) as ToolHookCall;
+  const result = (isError = false): ToolExecutionResult =>
+    ({ output: [], ...(isError ? { isError: true } : {}) }) as ToolExecutionResult;
 
-  const start = (args: Record<string, unknown>, toolCallId = 'call-1'): AgentEvent =>
-    ({ type: 'tool_execution_start', toolCallId, toolName: 'bash', args }) as unknown as AgentEvent;
+  it('成功的一次调用：名字、参数摘要、ok、时长', () => {
+    expect(traceRowFor(call(), result(), 42)).toMatchObject({
+      kind: 'tool',
+      name: 'write',
+      argsDigest: 'server.js',
+      ok: true,
+      ms: 42,
+    });
+  });
 
-  const end = (extra: Record<string, unknown>, toolCallId = 'call-1'): AgentEvent =>
-    ({ type: 'tool_execution_end', toolCallId, toolName: 'bash', ...extra }) as unknown as AgentEvent;
+  it('失败的一次调用照样记，ok 是 false 而不是消失', () => {
+    expect(traceRowFor(call({ name: 'bash' }), result(true)).ok).toBe(false);
+  });
 
-  it('start 只记参数，end 才落一行：成败与耗时来自结果行', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(start({ command: 'node --test' }), pending, recorder);
-    expect(rows).toHaveLength(0);
-
-    applyAgentEvent(
-      end({ entry: { model: [{ role: 'toolResult', isError: false, durationMs: 820 }] } }),
-      pending,
-      recorder,
+  it('嵌套调用标出来：它不是模型的直接一步，是工具内部的分岔', () => {
+    const row = traceRowFor(
+      call({ name: 'mcp__github__search', parent: { taskId: 't-1' as never, callId: 'c-0' } }),
+      result(),
     );
-    expect(rows).toEqual([
-      { kind: 'tool', name: 'bash', argsDigest: 'node --test', ok: true, ms: 820 },
-    ]);
-    expect(pending.size).toBe(0);
+    expect(row.name).toBe('mcp__github__search（嵌套）');
   });
 
-  it('结果行说错了，就记一条失败', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(start({ command: 'wrong' }), pending, recorder);
-    applyAgentEvent(
-      end({ entry: { model: [{ role: 'toolResult', isError: true }] } }),
-      pending,
-      recorder,
-    );
-    expect(rows[0]?.ok).toBe(false);
-  });
-
-  it('没有结果行就是"不知道"：记 null，不替系统判成功也不判失败', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(start({ command: 'sleep 600' }), pending, recorder);
-    applyAgentEvent(end({}), pending, recorder);
-    expect(rows[0]).toMatchObject({ ok: null, argsDigest: 'sleep 600' });
-  });
-
-  it('助手消息里的工具调用补上参数——checkpoint 被清掉时 start 只剩空对象', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(
-      {
-        type: 'message_end',
-        entry: {
-          model: [
-            {
-              role: 'assistant',
-              content: [{ type: 'toolCall', id: 'call-1', name: 'bash', arguments: { command: 'node --check server.js' } }],
-            },
-          ],
-        },
-      } as unknown as AgentEvent,
-      pending,
-      recorder,
-    );
-    applyAgentEvent(end({ entry: { model: [{ role: 'toolResult', isError: false }] } }), pending, recorder);
-    expect(rows[0]?.argsDigest).toBe('node --check server.js');
-  });
-
-  it('task_failed 是确定的失败，记一条 error 行', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(
-      { type: 'task_failed', taskId: 't', kind: 'pi.tool', message: '工具任务失败' } as unknown as AgentEvent,
-      pending,
-      recorder,
-    );
-    expect(rows[0]).toEqual({ kind: 'error', name: 'pi.tool', ok: false, argsDigest: '工具任务失败' });
-  });
-
-  it('嵌套调用读 result.isError', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent(start({ question: '查一下' }, 'nested-1'), pending, recorder);
-    applyAgentEvent(end({ result: { taskId: 't', isError: true, diagnostics: [] } }, 'nested-1'), pending, recorder);
-    expect(rows[0]?.ok).toBe(false);
-  });
-
-  it('别的类型的事件不看一眼', () => {
-    const { rows, recorder, pending } = collect();
-    applyAgentEvent({ type: 'turn_end' } as unknown as AgentEvent, pending, recorder);
-    expect(rows).toHaveLength(0);
+  it('用量有就算进去，读不出来就不给——0 和"不知道"不是一回事', () => {
+    const withUsage = { ...result(), usage: { models: { m: { input: 10, output: 5 } } } };
+    expect(traceRowFor(call(), withUsage as unknown as ToolExecutionResult).tokens).toBe(15);
+    expect(traceRowFor(call(), result()).tokens).toBeUndefined();
   });
 });
+
+describe('登记表：hook 怎么找到那个任务的记录器', () => {
+  it('登记之后 hook 才写；撤销之后不再写', async () => {
+    const rows: Parameters<TraceRecorder['record']>[0][] = [];
+    const recorder: TraceRecorder = { taskId: 'task-1', record: (input) => rows.push(input) };
+    const hooks = (createTraceExtension().hooks?.[0]?.handlers ?? {}) as ToolHooks;
+    const api = { conversationId: 'conv-1' } as never;
+    const call = { id: 'c1', name: 'read', arguments: {} } as never;
+    const result = { output: [] } as never;
+
+    const undo = registerTraceRecorder('conv-1', recorder);
+    await hooks.beforeTool!(call, api, {} as never);
+    await hooks.afterTool!(call, result, api, {} as never);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: 'read', ok: true });
+
+    undo();
+    await hooks.afterTool!(call, result, api, {} as never);
+    expect(rows).toHaveLength(1);
+  });
+});
+

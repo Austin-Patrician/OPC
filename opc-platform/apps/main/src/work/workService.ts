@@ -65,6 +65,7 @@ import {
   escalationTag,
 } from './escalateTool';
 import { buildSubagentPrompt, type SubagentAnswer, type SubagentToolApi } from './subagent';
+import { createTraceExtension } from './trace';
 import { priceUsage } from './usage';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import { createRecallToolExtension, type RecallOutcome } from './recallTool';
@@ -1211,6 +1212,9 @@ export class WorkService {
     // task is "blocked: missing_task".
     const registry = createRegistry();
     registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
+    // 动作流（W6）：工具调用 → `task_trace`。装在这里而不是每个工具里，
+    // 因为它是"所有调用的旁听者"，不该由哪个工具自己负责。
+    registry.install(createTraceExtension());
 
     const install = (slot: ToolSlot) => {
       if (!slot.available || !slot.extension) return;
