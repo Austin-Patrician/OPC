@@ -590,6 +590,15 @@ export function registerIpc({
     threads.markReportRead(draft.reportId);
     return result.thread;
   });
+  ipcMain.handle(IPC.threads.answer, async (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('threads:answer 参数非法');
+    const draft = raw as Record<string, unknown>;
+    if (typeof draft.reportId !== 'string') throw new Error('threads:answer 需要 reportId');
+    if (typeof draft.text !== 'string') throw new Error('threads:answer 需要 text');
+    const result = await work.answerFor({ reportId: draft.reportId, text: draft.text });
+    if (!result.ok) throw new Error(result.error);
+    return result.delivered;
+  });
   ipcMain.handle(IPC.threads.close, (_event, threadId: unknown) => {
     if (typeof threadId !== 'string') throw new Error('threads:close 参数非法');
     return threads.setState(threadId, 'done');

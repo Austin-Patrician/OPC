@@ -201,6 +201,41 @@ describe('执行体看到的提示词', () => {
     expect(buildPrompt(task())).not.toContain('子任务的产出');
   });
 
+  /**
+   * 回答请示（W3）单独一段，排在"改方向"之前。
+   *
+   * 混进改方向那一段，模型会以为需求变了，于是**重做一遍**；而它该做的是接着做。
+   */
+  it('回答和改方向分成两段：一个是对问话的回复，一个是换了需求', () => {
+    const prompt = buildPrompt(
+      task({
+        steering: [
+          { note: '回答（我问的「A 快 B 稳，要哪个」）：选稳的那个', at: 1, kind: 'answer' },
+          { note: '主题色不要用蓝的', at: 2, kind: 'steer' },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('他回答了你请示的问题（照这个做，不要再问一遍）');
+    expect(prompt).toContain('- 回答（我问的「A 快 B 稳，要哪个」）：选稳的那个');
+    expect(prompt).toContain('用户在做这件事的过程中改了方向');
+    expect(prompt).toContain('- 主题色不要用蓝的');
+
+    const at = (needle: string) => prompt.indexOf(needle);
+    // 回答在前：它是"我之前问的那件事有答案了"，不是新要求。
+    expect(at('他回答了你请示的问题')).toBeLessThan(at('用户在做这件事的过程中改了方向'));
+    // 回答只出现在自己那一段，不重复出现在改方向里。
+    expect(prompt.split('选稳的那个')).toHaveLength(2);
+  });
+
+  it('只有回答、没有改方向时，不留空标题', () => {
+    const prompt = buildPrompt(
+      task({ steering: [{ note: '回答：选稳的那个', at: 1, kind: 'answer' }] }),
+    );
+    expect(prompt).toContain('他回答了你请示的问题');
+    expect(prompt).not.toContain('改了方向');
+  });
+
   it('改过两次就两条都在，按说的顺序', () => {
     const prompt = buildPrompt(
       task({

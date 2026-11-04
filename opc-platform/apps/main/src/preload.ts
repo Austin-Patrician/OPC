@@ -118,6 +118,7 @@ const bridge: OpcBridge = {
     list: (limit?: number) => ipcRenderer.invoke(IPC.threads.list, limit),
     markRead: (reportId: string) => ipcRenderer.invoke(IPC.threads.markRead, reportId),
     decide: (input: unknown) => ipcRenderer.invoke(IPC.threads.decide, input),
+    answer: (input: unknown) => ipcRenderer.invoke(IPC.threads.answer, input),
     close: (threadId: string) => ipcRenderer.invoke(IPC.threads.close, threadId),
   },
   billing: {

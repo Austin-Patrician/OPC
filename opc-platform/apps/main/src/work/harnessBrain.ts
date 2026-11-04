@@ -62,7 +62,18 @@ export class HarnessBrain implements TaskBrain {
    * 返回 `false` 表示这条活此刻没有在跑的会话——那就只能走持久化那条路（写进
    * `task.steering`，下一次尝试读到）。
    */
-  interject = async (taskId: string, text: string): Promise<boolean> => {
+  /**
+   * 插一句进**正在跑**的那个会话。
+   *
+   * `label` 是这句话的开场白，默认是"改了方向"——因为绝大多数插话都是这个。但回答
+   * 请示不是：它是**对执行体自己那句问话的回复**，用"改了方向"开头会让它以为需求变了，
+   * 于是重新做一遍而不是接着做。
+   */
+  interject = async (
+    taskId: string,
+    text: string,
+    options: { label?: string; kind?: 'steer' | 'answer' } = {},
+  ): Promise<boolean> => {
     const conversation = this.live.get(taskId);
     if (!conversation) return false;
     const note = text.trim();
@@ -72,9 +83,9 @@ export class HarnessBrain implements TaskBrain {
     const submission = await conversation.submit(
       {
         type: 'input',
-        content: `用户中途改了方向（优先于原来的说明）：${note}`,
+        content: `${options.label ?? '用户中途改了方向（优先于原来的说明）：'}${note}`,
         whenBusy: 'steer',
-        entry: { kind: 'opc.steering', data: { source: 'user' } },
+        entry: { kind: 'opc.steering', data: { source: 'user', kind: options.kind ?? 'steer' } },
       },
       ctx,
     );
@@ -241,10 +252,21 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     '3. 确认无误后立即结束，不要输出大段解释。',
   );
 
+  /*
+   * 他回答了你请示的问题。单独一段、排在"改方向"之前：这是**对你那句问话的回复**，
+   * 不是你换了需求。混在一起模型会重新做一遍，而它该做的是接着做。
+   */
+  const answers = (task.steering ?? []).filter((entry) => entry.kind === 'answer');
+  if (answers.length > 0) {
+    lines.push('', '他回答了你请示的问题（照这个做，不要再问一遍）：');
+    for (const entry of answers) lines.push(`- ${entry.note}`);
+  }
+
   // 你改的方向排在"要求"之后：它是后说的，而且与原说明冲突时以它为准。
-  if (task.steering && task.steering.length > 0) {
+  const steers = (task.steering ?? []).filter((entry) => entry.kind !== 'answer');
+  if (steers.length > 0) {
     lines.push('', '用户在做这件事的过程中改了方向（**与上面的说明冲突时，以这里为准**）：');
-    for (const entry of task.steering) lines.push(`- ${entry.note}`);
+    for (const entry of steers) lines.push(`- ${entry.note}`);
   }
 
   // 用户亲口要求过、一直有效的那些。排在"工作台的规定"之前：前者是他刚说的，

@@ -122,6 +122,8 @@ export const IPC = {
     queue: 'threads:queue',
     markRead: 'threads:markRead',
     decide: 'threads:decide',
+    /** 回答执行体的请示（`ReportKind = 'question'` 的那一类）。 */
+    answer: 'threads:answer',
     close: 'threads:close',
   },
   workers: {
@@ -819,6 +821,13 @@ export interface OpcBridge {
 export interface AttentionEntry {
   id: string;
   threadId: string;
+  /** 这条汇报是哪件活说的；空 = 这条线本身。 */
+  taskId: string | null;
+  /**
+   * `question` 是执行体卡住了在问你，收件动词是「回答」；
+   * `report` 是结果给你看，收件动词是「认可 / 重做」。
+   */
+  kind: 'report' | 'question';
   /** 「整理 Q3 财报」——你认的是这件事，不是 id。 */
   threadTitle: string;
   level: 'decide' | 'notify' | 'silent';
@@ -848,6 +857,14 @@ export interface ThreadsBridge {
     decision: 'approve' | 'rework';
     note?: string;
   }): Promise<WorkThread>;
+  /**
+   * 回答执行体的请示。
+   *
+   * 返回它去哪了：`live` 插进了正在跑的会话，`next-attempt` 记在那件活上等下一次尝试，
+   * `new-task` 是那件活已经收尾、于是开了一件新活带上这个回答。界面上要说清是哪一种
+   * ——"我答了，但它没收到"是最糟的一种沉默。
+   */
+  answer(input: { reportId: string; text: string }): Promise<'live' | 'next-attempt' | 'new-task'>;
   /** 关掉一条工作线（你手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;
 }

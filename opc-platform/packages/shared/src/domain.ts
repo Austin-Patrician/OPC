@@ -175,6 +175,14 @@ export interface TaskTrace {
 export interface TaskSteering {
   note: string;
   at: number;
+  /**
+   * 这句话是什么。
+   *
+   * `steer`：你中途改方向（"主色换成蓝的"）。
+   * `answer`：他回答了你请示的那个问题——它是对**你问的那句**的回复，不是新要求，
+   * 所以进提示词时单独一段，而不是混在"改方向"里。
+   */
+  kind?: 'steer' | 'answer';
 }
 
 /**
@@ -1230,9 +1238,21 @@ export interface TriagePolicyPatch {
 }
 
 /** A thread's word to you. The three levels are the whole interface. */
+/**
+ * 汇报是两种不同的东西。
+ *
+ * - `report`：给你看的结果（验收过了/没过、静默线跑完了）；
+ * - `question`：执行体**卡住**了，要你回答一句。它进队列的时候，收件动词是"回答"，
+ *   不是"认可/返工"——那两个动作回答不了一句问句。
+ */
+export type ReportKind = 'report' | 'question';
+
 export interface WorkReport {
   id: string;
   threadId: string;
+  /** 这条汇报是哪件活说的。没有就是"这条线本身"（老数据、线的收尾）。 */
+  taskId: string | null;
+  kind: ReportKind;
   level: AttentionLevel;
   title: string;
   body: string;

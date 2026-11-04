@@ -546,6 +546,67 @@ export class WorkService {
   };
 
   /**
+   * 回答执行体的请示（W3）。
+   *
+   * 在这之前它没有收件动词：请示落到队列里，和"活干完了请你验收"长得一模一样，而你能
+   * 按的只有**认可**（把活标成通过）和**返工**（重开一件活）。两个都回答不了一句问句。
+   *
+   * 回答必须回到**问它的那件活**上，而且要覆盖两种时刻：
+   *
+   * - 还在跑：插进它正在跑的那个会话，这一轮就能看到（`interject`）；
+   * - 还没开跑 / 要重试：写进 `task.steering`，下一次尝试一定带上；
+   * - **已经收尾**：答案不能烂在地里——开一件新的活带上它（等价于"带着意见再做一次"）。
+   */
+  answerFor = async (input: {
+    reportId: string;
+    text: string;
+  }): Promise<
+    { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
+  > => {
+    const text = input.text.trim();
+    if (!text) return { ok: false, error: '回答不能是空的' };
+
+    const report = this.threads.getReport(input.reportId);
+    if (!report) return { ok: false, error: `找不到这条请示：${input.reportId}` };
+    if (report.kind !== 'question') {
+      return { ok: false, error: '这条是汇报不是请示：要表态就用认可或返工' };
+    }
+    if (!report.taskId) return { ok: false, error: '这条请示没记下是哪件活问的' };
+
+    const task = this.repository.getTask(report.taskId);
+    if (!task) return { ok: false, error: '问这个问题的那件活已经不在了' };
+
+    const question = report.title.replace(/^请示：/, '');
+    this.threads.markReportRead(report.id);
+
+    if (task.status !== 'open' && task.status !== 'running') {
+      const threadId = task.threadId;
+      if (!threadId) return { ok: false, error: '这条请示不在任何工作线上' };
+      const created = this.decideThread(threadId, 'rework', `你回答了他请示的问题：${text}`);
+      return created.ok
+        ? { ok: true, delivered: 'new-task' }
+        : { ok: false, error: created.error };
+    }
+
+    const note = `回答（我问的「${question}」）：${text}`;
+    this.repository.addSteering(task.id, note, 'answer');
+    this.repository.addStep(task.id, `你回答了请示：${text}`);
+    const live =
+      this.modelBrain !== null &&
+      (await this.modelBrain.interject(
+        task.id,
+        `「${question}」——${text}`,
+        { label: '他回答了你请示的问题（照这个做，不要再问一遍）：', kind: 'answer' },
+      ));
+
+    // 它不再"在等人做决定"了。
+    if (task.threadId) this.threads.setState(task.threadId, 'running');
+    const updated = this.repository.getTask(task.id);
+    if (updated) this.emit(updated);
+    return { ok: true, delivered: live ? 'live' : 'next-attempt' };
+  };
+
+  /**
    * 你在注意力队列上的两个动作（steering 层）。
    *
    * `approve` —— 认可。这活只有人能判，所以认可就是终审：任务记成你通过，
@@ -1336,6 +1397,9 @@ export class WorkService {
       level,
       title: `请示：${input.question}`,
       body,
+      // 回答要落到**问这个问题的那件活**上，不能落到"这条线上最近的一件"。
+      taskId: task.id,
+      kind: 'question',
     });
     // 在等人做决定，这条线就不再是"在跑"。
     if (level === 'decide') this.threads.setState(task.threadId, 'waiting');

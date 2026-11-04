@@ -516,7 +516,7 @@ export class TaskRepository {
    * 追加而不是覆盖：一段活的中间可能被改两次方向，两次都是真的发生过的事；只有
    * 需要"当前口径"的地方（提示词）才把它整体按顺序读出来。
    */
-  addSteering = (taskId: string, note: string): TaskSteering[] => {
+  addSteering = (taskId: string, note: string, kind: 'steer' | 'answer' = 'steer'): TaskSteering[] => {
     const text = note.trim();
     if (!text) return [];
     const row = this.statement('SELECT steering FROM task WHERE id = ?').get(taskId) as
@@ -524,7 +524,10 @@ export class TaskRepository {
       | undefined;
     if (!row) throw new Error(`任务不存在：${taskId}`);
 
-    const next = [...parseJson<TaskSteering[]>(row.steering ?? '[]', []), { note: text, at: Date.now() }];
+    const next = [
+      ...parseJson<TaskSteering[]>(row.steering ?? '[]', []),
+      { note: text, at: Date.now(), kind },
+    ];
     this.statement('UPDATE task SET steering = ?, updated_at = ? WHERE id = ?').run(
       JSON.stringify(next),
       Date.now(),

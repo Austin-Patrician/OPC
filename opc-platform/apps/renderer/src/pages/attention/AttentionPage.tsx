@@ -38,7 +38,12 @@ export function AttentionPage() {
   /** Which row is asking for a rework note, and what you typed. */
   const [reworkId, setReworkId] = useState<string | null>(null);
   const [note, setNote] = useState('');
+  /** Which row is asking for an answer, and what you typed. */
+  const [answerId, setAnswerId] = useState<string | null>(null);
+  const [reply, setReply] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
+  /** 上一步做完之后的一句确认（"回答已经插进它正在跑的活里"）。 */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!window.opc?.threads) return;
@@ -120,6 +125,38 @@ export function AttentionPage() {
     }
   };
 
+  /**
+   * 回答执行体的请示。
+   *
+   * 它不是"认可/重做"的第三种说法：那两个是对**结果**表态，这个是对**问题**作答。
+   * 送出去之后要如实说它去了哪——插进了正在跑的会话，还是记在那件活上等下一次尝试。
+   */
+  const sendAnswer = async (entry: AttentionEntry) => {
+    const text = reply.trim();
+    if (!text) return;
+    setPendingId(entry.id);
+    try {
+      const delivered = await window.opc!.threads.answer({ reportId: entry.id, text });
+      setQueue((previous) => previous.filter((row) => row.id !== entry.id));
+      setAnswerId(null);
+      setReply('');
+      const message =
+        delivered === 'live'
+          ? t('attention.answerLive')
+          : delivered === 'new-task'
+            ? t('attention.answerNewTask')
+            : t('attention.answerNextAttempt');
+      setError(null);
+      window.setTimeout(() => void load(), 400);
+      // 一行确认：它去了哪，比"已送出"有用得多。
+      setNotice(message);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setPendingId(null);
+    }
+  };
+
   /** 丢一个目标：开一条工作线，剩下的交给 Router 决定怎么做。 */
   const submitGoal = async () => {
     const text = goal.trim();
@@ -187,6 +224,12 @@ export function AttentionPage() {
         </div>
       ) : null}
 
+      {notice ? (
+        <div className="mb-4 rounded-xl border border-line bg-surface-muted/40 px-4 py-3 text-sm text-ink-secondary">
+          {notice}
+        </div>
+      ) : null}
+
       {queue.length === 0 && !loading ? (
         <div className="mb-5 rounded-xl border border-line bg-surface px-6 py-10 text-center">
           <Sparkles className="mx-auto size-6 text-accent-ink" />
@@ -229,7 +272,25 @@ export function AttentionPage() {
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
-                        {level === 'decide' ? (
+                        {/*
+                          两种 decide 行要分开口令：对**结果**表态是认可/重做，对**问题**
+                          作答是回答。以前它们共用一个按钮组，于是"选 A 还是 B"只能靠
+                          「重做」写一句意见——那不是回答，那是重开一件活。
+                        */}
+                        {entry.kind === 'question' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAnswerId(answerId === entry.id ? null : entry.id);
+                              setReply('');
+                            }}
+                            disabled={pendingId === entry.id}
+                            className={cn(buttonClass.primary, 'shrink-0')}
+                          >
+                            <ArrowUp className="size-3.5" />
+                            {t('attention.answer')}
+                          </button>
+                        ) : level === 'decide' ? (
                           <>
                             <button
                               type="button"
@@ -266,6 +327,39 @@ export function AttentionPage() {
                         )}
                       </div>
                     </div>
+
+                    {answerId === entry.id ? (
+                      <div className="mt-2 rounded-lg border border-line bg-surface-muted/40 p-2">
+                        <textarea
+                          value={reply}
+                          onChange={(event) => setReply(event.target.value)}
+                          rows={2}
+                          autoFocus
+                          placeholder={t('attention.answerPlaceholder')}
+                          className="w-full resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-quaternary"
+                        />
+                        <div className="mt-1 flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAnswerId(null);
+                              setReply('');
+                            }}
+                            className={buttonClass.secondary}
+                          >
+                            {t('attention.answerCancel')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void sendAnswer(entry)}
+                            disabled={pendingId === entry.id || reply.trim().length === 0}
+                            className={buttonClass.primary}
+                          >
+                            {t('attention.answerConfirm')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {reworkId === entry.id ? (
                       <div className="mt-2 rounded-lg border border-line bg-surface-muted/40 p-2">

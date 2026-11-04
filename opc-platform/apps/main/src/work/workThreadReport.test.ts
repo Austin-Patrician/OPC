@@ -326,6 +326,98 @@ describe('静默线', () => {
  * 这里锁的是收口的三个面：**等**（`collect`）、**收**（子任务产出进提示词）、
  * **谁说**（线的状态由根任务决定）。
  */
+/**
+ * 回答执行体的请示（W3）。
+ *
+ * E3 给了执行体请示的嘴，但收件端只有「认可 / 重做」两个动词——它们回答不了一句问句。
+ * 这一组锁的是：请示记得住是哪件活问的、回答落在**那件活**上、以及三种时刻各自的去向。
+ */
+describe('回答请示', () => {
+  function openTask(title = '写一个返回 ok 的服务') {
+    const thread = threads.createThread({ title });
+    const created = work.createTask({
+      title,
+      brief: '用 node 内置 http',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return { thread, task: created.task };
+  }
+
+  it('请示记着是哪件活问的，种类是问题而不是汇报', () => {
+    const { thread, task } = openTask();
+    work.escalateFor({ taskId: task.id, question: 'A 快 B 稳，要哪个', tried: '', suggestion: '' });
+
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(report?.kind).toBe('question');
+    expect(report?.taskId).toBe(task.id);
+    // 队列里也是同一条（界面据此换动词）。
+    expect(threads.listQueueWithThread()[0]?.kind).toBe('question');
+  });
+
+  it('回答记在那件活上，线从"等你"回到"在跑"', async () => {
+    const { thread, task } = openTask();
+    work.escalateFor({ taskId: task.id, question: 'A 快 B 稳，要哪个', tried: '', suggestion: '' });
+    expect(threads.getThread(thread.id)?.state).toBe('waiting');
+
+    const [report] = threads.listReportsOf(thread.id, 5);
+    const result = await work.answerFor({ reportId: report!.id, text: '选稳的那个' });
+
+    // 没模型在跑 → 记在那件活上，下一次尝试会看到。
+    expect(result).toEqual({ ok: true, delivered: 'next-attempt' });
+    const updated = new TaskRepository(db).getTask(task.id)!;
+    expect(updated.steering).toEqual([
+      expect.objectContaining({ kind: 'answer', note: '回答（我问的「A 快 B 稳，要哪个」）：选稳的那个' }),
+    ]);
+    expect(threads.getThread(thread.id)?.state).toBe('running');
+    // 答过的那一行离开队列：它不再是"等你"。
+    expect(threads.listQueue()).toHaveLength(0);
+  });
+
+  it('那件活已经收尾：答案不烂在地里，带着它新开一件', async () => {
+    const { thread, task } = openTask();
+    const finished = await work.runTaskAndWait(task.id);
+    expect(finished.status).toBe('accepted');
+
+    // 它跑完之后又问了一句（真实里不会，但数据形状必须处理得住）。
+    work.escalateFor({ taskId: task.id, question: '要不要顺手加个 README', tried: '', suggestion: '' });
+    const [report] = threads.listReportsOf(thread.id, 5);
+
+    const result = await work.answerFor({ reportId: report!.id, text: '要' });
+    expect(result).toEqual({ ok: true, delivered: 'new-task' });
+
+    const latest = new TaskRepository(db).latestForThread(thread.id)!;
+    expect(latest.id).not.toBe(task.id);
+    expect(latest.brief).toContain('要');
+  }, 30_000);
+
+  it('对一条普通的汇报按「回答」会被拒绝，而且告诉它该用哪个动作', async () => {
+    const { thread, task } = openTask();
+    await work.runTaskAndWait(task.id);
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(report?.kind).toBe('report');
+
+    const result = await work.answerFor({ reportId: report!.id, text: '收到' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('认可或返工');
+  }, 30_000);
+
+  it('空回答不送出去', async () => {
+    const { thread, task } = openTask();
+    work.escalateFor({ taskId: task.id, question: 'A 快 B 稳，要哪个', tried: '', suggestion: '' });
+    const [report] = threads.listReportsOf(thread.id, 5);
+    expect(await work.answerFor({ reportId: report!.id, text: '   ' })).toEqual({
+      ok: false,
+      error: '回答不能是空的',
+    });
+  });
+});
+
 describe('团队收口', () => {
   const repo = () => new TaskRepository(db);
 

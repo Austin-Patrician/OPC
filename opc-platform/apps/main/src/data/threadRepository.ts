@@ -1,5 +1,6 @@
 import type {
   AttentionLevel,
+  ReportKind,
   ThreadState,
   TriggerEvent,
   TriggerReplyTarget,
@@ -91,6 +92,10 @@ export interface AddReportInput {
   level?: AttentionLevel;
   title: string;
   body?: string;
+  /** 这条汇报是哪件活说的。空 = 这条线本身。 */
+  taskId?: string | null;
+  /** `question` 是"要你回答一句"，收件动词因此不同。 */
+  kind?: ReportKind;
 }
 
 interface ThreadRow {
@@ -148,6 +153,8 @@ interface ReportRow {
   created_at: number;
   read_at: number | null;
   thread_reply_target?: string | null;
+  task_id?: string | null;
+  kind?: ReportKind;
 }
 
 /** States a finished thread can land in; both stop the router from resuming it. */
@@ -509,12 +516,14 @@ export class ThreadRepository {
       level: input.level ?? ('notify' as AttentionLevel),
       title: input.title,
       body: input.body ?? '',
+      task_id: input.taskId ?? null,
+      kind: input.kind ?? ('report' as ReportKind),
       created_at: this.now(),
       read_at: null,
     };
     this.statement(
-      `INSERT INTO report (id, thread_id, level, title, body, created_at, read_at)
-       VALUES (@id, @thread_id, @level, @title, @body, @created_at, @read_at)`,
+      `INSERT INTO report (id, thread_id, level, title, body, task_id, kind, created_at, read_at)
+       VALUES (@id, @thread_id, @level, @title, @body, @task_id, @kind, @created_at, @read_at)`,
     ).run(row);
     this.touch(input.threadId);
     return toReport(row as ReportRow);
@@ -825,6 +834,8 @@ function toReport(row: ReportRow): WorkReport {
   return {
     id: row.id,
     threadId: row.thread_id,
+    taskId: row.task_id ?? null,
+    kind: row.kind ?? 'report',
     level: row.level,
     title: row.title,
     body: row.body,

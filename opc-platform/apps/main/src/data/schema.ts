@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1816,7 +1816,23 @@ const V44 = `
 ALTER TABLE task ADD COLUMN error_kind TEXT;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44];
+/**
+ * V45：汇报分两种话，而且知道它是哪件活说的。
+ *
+ * 在这之前，`report` 里混着两种东西：「结果给你看」（验收过了/没过）和「问题要你答」
+ * （执行体请示）。它们长得一模一样，于是收件端只有两个动词——认可和返工——而这两个
+ * 都回答不了一句问句。`task_id` 也是必须的：回答要落到**问问题的那件活**上，不能落到
+ * "这条线上最近的一件"。
+ *
+ * 默认值让老库保持现状：以前的汇报全是"结果"，没有一件知道自己是哪件活说的。
+ */
+const V45 = `
+ALTER TABLE report ADD COLUMN task_id TEXT;
+ALTER TABLE report ADD COLUMN kind TEXT NOT NULL DEFAULT 'report'
+  CHECK (kind IN ('report','question'));
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

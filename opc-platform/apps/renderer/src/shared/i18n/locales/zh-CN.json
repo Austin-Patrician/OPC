@@ -1172,6 +1172,13 @@
     "rework": "重做",
     "reworkCancel": "取消",
     "reworkConfirm": "确认重做",
-    "reworkPlaceholder": "哪里不对？（可以不填）"
+    "reworkPlaceholder": "哪里不对？（可以不填）",
+    "answer": "回答",
+    "answerConfirm": "送出回答",
+    "answerCancel": "取消",
+    "answerPlaceholder": "直接回答它所问的那件事",
+    "answerLive": "回答已经插进它正在跑的活里，这一轮就能看到。",
+    "answerNextAttempt": "回答记在那件活上了，它下一次尝试会看到。",
+    "answerNewTask": "那件活已经收尾了，所以带着你的回答新开了一件继续做。"
   }
 }
