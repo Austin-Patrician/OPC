@@ -45,6 +45,8 @@ export interface CreateThreadInput {
   attention?: AttentionLevel;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */
   budgetTokens?: number | null;
+  /** 静默线：跑通了才说话，没跑通就当没发生（§3.4）。 */
+  speculative?: boolean;
 }
 
 /** `openThread` 的返回：这次是新开的，还是并进了已有的那条线。 */
@@ -98,6 +100,7 @@ interface ThreadRow {
   thread_key: string | null;
   state: ThreadState;
   attention: AttentionLevel;
+  speculative: number;
   budget_tokens: number | null;
   spent_tokens: number;
   created_at: number;
@@ -179,6 +182,7 @@ export class ThreadRepository {
       thread_key: input.threadKey ?? null,
       state: 'open' as ThreadState,
       attention: input.attention ?? ('silent' as AttentionLevel),
+      speculative: input.speculative ? 1 : 0,
       budget_tokens: input.budgetTokens ?? null,
       spent_tokens: 0,
       created_at: at,
@@ -186,8 +190,8 @@ export class ThreadRepository {
       closed_at: null,
     };
     this.statement(
-      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, state, attention, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
-       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @state, @attention, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
+      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, state, attention, speculative, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
+       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @state, @attention, @speculative, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
     ).run(row);
     return toThread(row as ThreadRow);
   }
@@ -737,6 +741,7 @@ function toThread(row: ThreadRow): WorkThread {
     externalId: row.external_id ?? null,
     state: row.state,
     attention: row.attention,
+    speculative: row.speculative === 1,
     budgetTokens: row.budget_tokens,
     spentTokens: row.spent_tokens,
     createdAt: row.created_at,

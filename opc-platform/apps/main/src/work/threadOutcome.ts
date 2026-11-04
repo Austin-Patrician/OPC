@@ -22,12 +22,36 @@ export interface ThreadOutcome {
 
 const STILL_GOING: readonly TaskStatus[] = ['open', 'running'];
 
-export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
+export interface ThreadOutcomeOptions {
+  /**
+   * 静默线（§3.4）。
+   *
+   * 规矩是反的：**永远不 `decide`**。`decide` 的意思是「我要你放下手上的事」，而投机
+   * 的前提恰恰是这件事还没有确定性价值。所以判据换成闸门：
+   *
+   * - 闸门过了 → `notify`（"我查了一下，是这样"，值得他知道）
+   * - 没过 / 没有闸门 → `silent` + 归档（"我试过了，不值得"也是一条结论，但不该打断他）
+   */
+  speculative?: boolean;
+}
+
+export function threadOutcomeFor(
+  task: WorkTask,
+  options: ThreadOutcomeOptions = {},
+): ThreadOutcome | null {
   if (!task.threadId) return null;
   if (STILL_GOING.includes(task.status)) return null;
+  const speculative = options.speculative === true;
 
   switch (task.status) {
     case 'accepted':
+      if (speculative) {
+        // 静默线的价值判断只有一条：闸门过了没有。没有闸门就没有判据，也就没有资格
+        // 打断他——归档，留记录。
+        return isUnverified(task)
+          ? { state: 'archived', report: { level: 'silent', title: task.title, body: summarise(task) } }
+          : { state: 'done', report: { level: 'notify', title: task.title, body: summarise(task) } };
+      }
       if (isUnverified(task)) {
         // Nothing was proven — only that files landed. Saying "done" here would
         // be the system claiming a verdict it never had.
@@ -56,6 +80,7 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
       };
 
     case 'rejected':
+      if (speculative) return silentArchive(task, `没通过验收：${task.acceptance?.reason ?? ''}`);
       return {
         state: 'waiting',
         report: {
@@ -66,6 +91,7 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
       };
 
     case 'failed':
+      if (speculative) return silentArchive(task, `跑挂了：${task.error ?? '未知错误'}`);
       return {
         state: 'failed',
         report: {
@@ -87,6 +113,14 @@ export function threadOutcomeFor(task: WorkTask): ThreadOutcome | null {
     default:
       return null;
   }
+}
+
+/** 静默线没跑成：归档一条记录，不占他的注意力。 */
+function silentArchive(task: WorkTask, reason: string): ThreadOutcome {
+  return {
+    state: 'archived',
+    report: { level: 'silent', title: task.title, body: `${reason}\n${summarise(task)}` },
+  };
 }
 
 function summarise(task: WorkTask): string {

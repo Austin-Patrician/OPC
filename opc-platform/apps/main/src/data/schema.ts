@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1729,7 +1729,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_subject_live
   WHERE subject IS NOT NULL AND is_archived = 0 AND valid_until IS NULL;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39];
+/**
+ * V40：**静默线**（§3.4 投机执行在我们这里能被搬过来的那一半）。
+ *
+ * Router 有时会判断"这件事值得跑，但值不值得让他知道还不确定"——比如群里有人报了个错。
+ * 这种线的规矩是反的：**永远不 decide**。跑通了才 notify（"我查了一下，是这样"），
+ * 没跑通就 silent 归档（"我试过了，不值得"也是一条结论，但不该打断他）。
+ *
+ * 默认 0 让老库保持现状：已有的线全都还是"跑完了要说话"的。
+ */
+const V40 = `
+ALTER TABLE thread ADD COLUMN speculative INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

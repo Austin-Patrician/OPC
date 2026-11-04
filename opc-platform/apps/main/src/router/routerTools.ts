@@ -186,6 +186,13 @@ export function createRouterTools(deps: RouterToolDeps) {
               description: '执行体类型：查资料 / 写代码 / 运维操作。不确定就用 research。',
             }),
           ),
+          speculative: Type.Optional(
+            Type.Boolean({
+              description:
+                '静默线：这条线跑通了才告诉你，没跑通就当没发生。用在"值得跑，但值不值得让他知道' +
+                '还不确定"的事上（例如群里有人报了个错）。它不会打扰他，所以也不要拿它派他明确要的活。',
+            }),
+          ),
         }),
         execute: async (args) => {
           const result = deps.openLine({
@@ -193,6 +200,7 @@ export function createRouterTools(deps: RouterToolDeps) {
             ...(args.title ? { title: args.title } : {}),
             ...(args.thread_key ? { threadKey: args.thread_key } : {}),
             ...(args.template ? { template: args.template } : {}),
+            ...(args.speculative ? { speculative: true } : {}),
           });
           if (!result.ok) return fail(`没派出去：${result.reason}`);
           return ok(

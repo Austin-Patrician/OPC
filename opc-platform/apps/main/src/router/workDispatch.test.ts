@@ -166,3 +166,43 @@ describe('派活', () => {
     expect(created[0]!.workerId).not.toBe(stray.id);
   });
 });
+
+/**
+ * 静默线（§3.4）：Router 用它表达"值得跑，但值不值得让他知道还不确定"。
+ *
+ * 标记落在**线**上而不是任务上：规矩是这条线的规矩，而且它得在派第一个任务之前就定下来
+ * ——否则第一次跑完就已经打扰过他了。
+ */
+describe('静默线', () => {
+  it('标记落在线上', () => {
+    const { open } = opener();
+    const result = open({ goal: '查一下群里说的那个报错是不是真的', speculative: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(threads.getThread(result.threadId)?.speculative).toBe(true);
+  });
+
+  it('普通派活不是静默线：老规矩，跑完了要说话', () => {
+    const { open } = opener();
+    const result = open({ goal: '整理 Q3 财报' });
+    if (!result.ok) throw new Error(result.reason);
+    expect(threads.getThread(result.threadId)?.speculative).toBe(false);
+  });
+
+  it('同一个身份已经有线时不改它的性质：已有那条线不是投机开的', () => {
+    const { open } = opener();
+    const first = open({ goal: '整理 Q3 财报', threadKey: 'im:oc_1:om_1' });
+    if (!first.ok) throw new Error(first.reason);
+
+    const second = open({
+      goal: '补充一句：只要结论',
+      threadKey: 'im:oc_1:om_1',
+      speculative: true,
+    });
+    if (!second.ok) throw new Error(second.reason);
+
+    expect(second.threadId).toBe(first.threadId);
+    expect(threads.getThread(first.threadId)?.speculative).toBe(false);
+  });
+});

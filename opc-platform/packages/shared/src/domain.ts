@@ -939,6 +939,14 @@ export interface WorkThread {
   externalId: string | null;
   state: ThreadState;
   attention: AttentionLevel;
+  /**
+   * 静默线（§3.4）。
+   *
+   * Router 判断"这件事值得跑，但值不值得让他知道还不确定"时开这种线。规矩是反的：
+   * **汇报永远不是 `decide`**——跑通了才 `notify`，没跑通就 `silent` 归档。
+   * `decide` 的意思是「我要你放下手上的事」，而投机的前提恰恰是它还没有确定性价值。
+   */
+  speculative: boolean;
   /** Hard token ceiling for the whole thread; null = only the global cap applies. */
   budgetTokens: number | null;
   spentTokens: number;

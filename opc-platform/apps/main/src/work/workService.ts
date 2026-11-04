@@ -1287,7 +1287,9 @@ export class WorkService {
     if (!task?.threadId) throw new Error('这条任务不在任何工作线上，没有可请示的地方');
 
     const previous = task.steps.filter((step) => step.text.startsWith('请示：')).length;
-    const level = escalationLevel(previous);
+    // 静默线上的请示也不插队：这条线本来就是我自作主张开的，不能反过来向他要决定。
+    const speculative = this.threads.getThread(task.threadId)?.speculative === true;
+    const level = speculative ? 'notify' : escalationLevel(previous);
     this.repository.addStep(input.taskId, `请示：${input.question}`);
 
     const body = [
@@ -1568,7 +1570,8 @@ export class WorkService {
     if (!task) return;
     // 交回过的任务不再改线的状态：线已经回到 open 等别人接手，一条"跑完了"会把它按回去。
     if (this.handedBack.has(task.id)) return;
-    const outcome = threadOutcomeFor(task);
+    const thread = task.threadId ? this.threads.getThread(task.threadId) : null;
+    const outcome = threadOutcomeFor(task, { speculative: thread?.speculative === true });
     if (!outcome) return;
     if (this.reportedThreads.get(task.id) === task.status) return;
     this.reportedThreads.set(task.id, task.status);
@@ -1584,7 +1587,8 @@ export class WorkService {
         this.warnedThreads.add(threadId);
         this.threads.addReport({
           threadId,
-          level: 'decide',
+          // 静默线超预算也只说一次、且不插队：它是我自己开的，不该让他替我焦虑。
+          level: thread?.speculative ? 'notify' : 'decide',
           title: task.title,
           body: '这条工作线已经超出它自己的额度，继续还是收手？',
         });

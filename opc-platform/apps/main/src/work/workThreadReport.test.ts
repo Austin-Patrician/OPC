@@ -265,6 +265,57 @@ describe('请示与交回', () => {
   });
 });
 
+/**
+ * 静默线（§3.4 / E4）。
+ *
+ * 它不是"提前跑"（那需要后台有富余算力，单机上只是抢你自己的时间），是**说不说的判断**：
+ * Router 已经决定要跑，但"值不值得让他知道"还不确定。所以规矩是反的——永远不 `decide`，
+ * 闸门过了才 `notify`。
+ */
+describe('静默线', () => {
+  function speculativeThread() {
+    const thread = threads.createThread({ title: '查一下那个报错', speculative: true });
+    const created = work.createTask({
+      title: '查一下那个报错',
+      brief: '群里说是 500',
+      deliverableSpec: 'server.js 返回 ok',
+      assigneeId,
+      estTokens: 5_000,
+      acceptanceCommand: ['node', '{checks}/verify.mjs'],
+      acceptanceTemplate: 'http-ok',
+      threadId: thread.id,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    return { thread, task: created.task };
+  }
+
+  it('跑通了才说话：一条 notify 进队列', async () => {
+    const { thread, task } = speculativeThread();
+    const finished = await work.runTaskAndWait(task.id);
+    expect(finished.status).toBe('accepted');
+
+    const queue = threads.listQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0]?.level).toBe('notify');
+    expect(threads.getThread(thread.id)?.state).toBe('done');
+  });
+
+  it('中途请示也不插队：静默线上的 escalate 只 notify', () => {
+    const { thread, task } = speculativeThread();
+    const result = work.escalateFor({
+      taskId: task.id,
+      question: '这算不算他关心的问题',
+      tried: '看了群聊上下文',
+      suggestion: '先查，不通就算了',
+    });
+
+    expect(result.level).toBe('notify');
+    expect(threads.listQueue().every((report) => report.level !== 'decide')).toBe(true);
+    // 线不回 waiting：没人需要为它做决定。
+    expect(threads.getThread(thread.id)?.state).not.toBe('waiting');
+  });
+});
+
 describe('task → thread reporting', () => {
   it('closes the line of work quietly when the work passes acceptance', async () => {
     const { thread, task } = await runOne();

@@ -377,7 +377,7 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 | **E1** ✅ | `WorkTask.records` + 只读 `recall` + 复用 `spillText` | 保真用例（逐字保留）、作用域用例、预算性能断言 |
 | **E2** ✅ | `investigate`（子代理）：深度 1、串行、只读 + scratch、合账、透明但可见 | 六条用例，一条一个限制 |
 | **E3** ✅ | `escalate` / `hand_back` + "进度不进 Router"的闸门 | 四次断言，含"report 表里没有 progress" |
-| **E4** | `thread.speculative` + 汇报规则 | 三条用例，含"静默线的 escalate 也不 decide" |
+| **E4** ✅ | `thread.speculative`（V40）+ 汇报规则 | 三条用例，含"静默线的 escalate 也不 decide" |
 | — | 一条线的第二个任务注入交接 | 三条用例（有段 / 有上限 / 空历史不崩） |
 
 顺序的理由：E1 先做，因为 E2 的子代理**需要**"看得见原始证据"才有意义（否则子代理只能看到父的
@@ -554,3 +554,59 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 ### 这一层之后
 
 ①②③④ 四层能力里，①②③齐了。剩下 E4（静默线）和 §11 那张诚实清单。
+
+---
+
+## 15. E4 已落地：静默线
+
+### 只做了后一半，而且说清为什么
+
+原文 §3.4 的那个例子是两个动作：**提前跑** + **说不说**。我们只做后一半。
+
+前一半需要「后台有富余算力」这个前提。我们是单机、单个人的机器，提前跑就是抢你自己的
+时间——`04-superagent-check.md` §1 那条判断不变。
+
+后一半几乎不花新代码，因为两样东西都是现成的：**执行**是任务，**判据**是验收闸门。缺的只是
+一条线级标记和一条汇报规则：
+
+> 静默线上的汇报**永远不是 `decide`**。闸门过了 → `notify`；没通过（或根本没有闸门）→
+> `silent` + 归档。
+
+为什么"永远不 decide"：`decide` 的意思是「我要你放下手上的事」，而投机的前提恰恰是这件事
+还没有确定性价值。
+
+### 落到了哪
+
+| 东西 | 在哪 |
+|---|---|
+| `thread.speculative`（默认 0，老库不动） | `schema.ts` 的 V40 |
+| 开线时带上 | `workDispatch` / Router 的 `open_line_of_work(speculative)` |
+| 汇报分级 | `threadOutcomeFor(task, { speculative })`（纯函数，五条用例） |
+| 请示也降级 | `workService.escalateFor` |
+| 超预算只说一次、且不插队 | `workService.reportToThread` |
+
+### 三个容易漏的地方
+
+**① 标记落在线上，不是任务上。** 规矩是这条线的规矩，而且它必须在派第一个任务**之前**就定
+下来——否则第一次跑完就已经打扰过他了。
+
+**② 同一个身份已有线时不改它的性质。** `openThread` 是"有就并进去"，那条已有的线不是投机
+开的；把 `speculative` 盖上去，会让一条他明确要过的活从此不再报"没通过"。用例锁住了这一条。
+
+**③ 没有闸门的静默线归档，不是"通过"。** `UNVERIFIED_GATE` 是一个永远成功、什么都证明不了
+的命令。静默线上这等于"我不知道它对不对"——那就更不能拿它去换他的一次注意。
+
+### 用例
+
+`threadOutcome.test.ts`（+5）：过了才 notify、没通过归档、跑挂了也不 decide、没有闸门就归档、
+非静默线不受影响。
+
+`workDispatch.test.ts`（+3）：标记落在线上、普通派活不是静默线、已有线上不被改写。
+
+`workThreadReport.test.ts`（+2，端到端）：跑通了一条 notify 进队列；静默线上的 `escalate`
+只 `notify`，且线不回 `waiting`（没人需要为它做决定）。
+
+### 这一层之后
+
+原文对 Worker 层的每一条要求，现在都有了落点或有理由的"不做"（§11）。四期下来补的其实是
+同一件事的三个面：**它看到的、它能想到的、它能说的**。

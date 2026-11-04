@@ -56,6 +56,12 @@ export interface OpenLineInput {
   workerId?: string;
   /** 可执行的验收命令；没有就诚实地说"验不了"。 */
   acceptance?: readonly string[];
+  /**
+   * 静默线（§3.4）：跑通了才说话，没跑通就当没发生。
+   *
+   * Router 用它表达"这件事值得跑，但值不值得让他知道还不确定"。
+   */
+  speculative?: boolean;
 }
 
 export type OpenLineResult =
@@ -78,6 +84,7 @@ export function createLineOpener(deps: LineOpenerDeps) {
       title: input.title?.trim() || firstLine(goal),
       goal,
       threadKey: input.threadKey ?? null,
+      ...(input.speculative ? { speculative: true } : {}),
     });
 
     const template = input.template ?? inferTemplate(`${thread.title} ${goal}`);
