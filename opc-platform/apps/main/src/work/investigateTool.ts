@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import { defineExtension, defineTool, type ToolExecutionResult } from '@earendil-works/pi-durable';
-import type { SubagentAnswer } from './subagent';
+import type { Context } from '@earendil-works/chord/context';
+import type { SubagentAnswer, SubagentToolApi } from './subagent';
 
 /**
  * `investigate`：把一段思考交给一个干净的上下文去查。
@@ -20,8 +21,17 @@ export const MAX_INVESTIGATIONS = 3;
 export interface InvestigateToolDeps {
   /** 正在跑的父任务。空 = 没有作用域，不派。 */
   taskId: () => string | undefined;
-  /** 真的去跑。失败不传染：这里抛错会被工具收成一句"没查出来"。 */
-  run: (input: { taskId: string; question: string; expects: string }) => Promise<SubagentAnswer>;
+  /**
+   * 真的去跑。失败不传染：这里抛错会被工具收成一句"没查出来"。
+   *
+   * `api` 必须原样传下去：子会话要归**这次工具调用**所有，那个所有权只有
+   * 工具调用的 api 能建（`api.commit(tx => tx.createConversation(…))`）。
+   */
+  run: (
+    input: { taskId: string; question: string; expects: string },
+    api: SubagentToolApi,
+    context: Context,
+  ) => Promise<SubagentAnswer>;
   /** 记进父任务的步骤流。子代理对 Router 透明，但对你和 Watchdog 必须可见。 */
   log: (taskId: string, text: string) => void;
 }
@@ -57,7 +67,7 @@ export function createInvestigateToolExtension(deps: InvestigateToolDeps) {
             Type.String({ description: '希望拿回什么：结论 / 对比 / 一个文件路径 / 一段命令输出。' }),
           ),
         }),
-        execute: async (args): Promise<ToolExecutionResult> => {
+        execute: async (args, api, context): Promise<ToolExecutionResult> => {
           const question = args.question.trim();
           if (question.length < 4) {
             return {
@@ -102,11 +112,11 @@ export function createInvestigateToolExtension(deps: InvestigateToolDeps) {
           used.set(taskId, count + 1);
           deps.log(taskId, `[查 ${count + 1}] ${question}`);
           try {
-            const result = await deps.run({
-              taskId,
-              question,
-              expects: args.expects?.trim() ?? '',
-            });
+            const result = await deps.run(
+              { taskId, question, expects: args.expects?.trim() ?? '' },
+              api,
+              context,
+            );
             deps.log(
               taskId,
               `[查 ${count + 1}] 回来了：${result.answer.replace(/\s+/g, ' ').slice(0, 80)}`,

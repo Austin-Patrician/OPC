@@ -56,6 +56,7 @@ import { createRememberToolExtension } from '../memory/rememberTool';
 import { buildRecords, type RecordSource } from './records';
 import { ensureDir, listWorkspaceFiles } from './workspace';
 import { createInvestigateToolExtension } from './investigateTool';
+import { AssistantEntry, configure } from '@earendil-works/pi-durable';
 import {
   countEscalations,
   createEscalateToolExtension,
@@ -63,7 +64,7 @@ import {
   escalationLevel,
   escalationTag,
 } from './escalateTool';
-import { buildSubagentPrompt, readAnswerFile, type SubagentAnswer } from './subagent';
+import { buildSubagentPrompt, type SubagentAnswer, type SubagentToolApi } from './subagent';
 import { priceUsage } from './usage';
 import { registerSandboxWorkspace } from '../sandbox/workspaces';
 import { createRecallToolExtension, type RecallOutcome } from './recallTool';
@@ -1043,7 +1044,7 @@ export class WorkService {
             available: true,
             extension: createInvestigateToolExtension({
               taskId: () => currentTaskIdFor(personId),
-              run: (input) => this.runSubagent(input),
+              run: (input, api, context) => this.runSubagent(input, api, context),
               log: (taskId, text) => {
                 this.repository.addStep(taskId, text);
                 const task = this.repository.getTask(taskId);
@@ -1264,17 +1265,14 @@ export class WorkService {
 
   /** 关掉一个执行体的运行时。注册表在开库时固定，改工具集必须重开。 */
   private async evictRuntime(workerId: string): Promise<void> {
-    // 子代理那一份也要关：注册表在开库时固定，留着它 = 换掉的工具集对子代理不生效。
-    for (const key of [workerId, `${workerId}--sub`]) {
-      const entry = this.harnesses.get(key);
-      if (!entry) continue;
-      this.harnesses.delete(key);
-      const context = await getBackgroundContext();
-      try {
-        await entry.harness.close(context);
-      } catch (error) {
-        console.warn('关闭执行体 harness 失败（栈已变更）', error);
-      }
+    const entry = this.harnesses.get(workerId);
+    if (!entry) return;
+    this.harnesses.delete(workerId);
+    const context = await getBackgroundContext();
+    try {
+      await entry.harness.close(context);
+    } catch (error) {
+      console.warn('关闭执行体 harness 失败（栈已变更）', error);
     }
   }
 
@@ -1388,11 +1386,15 @@ export class WorkService {
    * 3. **账记在父任务上**。账目里不该出现"没有任务的支出"，否则线级预算说不清"这件事
    *    值不值"。
    */
-  private async runSubagent(request: {
-    taskId: string;
-    question: string;
-    expects: string;
-  }): Promise<SubagentAnswer> {
+  private async runSubagent(
+    request: {
+      taskId: string;
+      question: string;
+      expects: string;
+    },
+    api: SubagentToolApi,
+    ctx: Context,
+  ): Promise<SubagentAnswer> {
     const task = this.repository.getTask(request.taskId);
     if (!task) throw new Error('父任务不见了');
     if (!this.deps.modelConfig) throw new Error('没有配置模型');
@@ -1413,27 +1415,47 @@ export class WorkService {
     );
     ensureDir(scratchDir);
 
-    const { harness } = await this.harnessFor(identity, { storageSuffix: '--sub' });
-    const ctx = await getBackgroundContext();
+    const { harness } = await this.harnessFor(identity);
     const before = await harness.usage(ctx);
 
-    const conversation = await harness.createConversation(
-      {
-        ownership: { kind: 'ownerless' },
-        agent: {
-          model: { provider: model.providerId, modelId: model.modelId },
-          thinkingLevel: (this.deps.modelConfig.getThinking() ?? 'medium') as never,
-          // 它的世界只有临时目录——父目录它是"读得到的客人"，不是住户。
-          cwd: scratchDir,
-        },
-      },
-      ctx,
-    );
+    /*
+     * 子会话**归这个工具调用所有**，和父会话在同一个 harness 里。
+     *
+     * 以前它跑在另一份存储（`<workerId>--sub.sqlite`）上，理由是"工具里等另一轮
+     * generation，同一个 harness 的调度顺序不确定"。那条理由没有依据——平台自己的
+     * 示例就是这个形状，而 `workSubagentProbe` 用真模型跑通过（工具里建会话、提交、
+     * 等它答完、把答案带回父）。
+     *
+     * 归它所有买来三样手写不出来的东西：**中止顺着所有权传下去**、**重启认得出是
+     * 同一个子会话**（`scanConversations({ownerTaskId})`）、**界面能挂上去看它在
+     * 干什么**（`api.details`）。
+     */
+    const childId = await api.commit(async (tx) => {
+      const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
+      if (existing !== undefined) return existing.id;
+      const created = await tx.createConversation({
+        ownership: { kind: 'task', taskId: api.taskId },
+      });
+      // 子会话**继承父的 agent**（同一套工具、同一个模型），这里只改三样：
+      // 模型（执行体可能pinned 了自己的）、思考档位、和它的世界（临时目录）。
+      await configure(tx, created.id, {
+        model: { provider: model.providerId, modelId: model.modelId },
+        thinkingLevel: (this.deps.modelConfig!.getThinking() ?? 'medium') as never,
+        cwd: scratchDir,
+      });
+      return created.id;
+    }, ctx);
+
     // 沙箱只放行一个可写根。父任务的工作目录不在里面，所以"写不进去"是执行出来的，
     // 不是叮嘱出来的（读仍然放行）。
-    registerSandboxWorkspace(conversation.id, scratchDir);
+    registerSandboxWorkspace(childId, scratchDir);
+    // UI 顺着这条 details 找得到子会话：不写它，界面上就只有一个"查了一下"的黑盒。
+    await api.details({ conversationId: String(childId) }, ctx);
 
-    const submission = await conversation.submit(
+    const handle = await api.conversation(childId, ctx);
+    if (!handle) throw new Error('拿不到子会话的句柄');
+
+    const submission = await handle.submit(
       {
         type: 'input',
         content: buildSubagentPrompt({
@@ -1443,6 +1465,8 @@ export class WorkService {
           scratchDir,
           constraints: this.constraintsFor(task),
         }),
+        // 重启之后同一个 requestId 找得到同一次提交，不会问第二遍。
+        requestId: `subagent:${api.taskId}`,
       },
       ctx,
     );
@@ -1454,10 +1478,17 @@ export class WorkService {
     if (tokens > 0) this.repository.addTokens(task.id, tokens);
     if (costUsd > 0) this.repository.addCost(task.id, costUsd);
 
-    if (settled.status !== 'done') throw new Error(`子代理未完成（${settled.status}）`);
+    if (settled.type !== 'input' || settled.status !== 'done') {
+      throw new Error(`子代理未完成（${settled.type === 'input' ? settled.status : settled.type}）`);
+    }
+
+    // 答案是它这一轮的**结果条目**，不是"最后一条消息"：`settled.answer` 是具体
+    // 那一条的 id，所以这里没有猜。以前约定 `answer.md`，那是在用一个文件协议补
+    // 一件平台本来就给了的事。
+    const answerEntry = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
 
     return {
-      answer: readAnswerFile(scratchDir),
+      answer: textOfEntry(answerEntry),
       written: listWorkspaceFiles(scratchDir).map((file) => file.relPath),
       tokens,
       costUsd,
@@ -1721,15 +1752,8 @@ export class WorkService {
    * the tool registry and model. They are the same value until a task carries a
    * worker id, which is why old data keeps its existing `agents/<employee>.sqlite`.
    */
-  private async harnessFor(
-    identity: RuntimeIdentity,
-    options: { storageSuffix?: string } = {},
-  ): Promise<EmployeeHarness> {
-    // 子代理用**另一份存储**（`<workerId>--sub.sqlite`），但共用同一个主体：
-    // 同一套工具、同一个模型。分开存储的理由有两条，都不是洁癖——
-    // ① 上下文隔离是子代理存在的意义，共用一个会话库等于没隔离；
-    // ② 工具调用在等另一轮 generation 时，同一个 harness 里的调度顺序是不确定的。
-    const cacheKey = `${identity.runtimeKey}${options.storageSuffix ?? ''}`;
+  private async harnessFor(identity: RuntimeIdentity): Promise<EmployeeHarness> {
+    const cacheKey = identity.runtimeKey;
     const cached = this.harnesses.get(cacheKey);
     if (cached) return cached;
 
@@ -1804,4 +1828,23 @@ let contextPromise: Promise<Context> | null = null;
 function getBackgroundContext(): Promise<Context> {
   contextPromise ??= import('@earendil-works/chord/context').then((module) => module.BACKGROUND_CONTEXT);
   return contextPromise;
+}
+
+/**
+ * 一条 assistant 条目里的文字。
+ *
+ * 形状随 provider 略有差别（有的给 content 块数组，有的直接给字符串），所以只认
+ * `content` 里的 text 块——认不出来的部分宁可不给，也不把 JSON 倒进父的上下文。
+ */
+function textOfEntry(entry: unknown): string {
+  const messages = (entry as { model?: unknown[] } | undefined)?.model ?? [];
+  const texts: string[] = [];
+  for (const message of messages as { content?: unknown }[]) {
+    const content = message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as { type?: string; text?: unknown }[]) {
+      if (block?.type === 'text' && typeof block.text === 'string') texts.push(block.text);
+    }
+  }
+  return texts.join('\n').trim();
 }

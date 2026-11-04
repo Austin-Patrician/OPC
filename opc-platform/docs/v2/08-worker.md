@@ -467,12 +467,14 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 
 **① 子代理跑在另一份存储上（`<workerId>--sub.sqlite`），而不是同一个 harness 里。**
 
-最初想的是"同一个 harness 里再开一个会话"——它是同一套工具、同一个模型，看起来更省。
-放弃的理由有两条，第二条是硬的：上下文隔离是子代理存在的意义，共用一个会话库等于没隔离；
-而且**工具调用在等另一轮 generation 时，同一个 harness 里的调度顺序是不确定的**。让一个
-工具去等同一个调度器里的另一件活，是一个随时会变成"卡住十分钟"的设计。
+> **这一条后来被推翻了，见 `09-team.md` §8。** 当时的理由是"工具调用在等另一轮
+> generation 时，同一个 harness 里的调度顺序不确定"——那条理由从来没有验证过，而且
+> 是错的：平台自己的示例就是这个形状，我们的 `harnessBrain` 本来也在做同一件事。
+> 现在子代理归工具调用所有，跑在执行体自己那份存储里，`--sub.sqlite` 和 `answer.md`
+> 都删掉了。真模型探针三次跑通，`agents/` 下只剩一份存储。
 
-代价照实说：每个执行体多一个 sqlite，同一份 registry 会被打开两次。
+留着的原因是当时的两条判断：上下文隔离是子代理存在的意义；以及上面那条（错的）调度
+顾虑。第一条现在由"不同会话"满足，第二条已被证伪。
 
 **② 深度 1 不是"把工具藏起来"，是"同一时刻只允许一个在跑"。**
 
@@ -560,6 +562,9 @@ investigate(question, expects) → { answer, read: string[], written: string[] }
 ### 这一层之后
 
 ①②③④ 四层能力里，①②③齐了。剩下 E4（静默线）和 §11 那张诚实清单。
+
+> 后来 E3/E4 都做了，子代理也迁到了 owned conversation（`09-team.md` §8）——`answer.md`
+> 与 `--sub.sqlite` 都已删除，`readAnswerFile` 不复存在。
 
 ---
 

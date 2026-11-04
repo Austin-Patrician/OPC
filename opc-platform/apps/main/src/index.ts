@@ -77,6 +77,8 @@ const isOcrProbe = process.env.OPC_OCR_PROBE;
 const isSmoke = process.env.OPC_SMOKE === "1";
 /** `OPC_WORK_PROBE=1`: run the Phase 0 loop headlessly and print evidence. */
 const isWorkProbe = process.env.OPC_WORK_PROBE === "1";
+/** `OPC_SUBAGENT_PROBE=1`: can a tool wait for another conversation in the same harness? (真模型) */
+const isSubagentProbe = process.env.OPC_SUBAGENT_PROBE === '1';
 /** `OPC_MODEL_PROBE=1`: import the local pi provider config and run one task with the model brain. */
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
@@ -838,6 +840,7 @@ const isHeadlessMode =
   isSmoke ||
   Boolean(isOcrProbe) ||
   isWorkProbe ||
+  isSubagentProbe ||
   isModelProbe ||
   isConsolidationRunProbe ||
   isBlockerProbe ||
@@ -1972,6 +1975,39 @@ if (!hasLock) {
       );
       await work.dispose();
       app.exit(latest?.status === 'accepted' ? 0 : 1);
+      return;
+    }
+
+    if (isSubagentProbe) {
+      // 迁移子代理之前的一次前置验证（09-team.md §8）：工具里等另一轮 generation
+      // 在同一个 harness 里成不成立。用真库的模型配置 + 临时存储，不碰任何真会话。
+      initAppPaths();
+      const db = openCompanyDatabase(appPaths.database);
+      const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
+      const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
+      const llm = modelConfig.getDefaults().llm;
+      if (!llm) {
+        process.stdout.write(`${JSON.stringify({ probe: 'subagent', ok: false, error: '没有配置默认模型' }, null, 2)}\n`);
+        app.exit(2);
+        return;
+      }
+
+      try {
+        const { mkdtempSync } = await import('node:fs');
+        const { tmpdir } = await import('node:os');
+        const { probeWorkSubagent } = await import('./work/subagentProbe');
+        const outcome = await probeWorkSubagent({
+          modelConfig,
+          root: mkdtempSync(path.join(tmpdir(), 'opc-subagent-probe-')),
+        });
+        process.stdout.write(`${JSON.stringify({ probe: 'subagent', ...outcome }, null, 2)}\n`);
+        app.exit(outcome.ok ? 0 : 1);
+      } catch (error) {
+        console.error('SUBAGENT_PROBE_FAILED', error);
+        app.exit(1);
+      } finally {
+        db.close();
+      }
       return;
     }
 

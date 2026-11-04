@@ -114,7 +114,7 @@ return { status: 'waiting', checkpoint: { phase: 'decide', payments }, on: payme
 | 团队的 UI | `watchTaskGraph()` 能给出任务树，但我们的账本是自己的 `task` 表。团队面板要等 UI 那一轮 |
 | 子代理还在用自造的隔离（`--sub.sqlite`） | 见 §8 |
 
-## 8. 下一步：子代理该迁到 owned conversation
+## 8. 子代理已迁到 owned conversation
 
 `08-worker.md` §13 里子代理跑在**另一份存储**（`<workerId>--sub.sqlite`）、用 `answer.md` 交接
 结论、用模块级 `inFlight` 钉深度。当时的理由是"工具调用在等另一轮 generation 时，同一个 harness
@@ -133,5 +133,43 @@ await api.details({ conversationId: child }, context);   // UI 能挂到子代�
 买了三样东西，都是我们手写不出来的：**中止会顺着所有权传下去**、**重启能找回同一个子会话**、
 **界面能看见它在干什么**。
 
-所以它排在下一期，但**先写探针**：真实模型、中文、工具链跑通一次再迁。上一次凭"我觉得"下的
-判断已经错过一回，这一条不再凭感觉。
+所以迁移之前先写了一个探针（`OPC_SUBAGENT_PROBE=1`）：临时库、临时目录、真模型，跑的是
+**完整链路**——父任务在跑，`investigate` 里开一个归它所有的子会话，子会话用自己的上下文查
+一件事，父拿回结论继续干，最后过真闸门。
+
+三次运行的结果一致：
+
+```json
+{ "ok": true, "taskStatus": "accepted", "investigated": true,
+  "verdict": "pass", "artifacts": ["server.js"],
+  "agentStores": ["<workerId>.sqlite"],
+  "steps": ["[查 1] …", "[查 1] 回来了：## 结论 最少 1 行 …", "自动验收通过"] }
+```
+
+`agentStores` 只有**一份**：没有 `--sub.sqlite` 了。
+
+### 删掉的自造件
+
+| 删掉 | 换成 |
+|---|---|
+| `<workerId>--sub.sqlite` | 子会话就在执行体自己那份存储里 |
+| `answer.md` 文件协议 + `readAnswerFile` | `settled.answer` 那一条（具体 id，不是"最后一条消息"） |
+| `harness.createConversation({ ownership: 'ownerless' })` | `api.commit(tx => tx.createConversation({ ownership: { kind: 'task' } }))` |
+| `harness.createConversation` 上手工配 agent | `configure(tx, childId, { model, thinkingLevel, cwd })` |
+
+换来三样手写不出来的：**中止顺着所有权传给子会话**、**重启认得出是同一个子会话**
+（`scanConversations({ ownerTaskId })` + `requestId`）、**界面挂得上去看它在干什么**
+（`api.details({ conversationId })`）。
+
+### 留着的一个自造件，和为什么
+
+`investigateTool` 里那个模块级的 `inFlight` / `used` 还留着。它管的是**深度 1** 和
+**一次任务最多三次**，那是策略，不是平台能力。平台的等价物是给子会话 `configure` 时
+`extensions: { remove: [investigate] }`——但我们的扩展对象是每次 `buildRegistry` 现造的，
+拿不到稳定的引用，而按名字移除不是 1.4.0 的接口。等它有了，这一处也删。
+
+### 探针本身
+
+`OPC_SUBAGENT_PROBE=1 electron .` 会打印一段 JSON 然后退出，`ok` 的判据是三条同时成立：
+模型真的派了子代理、父任务过了验收、`agents/` 下只有一份存储。它跑在临时目录里，
+不碰真库、不往任何人的会话里写东西。

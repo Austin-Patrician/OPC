@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 /**
  * 子代理（原文 §2.2：Worker 内部可以再创建 Subagent，对 Router 透明）。
  *
@@ -21,6 +18,9 @@ import path from 'node:path';
  */
 
 /** 派出去要查什么。 */
+import type { Context } from '@earendil-works/chord/context';
+import type { ToolExecutionApi } from '@earendil-works/pi-durable';
+
 export interface SubagentRequest {
   /** 父任务。作用域、预算、账目都挂在它上面。 */
   taskId: string;
@@ -47,10 +47,23 @@ export interface SubagentAnswer {
   costUsd: number;
 }
 
-export type SubagentRunner = (request: SubagentRequest) => Promise<SubagentAnswer>;
+export type SubagentRunner = (
+  request: SubagentRequest,
+  api: SubagentToolApi,
+  context: Context,
+) => Promise<SubagentAnswer>;
 
-/** 子代理写结论的地方。约定一个文件名，比解析最后一条消息可靠。 */
-export const ANSWER_FILE = 'answer.md';
+/**
+ * 子代理只用到工具调用的四件事：知道自己是谁（作用域与所有权）、能开一个归自己的
+ * 会话、能拿到它的句柄、能让界面挂上去。
+ *
+ * 用 `Pick` 而不是整个 `ToolExecutionApi`：这里声明的是**宿主依赖什么**，多一个
+ * 字段，就多一个以后不敢改的地方。
+ */
+export type SubagentToolApi = Pick<
+  ToolExecutionApi,
+  'taskId' | 'commit' | 'conversation' | 'details'
+>;
 
 /**
  * 子代理的提示词。
@@ -82,25 +95,11 @@ export function buildSubagentPrompt(request: SubagentRequest): string {
   lines.push(
     '',
     '要求：',
-    `1. 把结论写进当前目录的 ${ANSWER_FILE}：只写结论与依据，不要复述你查的过程。`,
+    '1. 把结论写成**你这一轮的回答**：只写结论与依据，不要复述你查的过程。',
+    '   父只读得到你最后那段话，读不到你的中间步骤。',
     '2. 不要再派子代理——你已经是最里面那一层了。',
     '3. 查不到就说查不到，并写清你试过什么。编一个像样的结论比没有结论更糟。',
   );
 
   return lines.join('\n');
-}
-
-/**
- * 读回它写下的结论。
- *
- * 约定一个文件而不是解析"最后一条消息"：会话的最后一条可能是工具调用、可能是
- * compaction 之后的摘要，解析它等于在猜。文件读不到就明说没结论——比给父一段
- * 看上去很像结论的东西安全。
- */
-export function readAnswerFile(scratchDir: string): string {
-  try {
-    return fs.readFileSync(path.join(scratchDir, ANSWER_FILE), 'utf8').trim();
-  } catch {
-    return '';
-  }
 }
