@@ -117,6 +117,8 @@ const bridge: OpcBridge = {
     save: (draft: unknown) => ipcRenderer.invoke(IPC.mcp.save, draft),
     remove: (name: string) => ipcRenderer.invoke(IPC.mcp.remove, name),
     test: (name: string) => ipcRenderer.invoke(IPC.mcp.test, name),
+    login: (name: string) => ipcRenderer.invoke(IPC.mcp.login, name),
+    logout: (name: string) => ipcRenderer.invoke(IPC.mcp.logout, name),
   },
   threads: {
     start: (goal: string) => ipcRenderer.invoke(IPC.threads.start, goal),

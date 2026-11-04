@@ -9,6 +9,7 @@ import {
 } from './contract';
 import { readFile, readMcpConfig } from './config';
 import { connectMcp, type McpConnection } from './connection';
+import { McpAuthStore, authFile, isHttp } from './auth';
 
 /**
  * MCP 服务器的那一页（M2）。
@@ -31,6 +32,8 @@ export interface McpServerView {
   resources?: number;
   /** 探测失败的原因。一个服务器坏了只是一行红字。 */
   error?: string;
+  /** 只有 HTTP 服务器有：登录了没有。stdio 的凭据是它自己的环境变量。 */
+  auth?: 'signed-in' | 'signed-out';
 }
 
 const fileName = (userDataDir: string) => path.join(userDataDir, 'mcp.json');
@@ -41,10 +44,16 @@ export function listServers(options: { userDataDir: string; homeDir?: string }):
   sources: string[];
 } {
   const { servers, sources } = readMcpConfig(options);
-  return { servers: servers.map(toView), sources };
+  return { servers: servers.map((server) => toView(server, options.userDataDir)), sources };
 }
 
-export function toView(config: McpServerConfig): McpServerView {
+export function toView(config: McpServerConfig, userDataDir?: string): McpServerView {
+  const auth =
+    userDataDir && isHttp(config)
+      ? new McpAuthStore(authFile(userDataDir), config.name).hasTokens()
+        ? ('signed-in' as const)
+        : ('signed-out' as const)
+      : undefined;
   return {
     name: config.name,
     transport: isStdioServer(config) ? 'stdio' : 'http',
@@ -54,6 +63,7 @@ export function toView(config: McpServerConfig): McpServerView {
     enabled: isEnabled(config),
     exposure: exposureOf(config),
     ...(config.description ? { description: config.description } : {}),
+    ...(auth ? { auth } : {}),
   };
 }
 
@@ -66,8 +76,9 @@ export function toView(config: McpServerConfig): McpServerView {
 export async function testServer(
   config: McpServerConfig,
   connect: (config: McpServerConfig) => Promise<McpConnection> = connectMcp,
+  userDataDir?: string,
 ): Promise<McpServerView> {
-  const view = toView(config);
+  const view = toView(config, userDataDir);
   let connection: McpConnection | null = null;
   try {
     connection = await connect(config);

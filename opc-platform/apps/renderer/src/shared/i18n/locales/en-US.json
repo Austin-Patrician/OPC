@@ -671,7 +671,13 @@
       "save": "Save",
       "saved": "Saved. It applies to the next piece of work, no restart.",
       "removed": "{{name}} removed.",
-      "sources": "Read from: {{files}}"
+      "sources": "Read from: {{files}}",
+      "signIn": "Sign in",
+      "signOut": "Sign out",
+      "signedIn": "Signed in",
+      "signedOut": "Not signed in",
+      "signedInNotice": "Signed in to {{name}}. The next piece of work carries the credential.",
+      "signedOutNotice": "Cleared the credential for {{name}}."
     }
   },
   "notFound": {

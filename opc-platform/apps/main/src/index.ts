@@ -5,7 +5,7 @@ import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
 import { readMcpConfig } from './mcp/config';
-import { closeAllMcpConnections } from './mcp/connection';
+import { closeAllMcpConnections, configureMcpAuth } from './mcp/connection';
 import { USER_MEMORY_OWNER } from './memory/owners';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
@@ -467,6 +467,8 @@ async function bootstrap(): Promise<void> {
   const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
   // 外部能力（MCP）：读 `<userData>/mcp.json`，再读 pi 的 `~/.pi/agent/mcp.json`。
   // 一个服务器连不上只会让它的工具不在，不影响别的、也不影响这个应用能不能开。
+  // OAuth 的 token 存在 userData 下（加密）：和模型的凭据分开放，两件事生命周期不一样。
+  configureMcpAuth(appPaths.userData);
   const readMcp = () => readMcpConfig({ userDataDir: appPaths.userData }).servers;
   const mcpConfigured = readMcp();
   if (mcpConfigured.length > 0) {

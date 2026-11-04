@@ -9,6 +9,7 @@ import {
   type Tool,
 } from '@earendil-works/pi-mcp';
 import { isStdioServer, type McpServerConfig } from './contract';
+import { McpAuthStore, authFile, runtimeAuthProvider } from './auth';
 
 /**
  * 一个 MCP 服务器的连接。
@@ -37,6 +38,18 @@ export interface McpConnection {
 
 const CLIENT_INFO = { name: 'opc', version: '0.1.0' } as const;
 
+/**
+ * OAuth 的状态文件。没有配置就没有 OAuth——匿名能连的服务器照连。
+ *
+ * 用模块级而不是构造参数：`connectMcp` 是被四条路径共用的（建注册表、测试、探针、
+ * 登录后重连），把 userData 一路传下去只会让每个调用方都多知道一件与它无关的事。
+ */
+let authStore: string | null = null;
+
+export function configureMcpAuth(userDataDir: string): void {
+  authStore = authFile(userDataDir);
+}
+
 /** 连上并读完工具与资源目录。失败就抛：调用方决定"这一个坏了"还是"整个都别用"。 */
 export async function connectMcp(
   config: McpServerConfig,
@@ -60,6 +73,13 @@ export async function connectMcp(
     : new StreamableHttpTransport({
         url: config.url,
         ...(config.headers ? { headers: config.headers } : {}),
+        // 有 `Authorization` 头就说明它自带凭据，OAuth 不该插手（那会把 401 变成登录流程）。
+        ...(() => {
+          const provider = authStore
+            ? runtimeAuthProvider(config, new McpAuthStore(authStore, config.name))
+            : undefined;
+          return provider ? { authProvider: provider } : {};
+        })(),
       });
 
   try {

@@ -671,7 +671,13 @@
       "save": "保存",
       "saved": "已经记下了。下一次干活就生效，不用重启。",
       "removed": "{{name}} 已经移除。",
-      "sources": "配置读自：{{files}}"
+      "sources": "配置读自：{{files}}",
+      "signIn": "登录",
+      "signOut": "登出",
+      "signedIn": "已登录",
+      "signedOut": "未登录",
+      "signedInNotice": "{{name}} 登录成功。下一次干活就带上了凭据。",
+      "signedOutNotice": "{{name}} 的凭据已经清掉。"
     }
   },
   "notFound": {

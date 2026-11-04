@@ -21,7 +21,7 @@ import type {
   WorkThread,
 } from '@opc/shared/domain';
 import { MODEL_ROLES, type ModelRole } from '@opc/shared/domain';
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAppInfo } from '../appInfo';
@@ -39,6 +39,7 @@ import { appPaths } from '../paths';
 import { closeAllMcpConnections } from '../mcp/connection';
 import { listServers, removeServer, saveServer, testServer } from '../mcp/settings';
 import { readMcpConfig } from '../mcp/config';
+import { McpAuthStore, authFile, isHttp, loginMcp } from '../mcp/auth';
 import type { McpExposure, McpServerConfig } from '../mcp/contract';
 import type { ModelConfigService } from '../models/modelConfigService';
 import type { DecisionService } from '../models/decisionService';
@@ -621,15 +622,36 @@ export function registerIpc({
     await reloadMcp();
     return result;
   });
-  ipcMain.handle(IPC.mcp.test, async (_event, name: unknown) => {
-    if (typeof name !== 'string' || !name.trim()) throw new Error('mcp:test 需要服务器名');
-    const config = listServers(mcpOptions()).servers.find((server) => server.name === name.trim());
-    if (!config) throw new Error(`没有这个服务器：${name}`);
-    const full = readMcpConfig({ userDataDir: appPaths.userData }).servers.find(
+  const mcpConfigFor = (name: unknown): McpServerConfig => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('mcp 需要服务器名');
+    const config = readMcpConfig({ userDataDir: appPaths.userData }).servers.find(
       (server) => server.name === name.trim(),
     );
-    if (!full) throw new Error(`没有这个服务器：${name}`);
-    return testServer(full);
+    if (!config) throw new Error(`没有这个服务器：${name}`);
+    return config;
+  };
+  ipcMain.handle(IPC.mcp.test, async (_event, name: unknown) =>
+    testServer(mcpConfigFor(name), undefined, appPaths.userData),
+  );
+
+  ipcMain.handle(IPC.mcp.login, async (_event, name: unknown) => {
+    const config = mcpConfigFor(name);
+    if (!isHttp(config)) throw new Error('只有 HTTP 服务器需要登录：stdio 的凭据在它自己的环境变量里');
+    const store = new McpAuthStore(authFile(appPaths.userData), config.name);
+    const result = await loginMcp(config, {
+      store,
+      // 只有这个进程知道"打开浏览器"是什么意思。
+      openBrowser: (url) => shell.openExternal(url),
+    });
+    if (!result.ok) throw new Error(result.error);
+    await reloadMcp();
+    return listServers(mcpOptions());
+  });
+  ipcMain.handle(IPC.mcp.logout, async (_event, name: unknown) => {
+    const config = mcpConfigFor(name);
+    new McpAuthStore(authFile(appPaths.userData), config.name).clear();
+    await reloadMcp();
+    return listServers(mcpOptions());
   });
 
   ipcMain.handle(IPC.threads.answer, async (_event, raw: unknown) => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Plug, RefreshCw, Trash2 } from 'lucide-react';
+import { KeyRound, Loader2, LogOut, Plug, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { McpServerView } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section, StatusBadge } from '@/features/settings/ui/kit';
@@ -89,6 +89,35 @@ export function McpPage() {
     }
   };
 
+  /** 走一遍 OAuth：会打开浏览器，回来就多一行"已登录"。 */
+  const signIn = async (name: string) => {
+    setBusy(`auth:${name}`);
+    try {
+      const next = await window.opc!.mcp.login(name);
+      setServers(next.servers);
+      setSources(next.sources);
+      setNotice(t('settings.mcp.signedInNotice', { name }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const signOut = async (name: string) => {
+    setBusy(`auth:${name}`);
+    try {
+      const next = await window.opc!.mcp.logout(name);
+      setServers(next.servers);
+      setSources(next.sources);
+      setNotice(t('settings.mcp.signedOutNotice', { name }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const remove = async (name: string) => {
     setBusy(`remove:${name}`);
     try {
@@ -152,6 +181,16 @@ export function McpPage() {
                       tone={server.exposure === 'direct' ? 'blue' : 'gray'}
                       label={t(`settings.mcp.exposure.${server.exposure}`)}
                     />
+                    {server.auth ? (
+                      <StatusBadge
+                        tone={server.auth === 'signed-in' ? 'green' : 'amber'}
+                        label={
+                          server.auth === 'signed-in'
+                            ? t('settings.mcp.signedIn')
+                            : t('settings.mcp.signedOut')
+                        }
+                      />
+                    ) : null}
                   </div>
                   <div className="mt-0.5 truncate text-2xs text-ink-quaternary">{server.target}</div>
                   {server.tools !== undefined ? (
@@ -177,6 +216,25 @@ export function McpPage() {
                     )}
                     {t('settings.mcp.test')}
                   </button>
+                  {server.auth ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void (server.auth === 'signed-in' ? signOut(server.name) : signIn(server.name))
+                      }
+                      disabled={busy === `auth:${server.name}`}
+                      className={buttonClass.secondary}
+                    >
+                      {busy === `auth:${server.name}` ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : server.auth === 'signed-in' ? (
+                        <LogOut className="size-3.5" />
+                      ) : (
+                        <KeyRound className="size-3.5" />
+                      )}
+                      {server.auth === 'signed-in' ? t('settings.mcp.signOut') : t('settings.mcp.signIn')}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void remove(server.name)}

@@ -88,15 +88,44 @@ OPC_MCP_PROBE=1 electron .
 3. **删到一台不剩就把文件删掉**，而不是留一个 `{"mcpServers":{}}`——空文件会让人以为
    哪里坏了。
 
-## 7. 还没做的（M3）
+## 7. M2b 已落地：OAuth
+
+这是 MCP 里唯一**有状态**的部分。三件事必须做对，每一件都对应一个具体的失败：
+
+| 要求 | 为什么 | 落在哪 |
+|---|---|---|
+| token 落盘且**加密** | 它等价于一个能读你数据的密码 | `McpAuthStore`（系统密钥环 `safeStorage`，文件 `mcp-auth.json`） |
+| 按**名字**隔离 | 同名换了地址就是另一台服务器，旧 token 不能跟着过去 | 一个名字一份密文条目 |
+| 401 之后要么续、要么明说 | 不能静默变成一堆工具调用失败 | `adaptOAuthProvider`（pi-mcp 自带，并发 401 共享一次刷新） |
+
+登录流程就是 pi-mcp README 那一段：先**不带凭据连一次**，撞到 401 才知道要登录；
+然后开浏览器、等本地回调、拿 code 换 token。
+
+两个实现判断：
+
+**① 先挂"等人回来"，再开浏览器。** 顺序反了会漏掉浏览器回跳得很快的那一次，
+表现是"点了登录、浏览器回来了、界面还是未登录"——而这条路径恰恰是最难复现的。
+
+**② 运行时不给登录。** `runtimeAuthProvider` 的 `redirectUrl` 是一个必然没人监听的
+地址：需要人点头的事不该在一次工具调用里发生。token 过期且续不上时它抛
+`McpOAuthAuthorizationRequiredError`，工具调用失败并说清"去设置页重新登录"。
+
+用例（`auth.test.ts`，7 条）：密文落盘（文件里看不到明文）、按名字隔离、登出清干净、
+解不开就当没登录（换台机器不该在第一次调用里抛）、已登录不开浏览器、要人点头时开浏览器
+并换到 token、失败返回原因而不是抛。
+
+测试里注入了一个逐字节取反的"加密"：真加密是 Electron 的 `safeStorage`，vitest 里没有
+那件东西。要验的是读写与隔离，不是密码学。
+
+## 8. 还没做的（M3）
 
 | 缺口 | 为什么还没做 |
 |---|---|
-| OAuth（`pi-mcp/oauth`：PKCE + DCR + 回调） | 需要一条 token 存放路径（我们已有的 credential store）和一个回调页；先让不需要登录的服务器能用 |
+| 动作级审批（许可票） | 判据已经有了（`needsApproval`），缺的是"停下来等人批"的那条路——它要接到注意力队列的 `answer` 上 |
 | 动作级审批（许可票） | 判据已经有了（`needsApproval`，读服务器自报的 `destructiveHint` / `openWorldHint`），缺的是"停下来等人批"的那条路 |
 | `tools/list_changed` 的热更新 | 现在目录在挂载时读一次。服务器换了工具要等下一次重开 |
 
-## 8. 一个构建上的坑，记下来
+## 9. 一个构建上的坑，记下来
 
 `@earendil-works/pi-mcp` 是 **ESM-only**（`exports` 里没有 `require` 条件），而主进程包是
 CommonJS。`require('@earendil-works/pi-mcp')` 会报 `No "exports" main defined`。

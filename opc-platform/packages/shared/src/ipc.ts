@@ -131,6 +131,8 @@ export const IPC = {
     save: 'mcp:save',
     remove: 'mcp:remove',
     test: 'mcp:test',
+    login: 'mcp:login',
+    logout: 'mcp:logout',
   },
   workers: {
     list: 'workers:list',
@@ -859,6 +861,8 @@ export interface McpServerView {
   tools?: number;
   resources?: number;
   error?: string;
+  /** HTTP 服务器才有：登录了没有。 */
+  auth?: 'signed-in' | 'signed-out';
 }
 
 /** 一份可写回的服务器配置（界面里能编辑的那几个字段）。 */
@@ -881,6 +885,14 @@ export interface McpBridge {
   remove(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
   /** 连一次、报工具数。不改配置。 */
   test(name: string): Promise<McpServerView>;
+  /**
+   * 走一遍 OAuth 登录（会打开浏览器）。
+   *
+   * 只有 HTTP 服务器需要：stdio 的凭据是它自己的环境变量。登录成功之后连接会重建，
+   * 所以下一次干活就带上了——不用重启。
+   */
+  login(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  logout(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
 }
 
 export interface ThreadsBridge {
