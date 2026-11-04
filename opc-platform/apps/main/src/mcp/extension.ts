@@ -36,6 +36,13 @@ export interface McpMount {
   /** 没有任何可用服务器时为 null（不必往注册表里装一个空扩展）。 */
   extension: Extension | null;
   servers: McpServerStatus[];
+  /**
+   * 服务器换了工具时，把重新造好的扩展交给这里去**就地替换**。
+   *
+   * 是一个可设置的字段而不是构造参数：一个执行体的注册表会被重建（换栈、改配置），
+   * 而挂载是复用的——每次重建都把这里指向新的那一个注册表。
+   */
+  refreshTarget?: (extension: Extension) => void;
   close: () => Promise<void>;
 }
 
@@ -59,6 +66,13 @@ function spillToFile(text: string): string {
 export async function mountMcp(input: {
   servers: readonly McpServerConfig[];
   connect?: (config: McpServerConfig) => Promise<McpConnection>;
+  /**
+   * 服务器宣布工具变了之后，重新造好的那一份扩展交给它去**就地替换**。
+   *
+   * 不替换的话，模型会一直看着一份过期的工具列表：新加的搜不到，删掉的点了报"未知工具"
+   * ——而这两件事它都不会说，它只会换条路走。
+   */
+  onToolsChanged?: (extension: Extension) => void;
 }): Promise<McpMount> {
   const connect = input.connect ?? sharedMcpConnection;
   /*
@@ -94,91 +108,134 @@ export async function mountMcp(input: {
     return { extension: null, servers: statuses, close: async () => undefined };
   }
 
-  // 工具名可能撞（两个服务器都有 `search`）。撞了加短哈希，而不是让后一个静默覆盖前一个。
-  const flat = live.flatMap((entry) =>
-    entry.connection.tools.map((tool) => ({ server: entry.config.name, tool, connection: entry.connection, config: entry.config })),
-  );
-  const names = uniqueToolNames(flat.map((entry) => ({ server: entry.server, tool: entry.tool.name })));
+  /**
+   * 造一次扩展。第一次挂载造一次；服务器宣布工具变了之后再造一次——**同一个函数**，
+   * 所以"热更新"和"启动时"这两条路不可能长出两套不同的映射规则。
+   */
+  const build = (): Extension => {
+    // 工具名可能撞（两个服务器都有 `search`）。撞了加短哈希，而不是让后一个静默覆盖前一个。
+    const flat = live.flatMap((entry) =>
+      entry.connection.tools.map((tool) => ({
+        server: entry.config.name,
+        tool,
+        connection: entry.connection,
+        config: entry.config,
+      })),
+    );
+    const names = uniqueToolNames(flat.map((entry) => ({ server: entry.server, tool: entry.tool.name })));
 
-  /** 要人点头的那些：工具名 → 给人看的一行。空表就不装 hook。 */
-  const gated = new Map<string, string>();
-  const tools = flat.map((entry, index) => {
-    const name = names[index]!;
-    const exposure = exposureOf(entry.config);
-    const description = entry.tool.description ?? entry.tool.title ?? entry.tool.name;
-    // 服务器自己声明的后果（`destructiveHint` / `openWorldHint`）——不是我们猜的。
-    if (needsApproval(entry.tool.annotations)) {
-      gated.set(name, `[${entry.server}] ${entry.tool.title ?? entry.tool.name}`);
+    /** 要人点头的那些：工具名 → 给人看的一行。空表就不装 hook。 */
+    const gated = new Map<string, string>();
+    const tools = flat.map((entry, index) => {
+      const name = names[index]!;
+      const exposure = exposureOf(entry.config);
+      const description = entry.tool.description ?? entry.tool.title ?? entry.tool.name;
+      // 服务器自己声明的后果（`destructiveHint` / `openWorldHint`）——不是我们猜的。
+      if (needsApproval(entry.tool.annotations)) {
+        gated.set(name, `[${entry.server}] ${entry.tool.title ?? entry.tool.name}`);
+      }
+      return defineTool({
+        name,
+        // 说明里带服务器名：模型在 `tool_search` 的结果里要能看出"这是谁的 search"。
+        description: `[${entry.server}] ${description}`,
+        parameters: entry.tool.inputSchema,
+        // `deferred`：先搜到再调用。这是 pi 对 MCP 的默认，理由很直接——一个服务器
+        // 十来个工具的 schema 就是几千 token，而大多数轮次一个都用不上。
+        ...(exposure === 'direct' ? {} : { deferred: true as const }),
+        execute: async (args: unknown): Promise<ToolExecutionResult> => {
+          const result = await entry.connection.callTool(
+            entry.tool.name,
+            (args ?? {}) as Record<string, unknown>,
+          );
+          return {
+            ...(result.isError === true ? { isError: true } : {}),
+            output: toOutput(result.content, result.structuredContent),
+          };
+        },
+      });
+    });
+
+    // 资源：任一服务器声明了 resources 才装这三件（不然就是三颗空炮）。
+    if (live.some((entry) => entry.connection.resources.length > 0)) {
+      tools.push(...resourceTools(live));
     }
-    return defineTool({
-      name,
-      // 说明里带服务器名：模型在 `tool_search` 的结果里要能看出"这是谁的 search"。
-      description: `[${entry.server}] ${description}`,
-      parameters: entry.tool.inputSchema,
-      // `deferred`：先搜到再调用。这是 pi 对 MCP 的默认，理由很直接——一个服务器
-      // 十来个工具的 schema 就是几千 token，而大多数轮次一个都用不上。
-      ...(exposure === 'direct' ? {} : { deferred: true as const }),
-      execute: async (args: unknown): Promise<ToolExecutionResult> => {
-        const result = await entry.connection.callTool(
-          entry.tool.name,
-          (args ?? {}) as Record<string, unknown>,
-        );
-        return {
-          ...(result.isError === true ? { isError: true } : {}),
-          output: toOutput(result.content, result.structuredContent),
-        };
-      },
+
+    // 状态表就地更新：界面上那一行"几个工具"跟着目录变。
+    // 只改**连上的**那几台——连不上的那些行（带着 error）要留着，不然界面上会变成
+    // "这台服务器不存在了"，而实际上它只是没起来。
+    for (const entry of live) {
+      const row = statuses.find((status) => status.name === entry.config.name);
+      const tools = entry.connection.tools.length;
+      const resources = entry.connection.resources.length;
+      if (row) {
+        row.tools = tools;
+        row.resources = resources;
+      } else {
+        statuses.push({ name: entry.config.name, tools, resources });
+      }
+    }
+
+    const summary = live
+      .map((entry) => {
+        const description = entry.config.description?.trim();
+        const counts = `${entry.connection.tools.length} 个工具`;
+        return `- ${entry.config.name}（${counts}）${description ? `：${description}` : ''}`;
+      })
+      .join('\n');
+
+    const approval = approvalHook(gated);
+    return defineExtension({
+      name: 'opc.mcp',
+      tools,
+      ...(approval ? { hooks: [approval] } : {}),
+      // 一个短段落告诉模型"还有这些外部能力"。不列工具名：那正是 `deferred` 要避免的，
+      // 列了就等于把 schema 的一半又塞回上下文。
+      sections: [
+        section('mcp_servers', () =>
+          [
+            '## 接入的外部能力（MCP）',
+            '下面这些服务器的工具**不在**你的工具列表里，要用 `tool_search` 搜出来再调。',
+            summary,
+          ].join('\n'),
+        ),
+      ],
     });
-  });
+  };
 
-  // 资源：任一服务器声明了 resources 才装这三件（不然就是三颗空炮）。
-  const withResources = live.filter((entry) => entry.connection.resources.length > 0);
-  if (withResources.length > 0) {
-    tools.push(...resourceTools(withResources));
-  }
+  let extension = build();
 
-  for (const entry of live) {
-    statuses.push({
-      name: entry.config.name,
-      tools: entry.connection.tools.length,
-      resources: entry.connection.resources.length,
-    });
-  }
+  /*
+   * 服务器换了工具（`notifications/tools/list_changed`）：重读目录、再造一份扩展，
+   * 交给宿主去**就地替换**注册表里的那一份。
+   *
+   * 不替换的话，模型会一直看着一份过期的工具列表：新加的搜不到，删掉的点了报"未知工具"。
+   * 而这两件事它都不会说，它只会换条路走——你看到的是"它怎么不用那个工具"。
+   */
+  const unsubscribes = live.map((entry) =>
+    entry.connection.onToolsChanged(() => {
+      void (async () => {
+        try {
+          await entry.connection.refreshTools();
+          extension = build();
+          input.onToolsChanged?.(extension);
+          mount.refreshTarget?.(extension);
+        } catch (error) {
+          console.warn(`[mcp] ${entry.config.name} 的工具目录没刷新成功`, error);
+        }
+      })();
+    }),
+  );
 
-  const summary = live
-    .map((entry) => {
-      const description = entry.config.description?.trim();
-      const counts = `${entry.connection.tools.length} 个工具`;
-      return `- ${entry.config.name}（${counts}）${description ? `：${description}` : ''}`;
-    })
-    .join('\n');
-
-  const approval = approvalHook(gated);
-  const extension = defineExtension({
-    name: 'opc.mcp',
-    tools,
-    ...(approval ? { hooks: [approval] } : {}),
-    // 一个短段落告诉模型"还有这些外部能力"。不列工具名：那正是 `deferred` 要避免的，
-    // 列了就等于把 schema 的一半又塞回上下文。
-    sections: [
-      section('mcp_servers', () =>
-        [
-          '## 接入的外部能力（MCP）',
-          '下面这些服务器的工具**不在**你的工具列表里，要用 `tool_search` 搜出来再调。',
-          summary,
-        ].join('\n'),
-      ),
-    ],
-  });
-
-  return {
+  const mount: McpMount = {
     extension,
     servers: statuses,
     close: async () => {
+      for (const unsubscribe of unsubscribes) unsubscribe();
       if (!ownsConnections) return;
       for (const connection of opened) await connection.close().catch(() => undefined);
     },
   };
+  return mount;
 }
 
 /**

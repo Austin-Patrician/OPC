@@ -28,8 +28,13 @@ export interface McpConnection {
   /** 服务器自报的身份，用来在界面上说"连上了谁"。 */
   readonly serverInfo: { name: string; version: string } | undefined;
   /** 连接时读到的工具目录。 */
+  /** 当前目录。服务器宣布变了之后，这里跟着变（见 `refreshTools`）。 */
   readonly tools: readonly Tool[];
   readonly resources: readonly Resource[];
+  /** 重新读一遍目录。`notifications/tools/list_changed` 来了就调它。 */
+  refreshTools(): Promise<readonly Tool[]>;
+  /** 服务器说它的工具变了。返回撤销订阅。 */
+  onToolsChanged(listener: () => void): () => void;
   callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult>;
   readResource(uri: string): Promise<ReadResourceResult>;
   listResourceTemplates(): Promise<readonly ResourceTemplate[]>;
@@ -96,12 +101,21 @@ export async function connectMcp(
   const resources = supportsResources ? await client.listResources(request) : [];
 
   const info = client.serverInfo;
+  let current: readonly Tool[] = tools;
 
   return {
     config,
     serverInfo: info ? { name: info.name, version: info.version } : undefined,
-    tools,
+    get tools() {
+      return current;
+    },
     resources,
+    refreshTools: async () => {
+      current = await client.listTools(request);
+      return current;
+    },
+    onToolsChanged: (listener) =>
+      client.onNotification('notifications/tools/list_changed', () => listener()),
     callTool: (name, args) => client.callTool(name, args, request),
     readResource: (uri) => client.readResource(uri, request),
     listResourceTemplates: () => client.listResourceTemplates(request),

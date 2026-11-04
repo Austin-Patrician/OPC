@@ -32,7 +32,7 @@ import { TaskRepository, taskWorkspaceRelPath, type CreateTaskDraft } from '../d
 import { ThreadRepository } from '../data/threadRepository';
 import type { AppPaths } from '../env';
 import type { McpServerConfig } from '../mcp/contract';
-import { mountMcp } from '../mcp/extension';
+import { mountMcp, type McpMount } from '../mcp/extension';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
@@ -202,6 +202,13 @@ export class WorkService {
   private readonly handedBack = new Set<string>();
   /** 每个执行体看到的 MCP 服务器状态（栈页面据此说"接了几个、哪个没连上"）。 */
   readonly mcpServers = new Map<string, { name: string; tools: number; resources: number; error?: string }[]>();
+  /**
+   * 每个执行体一份 MCP 挂载。
+   *
+   * 缓存而不是每次现连：`toolSlots` 会被栈页面、`capabilities`、建注册表三条路调用，
+   * 而连接本身是进程级共享的——真正要省的是"每次重新读一遍目录"。
+   */
+  private readonly mcpMounts = new Map<string, Promise<McpMount>>();
   /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
@@ -1085,6 +1092,35 @@ export class WorkService {
    * page renders it. Reasons are codes, not sentences, so both locales can
    * explain the same missing provider without the main process translating.
    */
+  /** 这个执行体的 MCP 挂载；没有配置就是 null。 */
+  private async mcpMountFor(workerId: string): Promise<McpMount | null> {
+    const servers = this.deps.mcp?.() ?? [];
+    if (servers.length === 0) return null;
+
+    const cached = this.mcpMounts.get(workerId);
+    if (cached) return cached;
+
+    const opening = mountMcp({ servers });
+    this.mcpMounts.set(workerId, opening);
+    try {
+      const mount = await opening;
+      for (const server of mount.servers) {
+        if (server.error) console.warn(`[mcp] ${server.name} 没连上：${server.error}`);
+      }
+      this.mcpServers.set(workerId, mount.servers);
+      // 一个都没连上就别占着一个槽：它会让界面显示"有 MCP"，而实际什么都没有。
+      if (!mount.extension) {
+        this.mcpMounts.delete(workerId);
+        return null;
+      }
+      return mount;
+    } catch (error) {
+      this.mcpMounts.delete(workerId);
+      console.warn('[mcp] 挂载失败', error);
+      return null;
+    }
+  }
+
   private async toolSlots(subject: RegistrySubject): Promise<ToolSlot[]> {
     const personId = subject.ownerId ?? subject.id;
     // §2.2：工具集是执行体自己的属性。`employee` 那一路只是迁移期兜底。
@@ -1310,6 +1346,15 @@ export class WorkService {
       }
     }
 
+    // 外部能力（MCP）：和别的扩展**一样是一个槽**，所以它能被按执行体关掉，
+    // 也能用 `mcp__github__*` 这样一条规则关掉一个服务器的全部工具。
+    const mcp = await this.mcpMountFor(subject.id);
+    slots.push(
+      mcp?.extension
+        ? { name: 'opc.mcp', essential: false, available: true, extension: mcp.extension }
+        : { name: 'opc.mcp', essential: false, available: false, reason: 'no-mcp-servers' },
+    );
+
     return slots;
   }
 
@@ -1333,17 +1378,15 @@ export class WorkService {
     // 因为它是"所有调用的旁听者"，不该由哪个工具自己负责。
     registry.install(createTraceExtension());
 
-    // 外部能力（MCP）。一个服务器连不上只记一条，不影响别的，也不影响这个执行体本身。
-    // 每次建注册表都现读配置：设置页改完 `mcp.json` 之后 `invalidateAllHarnesses()`
-    // 会让下一次建表读到新的那几台，不必重启。
-    const mcpServers = this.deps.mcp?.() ?? [];
-    if (mcpServers.length > 0) {
-      const mount = await mountMcp({ servers: mcpServers });
-      if (mount.extension) registry.install(mount.extension);
-      for (const server of mount.servers) {
-        if (server.error) console.warn(`[mcp] ${server.name} 没连上：${server.error}`);
-      }
-      this.mcpServers.set(subject.id, mount.servers);
+    /*
+     * 外部能力（MCP）走槽位装（见 `toolSlots`），所以策略对它一样生效。
+     *
+     * 这里只做一件额外的事：把"服务器换了工具"的热更新指向**这一个**注册表——
+     * 注册表会重建（换栈、改配置），而挂载是复用的。
+     */
+    const mcp = await this.mcpMountFor(subject.id);
+    if (mcp) {
+      mcp.refreshTarget = (extension) => registry.install(filterExtensionTools(extension, policy));
     }
 
     const install = (slot: ToolSlot) => {
@@ -1460,6 +1503,9 @@ export class WorkService {
 
   /** 关掉一个执行体的运行时。注册表在开库时固定，改工具集必须重开。 */
   private async evictRuntime(workerId: string): Promise<void> {
+    // 挂载也要丢：注册表要重建，而挂载是"这个执行体看到的那份目录"——留着它，
+    // 设置页改完 `mcp.json` 之后新的服务器不会出现。
+    this.mcpMounts.delete(workerId);
     const entry = this.harnesses.get(workerId);
     if (!entry) return;
     this.harnesses.delete(workerId);

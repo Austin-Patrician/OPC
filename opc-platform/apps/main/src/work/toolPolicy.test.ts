@@ -4,6 +4,7 @@ import {
   filterExtensionTools,
   isExtensionEnabled,
   isToolActive,
+  isToolEnabled,
   normalizeToolPolicy,
   parseToolPolicy,
 } from './toolPolicy';
@@ -64,5 +65,31 @@ describe('policy checks', () => {
   it('returns the same object when no tools are denied', () => {
     const extension = { name: 'coding-tools', tools: [{ name: 'bash' }] };
     expect(filterExtensionTools(extension, EMPTY_TOOL_POLICY)).toBe(extension);
+  });
+
+  /**
+   * 前缀规则：`mcp__github__*` 关掉一个 MCP 服务器的全部工具。
+   *
+   * 没有它就得逐个枚举，而 MCP 服务器的工具是会变的——今天关完了，明天它加一个，
+   * 那个就又开了。这不是"方便"，是"漏一次就没人发现"。
+   */
+  it('结尾的 * 是前缀匹配：一条规则关掉一整个服务器的工具', () => {
+    const wildcard = { ...EMPTY_TOOL_POLICY, disabledTools: ['mcp__github__*'] };
+    expect(isToolEnabled(wildcard, 'mcp__github__search_code')).toBe(false);
+    expect(isToolEnabled(wildcard, 'mcp__gitlab__search_code')).toBe(true);
+    // 前缀不是"包含"：只有真的以它开头才算。
+    expect(isToolEnabled(wildcard, 'opc.mcp__github')).toBe(true);
+  });
+
+  it('过滤也认这条规则', () => {
+    const wildcard = { ...EMPTY_TOOL_POLICY, disabledTools: ['mcp__github__*'] };
+    const extension = {
+      name: 'opc.mcp',
+      tools: [{ name: 'mcp__github__search' }, { name: 'mcp__fs__read' }, { name: 'list_mcp_resources' }],
+    };
+    expect(filterExtensionTools(extension, wildcard).tools?.map((tool) => tool.name)).toEqual([
+      'mcp__fs__read',
+      'list_mcp_resources',
+    ]);
   });
 });

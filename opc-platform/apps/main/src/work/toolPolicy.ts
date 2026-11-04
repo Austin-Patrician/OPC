@@ -46,8 +46,18 @@ export function isExtensionEnabled(policy: ToolPolicy, extensionName: string): b
   return !policy.disabledExtensions.includes(extensionName);
 }
 
+/**
+ * 一条拒绝规则是否命中某个工具名。
+ *
+ * 结尾的 `*` 是前缀匹配：`mcp__github__*` 关掉一个 MCP 服务器的全部工具，而不必在
+ * 服务器加了一个工具之后回来补一条。这也是 pi 自己的写法（`--tools 'mcp__radius__*'`）。
+ */
+export function toolMatches(pattern: string, toolName: string): boolean {
+  return pattern.endsWith('*') ? toolName.startsWith(pattern.slice(0, -1)) : pattern === toolName;
+}
+
 export function isToolEnabled(policy: ToolPolicy, toolName: string): boolean {
-  return !policy.disabledTools.includes(toolName);
+  return !policy.disabledTools.some((pattern) => toolMatches(pattern, toolName));
 }
 
 /** Effective state used by the UI and the registry alike. */
@@ -72,6 +82,10 @@ export function filterExtensionTools<T extends { tools?: readonly { name: string
   policy: ToolPolicy,
 ): T {
   if (policy.disabledTools.length === 0 || !extension.tools) return extension;
-  const disabled = new Set(policy.disabledTools);
-  return { ...extension, tools: extension.tools.filter((tool) => !disabled.has(tool.name)) };
+  return {
+    ...extension,
+    tools: extension.tools.filter(
+      (tool) => !policy.disabledTools.some((pattern) => toolMatches(pattern, tool.name)),
+    ),
+  };
 }

@@ -124,6 +124,8 @@ function fakeConnection(tools: number, resources: number, onClose = () => undefi
       uri: `mem://${index}`,
       name: `r${index}`,
     })),
+    refreshTools: async () => [],
+    onToolsChanged: () => () => undefined,
     callTool: async () => ({ content: [] }),
     readResource: async () => ({ contents: [] }),
     listResourceTemplates: async () => [],

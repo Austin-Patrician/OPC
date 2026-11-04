@@ -161,7 +161,36 @@ beforeTool 看到要审批的工具、没有放行条
 | 动作级审批（许可票） | 判据已经有了（`needsApproval`，读服务器自报的 `destructiveHint` / `openWorldHint`），缺的是"停下来等人批"的那条路 |
 | `tools/list_changed` 的热更新 | 现在目录在挂载时读一次。服务器换了工具要等下一次重开 |
 
-## 9. 一个构建上的坑，记下来
+## 9. 两个小口子已经补上
+
+### 服务器换了工具（`tools/list_changed`）
+
+以前目录在挂载时读一次，服务器加了工具要等重开——而模型看到的是那份旧列表：新加的搜不到，
+删掉的点了报"未知工具"。**这两件事它都不会说，它只会换条路走**，你看到的是"它怎么不用那个工具"。
+
+现在：`McpConnection.onToolsChanged` 订阅那条通知 → 重读目录 → **用同一个 `build()`**
+再造一份扩展 → `mount.refreshTarget(extension)` 交给宿主，`registry.install()` 就地替换
+（pi：同名安装即替换，在途的调用保持旧代码，下一轮用新的）。
+
+`refreshTarget` 是**可设置的字段**而不是构造参数：注册表会重建（换栈、改配置），而挂载是
+复用的——每次重建都把这里指向新的那一个。
+
+### 按执行体开关
+
+`opc.mcp` 以前是建注册表时直接装的，绕过了槽位，所以 `toolPolicy` 停不到它。现在它是一个
+**槽**：`stack()` 里看得见、关得掉，关掉的方式有两条——
+
+- 关整个扩展（`disabledExtensions: ['opc.mcp']`）；
+- 关一个服务器的全部工具（`disabledTools: ['mcp__github__*']`）。
+
+第二条需要前缀规则，`toolPolicy` 加上了（和 pi 的 `--tools 'mcp__radius__*'` 同一个写法）。
+理由不是方便：MCP 服务器的工具会变，逐个枚举等于"今天关完了、明天它加一个就又开了"，
+而漏一次没人会发现。
+
+没配置服务器时它也**不是不出现**，而是一行写着 `no-mcp-servers` 的槽——不出现的话，界面上
+就没有地方能说明"这个应用能接 MCP"，而那正是新用户最先问的事。
+
+## 10. 一个构建上的坑，记下来
 
 `@earendil-works/pi-mcp` 是 **ESM-only**（`exports` 里没有 `require` 条件），而主进程包是
 CommonJS。`require('@earendil-works/pi-mcp')` 会报 `No "exports" main defined`。

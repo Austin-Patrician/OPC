@@ -109,6 +109,23 @@ describe('WorkService.capabilities', () => {
     expect(agent.status).toBe('idle');
   });
 
+  /**
+   * 外部能力也是**一个槽**，哪怕一台服务器都没有。
+   *
+   * 不出现的话，界面上就没有地方能说明"这个应用能接 MCP"——而那正是新用户最先问的事。
+   * 出现了但写着"没有配置"，才是一条能回答问题的行。
+   */
+  it('MCP 是一个槽：没配置时明说，而不是不存在', async () => {
+    const workerId = executor({ name: '林澈' });
+    const stack = await workWith().stack(workerId);
+
+    expect(stack.extensions.find((extension) => extension.name === 'opc.mcp')).toMatchObject({
+      available: false,
+      enabled: false,
+      reason: 'no-mcp-servers',
+    });
+  });
+
   it('installs decomposition for every executor once another one exists', async () => {
     const first = executor({ name: '沈聿', template: 'research' });
     const second = executor({ name: '林澈', template: 'code' });

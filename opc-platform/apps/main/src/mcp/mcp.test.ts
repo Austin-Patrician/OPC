@@ -26,6 +26,7 @@ import path from 'node:path';
 
 /** 一个够用的假服务器：initialize / tools/list / tools/call / resources/*。 */
 function fakeServer(transport: InMemoryTransport, tools: Tool[], text = 'pong') {
+  const state = { tools: [...tools] };
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
   transport.onMessage((message: JsonRpcMessage) => {
     const request = message as { id?: unknown; method?: string; params?: unknown };
@@ -42,7 +43,7 @@ function fakeServer(transport: InMemoryTransport, tools: Tool[], text = 'pong') 
         });
         return;
       case 'tools/list':
-        reply({ tools });
+        reply({ tools: state.tools });
         return;
       case 'tools/call': {
         const params = request.params as { name: string; arguments?: Record<string, unknown> };
@@ -64,7 +65,15 @@ function fakeServer(transport: InMemoryTransport, tools: Tool[], text = 'pong') 
     }
   });
   void transport.start();
-  return { calls };
+  return {
+    calls,
+    state,
+    /** 服务器加了工具，然后按协议宣布一声。 */
+    async announce(tool: Tool) {
+      state.tools.push(tool);
+      await transport.send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' } as never);
+    },
+  };
 }
 
 const echoTool: Tool = {
@@ -80,22 +89,33 @@ const config = (name = 'fixture'): McpServerConfig => ({ name, command: 'fake' }
 async function connectionWith(tools: Tool[], text = 'pong'): Promise<{
   connection: McpConnection;
   calls: { name: string; arguments: Record<string, unknown> }[];
+  announce: (tool: Tool) => Promise<void>;
 }> {
   const pair = createInMemoryTransportPair();
   const server = fakeServer(pair.server, tools, text);
   const { McpClient } = await import('@earendil-works/pi-mcp');
   const client = new McpClient({ name: 'test', version: '1' });
   await client.connect(pair.client);
-  const list = await client.listTools();
+  let list = await client.listTools();
   const resources = await client.listResources();
 
   return {
     calls: server.calls,
+    announce: server.announce,
     connection: {
       config: config(),
       serverInfo: { name: 'fixture', version: '1.0.0' },
-      tools: list,
+      // 和真的 `McpConnection` 一样：刷新之后 `tools` 跟着变（只返回新列表而字段不动，
+      // 就是在测一个不存在的实现）。
+      get tools() {
+        return list;
+      },
       resources,
+      refreshTools: async () => {
+        list = await client.listTools();
+        return list;
+      },
+      onToolsChanged: (listener) => client.onNotification('notifications/tools/list_changed', () => listener()),
       callTool: (name, args) => client.callTool(name, args),
       readResource: (uri) => client.readResource(uri),
       listResourceTemplates: () => client.listResourceTemplates(),
@@ -253,6 +273,30 @@ describe('挂载', () => {
     expect(rendered).toContain('文件与代码搜索');
     expect(rendered).not.toContain('echo');
     expect(rendered).toContain('tool_search');
+  });
+});
+
+describe('服务器换了工具', () => {
+  it('它一说变了，就重读目录并造一份新的，交给宿主替换', async () => {
+    const { connection, announce } = await connectionWith([echoTool]);
+    live.push(connection);
+
+    const refreshed: { name: string }[] = [];
+    await mountMcp({
+      servers: [config()],
+      connect: async () => connection,
+      onToolsChanged: (extension) => {
+        for (const tool of extension.tools ?? []) refreshed.push({ name: tool.name });
+      },
+    });
+
+    await announce({ name: 'poke', inputSchema: { type: 'object' } });
+
+    // 通知是异步的：等它落到我们的回调上。
+    for (let index = 0; index < 100 && !refreshed.some((tool) => tool.name === 'mcp__fixture__poke'); index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(refreshed.map((tool) => tool.name)).toContain('mcp__fixture__poke');
   });
 });
 
