@@ -30,6 +30,8 @@ import { USER_ID } from '../data/schema';
 import { TaskRepository, taskWorkspaceRelPath, type CreateTaskDraft } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
 import type { AppPaths } from '../env';
+import type { McpServerConfig } from '../mcp/contract';
+import { mountMcp } from '../mcp/extension';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
@@ -131,6 +133,12 @@ export interface WorkServiceDeps {
   images?: ImageService;
   /** Speech recognition / synthesis; each tool is installed only when usable. */
   speech?: SpeechService;
+  /**
+   * 接入的 MCP 服务器（`mcp.json` 那一份）。空 = 没有外部能力。
+   *
+   * 挂载点在建注册表时：pi 的 deferred 工具是**注册表里的东西**，不是运行时凭空长出来的。
+   */
+  mcp?: readonly McpServerConfig[];
   /** Structured decisions (Jev / System One); absent = no `decide` tool. */
   decisions?: DecisionService;
   memory?: MemoryService;
@@ -190,6 +198,8 @@ export class WorkService {
    * 和 `reportedThreads` 一样是进程内的：它记的是"这一次运行里发生过什么"。
    */
   private readonly handedBack = new Set<string>();
+  /** 每个执行体看到的 MCP 服务器状态（栈页面据此说"接了几个、哪个没连上"）。 */
+  readonly mcpServers = new Map<string, { name: string; tools: number; resources: number; error?: string }[]>();
   /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
@@ -1215,6 +1225,16 @@ export class WorkService {
     // 动作流（W6）：工具调用 → `task_trace`。装在这里而不是每个工具里，
     // 因为它是"所有调用的旁听者"，不该由哪个工具自己负责。
     registry.install(createTraceExtension());
+
+    // 外部能力（MCP）。一个服务器连不上只记一条，不影响别的，也不影响这个执行体本身。
+    if (this.deps.mcp && this.deps.mcp.length > 0) {
+      const mount = await mountMcp({ servers: this.deps.mcp });
+      if (mount.extension) registry.install(mount.extension);
+      for (const server of mount.servers) {
+        if (server.error) console.warn(`[mcp] ${server.name} 没连上：${server.error}`);
+      }
+      this.mcpServers.set(subject.id, mount.servers);
+    }
 
     const install = (slot: ToolSlot) => {
       if (!slot.available || !slot.extension) return;

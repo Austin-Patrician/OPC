@@ -4,6 +4,8 @@ import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
+import { readMcpConfig } from './mcp/config';
+import { closeAllMcpConnections } from './mcp/connection';
 import { USER_MEMORY_OWNER } from './memory/owners';
 import { loadSmokeScript } from './smoke';
 import { consolidateConversation } from './memory/consolidation';
@@ -77,6 +79,8 @@ const isOcrProbe = process.env.OPC_OCR_PROBE;
 const isSmoke = process.env.OPC_SMOKE === "1";
 /** `OPC_WORK_PROBE=1`: run the Phase 0 loop headlessly and print evidence. */
 const isWorkProbe = process.env.OPC_WORK_PROBE === "1";
+/** `OPC_MCP_PROBE=1`: 真的起一个 stdio MCP 子进程，连上、列工具、调一次。 */
+const isMcpProbe = process.env.OPC_MCP_PROBE === '1';
 /** `OPC_SUBAGENT_PROBE=1`: can a tool wait for another conversation in the same harness? (真模型) */
 const isSubagentProbe = process.env.OPC_SUBAGENT_PROBE === '1';
 /** `OPC_MODEL_PROBE=1`: import the local pi provider config and run one task with the model brain. */
@@ -461,10 +465,17 @@ async function bootstrap(): Promise<void> {
   // Skills are Markdown, so there is nothing to trust: they are discovered and
   // available unless you switches them off.
   const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
+  // 外部能力（MCP）：读 `<userData>/mcp.json`，再读 pi 的 `~/.pi/agent/mcp.json`。
+  // 一个服务器连不上只会让它的工具不在，不影响别的、也不影响这个应用能不能开。
+  const mcp = readMcpConfig({ userDataDir: appPaths.userData });
+  if (mcp.servers.length > 0) {
+    console.warn(`[mcp] 读到 ${mcp.servers.length} 个服务器：${mcp.servers.map((s) => s.name).join('、')}`);
+  }
   work = new WorkService({
     db,
     paths: appPaths,
     upsertTaskCard: (task) => chat?.upsertTaskCard(task),
+    mcp: mcp.servers,
     modelConfig,
     images: imageService,
     speech: speechService,
@@ -692,6 +703,11 @@ async function bootstrap(): Promise<void> {
     piSkills,
   });
 
+  // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。
+  app.on('before-quit', () => {
+    void closeAllMcpConnections();
+  });
+
   // Auto lifecycle (§7.5): an idle thread cools first — it stops auto-replying but
   // stays readable — and only a much older one is archived, which is what triggers
   // consolidation. Probes drive both explicitly instead of waiting.
@@ -840,6 +856,7 @@ const isHeadlessMode =
   isSmoke ||
   Boolean(isOcrProbe) ||
   isWorkProbe ||
+  isMcpProbe ||
   isSubagentProbe ||
   isModelProbe ||
   isConsolidationRunProbe ||
@@ -1975,6 +1992,20 @@ if (!hasLock) {
       );
       await work.dispose();
       app.exit(latest?.status === 'accepted' ? 0 : 1);
+      return;
+    }
+
+    if (isMcpProbe) {
+      // 外部能力（MCP）的端到端验证：真子进程、真握手、真调用、真收尸。
+      try {
+        const { probeMcp } = await import('./mcp/probe');
+        const outcome = await probeMcp();
+        process.stdout.write(`${JSON.stringify({ probe: 'mcp', ...outcome }, null, 2)}\n`);
+        app.exit(outcome.ok ? 0 : 1);
+      } catch (error) {
+        console.error('MCP_PROBE_FAILED', error);
+        app.exit(1);
+      }
       return;
     }
 

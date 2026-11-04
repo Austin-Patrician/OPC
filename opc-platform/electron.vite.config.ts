@@ -15,7 +15,10 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 export default defineConfig({
   main: {
     plugins: [
-      externalizeDepsPlugin({ exclude: ['@opc/shared'] }),
+      // `@earendil-works/pi-mcp` is ESM-only (its `exports` has no `require` condition),
+      // and the main bundle is CommonJS. Leave it out of the external list so Rollup
+      // compiles it in; requiring it at runtime fails with "No exports main defined".
+      externalizeDepsPlugin({ exclude: ['@opc/shared', '@earendil-works/pi-mcp'] }),
       {
         // The smoke script is read at runtime, not bundled: ship it verbatim next to
         // the main bundle so `loadSmokeScript()` works in dev and in the packaged app.
