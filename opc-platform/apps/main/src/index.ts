@@ -804,6 +804,27 @@ async function bootstrap(): Promise<void> {
     incidents: watchdogIncidents,
     judge: createWatchdogJudge(modelConfig, () => watchdogModel.get()),
     /**
+     * 判断模型的钥匙：主进程解密，只通过这条专用通道交给子进程（不进环境变量、
+     * 不写盘）。拿不到静态 key（OAuth-only）时返回 null，判断退回主进程。
+     */
+    modelWire: () => {
+      const target = watchdogModel.get() ?? modelConfig.getDefaults().llm;
+      if (!target) return null;
+      const provider = modelConfig.listProviders().find((entry) => entry.id === target.providerId);
+      const model = provider?.models.find((entry) => entry.id === target.modelId);
+      const apiKey = modelConfig.readKey(target.providerId);
+      if (!provider || !model || !apiKey) return null;
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        baseUrl: provider.baseUrl,
+        api: model.api ?? provider.api,
+        modelId: model.id,
+        modelName: model.name ?? model.id,
+        apiKey,
+      };
+    },
+    /**
      * 白名单动作（W6）。三件事按顺序做，缺一步都不算"修过"：
      *
      * 1. **认领**：`(incident, action)` 唯一键，重复请求直接返回"已执行过"；
@@ -915,10 +936,11 @@ async function bootstrap(): Promise<void> {
     }
     const after = await watchdog.ping();
     const advanced = (after?.lastTickAt ?? 0) > (before?.lastTickAt ?? 0);
-    // 等模型那一趟往返（判一次要几秒）。超时就不再等：探针只负责把事说清楚。
-    const judgeDeadline = Date.now() + 30_000;
+    // 等这次判断落地：基线是 ready 时的计数，等到它变大或超时。
+    const judgeDeadline = Date.now() + 60_000;
+    const baseline = before?.judged ?? 0;
     let judged = after?.judged ?? 0;
-    while (judged === 0 && Date.now() < judgeDeadline) {
+    while (judged <= baseline && Date.now() < judgeDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       judged = (await watchdog.ping())?.judged ?? 0;
     }

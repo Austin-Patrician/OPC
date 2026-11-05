@@ -4,7 +4,14 @@ import { utilityProcess, type UtilityProcess } from 'electron';
 import type { FaultSink } from '../data/systemEventRepository';
 import { messageOf } from '../data/systemEventRepository';
 import type { IncidentMirrorInput, WatchdogIncident } from '../data/watchdogIncidentRepository';
-import type { ActionPayload, JudgePayload, JudgeResult, WatchdogEvent, WatchdogPong } from './protocol';
+import type {
+  ActionPayload,
+  JudgePayload,
+  JudgeResult,
+  ModelWire,
+  WatchdogEvent,
+  WatchdogPong,
+} from './protocol';
 
 /**
  * 父进程这一侧的 Watchdog：把它启动起来、看着它、问它一句话、关掉它。
@@ -49,6 +56,11 @@ export interface WatchdogHostOptions {
    * 返回 `ok:false` 时，子进程会把原因记在 incident 上，但不会把它当已恢复。
    */
   performAction?: (payload: ActionPayload) => Promise<{ ok: boolean; message: string }>;
+  /**
+   * 判断模型的配置（含一把钥匙）。返回 `null` = 没有静态凭据（例如 OAuth-only），
+   * 判断退回由主进程代执行。只在换成子进程、且 ready 之后发送。
+   */
+  modelWire?: () => ModelWire | null;
   intervalMs?: number;
   /** 覆盖入口文件路径；默认取与主 bundle 同目录的 `watchdog.js`。 */
   entry?: string;
@@ -83,6 +95,10 @@ export class WatchdogHost {
         stdio: 'pipe',
         env: {
           ...process.env,
+          // 子进程自己会调模型（W5 补齐）。Node 的内置 fetch 默认不读代理变量，
+          // 而应用的代理配置正是以环境变量形式传下来的——没有这一行，判断会被
+          // 直连失败逼回主进程。
+          ...(process.env.NODE_USE_ENV_PROXY ? {} : { NODE_USE_ENV_PROXY: '1' }),
           OPC_WATCHDOG_BUSINESS_DB: this.options.businessDb,
           OPC_WATCHDOG_SESSION_DB: this.options.sessionDb,
           ...(this.options.intervalMs
@@ -254,6 +270,7 @@ export class WatchdogHost {
       }
       this.syncIncidents(message.incidents);
       this.settleReady(message.businessDbOpen);
+      this.configureModel();
       return;
     }
     if (message.type === 'pong') {
@@ -332,8 +349,23 @@ export class WatchdogHost {
       result = { ok: false, error: messageOf(error) };
     }
     try {
-      child.postMessage({ type: 'judge-result', requestId, findingId, result } as never);    } catch {
+      child.postMessage({ type: 'judge-result', requestId, findingId, result } as never);
+    } catch {
       // 子进程已经走了；它下次启动会重新问。
+    }
+  }
+
+  /**
+   * 把判断模型交给子进程。每次 ready 都发一遍（重启后子进程是新的，内存里没有）。
+   * 发不出去不记故障：子进程会退回让主进程代判。
+   */
+  private configureModel(): void {
+    const child = this.child;
+    if (!child || !this.options.modelWire) return;
+    try {
+      child.postMessage({ type: 'configure-model', model: this.options.modelWire() } as never);
+    } catch {
+      // 刚好退出：下一次 ready 会再发。
     }
   }
 

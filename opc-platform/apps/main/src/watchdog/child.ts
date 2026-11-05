@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import type { ActionName, WatchdogCommand, WatchdogEvent } from './protocol';
+import type { ActionName, ModelWire, WatchdogCommand, WatchdogEvent } from './protocol';
 import { DEFAULT_CANDIDATES, evaluateTask } from './candidates';
+import { buildJudgePrompt, parseVerdict } from './prompt';
+import { createLocalJudge, type CompleteFn } from './modelRunner';
 import { readWatchdogPolicy, type WatchdogPolicy } from './policy';
 import {
   readOpenEvents,
@@ -79,6 +81,13 @@ let pendingAction: string | null = null;
 let lastEvaluationAt = 0;
 /** 父进程已断：只记录，不再请求判断与动作。 */
 let orphaned = false;
+/** 判断模型（含一把钥匙）：只在内存里，主进程每次 ready 发一遍。 */
+let modelWire: ModelWire | null = null;
+/** 主进程至少说过一次"用哪个模型"（包括说的 `null`）。在那之前不判、也不退回。 */
+let modelConfigured = false;
+let localJudge: CompleteFn | null = null;
+/** 建不起来就试一次，之后本轮退回主进程，不再反复失败。 */
+let localJudgeUnavailable = false;
 /** 断连后还活多久：足够把当下的证据落下来，又不至于变成永久孤儿进程。 */
 const ORPHAN_GRACE_MS = positive(process.env.OPC_WATCHDOG_ORPHAN_MS, 2 * 60_000);
 
@@ -213,7 +222,7 @@ function evaluate(): void {
 
     // 父进程已经没了（孤儿模式）：还能记录，但没人能做判断、也没人能执行动作。
     if (!orphaned) {
-      askForJudgment(now, policy.judgeCooldownMs);
+      void runJudgment(now, policy.judgeCooldownMs);
       maybeAct(now, policy.actionCooldownMs);
     }
     noteOpenEvents(now);
@@ -234,40 +243,95 @@ function evaluate(): void {
 }
 
 /**
- * 问一次模型。
+ * 判一次。
  *
- * 一次只问一条，而且只问**已经判成候选的**：模型不该在健康的任务上花 token。
- * 出题的人是这里——证据（目标 + 候选 + 最近动作）由子进程挑，主进程只管调用。
+ * **优先在子进程里做**（W5 补齐）：主进程把"一个 provider + 一个模型 + 一把钥匙"
+ * 交过来，判断在这里完成——主进程不再出现在调用路径上，于是"主进程卡住"时
+ * 语义层也还活着。
+ *
+ * 没有静态凭据（OAuth-only）或本地建不起来时，退回让主进程代判。退回是兜底，
+ * 不是失败；但会在 finding 上记下 `judged_by`，看得见到底是谁判的。
  */
-function askForJudgment(now: number, cooldownMs: number): void {
+async function runJudgment(now: number, cooldownMs: number): Promise<void> {
   if (pendingJudge) return;
+  // 主进程还没说"用哪个模型"：此刻既不该猜，也不该退回（退回会把第一轮判成 parent）。
+  // 这一条消息是 ready 之后立刻发的，通常只差几毫秒。
+  if (!modelConfigured) return;
   const finding = store?.needsJudgment(now, cooldownMs);
   if (!finding || !business || finding.subjectType !== 'task') return;
 
   const task = readTask(business, finding.subjectId);
   if (!task) return;
 
-  const trace = readTrace(business, task.id, JUDGE_TRACE_ROWS).map((row) => ({
-    seq: row.seq,
-    at: row.at,
-    name: row.name,
-    argsDigest: row.argsDigest,
-    ok: row.ok,
-  }));
+  const trace = readTrace(business, task.id, JUDGE_TRACE_ROWS);
+  const requestId = randomUUID();
+  pendingJudge = requestId;
 
-  pendingJudge = randomUUID();
+  const complete = await ensureLocalJudge();
+  if (complete) {
+    try {
+      const text = await complete(
+        buildJudgePrompt({
+          title: task.title,
+          goal: task.goal,
+          candidateKind: finding.kind,
+          candidateSummary: finding.summary,
+          candidateDetail: finding.detail,
+          trace,
+        }),
+      );
+      applyVerdict(finding.id, parseVerdict(text), 'child');
+      if (pendingJudge === requestId) pendingJudge = null;
+      return;
+    } catch (error) {
+      // 本地调用失败（网络、鉴权、模型改名）：退回主进程，并留一句原因。
+      send({
+        type: 'error',
+        message: `子进程判断失败，改由主进程：${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
   send({
     type: 'judge',
-    requestId: pendingJudge,
+    requestId,
     findingId: finding.id,
     payload: {
       taskId: task.id,
       title: task.title,
       goal: task.goal,
       candidate: { kind: finding.kind, summary: finding.summary, detail: finding.detail },
-      trace,
+      trace: trace.map((row) => ({
+        seq: row.seq,
+        at: row.at,
+        name: row.name,
+        argsDigest: row.argsDigest,
+        ok: row.ok,
+      })),
     },
   });
+}
+
+/** 懒建本地判断器；建不起来就记下来，本轮不再试。 */
+async function ensureLocalJudge(): Promise<CompleteFn | null> {
+  if (localJudge) return localJudge;
+  if (!modelWire || localJudgeUnavailable) return null;
+  try {
+    localJudge = await createLocalJudge(modelWire);
+    return localJudge;
+  } catch (error) {
+    localJudgeUnavailable = true;
+    send({
+      type: 'error',
+      message: `本地判断器建不起来，本轮退回主进程：${error instanceof Error ? error.message : String(error)}`,
+    });
+    return null;
+  }
+}
+
+function applyVerdict(findingId: string, verdict: ReturnType<typeof parseVerdict>, by: string): void {
+  const escalate = ESCALATING.has(verdict.verdict) && verdict.confidence >= ESCALATE_CONFIDENCE;
+  store?.setVerdict(findingId, verdict, Date.now(), escalate, by);
 }
 
 /**
@@ -376,6 +440,15 @@ function handle(message: unknown): void {
   const command = message as WatchdogCommand | undefined;
   if (!command || typeof command !== 'object') return;
 
+  if (command.type === 'configure-model') {
+    // 每次 ready 都会来一次（重启后这边是空的）。清掉旧的判断器与"建不起来"的结论。
+    modelWire = command.model;
+    modelConfigured = true;
+    localJudge = null;
+    localJudgeUnavailable = false;
+    return;
+  }
+
   if (command.type === 'action-result') {
     if (pendingAction === command.requestId) pendingAction = null;
     store?.setActionResult(
@@ -403,6 +476,7 @@ function handle(message: unknown): void {
         },
         now,
         escalate,
+        'parent',
       );
     } else {
       // 判不了也是一次"判过"：否则模型不可用的每一轮都会重试。

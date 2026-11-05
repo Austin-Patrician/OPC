@@ -16,6 +16,14 @@ import type { Judgment, StoredFinding, WatchdogSnapshot } from './store';
 export type WatchdogCommand =
   | { type: 'ping' }
   | { type: 'stop' }
+  /**
+   * 把判断模型的配置交给子进程。密钥只在**内存**里，不写盘、不进环境变量。
+   *
+   * 这是"判断在子进程里做"的前提：主进程仍是唯一解密的地方，子进程只是拿到
+   * 一份它需要的、针对一个 provider 的凭据副本。`null` = 没有可用配置，退回
+   * 由主进程代判。
+   */
+  | { type: 'configure-model'; model: ModelWire | null }
   | { type: 'judge-result'; requestId: string; findingId: string; result: JudgeResult }
   | {
       type: 'action-result';
@@ -25,6 +33,18 @@ export type WatchdogCommand =
       ok: boolean;
       message: string;
     };
+
+/** 交给子进程的最小模型配置：一个 provider、一个模型、一把钥匙。 */
+export interface ModelWire {
+  providerId: string;
+  providerName: string;
+  baseUrl: string;
+  /** pi 的接口种类，例如 `openai-completions`。 */
+  api: string;
+  modelId: string;
+  modelName: string;
+  apiKey: string;
+}
 
 /**
  * 它能请求的动作。**白名单在类型里**：加一条新动作必须先在这里写清楚它的名字，

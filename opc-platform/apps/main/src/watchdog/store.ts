@@ -40,6 +40,8 @@ export interface StoredFinding {
   /** 模型给出的语义判断（W5）。没有就是还没判过。 */
   verdict?: Judgment;
   judgedAt?: number;
+  /** `child` = 子进程自己判的；`parent` = 主进程代判（无静态凭据时的兜底）。 */
+  judgedBy?: string;
   /** 请求过的动作（W6）。 */
   action?: string;
   actedAt?: number;
@@ -71,6 +73,7 @@ interface FindingRow {
   verdict_reason: string;
   verdict_confidence: number;
   judged_at: number | null;
+  judged_by: string;
   action: string;
   acted_at: number | null;
   action_result: string;
@@ -146,6 +149,7 @@ export class WatchdogStore {
         verdict_reason TEXT NOT NULL DEFAULT '',
         verdict_confidence REAL NOT NULL DEFAULT 0,
         judged_at    INTEGER,
+        judged_by    TEXT NOT NULL DEFAULT '',
         action       TEXT NOT NULL DEFAULT '',
         acted_at     INTEGER,
         action_result TEXT NOT NULL DEFAULT ''
@@ -237,6 +241,7 @@ export class WatchdogStore {
       verdict_reason: '',
       verdict_confidence: 0,
       judged_at: null,
+      judged_by: '',
       action: '',
       acted_at: null,
       action_result: '',
@@ -316,8 +321,8 @@ export class WatchdogStore {
     return row ? toFinding(row) : null;
   }
 
-  /** 落一条判断。 */
-  setVerdict(id: string, judgment: Judgment, now: number, escalate: boolean): void {
+  /** 落一条判断。`by` 记录是谁判的：`child` = 子进程自己，`parent` = 主进程代判。 */
+  setVerdict(id: string, judgment: Judgment, now: number, escalate: boolean, by = 'parent'): void {
     const current = this.db
       .prepare(`SELECT summary FROM watchdog_finding WHERE id = ?`)
       .get(id) as { summary: string } | undefined;
@@ -326,7 +331,8 @@ export class WatchdogStore {
       .prepare(
         `UPDATE watchdog_finding
             SET verdict = ?, verdict_reason = ?, verdict_confidence = ?, judged_at = ?,
-                summary = ?, state = CASE WHEN ? = 1 THEN 'escalated' ELSE state END
+                judged_by = ?, summary = ?,
+                state = CASE WHEN ? = 1 THEN 'escalated' ELSE state END
           WHERE id = ?`,
       )
       .run(
@@ -334,6 +340,7 @@ export class WatchdogStore {
         clip(judgment.reason, 400),
         judgment.confidence,
         now,
+        by,
         clip(`${current.summary}｜模型判断：${label(judgment)}`, 400),
         escalate ? 1 : 0,
         id,
@@ -433,21 +440,23 @@ export class WatchdogStore {
   }
 }
 
-/** 旧库（只有 active/resolved 两态）补列。列加完再回填，不留半截数据。 */
+/** 旧库补列。逐列判断、逐列加：整段 ALTER 在一半列已存在时会整体失败。 */
 function migrateFinding(db: Database.Database): void {
-  const columns = (db.prepare(`PRAGMA table_info(watchdog_finding)`).all() as { name: string }[]).map(
-    (row) => row.name,
-  );
-  const missing = ['state', 'first_at', 'last_seen_at', 'reopen_count'].filter(
-    (name) => !columns.includes(name),
-  );
-  if (missing.length > 0) {
-    db.exec(`
-      ALTER TABLE watchdog_finding ADD COLUMN state TEXT NOT NULL DEFAULT 'active';
-      ALTER TABLE watchdog_finding ADD COLUMN first_at INTEGER NOT NULL DEFAULT 0;
-      ALTER TABLE watchdog_finding ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0;
-      ALTER TABLE watchdog_finding ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0;
-    `);
+  const has = (name: string): boolean =>
+    (db.prepare(`PRAGMA table_info(watchdog_finding)`).all() as { name: string }[]).some(
+      (row) => row.name === name,
+    );
+  const ensure = (name: string, ddl: string): boolean => {
+    if (has(name)) return false;
+    db.exec(`ALTER TABLE watchdog_finding ADD COLUMN ${ddl}`);
+    return true;
+  };
+
+  const addedState = ensure('state', "state TEXT NOT NULL DEFAULT 'active'");
+  ensure('first_at', 'first_at INTEGER NOT NULL DEFAULT 0');
+  ensure('last_seen_at', 'last_seen_at INTEGER NOT NULL DEFAULT 0');
+  ensure('reopen_count', 'reopen_count INTEGER NOT NULL DEFAULT 0');
+  if (addedState) {
     db.exec(`
       UPDATE watchdog_finding SET first_at = at WHERE first_at = 0;
       UPDATE watchdog_finding SET last_seen_at = at WHERE last_seen_at = 0;
@@ -455,28 +464,17 @@ function migrateFinding(db: Database.Database): void {
     `);
   }
 
-  // V5（语义诊断）：模型给出的结论。空字符串 = 还没判过。
-  const judged = ['verdict', 'verdict_reason', 'verdict_confidence', 'judged_at'].filter(
-    (name) => !columns.includes(name),
-  );
-  if (judged.length > 0) {
-    db.exec(`
-      ALTER TABLE watchdog_finding ADD COLUMN verdict TEXT NOT NULL DEFAULT '';
-      ALTER TABLE watchdog_finding ADD COLUMN verdict_reason TEXT NOT NULL DEFAULT '';
-      ALTER TABLE watchdog_finding ADD COLUMN verdict_confidence REAL NOT NULL DEFAULT 0;
-      ALTER TABLE watchdog_finding ADD COLUMN judged_at INTEGER;
-    `);
-  }
+  // W5：模型给出的结论 + 谁判的。空字符串 = 还没判过。
+  ensure('verdict', "verdict TEXT NOT NULL DEFAULT ''");
+  ensure('verdict_reason', "verdict_reason TEXT NOT NULL DEFAULT ''");
+  ensure('verdict_confidence', 'verdict_confidence REAL NOT NULL DEFAULT 0');
+  ensure('judged_at', 'judged_at INTEGER');
+  ensure('judged_by', "judged_by TEXT NOT NULL DEFAULT ''");
 
-  // W6（动作）：请求过什么、什么时候、结果如何。
-  const acted = ['action', 'acted_at', 'action_result'].filter((name) => !columns.includes(name));
-  if (acted.length > 0) {
-    db.exec(`
-      ALTER TABLE watchdog_finding ADD COLUMN action TEXT NOT NULL DEFAULT '';
-      ALTER TABLE watchdog_finding ADD COLUMN acted_at INTEGER;
-      ALTER TABLE watchdog_finding ADD COLUMN action_result TEXT NOT NULL DEFAULT '';
-    `);
-  }
+  // W6：请求过什么、什么时候、结果如何。
+  ensure('action', "action TEXT NOT NULL DEFAULT ''");
+  ensure('acted_at', 'acted_at INTEGER');
+  ensure('action_result', "action_result TEXT NOT NULL DEFAULT ''");
 }
 
 function toFinding(row: FindingRow): StoredFinding {
@@ -503,6 +501,7 @@ function toFinding(row: FindingRow): StoredFinding {
         }
       : {}),
     ...(row.judged_at === null ? {} : { judgedAt: row.judged_at }),
+    ...(row.judged_by ? { judgedBy: row.judged_by } : {}),
     ...(row.action ? { action: row.action } : {}),
     ...(row.acted_at === null ? {} : { actedAt: row.acted_at }),
     ...(row.action_result ? { actionResult: row.action_result } : {}),
