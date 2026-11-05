@@ -19,6 +19,9 @@ export default defineConfig({
       'apps/renderer/src/**/*.test.tsx',
       'apps/main/src/**/*.test.ts',
       'packages/**/src/**/*.test.ts',
+      // Build-time helpers (proxy route detection for the OCR asset download) are
+      // plain `.mjs`; they run under Node, not Electron, so they belong here too.
+      'scripts/**/*.test.mjs',
     ],
     reporters: 'dot',
   },

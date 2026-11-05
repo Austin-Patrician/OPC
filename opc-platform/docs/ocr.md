@@ -78,6 +78,33 @@ node scripts/fetch-ocr-assets.mjs --check   # 仅校验（prebuild 调用，缺�
 - 校验只认 sha256，不看 mtime：已存在的正确文件不会重复下载。
 - `pnpm build` 的 `prebuild` 会跑 `--check`，缺模型在构建期就报错，而不是等到第一次 OCR。
 
+#### 代理（这条路上有一个容易踩空的地方）
+
+下载脚本**不是 Electron**：它由 pnpm 在 `postinstall` / `prebuild` 时用裸 Node 起进程，所以应用里那三条代理出口
+（Chromium session、主进程 `fetch` 包装、子进程 env）**一个都不作用于它**。只有代理、没有直连的机器上，
+应用一切正常而模型下载失败——报错只有一句 `fetch failed`。
+
+脚本自己解决，规则与应用设置里的「跟随系统」一致（`scripts/ocr-proxy.mjs`）：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | `OPC_OCR_PROXY=direct` | 显式不用代理（覆盖下面两条） |
+| 2 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 手动指定，写成 `http://host:port` |
+| 3 | 系统代理 | Windows 读注册表 `Internet Settings`（含 `ProxyOverride` → `NO_PROXY`）；macOS 读 `scutil --proxy` |
+| 4 | 都没有 | 直连 |
+
+两个必要的细节：
+
+- **Node 的内置 `fetch` 默认不读代理变量**，必须带 `--use-env-proxy` 启动。这个开关不能中途打开，所以脚本会
+  带着它**重入自己一次**（`OPC_OCR_PROXY_REEXEC` 防循环）；Node 太老没有这个开关时给一句警告再直连。
+- **`host:port` 只有一个值时，它是"对任何目标都用同一个明文 HTTP 代理"**，不是 HTTPS 代理。把它当成
+  `https://host:port`（即"对代理本身讲 TLS"）会让每个请求都以
+  `socket disconnected before secure TLS connection was established` 失败——目标站是不是 HTTPS 与
+  "怎么跟代理说话"无关。
+
+另外：代理链路会间歇性 reset（实测约 1/5 的连接），所以每个源重试 3 次；重定向**手动跟随**，
+报错会指明是哪一跳（`huggingface.co：…` / CDN 主机），而不是笼统的 `fetch failed`。
+
 ### `opc-ocr://` 协议
 
 `apps/main/src/ocr/protocol.ts`：
