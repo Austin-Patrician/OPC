@@ -19,6 +19,9 @@ asarUnpack:
   - '**/*.node'
   - 'node_modules/sqlite-vec*/**'
   - 'node_modules/better-sqlite3/**'
+  # Watchdog 的入口由 `utilityProcess.fork` 直接读磁盘：解包一份，别让它依赖
+  # asar 的透明重定向（`WatchdogHost.entryPath` 会两条路都试）。
+  - 'out/main/watchdog.js'
 mac:
   category: public.app-category.productivity
   target:

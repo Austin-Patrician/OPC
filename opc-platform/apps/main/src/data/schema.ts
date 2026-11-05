@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 50;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -1881,7 +1881,122 @@ CREATE TABLE IF NOT EXISTS mcp_permit (
 );
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46];
+/**
+ * V47：**主进程心跳与系统故障事件**（`11-watchdog-spec.md` W1）。
+ *
+ * 在这之前，"系统自己出毛病了"这件事只存在于控制台：Router 交给会话失败、
+ * 任务恢复失败、MCP 连不上，全都是一行 `console.error`。Watchdog 读的是库，
+ * 所以它对这些一无所知——它只能看见"某个任务卡住了"，看不见"为什么整个轮次
+ * 都在失败"。
+ *
+ * 两张表：
+ *
+ * 1. `system_heartbeat`：主进程还活着吗。`instance_id` 每次启动都不一样，所以
+ *    下一轮启动时能区分"上一个进程没正常关"和"这次刚起来"。只有一行（`id='main'`）。
+ * 2. `system_event`：结构性故障。只存可安全展示的东西——类型、时间、关联对象、
+ *    一句摘要、一段脱敏 JSON。**不存凭据，也不存完整提示词**。
+ */
+const V47 = `
+CREATE TABLE IF NOT EXISTS system_heartbeat (
+  id          TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  pid         INTEGER NOT NULL,
+  at          INTEGER NOT NULL,
+  state       TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('running','stopping'))
+);
+
+CREATE TABLE IF NOT EXISTS system_event (
+  id           TEXT PRIMARY KEY,
+  at           INTEGER NOT NULL,
+  kind         TEXT NOT NULL,
+  severity     TEXT NOT NULL DEFAULT 'error'
+    CHECK (severity IN ('info','warning','error')),
+  subject_type TEXT NOT NULL DEFAULT '',
+  subject_id   TEXT NOT NULL DEFAULT '',
+  summary      TEXT NOT NULL DEFAULT '',
+  detail       TEXT NOT NULL DEFAULT '',
+  handled_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_system_event_recent ON system_event(at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_event_open ON system_event(handled_at, at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_event_subject ON system_event(subject_type, subject_id, at DESC);
+`;
+
+/**
+ * V48：**Watchdog 的 incident 镜像**（`11-watchdog-spec.md` W3）。
+ *
+ * 事实源在 Watchdog 自己的库里：状态机必须能在主进程卡住时继续推进，所以它
+ * 不能住在一个"主进程不可用就写不进去"的地方。这张表是**镜像**，给 Router 与
+ * 界面读，由父进程按子进程每轮的 `tick` 刷新。
+ *
+ * 镜像可以丢：下一轮 tick 会重新写平。所以它不需要和子进程保持事务一致，
+ * 也不需要保留历史——历史在子进程那边。
+ */
+const V48 = `
+CREATE TABLE IF NOT EXISTS watchdog_incident (
+  id           TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  state        TEXT NOT NULL DEFAULT 'active'
+    CHECK (state IN ('active','rechecking','escalated','resolved')),
+  subject_type TEXT NOT NULL DEFAULT '',
+  subject_id   TEXT NOT NULL DEFAULT '',
+  summary      TEXT NOT NULL DEFAULT '',
+  detail       TEXT NOT NULL DEFAULT '',
+  first_at     INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  resolved_at  INTEGER,
+  reopen_count INTEGER NOT NULL DEFAULT 0,
+  synced_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watchdog_incident_open
+  ON watchdog_incident(state, last_seen_at DESC);
+`;
+
+/**
+ * V49：**Watchdog 的动作审计**（`11-watchdog-spec.md` W6）。
+ *
+ * 每一次"它请求系统做一件事"都落一行，包括被拒绝的那些。三件事靠它：
+ *
+ * 1. **幂等**：唯一键 (incident_id, action) —— 同一个请求重发多少次都只执行一次；
+ * 2. **审计**：谁在什么时候、因为什么、动了什么；
+ * 3. **回写**：执行结果（ok/message）留在库里，不会被"下一步又好了"覆盖掉。
+ *
+ * 这里只记**动作请求**，不记动作实现——实现永远在主进程（凭据与业务不变量都在那边）。
+ */
+const V49 = `
+CREATE TABLE IF NOT EXISTS watchdog_action (
+  id           TEXT PRIMARY KEY,
+  incident_id  TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  reason       TEXT NOT NULL DEFAULT '',
+  evidence     TEXT NOT NULL DEFAULT '',
+  requested_at INTEGER NOT NULL,
+  executed_at  INTEGER,
+  status       TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','done','failed','refused')),
+  result       TEXT NOT NULL DEFAULT '',
+  UNIQUE (incident_id, action)
+);
+CREATE INDEX IF NOT EXISTS idx_watchdog_action_recent ON watchdog_action(requested_at DESC);
+`;
+
+/**
+ * V50：**Watchdog 的恢复能力**（审查修复）。
+ *
+ * 1. `watchdog_action.attempts`：动作请求失败后要能重试。没有次数，就只能
+ *    "一次失败永不重试"或"无限重试"，两种都不对。
+ * 2. `watchdog_incident.announced_at` / `announce_attempts`：**状态迁移 ≠ 已经通知到人**。
+ *    以前镜像一升到 escalated 就算通知过；写报告失败那次就永远丢了。
+ *    现在"升级"和"通知成功"是两件事，通知失败下一轮还会再试。
+ */
+const V50 = `
+ALTER TABLE watchdog_action ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE watchdog_incident ADD COLUMN announced_at INTEGER;
+ALTER TABLE watchdog_incident ADD COLUMN announce_attempts INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

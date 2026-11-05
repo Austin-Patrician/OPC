@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
@@ -39,6 +40,9 @@ import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
 import { BillingSettingsService } from './work/billingSettings';
 import { TaskRepository } from './data/taskRepository';
+import { SystemEventRepository } from './data/systemEventRepository';
+import { WatchdogIncidentRepository } from './data/watchdogIncidentRepository';
+import { WatchdogActionRepository } from './data/watchdogActionRepository';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
 import { createDingTalkAdapter } from './trigger/dingtalk';
@@ -48,7 +52,11 @@ import { ingestTrigger } from './trigger/ingest';
 import { TriggerRegistry } from './trigger/registry';
 import { startTriggerServer, type TriggerServer } from './trigger/server';
 import { TriggerSettingsStore } from './trigger/settings';
-import { Watchdog } from './watchdog/watchdog';
+import { WatchdogHost } from './watchdog/host';
+import { createWatchdogJudge } from './watchdog/judge';
+import { WatchdogModelStore } from './watchdog/model';
+import { createWatchdogAnswerer } from './watchdog/ask';
+import { WatchdogPolicyStore } from './watchdog/policy';
 import { createRouterHost } from './router/routerHost';
 import { TriagePolicyStore } from './router/triagePolicy';
 import { createLineOpener } from './router/workDispatch';
@@ -85,6 +93,10 @@ const isMcpProbe = process.env.OPC_MCP_PROBE === '1';
 const isSubagentProbe = process.env.OPC_SUBAGENT_PROBE === '1';
 /** `OPC_MODEL_PROBE=1`: import the local pi provider config and run one task with the model brain. */
 const isModelProbe = process.env.OPC_MODEL_PROBE === "1";
+/** `OPC_WATCHDOG_PROBE=1`: 起一个真正的 Watchdog 子进程，证明主进程堵住时它还在转。 */
+const isWatchdogProbe = process.env.OPC_WATCHDOG_PROBE === '1';
+/** `OPC_WATCHDOG_JUDGE_PROBE=1`: 用默认模型判一次合成证据，验证语义层通路。 */
+const isWatchdogJudgeProbe = process.env.OPC_WATCHDOG_JUDGE_PROBE === '1';
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
 /** `OPC_CONSOLIDATION_RUN_PROBE=1`: skipped and done runs are both recorded. */
@@ -292,6 +304,60 @@ async function bootstrap(): Promise<void> {
   initAppPaths();
 
   const db = openCompanyDatabase(appPaths.database);
+  // 系统故障的去处。Watchdog（`11-watchdog-spec.md`）读的就是这张表；
+  // 在这之前，这些事只存在于控制台，而读库的东西看不见控制台。
+  const systemEvents = new SystemEventRepository(db);
+  // Watchdog 的 incident 镜像（事实源在它自己的库里）。给 Router 与界面读。
+  const watchdogIncidents = new WatchdogIncidentRepository(db);
+  // 动作账本：认领 → 执行 → 回写。幂等键是 (incident, action)。
+  const watchdogActions = new WatchdogActionRepository(db);
+  // 规则（W7）：阈值、冷却、总开关。设置页写、子进程每轮读。
+  const watchdogPolicy = new WatchdogPolicyStore(db);
+  // 它自己的模型（W5）：没配就退回默认 LLM。
+  const watchdogModel = new WatchdogModelStore(db);
+  const instanceId = randomUUID();
+  const previousRun = systemEvents.uncleanExit(instanceId);
+  if (previousRun) {
+    systemEvents.recordSafely({
+      kind: 'process.unclean_exit',
+      severity: 'warning',
+      subjectType: 'process',
+      summary: '上一次运行时没有正常退出：有可能有任务停在中途。',
+      detail: {
+        lastSeenAt: new Date(previousRun.at).toISOString(),
+        previousInstance: previousRun.instanceId,
+        pid: previousRun.pid,
+        state: previousRun.state,
+      },
+    });
+  }
+  systemEvents.beat({ instanceId, pid: process.pid });
+  const heartbeat = setInterval(() => {
+    try {
+      systemEvents.beat({ instanceId, pid: process.pid });
+    } catch (error) {
+      // 心跳写不进去说明库有问题；它不该把整个应用带下去。
+      console.warn('[heartbeat] 写不进去', error);
+    }
+  }, 15_000);
+  heartbeat.unref?.();
+  app.on('before-quit', () => {
+    clearInterval(heartbeat);
+    try {
+      systemEvents.beat({ instanceId, pid: process.pid, state: 'stopping' });
+    } catch {
+      // 退出路径上没什么可做的：下一次启动会把它当成异常退出，那也不算错。
+    }
+  });
+  // `app.exit()`（探针全走这条路）不会触发 `before-quit`。没有这一条，每跑一次
+  // 探针都会留下一条"上次没正常退出"，把真正的异常淹掉。
+  process.on('exit', () => {
+    try {
+      systemEvents.beat({ instanceId, pid: process.pid, state: 'stopping' });
+    } catch {
+      // 同步写都失败，说明库已经不可用了；记录退出状态不是这时该做的事。
+    }
+  });
   const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
   const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
   const network = new NetworkProxyService(db, {
@@ -476,6 +542,7 @@ async function bootstrap(): Promise<void> {
   }
   work = new WorkService({
     db,
+    faults: systemEvents,
     paths: appPaths,
     upsertTaskCard: (task) => chat?.upsertTaskCard(task),
     mcp: readMcp,
@@ -542,6 +609,7 @@ async function bootstrap(): Promise<void> {
    */
   const routerHost = createRouterHost({
     db,
+    faults: systemEvents,
     agentsDir: appPaths.agentsDir,
     workspaceDir: appPaths.workspaceDir,
     modelConfig,
@@ -653,6 +721,18 @@ async function bootstrap(): Promise<void> {
     facts,
     consolidationRuns,
     triage,
+    watchdog: {
+      incidents: watchdogIncidents,
+      actions: watchdogActions,
+      policy: watchdogPolicy,
+      model: watchdogModel,
+      ask: createWatchdogAnswerer({
+        models: modelConfig,
+        incidents: watchdogIncidents,
+        actions: watchdogActions,
+        events: systemEvents,
+      }),
+    },
     memories: {
       list: () =>
         memory.list(USER_MEMORY_OWNER).map((item) => ({
@@ -710,6 +790,156 @@ async function bootstrap(): Promise<void> {
   app.on('before-quit', () => {
     void closeAllMcpConnections();
   });
+
+  // Watchdog 是**另一个进程**（`docs/v2/11-watchdog-spec.md` W2）：它读同一个业务库
+  // （只读连接），写自己的库；主进程卡住或崩掉时它还在。
+  // 探针不加它：几十次短命进程各 fork 一个观测者，只会把探针本身拖慢。
+  const watchdog = new WatchdogHost({
+    // 探针可以指向一个临时业务库：它要验证"子进程真的去问了模型并落了结论"，
+    // 那不该往真实的库里塞假任务。生产路径永远是 `appPaths.database`。
+    businessDb:
+      (isWatchdogProbe && process.env.OPC_WATCHDOG_PROBE_BUSINESS_DB) || appPaths.database,
+    sessionDb: path.join(appPaths.userData, 'watchdog', 'watchdog.sqlite'),
+    faults: systemEvents,
+    incidents: watchdogIncidents,
+    judge: createWatchdogJudge(modelConfig, () => watchdogModel.get()),
+    /**
+     * 白名单动作（W6）。三件事按顺序做，缺一步都不算"修过"：
+     *
+     * 1. **认领**：`(incident, action)` 唯一键，重复请求直接返回"已执行过"；
+     * 2. **执行**：只有 `mcp.reconnect`。断开共享连接并让 harness 失效，
+     *    下一个任务会重新挂着试——幂等，最坏结果是"还是连不上"；
+     * 3. **回写**：成功写 `done`，失败写 `failed` + 原因。**失败不改 incident 状态**。
+     */
+    performAction: async (payload) => {
+      const claim = watchdogActions.claim({
+        incidentId: payload.incidentId,
+        action: payload.action,
+        reason: payload.reason,
+        evidence: payload.evidence,
+      });
+      // "没认领到"有四种原因，每一种的下一步都不同。旧实现把它们都说成
+      // "已经执行过"——一次认领后崩溃会被永久当成修好了。
+      if (claim === 'done') return { ok: true, message: '这条动作已经执行过（幂等跳过）' };
+      if (claim === 'in_flight') return { ok: true, message: '这条动作正在执行，等结果' };
+      if (claim === 'refused') return { ok: false, message: '这条动作之前被拒绝过，不再重试' };
+      if (claim === 'exhausted') return { ok: false, message: '这条动作已经试满次数，不再重试' };
+
+      try {
+        if (payload.action === 'mcp.reconnect') {
+          await closeAllMcpConnections();
+          await work?.invalidateAllHarnesses();
+          watchdogActions.finish(
+            payload.incidentId,
+            payload.action,
+            'done',
+            '已断开共享连接并让执行体缓存失效，下一个任务会重新挂载',
+          );
+          return { ok: true, message: '已重连' };
+        }
+        watchdogActions.finish(payload.incidentId, payload.action, 'refused', '不在白名单里');
+        return { ok: false, message: `不在白名单里：${payload.action}` };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        watchdogActions.finish(payload.incidentId, payload.action, 'failed', message);
+        return { ok: false, message };
+      }
+    },
+    /**
+     * 唯一的人可见出口：一条 incident 升级成 escalated 时，在这件活所属的线上
+     * 放一条 `decide`。旧的主进程 Watchdog 退休之后，这句话就靠这里说。
+     *
+     * 只处理挂在任务上的：进程级的事（主进程不响应）没有"线"可以说话，
+     * 它在库里、在镜像里，等 W7 的入口。
+     */
+    onEscalated: (incident) => {
+      if (incident.subjectType !== 'task') return;
+      const row = db
+        .prepare(`SELECT thread_id, title FROM task WHERE id = ?`)
+        .get(incident.subjectId) as { thread_id: string | null; title: string } | undefined;
+      if (!row?.thread_id) return;
+      threads.addReport({
+        threadId: row.thread_id,
+        level: 'decide',
+        title: row.title,
+        body: incident.summary,
+        taskId: incident.subjectId,
+      });
+    },
+    ...(isWatchdogProbe ? { intervalMs: 1_000 } : {}),
+  });
+  if (!isHeadlessMode) watchdog.start();
+  app.on('before-quit', () => {
+    void watchdog.stop();
+  });
+
+  if (isWatchdogJudgeProbe) {
+    // 一条合成证据：同一个命令失败三次、中间夹着别的动作——正是 W4 抓到的形状。
+    const verdict = await createWatchdogJudge(modelConfig)({
+      taskId: 'probe',
+      title: '修构建',
+      goal: 'server.js 能通过 node --check，并且 README 说明用法',
+      candidate: {
+        kind: 'repeat_failure',
+        summary: '同一个动作失败了 3 次（bash node --check server.js）',
+        detail: '{"attempts":3,"seqs":[2,4,6]}',
+      },
+      trace: [
+        { seq: 1, at: Date.now() - 5000, name: 'read', argsDigest: 'src/app.ts', ok: true },
+        { seq: 2, at: Date.now() - 4000, name: 'bash', argsDigest: 'node --check server.js', ok: false },
+        { seq: 3, at: Date.now() - 3000, name: 'write', argsDigest: 'server.js', ok: true },
+        { seq: 4, at: Date.now() - 2000, name: 'bash', argsDigest: 'node --check server.js', ok: false },
+        { seq: 5, at: Date.now() - 1000, name: 'read', argsDigest: 'src/app.ts', ok: true },
+        { seq: 6, at: Date.now(), name: 'bash', argsDigest: 'node --check server.js', ok: false },
+      ],
+    });
+    process.stdout.write(`WATCHDOG_JUDGE ${JSON.stringify(verdict)}\n`);
+    app.exit(verdict.ok ? 0 : 1);
+  }
+
+  if (isWatchdogProbe) {
+    watchdog.start();
+    const ready = await watchdog.whenReady(8_000);
+    const firstPid = watchdog.pidForProbe();
+    // W8：模拟一次崩溃，看它会不会按退避策略自己回来。
+    watchdog.crashForProbe();
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    const restarted = await watchdog.ping();
+    const secondPid = watchdog.pidForProbe();
+    const before = await watchdog.ping();
+    // 主进程**故意堵住自己**：一段同步忙等。同一进程里的定时器这时会停，
+    // 子进程不该停——这是 W2 唯一真正要证明的事。
+    const until = Date.now() + 3_000;
+    while (Date.now() < until) {
+      // busy wait on purpose
+    }
+    const after = await watchdog.ping();
+    const advanced = (after?.lastTickAt ?? 0) > (before?.lastTickAt ?? 0);
+    // 等模型那一趟往返（判一次要几秒）。超时就不再等：探针只负责把事说清楚。
+    const judgeDeadline = Date.now() + 30_000;
+    let judged = after?.judged ?? 0;
+    while (judged === 0 && Date.now() < judgeDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      judged = (await watchdog.ping())?.judged ?? 0;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    process.stdout.write(
+      `WATCHDOG_PROBE ${JSON.stringify({
+        ready,
+        before,
+        after,
+        tickAdvancedWhileBlocked: advanced,
+        restarted: Boolean(restarted) && secondPid !== null && secondPid !== firstPid,
+        pids: [firstPid, secondPid],
+        sessionDbExists: existsSync(path.join(appPaths.userData, 'watchdog', 'watchdog.sqlite')),
+        judged,
+        mirror: watchdogIncidents.listOpen(5).map((row) => ({ kind: row.kind, state: row.state })),
+        actions: watchdogActions.listRecent(3),
+      })}\n`,
+    );
+    await watchdog.stop();
+    app.exit(ready && advanced && restarted ? 0 : 1);
+  }
 
   // Auto lifecycle (§7.5): an idle thread cools first — it stops auto-replying but
   // stays readable — and only a much older one is archived, which is what triggers
@@ -808,24 +1038,9 @@ async function bootstrap(): Promise<void> {
     extractionTimer.unref?.();
     app.on('before-quit', () => clearInterval(extractionTimer));
 
-    // 进展监督（三层验收的第 ① 层）：判的是「还在不在往前走」，不是「做得对不对」。
-    // 只做程序层，不花 token：超时、长时间无新步骤、原地重复同一句。
-    // 它只**上报**，不杀任务——杀掉一个马上要成功的运行是本项目 P6 明确禁止的聪明。
-    const liveWork = work;
-    const watchdog = new Watchdog({
-      threads,
-      pending: () => liveWork.listPending(),
-      onDiagnosis: (task, diagnosis) => console.warn('[watchdog]', diagnosis.kind, task.id, diagnosis.reason),
-    });
-    const sweep = setInterval(() => {
-      try {
-        watchdog.sweep();
-      } catch (error) {
-        console.error('[watchdog] sweep 失败', error);
-      }
-    }, 60_000);
-    sweep.unref?.();
-    app.on('before-quit', () => clearInterval(sweep));
+    // 旧的程序层 Watchdog 已经退休（W4）：判据从 `task.steps` 搬到了 `task_trace`，
+    // 跑在子进程里（`watchdog/child.ts`）。它唯一的用户可见出口——
+    // 「这条线可能卡住了」——由 `onEscalated` 接着发，判据是 incident 升级。
   }
 
   // Outgoing traffic must already follow the your choice when the first window
@@ -857,6 +1072,8 @@ async function bootstrap(): Promise<void> {
 const isHeadlessMode =
   isSelfTest ||
   isSmoke ||
+  isWatchdogProbe ||
+  isWatchdogJudgeProbe ||
   Boolean(isOcrProbe) ||
   isWorkProbe ||
   isMcpProbe ||

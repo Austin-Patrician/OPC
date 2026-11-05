@@ -27,6 +27,8 @@ import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import type { FaultSink } from '../data/systemEventRepository';
+import { messageOf } from '../data/systemEventRepository';
 import { USER_ID } from '../data/schema';
 import { TaskRepository, taskWorkspaceRelPath, type CreateTaskDraft } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
@@ -128,6 +130,8 @@ interface ToolSlot {
 
 export interface WorkServiceDeps {
   db: CompanyDatabase;
+  /** 系统故障的去处（`system_event`）。没有就只打到控制台。 */
+  faults?: FaultSink;
   paths: AppPaths;
   /** Injects / updates the task card in the conversation. */
   upsertTaskCard: (task: WorkTask) => void;
@@ -439,6 +443,16 @@ export class WorkService {
           console.error('记失败这一步也失败了', recordError);
         }
         console.error('task run failed', error);
+        // 任务跑挂是 Watchdog 最该知道的一类事：它现在能从库里读到，
+        // 而不是只能从某一行日志里被偶然发现。
+        this.deps.faults?.recordSafely({
+          kind: 'work.run_failed',
+          severity: 'error',
+          subjectType: 'task',
+          subjectId: taskId,
+          summary: `任务启动/运行失败：${messageOf(error)}`,
+          detail: { taskId },
+        });
       },
     });
   }
@@ -1007,6 +1021,14 @@ export class WorkService {
       await this.runner.resumeInterrupted();
     } catch (error) {
       console.error('resume failed', error);
+      // 「状态恢复失败」正是文章 §6 点名的那类基础设施故障：它意味着有活被
+      // 落下了，而主流程不会再提它第二次。
+      this.deps.faults?.recordSafely({
+        kind: 'work.resume_failed',
+        severity: 'error',
+        subjectType: 'process',
+        summary: `启动恢复失败：${messageOf(error)}。可能有任务停在中断状态。`,
+      });
     }
     this.sweepStaleRunning();
   };
@@ -1105,7 +1127,16 @@ export class WorkService {
     try {
       const mount = await opening;
       for (const server of mount.servers) {
-        if (server.error) console.warn(`[mcp] ${server.name} 没连上：${server.error}`);
+        if (!server.error) continue;
+        console.warn(`[mcp] ${server.name} 没连上：${server.error}`);
+        this.deps.faults?.recordSafely({
+          kind: 'mcp.connect_failed',
+          severity: 'warning',
+          subjectType: 'mcp',
+          subjectId: server.name,
+          summary: `MCP 服务器 ${server.name} 没连上：${server.error}`,
+          detail: { server: server.name },
+        });
       }
       this.mcpServers.set(workerId, mount.servers);
       // 一个都没连上就别占着一个槽：它会让界面显示"有 MCP"，而实际什么都没有。

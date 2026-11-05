@@ -33,7 +33,15 @@ export default defineConfig({
     ],
     build: {
       outDir: resolve(__dirname, 'out/main'),
-      rollupOptions: { input: resolve(__dirname, 'apps/main/src/index.ts') },
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'apps/main/src/index.ts'),
+          // Watchdog 是**独立进程**（`docs/v2/11-watchdog-spec.md` W2），所以它
+          // 需要自己的入口文件：`utilityProcess.fork` 加载的是磁盘上的一个文件，
+          // 不是主 bundle 里的一个函数。
+          watchdog: resolve(__dirname, 'apps/main/src/watchdog/child.ts'),
+        },
+      },
     },
   },
   preload: {

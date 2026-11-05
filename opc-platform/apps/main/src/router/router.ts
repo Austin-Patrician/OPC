@@ -1,4 +1,6 @@
 import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
+import type { FaultSink } from '../data/systemEventRepository';
+import { messageOf } from '../data/systemEventRepository';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { TriggerReplyTarget } from '../trigger/types';
 import type { SemanticScreener } from './semanticGate';
@@ -62,6 +64,8 @@ export interface Intent {
 
 export interface RouterDeps {
   threads: ThreadRepository;
+  /** 系统故障的去处。没有就只打到控制台（探针与测试走这条）。 */
+  faults?: FaultSink;
   /** 程序层。默认全留，配错了会很明显（每一条都进模型）。 */
   prefilter?: (event: TriggerEvent) => PrefilterVerdict;
   /**
@@ -246,6 +250,14 @@ export class Router {
       report.reports = 0;
       report.failed += slow.length;
       console.error('[router] 交给会话失败', error);
+      // 这一条以前只活在这一行日志里：Watchdog 读库，看不到"整个轮次都在失败"。
+      this.deps.faults?.recordSafely({
+        kind: 'router.session_failed',
+        severity: 'error',
+        subjectType: 'router',
+        summary: `Router 这一轮没交进去，${slow.length} 条事件回到队列等待重试。`,
+        detail: { events: slow.length, reports: reports.length, reason: messageOf(error) },
+      });
     }
 
     return report;

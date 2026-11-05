@@ -159,6 +159,16 @@ const bridge: OpcBridge = {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
     setTriage: (patch: unknown) => ipcRenderer.invoke(IPC.router.setTriage, patch),
   },
+  watchdog: {
+    incidents: () => ipcRenderer.invoke(IPC.watchdog.incidents),
+    actions: () => ipcRenderer.invoke(IPC.watchdog.actions),
+    ask: (question: string) => ipcRenderer.invoke(IPC.watchdog.ask, question),
+    getPolicy: () => ipcRenderer.invoke(IPC.watchdog.getPolicy),
+    savePolicy: (patch: unknown) => ipcRenderer.invoke(IPC.watchdog.savePolicy, patch),
+    rollbackPolicy: () => ipcRenderer.invoke(IPC.watchdog.rollbackPolicy),
+    getModel: () => ipcRenderer.invoke(IPC.watchdog.getModel),
+    setModel: (ref: unknown) => ipcRenderer.invoke(IPC.watchdog.setModel, ref),
+  },
   trigger: {
     status: () => ipcRenderer.invoke(IPC.trigger.status),
     set: (patch: unknown) => ipcRenderer.invoke(IPC.trigger.set, patch),

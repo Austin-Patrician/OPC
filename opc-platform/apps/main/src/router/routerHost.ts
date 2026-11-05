@@ -5,6 +5,7 @@ import { createRegistry } from '@earendil-works/pi-durable';
 import type { ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
 import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import type { FaultSink } from '../data/systemEventRepository';
 import { TaskRepository } from '../data/taskRepository';
 import { ThreadRepository } from '../data/threadRepository';
 import type { FactService } from '../memory/factService';
@@ -37,6 +38,8 @@ import { renderTrace } from '../work/trace';
 
 export interface RouterHostDeps {
   db: CompanyDatabase;
+  /** 系统故障的去处（`system_event`）。没有就只打到控制台。 */
+  faults?: FaultSink;
   /** Router 自己的运行时目录（与执行体分开，互不污染）。 */
   agentsDir: string;
   workspaceDir: string;
@@ -426,6 +429,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
 
   const router = new Router({
     threads,
+    ...(deps.faults ? { faults: deps.faults } : {}),
     prefilter: fastPath,
     semantic,
     rules,

@@ -14,6 +14,7 @@ import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { TriagePage } from './pages/TriagePage';
+import { WatchdogPage } from './pages/WatchdogPage';
 import { McpPage } from './pages/McpPage';
 import { useTranslation } from 'react-i18next';
 import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
@@ -25,6 +26,7 @@ const PAGE_IDS = [
   'billing',
   'compaction',
   'triage',
+  'watchdog',
   'memory',
   'runtime',
   'llm',
@@ -78,6 +80,7 @@ export function SettingsShell() {
         { id: 'billing', label: t('settings.page.billing') },
         { id: 'compaction', label: t('settings.page.compaction') },
         { id: 'triage', label: t('settings.page.triage') },
+        { id: 'watchdog', label: t('settings.page.watchdog') },
         { id: 'memory', label: t('settings.page.memory') },
         { id: 'runtime', label: t('settings.page.runtime') },
       ],
@@ -136,6 +139,8 @@ export function SettingsShell() {
         return <CompactionPage />;
       case 'triage':
         return <TriagePage />;
+      case 'watchdog':
+        return <WatchdogPage />;
       case 'memory':
         return <MemoryPage />;
       case 'runtime':

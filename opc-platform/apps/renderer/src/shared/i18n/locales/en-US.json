@@ -144,6 +144,7 @@
       "network": "Network & proxy",
       "runtime": "Runtimes",
       "triage": "Event routing",
+      "watchdog": "Progress watchdog",
       "memory": "What it remembers"
     },
     "llm": {
@@ -564,6 +565,34 @@
       "ocrDetailText": "Text",
       "ocrDetailLines": "Lines",
       "bundledEmpty": "No bundled engines"
+    },
+    "watchdog": {
+      "desc": "It runs in its own process outside the app: reads the same data, records what looks wrong, and uses a model to tell whether the work is still heading somewhere. It reports; it does not act — the only repair is reconnecting a broken external connection, and that is auditable and reversible.",
+      "incidents": "Happening now",
+      "empty": "Nothing open right now.",
+      "ask": "Ask it",
+      "askPlaceholder": "e.g. why did that task stop?",
+      "askButton": "Ask",
+      "asking": "Looking…",
+      "evidence": "Evidence",
+      "actions": "What it has done",
+      "noActions": "No action has run yet.",
+      "policy": "Rules",
+      "model": "Judgement model",
+      "modelHint": "It only makes low-frequency calls; pick a cheap, obedient one. Empty follows the default model.",
+      "modelDefault": "Follow the default model",
+      "enabled": "Enable progress monitoring",
+      "idle": "No new action for how long (minutes)",
+      "repeat": "Same action failing how many times",
+      "stale": "Main heartbeat silent for (seconds)",
+      "recheck": "Keep watching after (minutes)",
+      "escalate": "Escalate to a human after (minutes)",
+      "judge": "Gap between model judgements (minutes)",
+      "actionCooldown": "Gap between repairs for one incident (minutes)",
+      "save": "Save",
+      "rollback": "Restore previous",
+      "saved": "Saved",
+      "rolledBack": "Restored"
     },
     "triage": {
       "desc": "Incoming events pass two stages. The first applies fixed rules and makes no model calls; the second is an optional semantic pre-filter that may call a classification model. Both settings affect cost and latency only — neither drops events silently.",

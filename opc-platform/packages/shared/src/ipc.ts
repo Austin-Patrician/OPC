@@ -134,6 +134,16 @@ export const IPC = {
     login: 'mcp:login',
     logout: 'mcp:logout',
   },
+  watchdog: {
+    incidents: 'watchdog:incidents',
+    actions: 'watchdog:actions',
+    ask: 'watchdog:ask',
+    getPolicy: 'watchdog:getPolicy',
+    savePolicy: 'watchdog:savePolicy',
+    rollbackPolicy: 'watchdog:rollbackPolicy',
+    getModel: 'watchdog:getModel',
+    setModel: 'watchdog:setModel',
+  },
   workers: {
     list: 'workers:list',
   },
@@ -789,6 +799,74 @@ export interface DecisionsBridge {
   classify(input: DecisionClassifyInput): Promise<DecisionClassifyResult>;
 }
 
+/**
+ * Watchdog（`docs/v2/11-watchdog-spec.md` W7）。
+ *
+ * 这一组只有两件事：**看**（incident / 动作账本 / 问一句）与**调规则**。
+ * 没有"修"——修复是 W6 的白名单，由 Watchdog 自己发起，不由界面代劳。
+ */
+export interface WatchdogIncidentView {
+  id: string;
+  kind: string;
+  state: 'active' | 'rechecking' | 'escalated' | 'resolved';
+  subjectType: string;
+  subjectId: string;
+  summary: string;
+  detail?: string;
+  firstAt: number;
+  lastSeenAt: number;
+  reopenCount: number;
+  resolvedAt?: number;
+}
+
+export interface WatchdogActionView {
+  incidentId: string;
+  action: string;
+  status: 'pending' | 'done' | 'failed' | 'refused';
+  at: number;
+  result: string;
+}
+
+export interface WatchdogAskResult {
+  ok: boolean;
+  answer?: string;
+  /** 喂给模型的证据编号（回答里的 `[i:…]` 应当落在这里面）。 */
+  evidence?: string[];
+  /** 模型实际引用、且确实存在的编号。 */
+  citations?: string[];
+  /** 被剔除的伪造引用条数。 */
+  invalidCitations?: number;
+  model?: string;
+  error?: string;
+}
+
+/** 规则的可编辑面。时间单位都是毫秒。 */
+export interface WatchdogPolicyView {
+  enabled: boolean;
+  idleTaskMs: number;
+  repeatFailure: number;
+  staleMainMs: number;
+  recheckAfterMs: number;
+  escalateAfterMs: number;
+  judgeCooldownMs: number;
+  actionCooldownMs: number;
+  updatedAt: number | null;
+  hasPrevious: boolean;
+}
+
+export interface WatchdogBridge {
+  incidents(): Promise<WatchdogIncidentView[]>;
+  actions(): Promise<WatchdogActionView[]>;
+  /** 问一句「为什么」。只读，带证据编号。 */
+  ask(question: string): Promise<WatchdogAskResult>;
+  getPolicy(): Promise<WatchdogPolicyView>;
+  savePolicy(patch: Partial<WatchdogPolicyView>): Promise<WatchdogPolicyView>;
+  rollbackPolicy(): Promise<WatchdogPolicyView>;
+  /** 它自己的模型；`null` = 跟随默认 LLM。 */
+  getModel(): Promise<{ providerId: string; modelId: string } | null>;
+  setModel(ref: { providerId: string; modelId: string } | null): Promise<{ providerId: string; modelId: string } | null>;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -816,6 +894,7 @@ export interface OpcBridge {
   billing: BillingBridge;
   threads: ThreadsBridge;
   mcp: McpBridge;
+  watchdog: WatchdogBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
@@ -877,8 +956,7 @@ export interface McpServerDraft {
   description?: string;
 }
 
-export interface McpBridge {
-  /** 当前生效的服务器清单，以及它读自哪几个文件。 */
+export interface McpBridge {  /** 当前生效的服务器清单，以及它读自哪几个文件。 */
   list(): Promise<{ servers: McpServerView[]; sources: string[] }>;
   /** 写入或改一台。返回写入后的清单。 */
   save(draft: McpServerDraft): Promise<{ servers: McpServerView[]; sources: string[] }>;

@@ -57,6 +57,19 @@ interface RegisterOptions {
   chat: ChatService;
   work: WorkService;
   models: ModelConfigService;
+  /** Watchdog 的只读入口与规则（W7）。 */
+  watchdog: {
+    incidents: { listRecent(limit?: number): unknown[] };
+    actions: { listRecent(limit?: number): unknown[] };
+    policy: {
+      view(): unknown;
+      save(patch: unknown): unknown;
+      rollback(): unknown;
+    };
+    /** 它自己的模型；`null` = 跟随默认 LLM。 */
+    model: { get(): unknown; set(ref: unknown): unknown };
+    ask(question: string): Promise<unknown>;
+  };
   speech: SpeechService;
   decisions: DecisionService;
   auth: AuthService;
@@ -125,6 +138,7 @@ export function registerIpc({
   triage,
   triggers,
   memories,
+  watchdog,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -526,6 +540,32 @@ export function registerIpc({
       throw new Error('router:setTriage 参数非法');
     }
     return triage.set(patch as TriagePolicyPatch);
+  });
+
+  // Watchdog（W7）：看 + 问 + 调规则。没有"修"——修复由它自己按白名单发起。
+  ipcMain.handle(IPC.watchdog.incidents, () => watchdog.incidents.listRecent(50));
+  ipcMain.handle(IPC.watchdog.actions, () => watchdog.actions.listRecent(20));
+  ipcMain.handle(IPC.watchdog.ask, (_event, question: unknown) => {
+    if (typeof question !== 'string') throw new Error('watchdog:ask 需要一个字符串');
+    return watchdog.ask(question);
+  });
+  ipcMain.handle(IPC.watchdog.getPolicy, () => watchdog.policy.view());
+  ipcMain.handle(IPC.watchdog.savePolicy, (_event, patch: unknown) => {
+    if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+      throw new Error('watchdog:savePolicy 参数非法');
+    }
+    return watchdog.policy.save(patch);
+  });
+  ipcMain.handle(IPC.watchdog.rollbackPolicy, () => watchdog.policy.rollback());
+  ipcMain.handle(IPC.watchdog.getModel, () => watchdog.model.get());
+  ipcMain.handle(IPC.watchdog.setModel, (_event, ref: unknown) => {
+    if (ref === null) return watchdog.model.set(null);
+    if (typeof ref !== 'object' || Array.isArray(ref)) throw new Error('watchdog:setModel 参数非法');
+    const input = ref as { providerId?: unknown; modelId?: unknown };
+    if (typeof input.providerId !== 'string' || typeof input.modelId !== 'string') {
+      throw new Error('watchdog:setModel 需要 providerId 与 modelId');
+    }
+    return watchdog.model.set({ providerId: input.providerId, modelId: input.modelId });
   });
 
   ipcMain.handle(IPC.facts.list, (_event, filter: unknown) => {
