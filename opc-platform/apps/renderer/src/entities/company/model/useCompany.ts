@@ -18,6 +18,9 @@ const PLACEHOLDER: CompanyProfile = {
   goal: '',
   colorId: DEFAULT_BRAND_COLOR,
   userName: '',
+  replyTone: 'balanced',
+  replyDetail: 'balanced',
+  replyInstructions: '',
 };
 
 interface CompanyState {

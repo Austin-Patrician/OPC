@@ -1,5 +1,6 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
+import type { ChatContentBlock } from '@opc/shared/domain';
 import { recallView } from './inline';
 
 /**
@@ -71,7 +72,7 @@ export interface RouterToolDeps {
 
   /** 对你说话。这是 Router 唯一能让人看见它的方式。 */
   /** `replyTarget` 是输入里提供的原始信道地址；不传则回桌面助手。 */
-  reply(text: string, replyTarget?: string): unknown | Promise<unknown>;
+  reply(text: string, replyTarget?: string, content?: ChatContentBlock[]): unknown | Promise<unknown>;
 
   /** 链式召回：返回一个对象的压缩视图 + 相邻对象的 id（Inline & Spill）。 */
   recall(id: string): string;
@@ -230,6 +231,12 @@ export function createRouterTools(deps: RouterToolDeps) {
           '简短、具体、只说你知道的。',
           parameters: Type.Object({
             text: Type.String({ description: '要说的话。' }),
+            content: Type.Optional(Type.Array(Type.Object({
+              type: Type.Union([Type.Literal('markdown'), Type.Literal('image'), Type.Literal('video'), Type.Literal('audio')]),
+              text: Type.Optional(Type.String()), url: Type.Optional(Type.String()),
+              taskId: Type.Optional(Type.String()), relPath: Type.Optional(Type.String()),
+              alt: Type.Optional(Type.String()), title: Type.Optional(Type.String()),
+            }), { description: '按顺序混排的 Markdown 与 HTTPS 媒体链接。' })),
             reply_target: Type.Optional(
               Type.String({
                 description:
@@ -239,7 +246,12 @@ export function createRouterTools(deps: RouterToolDeps) {
             ),
           }),
           execute: async (args) => {
-          await deps.reply(args.text, args.reply_target);
+          const content = args.content?.map((block) => block.type === 'markdown'
+            ? ({ type: 'markdown' as const, text: block.text ?? '' })
+            : ({ type: block.type as 'image' | 'video' | 'audio', source: block.url
+                ? { type: 'url' as const, url: block.url }
+                : { type: 'artifact' as const, taskId: block.taskId ?? '', relPath: block.relPath ?? '' }, alt: block.alt, title: block.title }));
+          await deps.reply(args.text, args.reply_target, content);
           return ok('已发出。');
         },
       }),

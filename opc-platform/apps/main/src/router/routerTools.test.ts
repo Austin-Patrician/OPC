@@ -14,7 +14,7 @@ import { createRouterTools } from './routerTools';
 function host(
   overrides: {
     steerLine?: () => Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
-    reply?: (text: string, target?: string) => void;
+    reply?: (text: string, target?: string, content?: import('@opc/shared/domain').ChatContentBlock[]) => void;
   } = {},
 ) {
   const calls: string[] = [];
@@ -27,9 +27,9 @@ function host(
       calls.push(`open:${input.goal}`);
       return { ok: true, threadId: 'th-1', workerId: 'w-1', taskId: 'task-1' };
     },
-    reply: (text, target) => {
+    reply: (text, target, content) => {
       replies.push(text);
-      overrides.reply?.(text, target);
+      overrides.reply?.(text, target, content);
     },
     recall: (id) => `thread ${id}`,
     lines: () => [
@@ -138,6 +138,24 @@ describe('Router 的工具带', () => {
     const { registry, replies } = host();
     await run(registry, 'reply_to_user', { text: '三条线都在跑。' });
     expect(replies).toEqual(['三条线都在跑。']);
+  });
+
+  it('按顺序把富媒体内容块交给桌面回复出口，不拼进用户输入文本', async () => {
+    const received: import('@opc/shared/domain').ChatContentBlock[][] = [];
+    const { registry } = host({ reply: (text, _target, content) => {
+      expect(text).toBe('图表在下面');
+      if (content) received.push(content);
+    } });
+    const blocks = [
+      { type: 'markdown', text: '先看结论' },
+      { type: 'image', url: 'https://example.com/chart.png', alt: '图表' },
+    ];
+    await run(registry, 'reply_to_user', { text: '图表在下面', content: blocks });
+    expect(received).toEqual([[
+      { type: 'markdown', text: '先看结论' },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/chart.png' }, alt: '图表', title: undefined },
+    ]]);
+    expect(JSON.stringify(received)).not.toContain('opc-content-envelope');
   });
 
   it('可以把受信任的原始信道地址交给回复出口', async () => {

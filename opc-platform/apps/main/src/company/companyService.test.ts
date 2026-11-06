@@ -111,8 +111,8 @@ describe('CompanyService', () => {
 
     expect(updated.name).toHaveLength(40);
     expect(updated.name).not.toContain('\n');
-    // A blank user name falls back rather than leaving the title bar empty.
-    expect(updated.userName).toBe(DEFAULT_USER_NAME);
+    // A blank user name is a valid preference; the UI uses its localized fallback.
+    expect(updated.userName).toBe('');
     expect(updated.goal).toHaveLength(60);
   });
 

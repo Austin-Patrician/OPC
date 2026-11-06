@@ -32,6 +32,7 @@ import { RuntimeService } from './runtime/service';
 import { inspectOcrRuntime, resolveOcrAssetsDir } from './ocr/assets';
 import { OcrSettingsStore } from './ocr/settings';
 import { registerOcrScheme } from './ocr/protocol';
+import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
 import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { initAppPaths, appPaths } from './paths';
@@ -76,6 +77,7 @@ const isDev = !app.isPackaged;
 
 // Must happen before `app.whenReady()`: the OCR window loads over `opc-ocr://`.
 registerOcrScheme();
+registerChatMediaScheme();
 
 /** Compile-time constant injected by electron-vite: `out/main`. */
 const mainDir = __dirname;
@@ -142,10 +144,11 @@ let ocrService: OcrService | null = null;
 let disposeIpc: (() => void) | null = null;
 function createMainWindow() {
 	const window = new BrowserWindow({
-		width: 1440,
-		height: 900,
-		minWidth: 1024,
-		minHeight: 640,
+		width: 1260,
+		height: 800,
+		minWidth: 980,
+		minHeight: 650,
+		roundedCorners: true,
 		show: false,
 		backgroundColor: "#dcdce0",
 		title: "OPC Agent 工作台",
@@ -155,14 +158,7 @@ function createMainWindow() {
 				x: 14,
 				y: 6
 			}
-		} : process.platform === "win32" ? {
-			titleBarStyle: "hidden",
-			titleBarOverlay: {
-				color: "#ebebec",
-				symbolColor: "#4a4a4d",
-				height: 24
-			}
-		} : { titleBarStyle: "default" },
+		} : { titleBarStyle: "hidden" },
 		webPreferences: {
 			preload: path.join(mainDir, "../preload/index.cjs"),
 			contextIsolation: true,
@@ -172,6 +168,7 @@ function createMainWindow() {
 			spellcheck: false
 		}
 	});
+	window.center();
 	window.once("ready-to-show", () => {
 		if (!isSmoke) window.show();
 	});
@@ -244,7 +241,7 @@ function hardenSession() {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: opc-media:; media-src 'self' blob: opc-media:; font-src 'self' data:; connect-src 'self'",
         ],
       },
     });
@@ -549,7 +546,7 @@ async function bootstrap(): Promise<void> {
     db,
     faults: systemEvents,
     paths: appPaths,
-    upsertTaskCard: (task) => chat?.upsertTaskCard(task),
+    upsertTaskCard: () => undefined,
     mcp: readMcp,
     modelConfig,
     images: imageService,
@@ -633,6 +630,10 @@ async function bootstrap(): Promise<void> {
     memory,
     /** 工作台的规矩：执行体的提示词里有，Router 也得有。 */
     facts,
+    personalPreferences: () => {
+      const profile = new CompanyService(db).get();
+      return { tone: profile.replyTone, detail: profile.replyDetail, instructions: profile.replyInstructions };
+    },
     openLine: createLineOpener({
       threads,
       createTask: work!.createTask,
@@ -657,7 +658,7 @@ async function bootstrap(): Promise<void> {
       },
     }),
     // Router 对你说话：走聊天这条唯一的外观信道（§2.2）。
-    reply: (text) => chat!.appendRouterMessage(chat!.ensureAssistant(), text),
+    reply: (text, _target, content) => chat!.appendRouterMessage(chat!.ensureAssistant(), text, content),
     /**
      * 你中途改方向（§8.2）。
      *
@@ -896,7 +897,14 @@ async function bootstrap(): Promise<void> {
         threadId: row.thread_id,
         level: 'decide',
         title: row.title,
-        body: incident.summary,
+        body: [
+          incident.summary,
+          incident.verdict
+            ? `Watchdog 判断：${incident.verdict}（置信度 ${Math.round((incident.verdictConfidence ?? 0) * 100)}%）${incident.verdictReason ? `；${incident.verdictReason}` : ''}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
         taskId: incident.subjectId,
       });
       return true;
@@ -1094,6 +1102,7 @@ async function bootstrap(): Promise<void> {
   // free any reservation whose task is gone.
   void work.recover();
   hardenSession();
+  handleChatMediaProtocol(session.defaultSession, appPaths.workspaceDir);
   mainWindow = createMainWindow();
 
   mainWindow.on('closed', () => {

@@ -14,6 +14,11 @@
     "loading": "Loading…",
     "empty": "Nothing here yet"
   },
+  "window": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore"
+  },
   "nav": {
     "attention": "Attention",
     "im": "Messages",
@@ -21,7 +26,11 @@
     "menu": "Settings",
     "issues": "Issues",
     "budget": "Budget",
-    "searchPlaceholder": "Search chats…"
+    "searchPlaceholder": "Search conversations…",
+    "chatSearchPlaceholder": "Search messages…",
+    "welcomeTitle": "What can I help you with?",
+    "welcomeHint": "Tell me a goal or hand off a task. Progress and results will come back to this conversation.",
+    "dispatchTask": "Dispatch a task"
   },
   "titleBar": {
     "hire": "Hire an agent",
@@ -29,6 +38,7 @@
     "userNamePlaceholder": "What should we call you?",
     "renameUser": "Click to rename",
     "profile": "My card",
+    "preferencesHint": "Change your avatar and reply preferences in Settings → Personal preferences.",
     "fields": {
       "name": "Name",
       "company": "Workspace",
@@ -47,7 +57,37 @@
     "mentionHint": "@ an agent in this conversation to assign work",
     "quickPrompts": "Saved instructions",
     "quickPromptsHint": "Quick instructions",
-    "inputPlaceholder": "Message… (Enter to send, Shift+Enter for a new line)",
+    "inputPlaceholder": "Say something to Buddy…",
+    "welcome": {
+      "online": "Online · ready when you are",
+      "title": "Hi, I'm Buddy",
+      "description": "Untangle an idea, draft something, explore new directions, or plan your next steps. Just tell me like you would in a chat.",
+      "tryOne": "A few ways to get started",
+      "tryIt": "Try it",
+      "cardImageAlt": "Everyday inspiration preview",
+      "prompts": {
+        "plan": {
+          "title": "Plan a steady pace for today",
+          "description": "Sort your priorities and find a clear next step",
+          "message": "Help me prioritize today's tasks and plan a clear, manageable work rhythm"
+        },
+        "organize": {
+          "title": "Turn scattered thoughts into an outline",
+          "description": "Capture the key points and actions to take next",
+          "message": "Help me organize these scattered thoughts into key takeaways and a practical action outline"
+        },
+        "ideas": {
+          "title": "Explore a few fresh directions",
+          "description": "Look at the problem from new angles",
+          "message": "Help me explore a few fresh and thought-provoking directions for what I'm working on"
+        },
+        "task": {
+          "title": "Catch me up on recent progress",
+          "description": "Gather completed work and open follow-ups",
+          "message": "Summarize my recent progress, including completed work and items that still need follow-up"
+        }
+      }
+    },
     "enterToSend": "Enter to send",
     "shiftEnter": "Shift+Enter for a new line",
     "typing": "{{names}} are working and calling tools…",
@@ -60,10 +100,13 @@
     "link": "Link",
     "action": {
       "voice": "Voice input",
-      "ai": "Let agents collaborate"
+      "ai": "Let agents collaborate",
+      "attach": "Add media or attachment",
+      "attachExample": "Help me turn this new footage into a crisp, well-paced short video"
     },
     "speech": {
       "recording": "Recording — click to stop",
+      "stopRecording": "Stop recording and transcribe",
       "transcribing": "Transcribing…",
       "transcribeFailed": "Transcription failed",
       "noAsr": "No speech-recognition model configured (Settings → Models → Voice)",
@@ -139,7 +182,7 @@
     "page": {
       "appearance": "Appearance & language",
       "compaction": "Workspace & compaction",
-      "company": "Workspace & you",
+      "company": "Personal preferences",
       "billing": "Billing",
       "network": "Network & proxy",
       "runtime": "Runtimes",
@@ -405,20 +448,30 @@
       "created": "{{count}} memories from {{episodes}} messages"
     },
     "company": {
-      "title": "Workspace",
-      "description": "Name, colours and how you are addressed live in the local database; press Save to sync the title bar and card.",
+      "title": "Personal preferences",
+      "description": "Choose how the assistant communicates with you. Your name is optional; your avatar appears in the title bar.",
       "name": "Workspace name",
       "nameHint": "Shown in the title bar and on the card",
-      "userHint": "The name in the title bar, and how agents address you",
+      "userHint": "Optional; the assistant will speak naturally without a name",
       "brand": "Brand colour",
       "brandTitle": "Appearance",
       "brandDesc": "Name, colours and visual identity — what the title bar and card show.",
       "logo": "Workspace logo",
       "logoHint": "PNG / JPG / WebP / GIF / SVG, square works best, up to 500 KB",
       "userTitle": "About you",
-      "userDesc": "How agents address you in chats and tasks.",
+      "userDesc": "Your name is optional. Leave it blank and the assistant will speak naturally without using a name.",
       "userAvatar": "Your avatar",
-      "userAvatarHint": "Shown in the title bar; initials are used when empty",
+      "userAvatarHint": "Shown in the title bar; a placeholder is used when empty",
+      "userPlaceholder": "Optional",
+      "replyTitle": "Reply style",
+      "replyDesc": "These preferences apply to every assistant reply. You can always ask for something different in chat.",
+      "replyTone": "Tone",
+      "tone": { "friendly": "Friendly", "balanced": "Balanced", "professional": "Professional" },
+      "replyDetail": "Level of detail",
+      "detail": { "concise": "Concise", "balanced": "Balanced", "detailed": "Detailed" },
+      "replyInstructions": "Additional preferences",
+      "replyInstructionsHint": "For example: lead with the conclusion; include runnable examples for code. Up to 500 characters.",
+      "replyInstructionsPlaceholder": "How would you like replies to be structured?",
       "imageUpload": "Upload image",
       "imageReplace": "Replace image",
       "imageRemove": "Remove",

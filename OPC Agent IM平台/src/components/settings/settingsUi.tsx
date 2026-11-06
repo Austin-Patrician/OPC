@@ -66,12 +66,12 @@ export const Section: React.FC<{
   action?: React.ReactNode;
   children: React.ReactNode;
 }> = ({ title, description, action, children }) => (
-  <section className="bg-white rounded-xl border border-[#E5E5E7] overflow-hidden">
-    <div className="px-4 pt-3.5 pb-3 flex items-start justify-between gap-3 border-b border-[#F0F0F2]">
+  <section className="bg-white/82 backdrop-blur-xl rounded-[10px] border border-black/[0.07] shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+    <div className="px-4 pt-3.5 pb-3 flex items-start justify-between gap-3 border-b border-black/[0.05]">
       <div className="min-w-0">
-        <h3 className="text-[13.5px] font-semibold text-[#1C1C1E]">{title}</h3>
+        <h3 className="text-[13.5px] font-semibold text-[#1D1D1F]">{title}</h3>
         {description && (
-          <p className="mt-0.5 text-[11.5px] text-[#8E8E93] leading-relaxed">{description}</p>
+          <p className="mt-0.5 text-[11.5px] text-[#86868B] leading-relaxed">{description}</p>
         )}
       </div>
       {action && <div className="shrink-0 flex items-center gap-2">{action}</div>}

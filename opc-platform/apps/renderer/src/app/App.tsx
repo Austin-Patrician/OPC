@@ -7,7 +7,6 @@ import { AttentionPage } from '@/pages/attention/AttentionPage';
 import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
-import { IssueListPage } from '@/pages/issues/IssueListPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 
 /**
@@ -23,12 +22,11 @@ export function App() {
       <ThemeSync />
       <Routes>
         <Route element={<AppShell />}>
-          {/* 你打开应用先看到"有什么事需要我"，不是会话列表。 */}
-          <Route index element={<Navigate to="/attention" replace />} />
+          {/* 对话首页是默认入口；需要确认的事情仍可从窄栏进入注意力队列。 */}
+          <Route index element={<Navigate to="/chat" replace />} />
           <Route path="attention" element={<AttentionPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
-          <Route path="issues" element={<IssueListPage />} />
           <Route path="skills" element={<CapabilitiesPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

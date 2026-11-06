@@ -176,6 +176,12 @@ export function WatchdogPage() {
                 </span>
                 <div className="min-w-0">
                   <div className="text-sm-plus text-ink">{incident.summary}</div>
+                  {incident.verdict ? (
+                    <div className="mt-1 text-xs-plus text-ink-secondary">
+                      Watchdog：{incident.verdict}（{Math.round((incident.verdictConfidence ?? 0) * 100)}%）
+                      {incident.verdictReason ? ` · ${incident.verdictReason}` : ''}
+                    </div>
+                  ) : null}
                   <div className="mt-0.5 text-xs-plus text-ink-tertiary">
                     {incident.kind}
                     {incident.subjectId ? ` · ${incident.subjectId}` : ''}

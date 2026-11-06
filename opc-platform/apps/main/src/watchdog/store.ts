@@ -329,25 +329,20 @@ export class WatchdogStore {
 
   /** 落一条判断。`by` 记录是谁判的：`child` = 子进程自己，`parent` = 主进程代判。 */
   setVerdict(id: string, judgment: Judgment, now: number, escalate: boolean, by = 'parent'): void {
-    const current = this.db
-      .prepare(`SELECT summary FROM watchdog_finding WHERE id = ?`)
-      .get(id) as { summary: string } | undefined;
-    if (!current) return;
     this.db
       .prepare(
         `UPDATE watchdog_finding
             SET verdict = ?, verdict_reason = ?, verdict_confidence = ?, judged_at = ?,
-                judged_by = ?, summary = ?,
+                judged_by = ?,
                 state = CASE WHEN ? = 1 THEN 'escalated' ELSE state END
           WHERE id = ?`,
       )
       .run(
         judgment.verdict,
-        clip(judgment.reason, 400),
+        clip(scrubSecrets(judgment.reason), 400),
         judgment.confidence,
         now,
         by,
-        clip(`${scrubSecrets(current.summary)}｜模型判断：${label(judgment)}`, 400),
         escalate ? 1 : 0,
         id,
       );
@@ -481,6 +476,18 @@ function migrateFinding(db: Database.Database): void {
   ensure('action', "action TEXT NOT NULL DEFAULT ''");
   ensure('acted_at', 'acted_at INTEGER');
   ensure('action_result', "action_result TEXT NOT NULL DEFAULT ''");
+
+  // 旧版本把显示用 verdict 后缀拼进 summary。新边界是 summary 只存规则事实，
+  // verdict 留在独立列；启动时清理已落库的旧格式，避免镜像继续传播混合字段。
+  const legacy = db
+    .prepare(`SELECT id, summary FROM watchdog_finding WHERE summary LIKE '%｜模型判断：%'`)
+    .all() as { id: string; summary: string }[];
+  const clean = db.prepare(`UPDATE watchdog_finding SET summary = ? WHERE id = ?`);
+  const suffix = /(?:｜模型判断：(?:还在往前走|确实停住了|在原地打转|偏离了目标|证据不足，判不了))+$/;
+  for (const row of legacy) {
+    const summary = row.summary.replace(suffix, '');
+    if (summary !== row.summary) clean.run(summary, row.id);
+  }
 }
 
 function toFinding(row: FindingRow): StoredFinding {
@@ -506,6 +513,7 @@ function toFinding(row: FindingRow): StoredFinding {
           },
         }
       : {}),
+    ...(row.verdict ? { verdictConfidence: row.verdict_confidence } : {}),
     ...(row.judged_at === null ? {} : { judgedAt: row.judged_at }),
     ...(row.judged_by ? { judgedBy: row.judged_by } : {}),
     ...(row.action ? { action: row.action } : {}),

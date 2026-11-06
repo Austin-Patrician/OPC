@@ -98,7 +98,7 @@ export const AppearanceSettings: React.FC = () => {
               );
             })}
           </div>
-          <Row label="界面字号" hint="影响会话列表与聊天消息的文字大小。">
+          <Row label="界面字号" hint="影响聊天消息与输入框的文字大小。">
             <Segmented
               label="界面字号"
               value={prefs.textSize}
@@ -187,7 +187,7 @@ export const NotificationSettings: React.FC = () => {
       <PageHeader
         crumbs={['通用', '通知']}
         title="通知"
-        description="控制 Agent 私聊、部门群组与任务流转的提醒方式。"
+        description="助手回复你时的提醒方式。"
       />
       <div className="space-y-4">
         <Section title="消息通知">
@@ -224,23 +224,16 @@ export const NotificationSettings: React.FC = () => {
           <Row label="提示音">
             <Toggle label="提示音" checked={prefs.notifySound} onChange={(v) => set('notifySound', v)} />
           </Row>
-          <Row label="群聊仅在 @我 时提醒" hint="部门群组中其他消息只累计未读数，不打扰。">
+          <Row label="事情办完时提醒" hint="助手完成你交代的事情后单独提醒一次。">
             <Toggle
-              label="群聊仅在 @我 时提醒"
-              checked={prefs.notifyMentionOnly}
-              onChange={(v) => set('notifyMentionOnly', v)}
-            />
-          </Row>
-          <Row label="Agent 任务完成提醒" hint="任务流转结束或交付物归档时提醒。">
-            <Toggle
-              label="Agent 任务完成提醒"
+              label="事情办完时提醒"
               checked={prefs.notifyTaskDone}
               onChange={(v) => set('notifyTaskDone', v)}
             />
           </Row>
         </Section>
 
-        <Section title="免打扰" description="时段内静音全部通知，Agent 仍会继续执行任务。">
+        <Section title="免打扰" description="时段内静音全部通知，助手仍会继续做事。">
           <Row label="定时免打扰">
             <Toggle label="定时免打扰" checked={prefs.dndEnabled} onChange={(v) => set('dndEnabled', v)} />
           </Row>

@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { ChatPanel } from '@/features/chat/ui/ChatPanel';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
-import { useWorkRuntime } from '@/features/task/model/useWorkRuntime';
-import { DispatchTaskDialog, type DispatchDraft } from '@/features/task/ui/DispatchTaskDialog';
 
 /**
  * 对话页。
@@ -12,12 +10,10 @@ import { DispatchTaskDialog, type DispatchDraft } from '@/features/task/ui/Dispa
  * 一个助手说话（Super-agent 的连续感），事情在注意力队列里，过程在这条会话里。
  */
 export function ChatPage() {
+  const { searchQuery } = useOutletContext<{ searchQuery: string }>();
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const { conversations, agents, typingByConversation, sendMessage, markRead } =
-    useChatRuntime();
-  const { createTask } = useWorkRuntime();
-  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const { conversations, agents, typingByConversation, sendMessage, markRead } = useChatRuntime();
 
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
   const [resolving, setResolving] = useState(false);
@@ -43,9 +39,6 @@ export function ChatPage() {
     if (active) markRead(active.id);
   }, [active, markRead]);
 
-  // createTask reserves budget, then starts the run; the card arrives via chat snapshots.
-  const dispatchTask = (draft: DispatchDraft) => createTask(draft);
-
   if (!active) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-panel px-6 text-center">
@@ -58,23 +51,12 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <ChatPanel
-        conversation={active}
-        agents={agents}
-        typingNames={typingByConversation[active.id] ?? []}
-        onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
-        onOpenDispatch={() => setDispatchOpen(true)}
-      />
-
-      {dispatchOpen ? (
-        <DispatchTaskDialog
-          agents={agents}
-          defaultAssigneeId={active.primaryAgentId ?? agents[0]?.id ?? ''}
-          onSubmit={dispatchTask}
-          onClose={() => setDispatchOpen(false)}
-        />
-      ) : null}
-    </div>
+    <ChatPanel
+      conversation={active}
+      agents={agents}
+      typingNames={typingByConversation[active.id] ?? []}
+      searchQuery={searchQuery}
+      onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
+    />
   );
 }

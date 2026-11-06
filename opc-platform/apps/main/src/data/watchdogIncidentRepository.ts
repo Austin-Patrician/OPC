@@ -22,6 +22,9 @@ export interface IncidentMirrorInput {
   subjectId: string;
   summary: string;
   detail: string;
+  verdict?: { verdict: string; reason: string; confidence: number };
+  judgedAt?: number;
+  judgedBy?: string;
   firstAt: number;
   lastSeenAt: number;
   reopenCount: number;
@@ -37,6 +40,12 @@ export interface WatchdogIncident {
   summary: string;
   /** 证据（JSON 字符串）。问答要用它才说得清"为什么这么判"。 */
   detail: string;
+  /** 模型判断单独存储，不拼进规则摘要。 */
+  verdict?: string;
+  verdictReason?: string;
+  verdictConfidence?: number;
+  judgedAt?: number;
+  judgedBy?: string;
   firstAt: number;
   lastSeenAt: number;
   reopenCount: number;
@@ -54,6 +63,11 @@ interface IncidentRow {
   subject_id: string;
   summary: string;
   detail: string;
+  verdict: string;
+  verdict_reason: string;
+  verdict_confidence: number;
+  judged_at: number | null;
+  judged_by: string;
   first_at: number;
   last_seen_at: number;
   reopen_count: number;
@@ -90,8 +104,10 @@ export class WatchdogIncidentRepository {
     const statement = this.db.prepare(
       `INSERT INTO watchdog_incident
          (id, kind, state, subject_type, subject_id, summary, detail,
+          verdict, verdict_reason, verdict_confidence, judged_at, judged_by,
           first_at, last_seen_at, resolved_at, reopen_count, synced_at)
        VALUES (@id, @kind, @state, @subjectType, @subjectId, @summary, @detail,
+               @verdict, @verdictReason, @verdictConfidence, @judgedAt, @judgedBy,
                @firstAt, @lastSeenAt, @resolvedAt, @reopenCount, @syncedAt)
        ON CONFLICT(id) DO UPDATE SET
          kind = excluded.kind,
@@ -100,6 +116,11 @@ export class WatchdogIncidentRepository {
          subject_id = excluded.subject_id,
          summary = excluded.summary,
          detail = excluded.detail,
+         verdict = excluded.verdict,
+         verdict_reason = excluded.verdict_reason,
+         verdict_confidence = excluded.verdict_confidence,
+         judged_at = excluded.judged_at,
+         judged_by = excluded.judged_by,
          first_at = excluded.first_at,
          last_seen_at = excluded.last_seen_at,
          resolved_at = excluded.resolved_at,
@@ -116,6 +137,11 @@ export class WatchdogIncidentRepository {
           subjectId: row.subjectId,
           summary: row.summary,
           detail: row.detail,
+          verdict: row.verdict?.verdict ?? '',
+          verdictReason: row.verdict?.reason ?? '',
+          verdictConfidence: row.verdict?.confidence ?? 0,
+          judgedAt: row.judgedAt ?? null,
+          judgedBy: row.judgedBy ?? '',
           firstAt: row.firstAt,
           lastSeenAt: row.lastSeenAt,
           resolvedAt: row.resolvedAt ?? null,
@@ -201,6 +227,11 @@ function toIncident(row: IncidentRow): WatchdogIncident {
     subjectId: row.subject_id,
     summary: row.summary,
     detail: row.detail,
+    ...(row.verdict ? { verdict: row.verdict } : {}),
+    ...(row.verdict_reason ? { verdictReason: row.verdict_reason } : {}),
+    ...(row.verdict ? { verdictConfidence: row.verdict_confidence } : {}),
+    ...(row.judged_at === null ? {} : { judgedAt: row.judged_at }),
+    ...(row.judged_by ? { judgedBy: row.judged_by } : {}),
     firstAt: row.first_at,
     lastSeenAt: row.last_seen_at,
     reopenCount: row.reopen_count,

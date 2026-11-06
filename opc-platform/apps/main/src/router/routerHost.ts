@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { Context } from '@earendil-works/chord/context';
 import type { Harness, Registry } from '@earendil-works/pi-durable';
 import { createRegistry } from '@earendil-works/pi-durable';
-import type { ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
+import type { ChatContentBlock, ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
 import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type { FaultSink } from '../data/systemEventRepository';
@@ -15,6 +15,7 @@ import type { ModelConfigService } from '../models/modelConfigService';
 import { Router } from './router';
 import { pickRouterModel } from './routerModel';
 import { RouterSession } from './routerSession';
+import { openRouterStorage } from './routerStorage';
 import { createRouterTools, type LineSummary } from './routerTools';
 import { createDecisionGate, keepAll, type SemanticScreener } from './semanticGate';
 import { bodyOf, createFastPath } from './triage';
@@ -51,7 +52,7 @@ export interface RouterHostDeps {
   openLine: (input: OpenLineInput) => OpenLineResult;
   /** 对你说话。 */
   /** Desktop fallback; external sends can be injected without coupling Router to SDKs. */
-  reply: (text: string, target?: TriggerReplyTarget) => void | Promise<void>;
+  reply: (text: string, target?: TriggerReplyTarget, content?: import('@opc/shared/domain').ChatContentBlock[]) => void | Promise<void>;
   /** Optional platform sender. If absent, a targeted reply falls back to desktop and logs. */
   externalReply?: (target: TriggerReplyTarget, text: string) => void | Promise<void>;
   /** 中途改方向。`live` 是"真的插进正在跑的会话"的条数。 */
@@ -71,6 +72,8 @@ export interface RouterHostDeps {
   memory?: MemoryService;
   /** 工作台的规矩：`fact` 的 global 那几条，每轮带进 Router 的上下文。 */
   facts?: FactService;
+  /** User-owned response preferences, read every turn so changes apply immediately. */
+  personalPreferences?: () => { tone: string; detail: string; instructions: string };
 }
 
 export interface RouterHost {
@@ -97,9 +100,18 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     harnessPromise ??= openRouterHarness(deps, registry());
     return harnessPromise;
   };
+  const resetHarness = async (): Promise<void> => {
+    const current = harnessPromise;
+    harnessPromise = null;
+    if (!current) return;
+    const opened = await current.catch(() => null);
+    if (!opened) return;
+    await opened.close((await deps.context()) as never).catch(() => undefined);
+  };
 
   const session = new RouterSession({
     harness,
+    resetHarness,
     context: () => deps.context() as Promise<unknown>,
     model,
     thinking: () => deps.modelConfig?.getRouterThinking() ?? 'low',
@@ -113,19 +125,22 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
 
   // ── 工具背后的动作 ────────────────────────────────────────────────────
 
-  const reply = async (text: string, address?: string): Promise<void> => {
+  const reply = async (text: string, address?: string, content?: import('@opc/shared/domain').ChatContentBlock[]): Promise<void> => {
     const target = address
       ? activeReplyTargets.find((candidate) => candidate.address === address)
       : undefined;
     if (address && !target) throw new Error(`当前输入没有这个回复地址：${address}`);
     if (target && deps.externalReply) {
-      await deps.externalReply(target, text);
+      // External IM adapters generally only accept text. Preserve the useful
+      // parts of a rich reply as Markdown and ordinary links, while never
+      // leaking an internal opc-media:// URL outside Electron.
+      await deps.externalReply(target, formatExternalReply(text, content));
       return;
     }
     if (target) {
       console.warn('[router] 没有外部回复器，目标信道回退到桌面会话', target.address);
     }
-    await deps.reply(text);
+    await deps.reply(text, undefined, content);
   };
 
   const lines = (state: 'active' | 'all' = 'active'): LineSummary[] => {
@@ -424,8 +439,16 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
    * 它**不经过检索**——「回答不要客套」不该因为这一轮的事件不相关就不出现。这正是
    * `07-memory.md` 公理 A4 的落地：必须每轮生效的东西不能依赖模型主动去取。
    */
-  const standing = (): string[] =>
-    deps.memory ? deps.memory.standing(USER_MEMORY_OWNER).map((item) => item.content) : [];
+  const standing = (): string[] => {
+    const saved = deps.memory ? deps.memory.standing(USER_MEMORY_OWNER).map((item) => item.content) : [];
+    const preferences = deps.personalPreferences?.();
+    if (!preferences) return saved;
+    const tone: Record<string, string> = { friendly: '友好自然', balanced: '自然平衡', professional: '专业正式' };
+    const detail: Record<string, string> = { concise: '优先简洁，先给结论', balanced: '详略适中', detailed: '尽量充分展开并解释依据' };
+    saved.unshift(`回复偏好：语气${tone[preferences.tone] ?? tone.balanced}；详略${detail[preferences.detail] ?? detail.balanced}。`);
+    if (preferences.instructions.trim()) saved.unshift(`用户补充的回复偏好：${preferences.instructions.trim()}`);
+    return saved;
+  };
 
   const router = new Router({
     threads,
@@ -478,6 +501,39 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   };
 }
 
+/** Convert renderer-only content blocks to a portable external-channel reply. */
+export function formatExternalReply(text: string, content?: readonly ChatContentBlock[]): string {
+  const parts = [withoutDesktopMediaUrls(text.trim())].filter(Boolean);
+  for (const block of content ?? []) {
+    if (block.type === 'markdown') {
+      if (block.text.trim()) parts.push(withoutDesktopMediaUrls(block.text.trim()));
+      continue;
+    }
+    const label = block.alt?.trim() || block.title?.trim() || block.type;
+    if (block.source.type === 'url') {
+      // Keep the original public URL. The opc-media proxy is local to the
+      // desktop renderer and must never be sent to an external IM adapter.
+      try {
+        const url = new URL(block.source.url);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          parts.push(`[${label}](${url.href})`);
+        } else {
+          parts.push(`[${label}]`);
+        }
+      } catch {
+        parts.push(`[${label}]`);
+      }
+    } else {
+      parts.push(`[${label}] (${block.source.relPath})`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
+function withoutDesktopMediaUrls(value: string): string {
+  return value.replace(/opc-media:\/\/[^\s)\]>"']+/gi, '[媒体仅在桌面可用]');
+}
+
 function replyTargetFromPayload(payload: Record<string, unknown>): TriggerReplyTarget | null {
   const value = payload.replyTarget;
   if (!value || typeof value !== 'object') return null;
@@ -505,7 +561,6 @@ function replyTargetFromPayload(payload: Record<string, unknown>): TriggerReplyT
  */
 async function openRouterHarness(deps: RouterHostDeps, registry: Registry): Promise<Harness> {
   const { Harness } = await import('@earendil-works/pi-durable');
-  const { openNodeSqliteStorage } = await import('@earendil-works/pi-durable/storage/sqlite/node');
   const { NodeExecutionEnv } = await import('@earendil-works/pi-durable/env/node');
 
   const context = await deps.context();
@@ -514,7 +569,7 @@ async function openRouterHarness(deps: RouterHostDeps, registry: Registry): Prom
     : (await import('@earendil-works/pi-ai/models')).createModels();
 
   return Harness.open(
-    await openNodeSqliteStorage(path.join(deps.agentsDir, 'router.sqlite')),
+    await openRouterStorage(path.join(deps.agentsDir, 'router.sqlite')),
     {
       models,
       registry,

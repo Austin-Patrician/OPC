@@ -4,8 +4,8 @@ import {
   type ChatSnapshot,
   type OpcBridge,
   type SendMessageInput,
-} from '@opc/shared/ipc';
-import type { OcrSettings } from '@opc/shared/ocr';
+} from "@opc/shared/ipc";
+import type { OcrSettings } from "@opc/shared/ocr";
 import type {
   BundledRuntime,
   CatalogProvider,
@@ -38,8 +38,8 @@ import type {
   DecisionClassifyResult,
   TaskTrace,
   WorkTask,
-} from '@opc/shared/domain';
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+} from "@opc/shared/domain";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 /**
  * The only surface the renderer may touch. No Node, no filesystem, no SQLite.
@@ -51,6 +51,11 @@ const bridge: OpcBridge = {
   app: {
     getInfo: () => ipcRenderer.invoke(IPC.app.getInfo),
   },
+  window: {
+    minimize: () => ipcRenderer.invoke(IPC.window.minimize),
+    toggleMaximize: () => ipcRenderer.invoke(IPC.window.toggleMaximize),
+    close: () => ipcRenderer.invoke(IPC.window.close),
+  },
   network: {
     get: () => ipcRenderer.invoke(IPC.network.get) as Promise<ProxyConfig>,
     update: (input: ProxyConfigInput) =>
@@ -58,7 +63,8 @@ const bridge: OpcBridge = {
     test: (input: ProxyConfigInput) =>
       ipcRenderer.invoke(IPC.network.test, input) as Promise<ProxyTestResult>,
     onChanged: (listener: (config: ProxyConfig) => void) => {
-      const handler = (_event: IpcRendererEvent, config: ProxyConfig) => listener(config);
+      const handler = (_event: IpcRendererEvent, config: ProxyConfig) =>
+        listener(config);
       ipcRenderer.on(IPC.network.changedEvent, handler);
       return () => {
         ipcRenderer.off(IPC.network.changedEvent, handler);
@@ -66,19 +72,36 @@ const bridge: OpcBridge = {
     },
   },
   runtime: {
-    snapshot: () => ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
-    probe: () => ipcRenderer.invoke(IPC.runtime.probe) as Promise<RuntimeSnapshot>,
+    snapshot: () =>
+      ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
+    probe: () =>
+      ipcRenderer.invoke(IPC.runtime.probe) as Promise<RuntimeSnapshot>,
     setActive: (kind: RuntimeKind, profileId: string | null) =>
-      ipcRenderer.invoke(IPC.runtime.setActive, kind, profileId) as Promise<RuntimeState>,
+      ipcRenderer.invoke(
+        IPC.runtime.setActive,
+        kind,
+        profileId,
+      ) as Promise<RuntimeState>,
     chooseBinary: (kind: RuntimeKind) =>
       ipcRenderer.invoke(IPC.runtime.chooseBinary, kind) as Promise<string>,
     inspect: (kind: RuntimeKind, binary: string) =>
-      ipcRenderer.invoke(IPC.runtime.inspect, kind, binary) as Promise<RuntimeInspection>,
+      ipcRenderer.invoke(
+        IPC.runtime.inspect,
+        kind,
+        binary,
+      ) as Promise<RuntimeInspection>,
     saveProfile: (draft: RuntimeProfileDraft) =>
-      ipcRenderer.invoke(IPC.runtime.saveProfile, draft) as Promise<RuntimeState>,
+      ipcRenderer.invoke(
+        IPC.runtime.saveProfile,
+        draft,
+      ) as Promise<RuntimeState>,
     removeProfile: (profileId: string) =>
-      ipcRenderer.invoke(IPC.runtime.removeProfile, profileId) as Promise<RuntimeState>,
-    bundled: () => ipcRenderer.invoke(IPC.runtime.bundled) as Promise<BundledRuntime[]>,
+      ipcRenderer.invoke(
+        IPC.runtime.removeProfile,
+        profileId,
+      ) as Promise<RuntimeState>,
+    bundled: () =>
+      ipcRenderer.invoke(IPC.runtime.bundled) as Promise<BundledRuntime[]>,
     ocr: () => ipcRenderer.invoke(IPC.runtime.ocr) as Promise<OcrSettings>,
     setOcr: (next: OcrSettings) =>
       ipcRenderer.invoke(IPC.runtime.setOcr, next) as Promise<OcrSettings>,
@@ -88,7 +111,8 @@ const bridge: OpcBridge = {
     update: (patch: CompanyProfilePatch) =>
       ipcRenderer.invoke(IPC.company.update, patch) as Promise<CompanyProfile>,
     onChanged: (listener: (profile: CompanyProfile) => void) => {
-      const handler = (_event: IpcRendererEvent, profile: CompanyProfile) => listener(profile);
+      const handler = (_event: IpcRendererEvent, profile: CompanyProfile) =>
+        listener(profile);
       ipcRenderer.on(IPC.company.changedEvent, handler);
       return () => {
         ipcRenderer.off(IPC.company.changedEvent, handler);
@@ -96,16 +120,24 @@ const bridge: OpcBridge = {
     },
   },
   chat: {
-    getSnapshot: () => ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
-    sendMessage: (input: SendMessageInput) => ipcRenderer.invoke(IPC.chat.sendMessage, input),
-    markRead: (conversationId: string) => ipcRenderer.invoke(IPC.chat.markRead, conversationId),
-    ensureAssistant: () => ipcRenderer.invoke(IPC.chat.ensureAssistant) as Promise<string>,
+    getSnapshot: () =>
+      ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
+    sendMessage: (input: SendMessageInput) =>
+      ipcRenderer.invoke(IPC.chat.sendMessage, input),
+    markRead: (conversationId: string) =>
+      ipcRenderer.invoke(IPC.chat.markRead, conversationId),
+    ensureAssistant: () =>
+      ipcRenderer.invoke(IPC.chat.ensureAssistant) as Promise<string>,
     archive: (conversationId: string) =>
-      ipcRenderer.invoke(IPC.chat.archive, conversationId) as Promise<{ archived: boolean; written: number }>,
+      ipcRenderer.invoke(IPC.chat.archive, conversationId) as Promise<{
+        archived: boolean;
+        written: number;
+      }>,
     restore: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.restore, conversationId) as Promise<void>,
     onSnapshot: (listener: (snapshot: ChatSnapshot) => void) => {
-      const handler = (_event: IpcRendererEvent, snapshot: ChatSnapshot) => listener(snapshot);
+      const handler = (_event: IpcRendererEvent, snapshot: ChatSnapshot) =>
+        listener(snapshot);
       ipcRenderer.on(IPC.chat.snapshotEvent, handler);
       return () => {
         ipcRenderer.off(IPC.chat.snapshotEvent, handler);
@@ -124,17 +156,20 @@ const bridge: OpcBridge = {
     start: (goal: string) => ipcRenderer.invoke(IPC.threads.start, goal),
     queue: () => ipcRenderer.invoke(IPC.threads.queue),
     list: (limit?: number) => ipcRenderer.invoke(IPC.threads.list, limit),
-    markRead: (reportId: string) => ipcRenderer.invoke(IPC.threads.markRead, reportId),
+    markRead: (reportId: string) =>
+      ipcRenderer.invoke(IPC.threads.markRead, reportId),
     decide: (input: unknown) => ipcRenderer.invoke(IPC.threads.decide, input),
     answer: (input: unknown) => ipcRenderer.invoke(IPC.threads.answer, input),
-    close: (threadId: string) => ipcRenderer.invoke(IPC.threads.close, threadId),
+    close: (threadId: string) =>
+      ipcRenderer.invoke(IPC.threads.close, threadId),
   },
   billing: {
     get: () => ipcRenderer.invoke(IPC.billing.get) as Promise<BillingSettings>,
     update: (patch: BillingSettingsPatch) =>
       ipcRenderer.invoke(IPC.billing.update, patch) as Promise<BillingSettings>,
     onChanged: (listener: (settings: BillingSettings) => void) => {
-      const handler = (_event: IpcRendererEvent, settings: BillingSettings) => listener(settings);
+      const handler = (_event: IpcRendererEvent, settings: BillingSettings) =>
+        listener(settings);
       ipcRenderer.on(IPC.billing.changedEvent, handler);
       return () => {
         ipcRenderer.off(IPC.billing.changedEvent, handler);
@@ -145,26 +180,31 @@ const bridge: OpcBridge = {
     consolidationRuns: (ownerId?: string) =>
       ipcRenderer.invoke(IPC.memory.consolidationRuns, ownerId),
     list: () => ipcRenderer.invoke(IPC.memory.list),
-    update: (id: string, content: string) => ipcRenderer.invoke(IPC.memory.update, id, content),
+    update: (id: string, content: string) =>
+      ipcRenderer.invoke(IPC.memory.update, id, content),
     forget: (id: string) => ipcRenderer.invoke(IPC.memory.forget, id),
     orphans: () => ipcRenderer.invoke(IPC.memory.orphans),
     claim: (ownerId: string) => ipcRenderer.invoke(IPC.memory.claim, ownerId),
-    discard: (ownerId: string) => ipcRenderer.invoke(IPC.memory.discard, ownerId),
+    discard: (ownerId: string) =>
+      ipcRenderer.invoke(IPC.memory.discard, ownerId),
   },
   facts: {
-    list: (filter?: { threadId?: string }) => ipcRenderer.invoke(IPC.facts.list, filter),
+    list: (filter?: { threadId?: string }) =>
+      ipcRenderer.invoke(IPC.facts.list, filter),
     write: (input: unknown) => ipcRenderer.invoke(IPC.facts.write, input),
   },
   router: {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
-    setTriage: (patch: unknown) => ipcRenderer.invoke(IPC.router.setTriage, patch),
+    setTriage: (patch: unknown) =>
+      ipcRenderer.invoke(IPC.router.setTriage, patch),
   },
   watchdog: {
     incidents: () => ipcRenderer.invoke(IPC.watchdog.incidents),
     actions: () => ipcRenderer.invoke(IPC.watchdog.actions),
     ask: (question: string) => ipcRenderer.invoke(IPC.watchdog.ask, question),
     getPolicy: () => ipcRenderer.invoke(IPC.watchdog.getPolicy),
-    savePolicy: (patch: unknown) => ipcRenderer.invoke(IPC.watchdog.savePolicy, patch),
+    savePolicy: (patch: unknown) =>
+      ipcRenderer.invoke(IPC.watchdog.savePolicy, patch),
     rollbackPolicy: () => ipcRenderer.invoke(IPC.watchdog.rollbackPolicy),
     getModel: () => ipcRenderer.invoke(IPC.watchdog.getModel),
     setModel: (ref: unknown) => ipcRenderer.invoke(IPC.watchdog.setModel, ref),
@@ -177,26 +217,35 @@ const bridge: OpcBridge = {
     list: () => ipcRenderer.invoke(IPC.workers.list),
   },
   artifacts: {
-    read: (taskId: string, relPath: string) => ipcRenderer.invoke(IPC.artifacts.read, taskId, relPath),
+    read: (taskId: string, relPath: string) =>
+      ipcRenderer.invoke(IPC.artifacts.read, taskId, relPath),
     saveAs: (taskId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.artifacts.saveAs, taskId, relPath),
   },
+  chatMedia: {
+    register: (input: unknown) => ipcRenderer.invoke(IPC.chatMedia.register, input),
+  },
   auth: {
-    login: (providerId: string, type: 'oauth' | 'apiKey') =>
+    login: (providerId: string, type: "oauth" | "apiKey") =>
       ipcRenderer.invoke(IPC.auth.login, providerId, type),
-    logout: (providerId: string) => ipcRenderer.invoke(IPC.auth.logout, providerId),
+    logout: (providerId: string) =>
+      ipcRenderer.invoke(IPC.auth.logout, providerId),
     status: () => ipcRenderer.invoke(IPC.auth.status),
     answer: (promptId: string, value: string | null) =>
       ipcRenderer.invoke(IPC.auth.answer, promptId, value),
     onPrompt: (listener: (request: AuthPromptRequest) => void) => {
-      const handler = (_event: IpcRendererEvent, request: AuthPromptRequest) => listener(request);
+      const handler = (_event: IpcRendererEvent, request: AuthPromptRequest) =>
+        listener(request);
       ipcRenderer.on(IPC.auth.promptEvent, handler);
       return () => {
         ipcRenderer.off(IPC.auth.promptEvent, handler);
       };
     },
     onNotify: (listener: (event: { text: string; url?: string }) => void) => {
-      const handler = (_event: IpcRendererEvent, payload: { text: string; url?: string }) => listener(payload);
+      const handler = (
+        _event: IpcRendererEvent,
+        payload: { text: string; url?: string },
+      ) => listener(payload);
       ipcRenderer.on(IPC.auth.notifyEvent, handler);
       return () => {
         ipcRenderer.off(IPC.auth.notifyEvent, handler);
@@ -204,67 +253,146 @@ const bridge: OpcBridge = {
     },
   },
   models: {
-    list: () => ipcRenderer.invoke(IPC.models.list) as Promise<ProviderConfig[]>,
-    getCatalog: () => ipcRenderer.invoke(IPC.models.getCatalog) as Promise<CatalogProvider[]>,
-    saveProvider: (draft: ProviderDraft) => ipcRenderer.invoke(IPC.models.saveProvider, draft),
-    removeProvider: (providerId: string) => ipcRenderer.invoke(IPC.models.removeProvider, providerId),
+    list: () =>
+      ipcRenderer.invoke(IPC.models.list) as Promise<ProviderConfig[]>,
+    getCatalog: () =>
+      ipcRenderer.invoke(IPC.models.getCatalog) as Promise<CatalogProvider[]>,
+    saveProvider: (draft: ProviderDraft) =>
+      ipcRenderer.invoke(IPC.models.saveProvider, draft),
+    removeProvider: (providerId: string) =>
+      ipcRenderer.invoke(IPC.models.removeProvider, providerId),
     setKey: (providerId: string, apiKey: string) =>
       ipcRenderer.invoke(IPC.models.setKey, providerId, apiKey),
-    getKey: (providerId: string) => ipcRenderer.invoke(IPC.models.getKey, providerId),
+    getKey: (providerId: string) =>
+      ipcRenderer.invoke(IPC.models.getKey, providerId),
     test: (providerId: string) =>
-      ipcRenderer.invoke(IPC.models.test, providerId) as Promise<ProviderTestResult>,
-    refreshModels: (providerId: string) => ipcRenderer.invoke(IPC.models.refreshModels, providerId),
-    addModel: (providerId: string, input: unknown) => ipcRenderer.invoke(IPC.models.addModel, providerId, input),
+      ipcRenderer.invoke(
+        IPC.models.test,
+        providerId,
+      ) as Promise<ProviderTestResult>,
+    refreshModels: (providerId: string) =>
+      ipcRenderer.invoke(IPC.models.refreshModels, providerId),
+    addModel: (providerId: string, input: unknown) =>
+      ipcRenderer.invoke(IPC.models.addModel, providerId, input),
     supportsOauth: (providerId: string) =>
-      ipcRenderer.invoke(IPC.models.supportsOauth, providerId) as Promise<boolean>,
-    getDefaults: () => ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
+      ipcRenderer.invoke(
+        IPC.models.supportsOauth,
+        providerId,
+      ) as Promise<boolean>,
+    getDefaults: () =>
+      ipcRenderer.invoke(IPC.models.getDefaults) as Promise<ModelDefaults>,
     setDefault: (role: ModelRole, ref: ModelRef | null) =>
       ipcRenderer.invoke(IPC.models.setDefault, role, ref),
     importFromPi: () => ipcRenderer.invoke(IPC.models.importFromPi),
-    getCompaction: () => ipcRenderer.invoke(IPC.models.getCompaction) as Promise<CompactionSettings>,
-    setCompaction: (next: CompactionSettings) => ipcRenderer.invoke(IPC.models.setCompaction, next),
-    setModelContext: (providerId: string, modelId: string, contextWindow: number) =>
-      ipcRenderer.invoke(IPC.models.setModelContext, providerId, modelId, contextWindow),
+    getCompaction: () =>
+      ipcRenderer.invoke(
+        IPC.models.getCompaction,
+      ) as Promise<CompactionSettings>,
+    setCompaction: (next: CompactionSettings) =>
+      ipcRenderer.invoke(IPC.models.setCompaction, next),
+    setModelContext: (
+      providerId: string,
+      modelId: string,
+      contextWindow: number,
+    ) =>
+      ipcRenderer.invoke(
+        IPC.models.setModelContext,
+        providerId,
+        modelId,
+        contextWindow,
+      ),
     setModels: (providerId: string, models: ModelOption[]) =>
       ipcRenderer.invoke(IPC.models.setModels, providerId, models),
     setModelPricing: (
       providerId: string,
       modelId: string,
-      price: { input: number; output: number; cacheRead: number; cacheWrite: number },
-    ) => ipcRenderer.invoke(IPC.models.setModelPricing, providerId, modelId, price),
+      price: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+      },
+    ) =>
+      ipcRenderer.invoke(
+        IPC.models.setModelPricing,
+        providerId,
+        modelId,
+        price,
+      ),
     applyBuiltinPricing: (providerId: string) =>
       ipcRenderer.invoke(IPC.models.applyBuiltinPricing, providerId),
-    getThinking: () => ipcRenderer.invoke(IPC.models.getThinking) as Promise<string>,
-    setThinking: (level: string | null) => ipcRenderer.invoke(IPC.models.setThinking, level),
-    getRouterThinking: () => ipcRenderer.invoke(IPC.models.getRouterThinking) as Promise<string>,
+    getThinking: () =>
+      ipcRenderer.invoke(IPC.models.getThinking) as Promise<string>,
+    setThinking: (level: string | null) =>
+      ipcRenderer.invoke(IPC.models.setThinking, level),
+    getRouterThinking: () =>
+      ipcRenderer.invoke(IPC.models.getRouterThinking) as Promise<string>,
     setRouterThinking: (level: string | null) =>
-      ipcRenderer.invoke(IPC.models.setRouterThinking, level) as Promise<string>,
+      ipcRenderer.invoke(
+        IPC.models.setRouterThinking,
+        level,
+      ) as Promise<string>,
   },
   speech: {
     transcribe: (input: SpeechTranscribeInput) =>
-      ipcRenderer.invoke(IPC.speech.transcribe, input) as Promise<SpeechTranscribeResult>,
+      ipcRenderer.invoke(
+        IPC.speech.transcribe,
+        input,
+      ) as Promise<SpeechTranscribeResult>,
     synthesize: (input: SpeechSynthesizeInput) =>
-      ipcRenderer.invoke(IPC.speech.synthesize, input) as Promise<SpeechSynthesizeResult>,
+      ipcRenderer.invoke(
+        IPC.speech.synthesize,
+        input,
+      ) as Promise<SpeechSynthesizeResult>,
   },
   decisions: {
     classify: (input: DecisionClassifyInput) =>
-      ipcRenderer.invoke(IPC.decisions.classify, input) as Promise<DecisionClassifyResult>,
+      ipcRenderer.invoke(
+        IPC.decisions.classify,
+        input,
+      ) as Promise<DecisionClassifyResult>,
   },
   work: {
-    listTasks: (limit?: number) => ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,
-    createTask: (input: CreateTaskInput) => ipcRenderer.invoke(IPC.work.createTask, input),
+    listTasks: (limit?: number) =>
+      ipcRenderer.invoke(IPC.work.listTasks, limit) as Promise<WorkTask[]>,
+    createTask: (input: CreateTaskInput) =>
+      ipcRenderer.invoke(IPC.work.createTask, input),
     runTask: (taskId: string) => ipcRenderer.invoke(IPC.work.runTask, taskId),
-    userDecision: (taskId: string, decision: 'approve' | 'reject', reason?: string) =>
-      ipcRenderer.invoke(IPC.work.userDecision, taskId, decision, reason) as Promise<WorkTask>,
+    userDecision: (
+      taskId: string,
+      decision: "approve" | "reject",
+      reason?: string,
+    ) =>
+      ipcRenderer.invoke(
+        IPC.work.userDecision,
+        taskId,
+        decision,
+        reason,
+      ) as Promise<WorkTask>,
     setIssueMeta: (taskId: string, patch: unknown) =>
-      ipcRenderer.invoke(IPC.work.setIssueMeta, taskId, patch) as Promise<WorkTask>,
-    linkTasks: (fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates') =>
-      ipcRenderer.invoke(IPC.work.linkTasks, fromId, toId, type) as Promise<WorkTask>,
-    subtasks: (taskId: string) => ipcRenderer.invoke(IPC.work.subtasks, taskId) as Promise<WorkTask[]>,
+      ipcRenderer.invoke(
+        IPC.work.setIssueMeta,
+        taskId,
+        patch,
+      ) as Promise<WorkTask>,
+    linkTasks: (
+      fromId: string,
+      toId: string,
+      type?: "blocks" | "duplicates" | "relates",
+    ) =>
+      ipcRenderer.invoke(
+        IPC.work.linkTasks,
+        fromId,
+        toId,
+        type,
+      ) as Promise<WorkTask>,
+    subtasks: (taskId: string) =>
+      ipcRenderer.invoke(IPC.work.subtasks, taskId) as Promise<WorkTask[]>,
     trace: (taskId: string, limit?: number) =>
       ipcRenderer.invoke(IPC.work.trace, taskId, limit) as Promise<TaskTrace[]>,
     onTaskChanged: (listener: (task: WorkTask) => void) => {
-      const handler = (_event: IpcRendererEvent, task: WorkTask) => listener(task);
+      const handler = (_event: IpcRendererEvent, task: WorkTask) =>
+        listener(task);
       ipcRenderer.on(IPC.work.taskEvent, handler);
       return () => {
         ipcRenderer.off(IPC.work.taskEvent, handler);
@@ -289,4 +417,4 @@ const bridge: OpcBridge = {
   },
 };
 
-contextBridge.exposeInMainWorld('opc', bridge);
+contextBridge.exposeInMainWorld("opc", bridge);

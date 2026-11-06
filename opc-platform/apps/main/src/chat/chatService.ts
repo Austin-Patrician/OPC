@@ -1,5 +1,6 @@
 import type {
   Agent,
+  ChatContentBlock,
   Conversation,
   ConversationStatus,
   Message,
@@ -86,18 +87,20 @@ export class ChatService {
     this.db = seed.db;
     this.snapshot = {
       agents: seed.agents ?? [],
-      conversations: this.db ? this.loadConversations(seed.conversations) : seed.conversations,
+      conversations: this.db
+        ? this.loadConversations(seed.conversations)
+        : seed.conversations.map(withVisibleMessages),
       typingByConversation: {},
     };
   }
 
   /** Stored conversations win; the seed is only used when nothing was persisted. */
   private loadConversations(seed: Conversation[]): Conversation[] {
-    if (!this.db) return seed;
+    if (!this.db) return seed.map(withVisibleMessages);
     const rows = this.db
       .prepare('SELECT payload FROM conversation ORDER BY created_at')
       .all() as { payload: string }[];
-    if (rows.length === 0) return seed;
+    if (rows.length === 0) return seed.map(withVisibleMessages);
 
     const messageRows = this.db
       .prepare('SELECT conversation_id, payload FROM message ORDER BY created_at, rowid')
@@ -105,10 +108,12 @@ export class ChatService {
 
     return rows.map((row) => {
       const base = JSON.parse(row.payload) as Omit<Conversation, 'messages'>;
-      const messages = messageRows
-        .filter((message) => message.conversation_id === base.id)
-        .map((message) => JSON.parse(message.payload) as Message);
-      return { ...base, messages };
+      return withVisibleMessages({
+        ...base,
+        messages: messageRows
+          .filter((message) => message.conversation_id === base.id)
+          .map((message) => JSON.parse(message.payload) as Message),
+      } as Conversation);
     });
   }
 
@@ -301,12 +306,11 @@ export class ChatService {
         .prepare('SELECT payload FROM message WHERE conversation_id = ? ORDER BY created_at, rowid')
         .all(conversationId) as { payload: string }[];
       if (rows.length > 0) {
-        return rows.map((row) => JSON.parse(row.payload) as Message);
+        return rows.map((row) => JSON.parse(row.payload) as Message).filter((message) => message.kind !== 'task' && message.kind !== 'deliverable');
       }
     }
-    return (
-      this.snapshot.conversations.find((item) => item.id === conversationId)?.messages.slice() ?? []
-    );
+    return this.snapshot.conversations.find((item) => item.id === conversationId)?.messages
+      .filter((message) => message.kind !== 'task' && message.kind !== 'deliverable').slice() ?? [];
   };
 
   /** Runs consolidation for one conversation (no-op without a summariser). */
@@ -447,10 +451,10 @@ export class ChatService {
    * 交互，由 Router 统一回复）。所以它只有一个入口，而且不经过任何"挑谁来回"的
    * 逻辑——说话的就是 Router 本身。
    */
-  appendRouterMessage = (conversationId: string, text: string): void => {
+  appendRouterMessage = (conversationId: string, text: string, content?: ChatContentBlock[]): void => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
-    this.appendReply(conversation, ROUTER_FACE, text);
+    this.appendReply(conversation, ROUTER_FACE, text, content);
   };
 
   /**
@@ -458,37 +462,8 @@ export class ChatService {
    * the same object move from running → accepted without polling.
    */
   upsertTaskCard = (task: WorkTask): void => {
-    const messageId = `task-card-${task.id}`;
-    const target =
-      this.snapshot.conversations.find(
-        (item) => item.kind === 'dm' && item.primaryAgentId === task.assigneeId,
-      ) ?? this.snapshot.conversations[0];
-    if (!target) return;
-
-    const previous = target.messages.find((message) => message.id === messageId);
-    const card: Message = {
-      id: messageId,
-      kind: 'task',
-      senderId: task.assigneeId,
-      senderName: task.assigneeName,
-      timestamp: formatClock(),
-      task,
-    };
-
-    this.commit({
-      conversations: this.snapshot.conversations.map((item) => {
-        if (item.id !== target.id) return item;
-        const messages = previous
-          ? item.messages.map((message) => (message.id === messageId ? card : message))
-          : [...item.messages, card];
-        return {
-          ...item,
-          messages,
-          lastMessage: previewOf(card),
-          timestamp: card.timestamp,
-        };
-      }),
-    });
+    // Execution state belongs to task/line views, never to chat history.
+    void task;
   };
 
   dispose = (): void => {
@@ -497,7 +472,7 @@ export class ChatService {
 
   // ── internals ──────────────────────────────────────────────────────────
 
-  private appendReply(conversation: Conversation, speaker: Speaker, text: string): void {
+  private appendReply(conversation: Conversation, speaker: Speaker, text: string, content?: ChatContentBlock[]): void {
     this.appendMessage(
       conversation,
       {
@@ -509,6 +484,7 @@ export class ChatService {
         senderAvatarUrl: speaker.avatarUrl,
         timestamp: formatClock(),
         text,
+        ...(content?.length ? { content } : {}),
       },
       { read: conversation.id === this.activeConversationId },
     );
@@ -576,4 +552,17 @@ function previewOf(message: Message): string {
   if (message.kind === 'deliverable') return message.deliverable?.title ?? '交付物';
   const text = message.text ?? '';
   return message.senderId === 'user' ? text : `${message.senderName}: ${text}`;
+}
+
+function withVisibleMessages<T extends Conversation>(conversation: T): T {
+  const messages = conversation.messages.filter(
+    (message) => message.kind !== 'task' && message.kind !== 'deliverable',
+  );
+  const latest = messages.at(-1);
+  return {
+    ...conversation,
+    messages,
+    lastMessage: latest ? previewOf(latest) : '还没有对话',
+    ...(latest ? { timestamp: latest.timestamp } : {}),
+  };
 }

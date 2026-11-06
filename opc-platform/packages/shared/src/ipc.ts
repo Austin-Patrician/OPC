@@ -40,8 +40,8 @@ import type {
   SpeechTranscribeResult,
   TaskTrace,
   WorkTask,
-} from './domain';
-import type { OcrSettings } from './ocr';
+} from "./domain";
+import type { OcrSettings } from "./ocr";
 
 /**
  * The typed surface between Electron main and renderer.
@@ -52,165 +52,171 @@ import type { OcrSettings } from './ocr';
 
 export const IPC = {
   chat: {
-    getSnapshot: 'chat:getSnapshot',
-    sendMessage: 'chat:sendMessage',
-    markRead: 'chat:markRead',
-    ensureAssistant: 'chat:ensureAssistant',
-    archive: 'chat:archive',
-    restore: 'chat:restore',
-    snapshotEvent: 'chat:snapshot',
+    getSnapshot: "chat:getSnapshot",
+    sendMessage: "chat:sendMessage",
+    markRead: "chat:markRead",
+    ensureAssistant: "chat:ensureAssistant",
+    archive: "chat:archive",
+    restore: "chat:restore",
+    snapshotEvent: "chat:snapshot",
   },
   diagnostics: {
-    report: 'diagnostics:report',
+    report: "diagnostics:report",
   },
   models: {
-    list: 'models:list',
-    getCatalog: 'models:getCatalog',
-    saveProvider: 'models:saveProvider',
-    removeProvider: 'models:removeProvider',
-    setKey: 'models:setKey',
-    getKey: 'models:getKey',
-    test: 'models:test',
-    refreshModels: 'models:refreshModels',
-    addModel: 'models:addModel',
-    supportsOauth: 'models:supportsOauth',
-    getDefaults: 'models:getDefaults',
-    setDefault: 'models:setDefault',
-    importFromPi: 'models:importFromPi',
-    getCompaction: 'models:getCompaction',
-    setCompaction: 'models:setCompaction',
-    setModelContext: 'models:setModelContext',
-    setModels: 'models:setModels',
-    setModelPricing: 'models:setModelPricing',
-    applyBuiltinPricing: 'models:applyBuiltinPricing',
-    getThinking: 'models:getThinking',
-    setThinking: 'models:setThinking',
-    getRouterThinking: 'models:getRouterThinking',
-    setRouterThinking: 'models:setRouterThinking',
+    list: "models:list",
+    getCatalog: "models:getCatalog",
+    saveProvider: "models:saveProvider",
+    removeProvider: "models:removeProvider",
+    setKey: "models:setKey",
+    getKey: "models:getKey",
+    test: "models:test",
+    refreshModels: "models:refreshModels",
+    addModel: "models:addModel",
+    supportsOauth: "models:supportsOauth",
+    getDefaults: "models:getDefaults",
+    setDefault: "models:setDefault",
+    importFromPi: "models:importFromPi",
+    getCompaction: "models:getCompaction",
+    setCompaction: "models:setCompaction",
+    setModelContext: "models:setModelContext",
+    setModels: "models:setModels",
+    setModelPricing: "models:setModelPricing",
+    applyBuiltinPricing: "models:applyBuiltinPricing",
+    getThinking: "models:getThinking",
+    setThinking: "models:setThinking",
+    getRouterThinking: "models:getRouterThinking",
+    setRouterThinking: "models:setRouterThinking",
   },
   speech: {
-    transcribe: 'speech:transcribe',
-    synthesize: 'speech:synthesize',
+    transcribe: "speech:transcribe",
+    synthesize: "speech:synthesize",
   },
   decisions: {
-    classify: 'decisions:classify',
+    classify: "decisions:classify",
   },
   facts: {
-    list: 'facts:list',
-    write: 'facts:write',
+    list: "facts:list",
+    write: "facts:write",
   },
   memory: {
-    consolidationRuns: 'memory:consolidationRuns',
-    list: 'memory:list',
-    update: 'memory:update',
-    forget: 'memory:forget',
-    orphans: 'memory:orphans',
-    claim: 'memory:claim',
-    discard: 'memory:discard',
+    consolidationRuns: "memory:consolidationRuns",
+    list: "memory:list",
+    update: "memory:update",
+    forget: "memory:forget",
+    orphans: "memory:orphans",
+    claim: "memory:claim",
+    discard: "memory:discard",
   },
   router: {
-    getTriage: 'router:getTriage',
-    setTriage: 'router:setTriage',
+    getTriage: "router:getTriage",
+    setTriage: "router:setTriage",
   },
   trigger: {
-    status: 'trigger:status',
-    set: 'trigger:set',
+    status: "trigger:status",
+    set: "trigger:set",
   },
   threads: {
-    start: 'threads:start',
-    list: 'threads:list',
-    queue: 'threads:queue',
-    markRead: 'threads:markRead',
-    decide: 'threads:decide',
+    start: "threads:start",
+    list: "threads:list",
+    queue: "threads:queue",
+    markRead: "threads:markRead",
+    decide: "threads:decide",
     /** 回答执行体的请示（`ReportKind = 'question'` 的那一类）。 */
-    answer: 'threads:answer',
-    close: 'threads:close',
+    answer: "threads:answer",
+    close: "threads:close",
   },
   mcp: {
-    list: 'mcp:list',
-    save: 'mcp:save',
-    remove: 'mcp:remove',
-    test: 'mcp:test',
-    login: 'mcp:login',
-    logout: 'mcp:logout',
+    list: "mcp:list",
+    save: "mcp:save",
+    remove: "mcp:remove",
+    test: "mcp:test",
+    login: "mcp:login",
+    logout: "mcp:logout",
   },
   watchdog: {
-    incidents: 'watchdog:incidents',
-    actions: 'watchdog:actions',
-    ask: 'watchdog:ask',
-    getPolicy: 'watchdog:getPolicy',
-    savePolicy: 'watchdog:savePolicy',
-    rollbackPolicy: 'watchdog:rollbackPolicy',
-    getModel: 'watchdog:getModel',
-    setModel: 'watchdog:setModel',
+    incidents: "watchdog:incidents",
+    actions: "watchdog:actions",
+    ask: "watchdog:ask",
+    getPolicy: "watchdog:getPolicy",
+    savePolicy: "watchdog:savePolicy",
+    rollbackPolicy: "watchdog:rollbackPolicy",
+    getModel: "watchdog:getModel",
+    setModel: "watchdog:setModel",
   },
   workers: {
-    list: 'workers:list',
+    list: "workers:list",
   },
   artifacts: {
-    read: 'artifacts:read',
-    saveAs: 'artifacts:saveAs',
+    read: "artifacts:read",
+    saveAs: "artifacts:saveAs",
   },
+  chatMedia: { register: "chatMedia:register" },
   auth: {
-    login: 'auth:login',
-    logout: 'auth:logout',
-    status: 'auth:status',
-    answer: 'auth:answer',
-    promptEvent: 'auth:prompt',
-    notifyEvent: 'auth:notify',
+    login: "auth:login",
+    logout: "auth:logout",
+    status: "auth:status",
+    answer: "auth:answer",
+    promptEvent: "auth:prompt",
+    notifyEvent: "auth:notify",
   },
   work: {
-    listTasks: 'work:listTasks',
-    userDecision: 'work:userDecision',
-    setIssueMeta: 'work:setIssueMeta',
-    linkTasks: 'work:linkTasks',
-    subtasks: 'work:subtasks',
-    trace: 'work:trace',
-    createTask: 'work:createTask',
-    runTask: 'work:runTask',
-    taskEvent: 'work:taskChanged',
+    listTasks: "work:listTasks",
+    userDecision: "work:userDecision",
+    setIssueMeta: "work:setIssueMeta",
+    linkTasks: "work:linkTasks",
+    subtasks: "work:subtasks",
+    trace: "work:trace",
+    createTask: "work:createTask",
+    runTask: "work:runTask",
+    taskEvent: "work:taskChanged",
   },
   billing: {
-    get: 'billing:get',
-    update: 'billing:update',
-    changedEvent: 'billing:changed',
+    get: "billing:get",
+    update: "billing:update",
+    changedEvent: "billing:changed",
   },
   app: {
-    getInfo: 'app:getInfo',
+    getInfo: "app:getInfo",
+  },
+  window: {
+    minimize: "window:minimize",
+    toggleMaximize: "window:toggleMaximize",
+    close: "window:close",
   },
   network: {
-    get: 'network:get',
-    update: 'network:update',
-    test: 'network:test',
-    changedEvent: 'network:changed',
+    get: "network:get",
+    update: "network:update",
+    test: "network:test",
+    changedEvent: "network:changed",
   },
   runtime: {
-    snapshot: 'runtime:snapshot',
-    probe: 'runtime:probe',
-    setActive: 'runtime:setActive',
-    chooseBinary: 'runtime:chooseBinary',
-    inspect: 'runtime:inspect',
-    saveProfile: 'runtime:saveProfile',
-    removeProfile: 'runtime:removeProfile',
-    bundled: 'runtime:bundled',
-    ocr: 'runtime:ocr',
-    setOcr: 'runtime:setOcr',
+    snapshot: "runtime:snapshot",
+    probe: "runtime:probe",
+    setActive: "runtime:setActive",
+    chooseBinary: "runtime:chooseBinary",
+    inspect: "runtime:inspect",
+    saveProfile: "runtime:saveProfile",
+    removeProfile: "runtime:removeProfile",
+    bundled: "runtime:bundled",
+    ocr: "runtime:ocr",
+    setOcr: "runtime:setOcr",
   },
   company: {
-    get: 'company:get',
-    update: 'company:update',
-    changedEvent: 'company:changed',
+    get: "company:get",
+    update: "company:update",
+    changedEvent: "company:changed",
   },
   capabilities: {
-    list: 'capabilities:list',
+    list: "capabilities:list",
   },
   extensions: {
-    list: 'extensions:list',
-    setEnabled: 'extensions:setEnabled',
+    list: "extensions:list",
+    setEnabled: "extensions:setEnabled",
   },
   skills: {
-    list: 'skills:list',
-    setEnabled: 'skills:setEnabled',
+    list: "skills:list",
+    setEnabled: "skills:setEnabled",
   },
 } as const;
 
@@ -228,7 +234,7 @@ export interface SendMessageInput {
 }
 
 /** Node/Electron platform strings, minus the dependency on @types/node. */
-export type DesktopPlatform = 'darwin' | 'win32' | 'linux';
+export type DesktopPlatform = "darwin" | "win32" | "linux";
 
 export interface AppInfo {
   name: string;
@@ -242,7 +248,7 @@ export interface AppInfo {
   userDataPath: string;
 }
 
-export type ProbeStatus = 'ok' | 'failed' | 'skipped';
+export type ProbeStatus = "ok" | "failed" | "skipped";
 
 export interface ProbeResult {
   id: string;
@@ -271,7 +277,9 @@ export interface ChatBridge {
   /** 唯一的那条会话：没有就建一条。没有执行体时返回 null。 */
   ensureAssistant(): Promise<string>;
   /** Archives a conversation and consolidates it once (idempotent). */
-  archive(conversationId: string): Promise<{ archived: boolean; written: number }>;
+  archive(
+    conversationId: string,
+  ): Promise<{ archived: boolean; written: number }>;
   /** Moves an archived conversation back into the active list. */
   restore(conversationId: string): Promise<void>;
 }
@@ -291,13 +299,25 @@ export interface WorkBridge {
   /** Fire-and-forget: progress arrives through `onTaskChanged`. */
   runTask(taskId: string): Promise<void>;
   /** You sign-off: approve → delivered, reject → parked with a reason. */
-  userDecision(taskId: string, decision: 'approve' | 'reject', reason?: string): Promise<WorkTask>;
+  userDecision(
+    taskId: string,
+    decision: "approve" | "reject",
+    reason?: string,
+  ): Promise<WorkTask>;
   setIssueMeta(
     taskId: string,
-    patch: { priority?: 'P0' | 'P1' | 'P2' | 'P3'; labels?: string[]; dueAt?: number | null },
+    patch: {
+      priority?: "P0" | "P1" | "P2" | "P3";
+      labels?: string[];
+      dueAt?: number | null;
+    },
   ): Promise<WorkTask>;
   /** `fromId blocks toId`; pass an empty `fromId` to remove the link. */
-  linkTasks(fromId: string, toId: string, type?: 'blocks' | 'duplicates' | 'relates'): Promise<WorkTask>;
+  linkTasks(
+    fromId: string,
+    toId: string,
+    type?: "blocks" | "duplicates" | "relates",
+  ): Promise<WorkTask>;
   onTaskChanged(listener: (task: WorkTask) => void): () => void;
 }
 
@@ -327,7 +347,7 @@ export interface ModelsBridge {
       contextWindow?: number;
       api?: string;
       /** Defaults to `chat`; the Image/Voice pages add their models explicitly. */
-      capability?: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
+      capability?: "chat" | "image" | "classifier" | "asr" | "tts";
       /** USD per 1M tokens; omitted/0 means "unknown". */
       inputUsdPerM?: number;
       outputUsdPerM?: number;
@@ -344,9 +364,16 @@ export interface ModelsBridge {
   getCompaction(): Promise<CompactionSettings>;
   setCompaction(next: CompactionSettings): Promise<CompactionSettings>;
   /** Context window of one model, used by the compaction thresholds. */
-  setModelContext(providerId: string, modelId: string, contextWindow: number): Promise<ProviderConfig[]>;
+  setModelContext(
+    providerId: string,
+    modelId: string,
+    contextWindow: number,
+  ): Promise<ProviderConfig[]>;
   /** Replaces a provider's model list (used when importing the pi catalog). */
-  setModels(providerId: string, models: ModelOption[]): Promise<ProviderConfig[]>;
+  setModels(
+    providerId: string,
+    models: ModelOption[],
+  ): Promise<ProviderConfig[]>;
   /** Copies pi's built-in cost (cache + context tiers) onto every model. */
   applyBuiltinPricing(providerId: string): Promise<{
     providers: ProviderConfig[];
@@ -357,7 +384,12 @@ export interface ModelsBridge {
   setModelPricing(
     providerId: string,
     modelId: string,
-    price: { input: number; output: number; cacheRead: number; cacheWrite: number },
+    price: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    },
   ): Promise<ProviderConfig[]>;
   getThinking(): Promise<string>;
   /** `null` clears the explicit choice and falls back to the system default. */
@@ -370,7 +402,7 @@ export interface ModelsBridge {
 
 export interface AuthPromptRequest {
   id: string;
-  kind: 'text' | 'secret' | 'select' | 'manual_code';
+  kind: "text" | "secret" | "select" | "manual_code";
   message: string;
   placeholder?: string;
   options?: readonly { id: string; label: string; description?: string }[];
@@ -382,13 +414,18 @@ export interface AuthMenuItem {
 }
 
 export interface AuthBridge {
-  login(providerId: string, type: 'oauth' | 'apiKey'): Promise<{ ok: boolean; message: string }>;
+  login(
+    providerId: string,
+    type: "oauth" | "apiKey",
+  ): Promise<{ ok: boolean; message: string }>;
   logout(providerId: string): Promise<{ ok: boolean; message: string }>;
   status(): Promise<AuthMenuItem[]>;
   /** Answer a pending prompt; `null` cancels the flow. */
   answer(promptId: string, value: string | null): Promise<void>;
   onPrompt(listener: (request: AuthPromptRequest) => void): () => void;
-  onNotify(listener: (event: { text: string; url?: string }) => void): () => void;
+  onNotify(
+    listener: (event: { text: string; url?: string }) => void,
+  ): () => void;
 }
 
 export interface ArtifactReadResult {
@@ -400,7 +437,7 @@ export interface ArtifactReadResult {
 
 export interface FactView {
   id: string;
-  scopeType: 'global' | 'thread';
+  scopeType: "global" | "thread";
   scopeId: string;
   subject: string;
   predicate: string;
@@ -410,14 +447,13 @@ export interface FactView {
   validFrom: number;
 }
 
-
 export interface ConsolidationRunView {
   id: string;
   ownerId: string;
   conversationIds: string[];
   episodeCount: number;
   memoriesCreated: number;
-  status: 'running' | 'done' | 'failed' | 'skipped';
+  status: "running" | "done" | "failed" | "skipped";
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
@@ -469,7 +505,7 @@ export interface CapabilitiesBridge {
 }
 
 /** Where a Pi extension was discovered: the user's home or this project. */
-export type PiExtensionScope = 'global' | 'project';
+export type PiExtensionScope = "global" | "project";
 
 /** One Pi extension found on disk, whether or not it is loaded. */
 export interface PiExtensionView {
@@ -514,7 +550,11 @@ export interface ExtensionsBridge {
    * Enables or disables one extension company-wide. Enabling runs the module in
    * the main process, so the first enable must pass `trusted: true`.
    */
-  setEnabled(id: string, enabled: boolean, trusted?: boolean): Promise<PiExtensionCatalog>;
+  setEnabled(
+    id: string,
+    enabled: boolean,
+    trusted?: boolean,
+  ): Promise<PiExtensionCatalog>;
 }
 
 /** One `SKILL.md` folder found on disk. */
@@ -556,7 +596,7 @@ export interface SkillsBridge {
 export interface MemoryView {
   id: string;
   /** `standing` 每轮都生效；`long` 命中相关度才出现。 */
-  tier: 'long' | 'standing';
+  tier: "long" | "standing";
   kind: string;
   /** 主题键：同一条规矩改过几次都只留一条，靠它认出来。 */
   subject: string | null;
@@ -630,7 +670,7 @@ export interface TriggerStatus {
 
 export interface TriggerPatch {
   port?: number;
-  secrets?: Partial<Record<'github' | 'feishu' | 'dingtalk', string>>;
+  secrets?: Partial<Record<"github" | "feishu" | "dingtalk", string>>;
 }
 
 export interface TriggerBridge {
@@ -642,7 +682,7 @@ export interface FactsBridge {
   /** 当前生效的事实：整条工作线的（给 threadId），或者整个工作台的。 */
   list(filter?: { threadId?: string }): Promise<FactView[]>;
   write(input: {
-    scopeType: 'global' | 'thread';
+    scopeType: "global" | "thread";
     scopeId?: string;
     subject: string;
     object: string;
@@ -708,9 +748,15 @@ export interface ArtifactsBridge {
   /** Reads an image artifact as a data URL (used for card thumbnails). */
   read(taskId: string, relPath: string): Promise<ArtifactReadResult>;
   /** "Download": native save dialog + copy, so it works under file:// too. */
-  saveAs(taskId: string, relPath: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+  saveAs(
+    taskId: string,
+    relPath: string,
+  ): Promise<{ ok: boolean; path?: string; error?: string }>;
 }
 
+export interface ChatMediaBridge {
+  register(input: { kind: "image" | "video" | "audio"; url?: string; taskId?: string; relPath?: string }): Promise<{ ok: boolean; url?: string; error?: string }>;
+}
 
 /**
  * The company row + its profile preferences (§1.3: one company per install).
@@ -808,11 +854,17 @@ export interface DecisionsBridge {
 export interface WatchdogIncidentView {
   id: string;
   kind: string;
-  state: 'active' | 'rechecking' | 'escalated' | 'resolved';
+  state: "active" | "rechecking" | "escalated" | "resolved";
   subjectType: string;
   subjectId: string;
   summary: string;
   detail?: string;
+  /** 最近一次结构化判断；空表示还未判。 */
+  verdict?: string;
+  verdictReason?: string;
+  verdictConfidence?: number;
+  judgedAt?: number;
+  judgedBy?: string;
   firstAt: number;
   lastSeenAt: number;
   reopenCount: number;
@@ -822,7 +874,7 @@ export interface WatchdogIncidentView {
 export interface WatchdogActionView {
   incidentId: string;
   action: string;
-  status: 'pending' | 'done' | 'failed' | 'refused';
+  status: "pending" | "done" | "failed" | "refused";
   at: number;
   result: string;
 }
@@ -864,7 +916,9 @@ export interface WatchdogBridge {
   rollbackPolicy(): Promise<WatchdogPolicyView>;
   /** 它自己的模型；`null` = 跟随默认 LLM。 */
   getModel(): Promise<{ providerId: string; modelId: string } | null>;
-  setModel(ref: { providerId: string; modelId: string } | null): Promise<{ providerId: string; modelId: string } | null>;
+  setModel(
+    ref: { providerId: string; modelId: string } | null,
+  ): Promise<{ providerId: string; modelId: string } | null>;
 }
 
 export interface OpcBridge {
@@ -872,6 +926,11 @@ export interface OpcBridge {
   readonly isElectron: true;
   app: {
     getInfo(): Promise<AppInfo>;
+  };
+  window: {
+    minimize(): Promise<void>;
+    toggleMaximize(): Promise<boolean>;
+    close(): Promise<void>;
   };
   network: NetworkBridge;
   runtime: RuntimeBridge;
@@ -883,6 +942,7 @@ export interface OpcBridge {
   decisions: DecisionsBridge;
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
+  chatMedia: ChatMediaBridge;
   workers: WorkersBridge;
   capabilities: CapabilitiesBridge;
   extensions: ExtensionsBridge;
@@ -915,10 +975,10 @@ export interface AttentionEntry {
    * `question` 是执行体卡住了在问你，收件动词是「回答」；
    * `report` 是结果给你看，收件动词是「认可 / 重做」。
    */
-  kind: 'report' | 'question' | 'approval';
+  kind: "report" | "question" | "approval";
   /** 「整理 Q3 财报」——你认的是这件事，不是 id。 */
   threadTitle: string;
-  level: 'decide' | 'notify' | 'silent';
+  level: "decide" | "notify" | "silent";
   title: string;
   body: string;
   createdAt: number;
@@ -932,35 +992,40 @@ export interface AttentionEntry {
  */
 export interface McpServerView {
   name: string;
-  transport: 'stdio' | 'http';
+  transport: "stdio" | "http";
   target: string;
   enabled: boolean;
-  exposure: 'deferred' | 'direct' | 'hidden';
+  exposure: "deferred" | "direct" | "hidden";
   description?: string;
   tools?: number;
   resources?: number;
   error?: string;
   /** HTTP 服务器才有：登录了没有。 */
-  auth?: 'signed-in' | 'signed-out';
+  auth?: "signed-in" | "signed-out";
 }
 
 /** 一份可写回的服务器配置（界面里能编辑的那几个字段）。 */
 export interface McpServerDraft {
   name: string;
-  transport: 'stdio' | 'http';
+  transport: "stdio" | "http";
   /** stdio：`npx -y server-fs`；http：URL。按空白切分，所以带空格的路径要写成数组形式。 */
   target: string;
   args?: string[];
   enabled?: boolean;
-  exposure?: 'deferred' | 'direct' | 'hidden';
+  exposure?: "deferred" | "direct" | "hidden";
   description?: string;
 }
 
-export interface McpBridge {  /** 当前生效的服务器清单，以及它读自哪几个文件。 */
+export interface McpBridge {
+  /** 当前生效的服务器清单，以及它读自哪几个文件。 */
   list(): Promise<{ servers: McpServerView[]; sources: string[] }>;
   /** 写入或改一台。返回写入后的清单。 */
-  save(draft: McpServerDraft): Promise<{ servers: McpServerView[]; sources: string[] }>;
-  remove(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  save(
+    draft: McpServerDraft,
+  ): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  remove(
+    name: string,
+  ): Promise<{ servers: McpServerView[]; sources: string[] }>;
   /** 连一次、报工具数。不改配置。 */
   test(name: string): Promise<McpServerView>;
   /**
@@ -970,7 +1035,9 @@ export interface McpBridge {  /** 当前生效的服务器清单，以及它读�
    * 所以下一次干活就带上了——不用重启。
    */
   login(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
-  logout(name: string): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  logout(
+    name: string,
+  ): Promise<{ servers: McpServerView[]; sources: string[] }>;
 }
 
 export interface ThreadsBridge {
@@ -991,7 +1058,7 @@ export interface ThreadsBridge {
   decide(input: {
     reportId: string;
     threadId: string;
-    decision: 'approve' | 'rework';
+    decision: "approve" | "rework";
     note?: string;
   }): Promise<WorkThread>;
   /**
@@ -1006,7 +1073,7 @@ export interface ThreadsBridge {
     text: string;
     /** 审批行才有意义：允不允许。请示行不看它。 */
     allow?: boolean;
-  }): Promise<'live' | 'next-attempt' | 'new-task'>;
+  }): Promise<"live" | "next-attempt" | "new-task">;
   /** 关掉一条工作线（你手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;
 }

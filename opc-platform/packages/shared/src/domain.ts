@@ -73,6 +73,11 @@ export interface Deliverable {
 
 export type MessageKind = 'text' | 'deliverable' | 'system' | 'task';
 
+/** Ordered, renderer-safe content in an assistant reply. */
+export type ChatContentBlock =
+  | { type: 'markdown'; text: string }
+  | { type: 'image' | 'video' | 'audio'; source: { type: 'url'; url: string } | { type: 'artifact'; taskId: string; relPath: string }; alt?: string; title?: string };
+
 /** ── Work / task pipeline (Phase 0) ─────────────────────────────────────── */
 
 export type IssuePriority = 'P0' | 'P1' | 'P2' | 'P3';
@@ -389,6 +394,10 @@ export interface CompanyProfile {
   logo?: string;
   /** Uploaded avatar as a base64 data URL; absent = initials. */
   userAvatar?: string;
+  /** Personal response preferences, applied by the Router on every turn. */
+  replyTone: 'friendly' | 'balanced' | 'professional';
+  replyDetail: 'concise' | 'balanced' | 'detailed';
+  replyInstructions: string;
 }
 
 /** Partial update; omitted fields keep their stored value. */
@@ -401,6 +410,9 @@ export interface CompanyProfilePatch {
   /** Data URL; `''` removes the uploaded image. */
   logo?: string;
   userAvatar?: string;
+  replyTone?: 'friendly' | 'balanced' | 'professional';
+  replyDetail?: 'concise' | 'balanced' | 'detailed';
+  replyInstructions?: string;
 }
 
 /** ── Runtime environments (global base environment) ────────────────────── */
@@ -1032,6 +1044,8 @@ export interface Message {
   /** Optional centered divider shown above the message. */
   timeHeader?: string;
   text?: string;
+  /** Structured assistant content; absent on legacy text-only messages. */
+  content?: ChatContentBlock[];
   deliverable?: Deliverable;
   /** Task card payload when `kind === 'task'`. */
   task?: WorkTask;

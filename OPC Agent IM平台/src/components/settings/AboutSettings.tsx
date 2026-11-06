@@ -1,7 +1,6 @@
 import React, { useEffect, useState, version as reactVersion } from 'react';
-import { ArrowUpRight, BookOpen, FolderGit2, Package, RotateCcw, Sparkles } from 'lucide-react';
+import { ArrowUpRight, BookOpen, FolderGit2, Package, RotateCcw } from 'lucide-react';
 import { devDependencies, version as appVersion } from '../../../package.json';
-import { onboardingStore } from '../onboarding/onboardingStore';
 import {
   IMAGE_MODELS,
   PI_AGENT_DIR,
@@ -55,18 +54,18 @@ export const AboutSettings: React.FC = () => {
       <PageHeader crumbs={['关于']} title="关于" />
 
       <div className="space-y-4">
-        <section className="bg-white rounded-xl border border-[#E5E5E7] px-5 py-5 flex items-center gap-4">
-          <div className="w-14 h-14 rounded-[16px] bg-gradient-to-br from-[#33ADFF] to-[#0077E6] flex items-center justify-center text-white text-[15px] font-bold tracking-tight shadow-[0_4px_12px_rgba(0,119,230,0.25)] shrink-0">
-            OPC
+        <section className="bg-white/80 backdrop-blur-xl rounded-[10px] border border-black/[0.07] shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_1px_3px_rgba(0,0,0,0.02)] px-5 py-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-[10px] bg-[#1D1D1F] flex items-center justify-center text-white text-[14px] font-semibold tracking-tight shadow-[0_2px_8px_rgba(0,0,0,0.12)] shrink-0">
+            M
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-[17px] font-bold text-[#1C1C1E]">OPC 一人公司</h3>
-              <span className="h-5 px-1.5 rounded-md bg-[#F2F2F5] text-[11px] font-mono text-[#6E6E73] flex items-center">
+              <h3 className="text-[16px] font-semibold text-[#1D1D1F]">Muse · Personal Agent</h3>
+              <span className="h-5 px-1.5 rounded-[5px] bg-black/[0.05] text-[11px] font-mono text-[#6E6E73] flex items-center">
                 v{appVersion}
               </span>
             </div>
-            <p className="mt-0.5 text-[12.5px] text-[#6E6E73]">AI Agent IM 协作平台 · Agent 运行时基于 pi</p>
+            <p className="mt-0.5 text-[12.5px] text-[#6E6E73]">你的私人助手 · 运行时基于 pi</p>
           </div>
         </section>
 
@@ -108,23 +107,11 @@ export const AboutSettings: React.FC = () => {
         </Section>
 
         <Section title="重置">
-          <div className="px-4 py-3.5 flex items-center gap-6 border-b border-[#F0F0F2]">
-            <div className="flex-1 min-w-0">
-              <div className="text-[13px] text-[#1C1C1E]">新手引导</div>
-              <div className="mt-0.5 text-[11.5px] text-[#8E8E93] leading-relaxed">
-                重新浏览欢迎页并逐步调整偏好、模型、公司信息与团队；已有会话和员工不会被清除。
-              </div>
-            </div>
-            <button type="button" className={`${buttonClass.secondary} shrink-0`} onClick={() => onboardingStore.reopen()}>
-              <Sparkles className="w-3.5 h-3.5" />
-              重新打开引导
-            </button>
-          </div>
           <div className="px-4 py-3.5 flex items-center gap-6">
             <div className="flex-1 min-w-0">
               <div className="text-[13px] text-[#1C1C1E]">恢复默认设置</div>
               <div className="mt-0.5 text-[11.5px] text-[#8E8E93] leading-relaxed">
-                恢复本页面的全部偏好并清除内存中的密钥；不会影响会话、组织架构等应用数据，也不会改动 pi 的{' '}
+                恢复本页面的全部偏好并清除内存中的密钥；不会影响助手的长期记忆规范与已交付记录，也不会改动 pi 的{' '}
                 <KeyTag>auth.json</KeyTag>。
               </div>
             </div>

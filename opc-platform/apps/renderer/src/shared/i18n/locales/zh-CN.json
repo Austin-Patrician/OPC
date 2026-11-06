@@ -14,14 +14,23 @@
     "loading": "加载中…",
     "empty": "暂无内容"
   },
+  "window": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原"
+  },
   "nav": {
     "attention": "注意力队列",
-    "im": "IM 消息工作台",
+    "im": "对话",
     "skills": "技能与工具",
     "menu": "设置与总控",
     "issues": "工作项",
     "budget": "预算中心",
-    "searchPlaceholder": "搜索会话…"
+    "searchPlaceholder": "搜索对话…",
+    "chatSearchPlaceholder": "搜索对话内容…",
+    "welcomeTitle": "有什么事需要我？",
+    "welcomeHint": "聊聊一个目标，或把一件待办交给我。工作进展和结果都会回到这条对话里。",
+    "dispatchTask": "派发一件任务"
   },
   "titleBar": {
     "hire": "聘用 Agent 执行体",
@@ -29,6 +38,7 @@
     "userNamePlaceholder": "输入你的称呼…",
     "renameUser": "点击修改称呼",
     "profile": "我的名片",
+    "preferencesHint": "头像与回复偏好可在「设置 → 个人偏好」中调整。",
     "fields": {
       "name": "名称",
       "company": "工作台",
@@ -47,7 +57,37 @@
     "mentionHint": "@ 提及会话内的 Agent 执行体指派任务",
     "quickPrompts": "常用指令模板",
     "quickPromptsHint": "快捷指令",
-    "inputPlaceholder": "发消息…（Enter 发送，Shift+Enter 换行）",
+    "inputPlaceholder": "和 Buddy 说点什么…",
+    "welcome": {
+      "online": "在线 · 随时听你招呼",
+      "title": "嗨，我是 Buddy",
+      "description": "理清思路、起草文案、发掘新点子，或规划接下来的工作。像聊天一样告诉我就好。",
+      "tryOne": "你可以从这里开始",
+      "tryIt": "试一试",
+      "cardImageAlt": "日常灵感预览",
+      "prompts": {
+        "plan": {
+          "title": "帮我规划今天的工作节奏",
+          "description": "梳理待办轻重缓急，安排清晰可行的下一步",
+          "message": "帮我梳理一下今天待办的轻重缓急，安排一个清晰可行的工作节奏"
+        },
+        "organize": {
+          "title": "把零散想法整理成行动大纲",
+          "description": "提炼核心结论，并列出可以马上推进的事项",
+          "message": "帮我把手头零散的想法理顺，整理成核心结论和下一步行动大纲"
+        },
+        "ideas": {
+          "title": "一起发掘几个新方向",
+          "description": "从不同角度打开思路",
+          "message": "围绕我正在做的事情，帮我发掘几个有启发性的新方向和反常识角度"
+        },
+        "task": {
+          "title": "总结最近的进展",
+          "description": "汇总完成事项与待跟进问题",
+          "message": "帮我总结一下最近的工作进展，列出已完成事项和需要继续跟进的问题"
+        }
+      }
+    },
     "enterToSend": "Enter 发送",
     "shiftEnter": "Shift+Enter 换行",
     "typing": "{{names}} 正在协同处理并调用工具…",
@@ -60,10 +100,13 @@
     "link": "链接",
     "action": {
       "voice": "语音输入",
-      "ai": "让 Agent 自主协同"
+      "ai": "让 Agent 自主协同",
+      "attach": "添加素材或附件",
+      "attachExample": "帮我把这段新素材剪成一条节奏清爽的短片"
     },
     "speech": {
       "recording": "录音中，点击停止",
+      "stopRecording": "结束录音并转写",
       "transcribing": "转写中…",
       "transcribeFailed": "语音转写失败",
       "noAsr": "未配置语音识别模型（设置 → 模型 → Voice）",
@@ -139,7 +182,7 @@
     "page": {
       "appearance": "外观与语言",
       "compaction": "工作区与压缩",
-      "company": "工作台与称呼",
+      "company": "个人偏好",
       "billing": "计费",
       "network": "网络与代理",
       "runtime": "运行时",
@@ -405,20 +448,30 @@
       "created": "写入 {{count}} 条记忆（处理 {{episodes}} 条对话）"
     },
     "company": {
-      "title": "工作台",
-      "description": "名称、配色与你的称呼都保存在本机数据库；改完点右上角「保存」才会同步到标题栏与名片。",
+      "title": "个人偏好",
+      "description": "设置助手如何与你交流。称呼可以留空，头像会显示在标题栏。",
       "name": "工作台名称",
       "nameHint": "显示在标题栏与名片上",
-      "userHint": "标题栏里显示的名字，也是 Agent 称呼你的方式",
+      "userHint": "可留空；助手会自然地直接与你对话",
       "brand": "品牌色",
       "brandTitle": "外观",
       "brandDesc": "名称、配色与视觉风格，决定标题栏和名片的样子。",
       "logo": "工作台 Logo",
       "logoHint": "支持 PNG / JPG / WebP / GIF / SVG，建议方形，不超过 500 KB",
       "userTitle": "你的资料",
-      "userDesc": "Agent 在对话与任务里怎么称呼你。",
+      "userDesc": "称呼是可选的；留空时助手会自然地直接与你对话。",
       "userAvatar": "你的头像",
-      "userAvatarHint": "显示在标题栏；不上传时使用称呼的首字母",
+      "userAvatarHint": "显示在标题栏；不上传时使用头像占位图",
+      "userPlaceholder": "可留空",
+      "replyTitle": "回复方式",
+      "replyDesc": "这些偏好会应用于助手每次回复，也可以在对话中随时提出不同要求。",
+      "replyTone": "回复语气",
+      "tone": { "friendly": "友好自然", "balanced": "自然平衡", "professional": "专业正式" },
+      "replyDetail": "回答详略",
+      "detail": { "concise": "简洁", "balanced": "适中", "detailed": "详细" },
+      "replyInstructions": "其他偏好",
+      "replyInstructionsHint": "例如：先给结论；涉及代码时附上可运行示例。最多 500 字。",
+      "replyInstructionsPlaceholder": "告诉助手你希望它如何组织回复…",
       "imageUpload": "上传图片",
       "imageReplace": "更换图片",
       "imageRemove": "移除",

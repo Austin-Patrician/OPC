@@ -119,6 +119,13 @@ function collect(deps: {
         (incident.subjectId ? ` · 对象 ${incident.subjectType}/${incident.subjectId}` : '') +
         ` · 首次 ${when(incident.firstAt)} · 复发 ${incident.reopenCount} 次\n    说明：${incident.summary}`,
     );
+    if (incident.verdict) {
+      lines.push(
+        `    最近判断：${incident.verdict}（置信度 ${Math.round((incident.verdictConfidence ?? 0) * 100)}%）` +
+          (incident.verdictReason ? `；${incident.verdictReason}` : '') +
+          (incident.judgedBy ? ` · judged_by=${incident.judgedBy}` : ''),
+      );
+    }
     if (incident.detail) {
       // 证据是 JSON：判"为什么"要靠它（哪个工具、哪几步、成没成），不是靠摘要。
       lines.push(`    证据：${incident.detail.slice(0, 600)}`);

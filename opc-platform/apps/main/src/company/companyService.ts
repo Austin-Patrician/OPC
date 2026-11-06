@@ -21,6 +21,9 @@ import { USER_ID, COMPANY_ID } from '../data/schema';
 const KEY_GOAL = 'profile.goal';
 const KEY_COLOR = 'profile.colorId';
 const KEY_LOGO = 'profile.logo';
+const KEY_REPLY_TONE = 'profile.replyTone';
+const KEY_REPLY_DETAIL = 'profile.replyDetail';
+const KEY_REPLY_INSTRUCTIONS = 'profile.replyInstructions';
 // `profile.bossName` / `profile.bossAvatar` 这里不再读写：v18 已经把值搬进 `app_user`，
 // 旧的两行留着，回滚一个版本仍能渲染出称呼。
 
@@ -28,7 +31,7 @@ export const DEFAULT_COMPANY_NAME = '我的工作台';
 export const DEFAULT_USER_NAME = '我';
 export const DEFAULT_COMPANY_COLOR = 'ocean';
 
-const LIMITS = { name: 40, domain: 40, goal: 60, colorId: 24, userName: 20 } as const;
+const LIMITS = { name: 40, domain: 40, goal: 60, colorId: 24, userName: 20, replyInstructions: 500 } as const;
 
 /**
  * Uploaded logos travel through the same `app_setting` row as the other profile
@@ -63,6 +66,11 @@ export class CompanyService {
       userName: user.name,
       logo: this.setting(KEY_LOGO) || undefined,
       userAvatar: user.avatar || undefined,
+      replyTone: (['friendly', 'balanced', 'professional'].includes(this.setting(KEY_REPLY_TONE) ?? '')
+        ? this.setting(KEY_REPLY_TONE) : 'balanced') as CompanyProfile['replyTone'],
+      replyDetail: (['concise', 'balanced', 'detailed'].includes(this.setting(KEY_REPLY_DETAIL) ?? '')
+        ? this.setting(KEY_REPLY_DETAIL) : 'balanced') as CompanyProfile['replyDetail'],
+      replyInstructions: this.setting(KEY_REPLY_INSTRUCTIONS) ?? '',
     };
   };
 
@@ -77,7 +85,7 @@ export class CompanyService {
       .get(USER_ID) as { id: string; name: string; avatar: string } | undefined;
     return {
       id: USER_ID,
-      name: row?.name?.trim() || DEFAULT_USER_NAME,
+      name: row?.name?.trim() ?? DEFAULT_USER_NAME,
       avatar: row?.avatar ?? '',
     };
   };
@@ -97,6 +105,9 @@ export class CompanyService {
       if (patch.goal !== undefined) this.setSetting(KEY_GOAL, clamp(patch.goal, LIMITS.goal), now);
       if (patch.colorId !== undefined) this.setSetting(KEY_COLOR, clamp(patch.colorId, LIMITS.colorId), now);
       if (patch.logo !== undefined) this.setSetting(KEY_LOGO, clampImage(patch.logo), now);
+      if (patch.replyTone !== undefined && ['friendly', 'balanced', 'professional'].includes(patch.replyTone)) this.setSetting(KEY_REPLY_TONE, patch.replyTone, now);
+      if (patch.replyDetail !== undefined && ['concise', 'balanced', 'detailed'].includes(patch.replyDetail)) this.setSetting(KEY_REPLY_DETAIL, patch.replyDetail, now);
+      if (patch.replyInstructions !== undefined) this.setSetting(KEY_REPLY_INSTRUCTIONS, clamp(patch.replyInstructions, LIMITS.replyInstructions), now);
 
       // 你就是那一行：upsert 而不是 insert —— 迁移会种下它，手工删掉之后必须能长回来，
       // 而不是让这次写入失败。
@@ -113,7 +124,7 @@ export class CompanyService {
             USER_ID,
             patch.userName === undefined
               ? before.name
-              : clamp(patch.userName, LIMITS.userName) || DEFAULT_USER_NAME,
+              : clamp(patch.userName, LIMITS.userName),
             patch.userAvatar === undefined ? before.avatar : clampImage(patch.userAvatar),
             now,
             now,

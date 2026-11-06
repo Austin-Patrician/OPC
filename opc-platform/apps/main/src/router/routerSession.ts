@@ -21,6 +21,8 @@ import type { ModelRef } from '@opc/shared/domain';
 export interface RouterSessionDeps {
   /** 打开（或复用）`router` 这个 harness。 */
   harness: () => Promise<Harness>;
+  /** Discard a harness whose durable session was poisoned by a storage failure. */
+  resetHarness?: () => Promise<void>;
   /** pi 的 context：主进程里是后台上下文。 */
   context: () => Promise<unknown>;
   /** Router 用哪个模型。轻量即可（§2.1：常见判断不复杂）。 */
@@ -35,6 +37,8 @@ export interface RouterSessionDeps {
 
 export class RouterSession {
   private conversation: Conversation | null = null;
+  /** Share the first root creation across simultaneous deliveries. */
+  private opening: Promise<Conversation> | null = null;
   /** 已经交上去、还没 settle 的轮次。用于避免无意义的并发提交。 */
   private pending = 0;
   private lastError: string | null = null;
@@ -61,9 +65,26 @@ export class RouterSession {
       await this.reconfigure(this.conversation);
       return this.conversation;
     }
+
+    if (!this.opening) this.opening = this.openConversation();
+    const opening = this.opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.opening === opening) this.opening = null;
+    }
+  }
+
+  private async openConversation(): Promise<Conversation> {
     const harness = await this.deps.harness();
     const context = await this.deps.context();
-    const conversation = await harness.root(context as never);
+    let conversation: Conversation;
+    try {
+      conversation = await harness.root(context as never);
+    } catch (error) {
+      await this.deps.resetHarness?.();
+      throw error;
+    }
     this.conversation = conversation;
     await this.reconfigure(conversation);
     return conversation;

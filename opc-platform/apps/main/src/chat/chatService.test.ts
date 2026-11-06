@@ -50,6 +50,40 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(reply.senderName).toBe('助手');
   });
 
+  it('Router 回复按顺序保留结构化媒体内容块', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    const content = [
+      { type: 'markdown' as const, text: '结果如下' },
+      { type: 'image' as const, source: { type: 'url' as const, url: 'https://example.com/chart.png' }, alt: '图表' },
+    ];
+
+    chat.appendRouterMessage(id, '结果如下', content);
+
+    expect(chat.readTranscript(id).at(-1)?.content).toEqual(content);
+  });
+
+  it('任务进度不会写入对话消息流', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    chat.upsertTaskCard({ id: 'task-1' } as never);
+    expect(chat.readTranscript(id)).toEqual([]);
+  });
+
+  it('初始旧会话会隐藏历史任务卡并从最新可见消息生成预览', () => {
+    const chat = new ChatService({ agents: [], conversations: [{
+      id: 'legacy', title: '旧会话', kind: 'dm', memberIds: [ROUTER_ID],
+      lastMessage: '旧任务卡', timestamp: '08:00',
+      messages: [
+        { id: 'card', kind: 'task', senderId: 'worker', senderName: '执行体', timestamp: '08:00', task: {} } as never,
+        { id: 'reply', kind: 'text', senderId: ROUTER_ID, senderName: '助手', timestamp: '08:01', text: '已经完成' },
+      ],
+    }] });
+    const conversation = chat.getSnapshot().conversations[0]!;
+    expect(conversation.messages.map((message) => message.id)).toEqual(['reply']);
+    expect(conversation.lastMessage).toBe('助手: 已经完成');
+  });
+
   it('再点一次不会开出第二条会话', () => {
     const chat = new ChatService({ agents: [], conversations: [] });
     expect(chat.ensureAssistant()).toBe(chat.ensureAssistant());

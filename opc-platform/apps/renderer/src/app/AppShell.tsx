@@ -1,4 +1,5 @@
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
+import { useState } from 'react';
 import { useCompanySync } from '@/entities/company/model/useCompany';
 import { useBillingSync } from '@/entities/billing/model/useBilling';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
@@ -8,16 +9,14 @@ import { NavRail } from '@/widgets/nav-rail/NavRail';
 import { TitleBar } from '@/widgets/title-bar/TitleBar';
 
 /**
- * Application chrome: wallpaper → title bar → rail → routed view.
- *
- * The title bar and the navigation rail share one chrome plane; the routed view is
- * an inset rounded card on top of it. That is what lets the header lose its
- * divider — the card's own edge is the only line between the rail and the body.
- * Everything inside is a flex row/column with `min-h-0`, which keeps the chat
- * scroller from pushing the composer off-screen at any interface scale.
+ * One rounded desktop window contains the navigation rail and routed content.
+ * The title bar belongs to the content column so it doesn't split the rail away
+ * from the page. `min-h-0` keeps chat scrolling independent from the composer.
  */
 export function AppShell() {
-  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   useCompanySync();
   useBillingSync();
   const { conversations } = useChatRuntime();
@@ -26,18 +25,27 @@ export function AppShell() {
   const unreadTotal = conversations.reduce((total, item) => total + (item.unreadCount ?? 0), 0);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-chrome">
+    <div className="buddy-viewport relative isolate flex h-full w-full overflow-hidden">
       <BackgroundLayer kind={background.kind} url={background.url} />
-
-      <TitleBar onOpenSettings={() => navigate('/settings')} />
-
-      {/* No top padding: the body card starts on the title bar's bottom edge, so
-          the native Windows caption buttons sit directly on it. The rail keeps its
-          own top inset to clear the avatar that hangs over the chrome edge. */}
-      <div className="flex min-h-0 flex-1 gap-2 overflow-hidden px-2 pb-2">
-        <NavRail unreadTotal={unreadTotal} />
-        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-line bg-panel shadow-card">
-          <Outlet />
+      <div className="buddy-desktop relative z-10 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
+        <div className="buddy-layout relative flex min-h-0 flex-1 overflow-hidden">
+          <NavRail unreadTotal={unreadTotal} />
+          <div className="buddy-main flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <TitleBar
+              searchEnabled={location.pathname.startsWith('/chat')}
+              searchOpen={searchOpen}
+              searchQuery={searchQuery}
+              onToggleSearch={() => setSearchOpen((open) => !open)}
+              onSearchQueryChange={setSearchQuery}
+              onCloseSearch={() => {
+                setSearchOpen(false);
+                setSearchQuery('');
+              }}
+            />
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <Outlet context={{ searchQuery }} />
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CompanyProfile } from '@opc/shared/domain';
-import { userName, companyName } from '@/entities/company/model/options';
+import { userName } from '@/entities/company/model/options';
 
 /** Matches the cap in `CompanyService.update`. */
 const BOSS_NAME_MAX = 20;
@@ -23,7 +23,6 @@ interface IdentityPopoverProps {
 export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
   const { t } = useTranslation();
   const user = userName(profile, t('company.userFallback'));
-  const company = companyName(profile, t('company.fallbackName'));
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(profile.userName);
@@ -36,7 +35,7 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
   const commit = () => {
     setEditing(false);
     const next = draft.trim();
-    if (next && next !== profile.userName) onRename(next);
+    if (next !== profile.userName) onRename(next);
   };
 
   return (
@@ -86,14 +85,8 @@ export function IdentityPopover({ profile, onRename }: IdentityPopoverProps) {
           </dd>
         </div>
 
-        <div className="flex items-baseline gap-3">
-          <dt className="w-14 shrink-0 text-2xs text-ink-tertiary">{t('titleBar.fields.company')}</dt>
-          <dd className="min-w-0 flex-1 truncate text-sm text-ink">{company}</dd>
-        </div>
-
-        <div className="flex items-baseline gap-3">
-          <dt className="w-14 shrink-0 text-2xs text-ink-tertiary">{t('titleBar.fields.role')}</dt>
-          <dd className="min-w-0 flex-1 text-sm leading-snug text-ink">{t('titleBar.founderRole')}</dd>
+        <div className="border-t border-line pt-2 text-xs leading-relaxed text-ink-tertiary">
+          {t('titleBar.preferencesHint')}
         </div>
       </dl>
     </div>

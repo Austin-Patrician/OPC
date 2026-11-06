@@ -1,14 +1,14 @@
 import type { BackgroundKind } from '@/shared/theme/types';
 
 /**
- * Fixed wallpaper plane. Rendered once by the shell, below every panel.
+ * Wallpaper plane contained by the shell, below every panel.
  * `custom` accepts remote URLs, `data:` URLs (uploads) and GIFs.
  */
 export function BackgroundLayer({ kind, url }: { kind: BackgroundKind; url: string }) {
   if (kind === 'none') return null;
 
   return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+    <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
       {kind === 'custom' && url ? (
         <div
           className="size-full bg-cover bg-center bg-no-repeat"

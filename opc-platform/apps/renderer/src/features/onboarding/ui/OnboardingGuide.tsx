@@ -8,13 +8,12 @@ import { CompanyMark } from '@/entities/company/ui/CompanyMark';
 import { useOnboarding, useOnboardingOpen } from '../model/onboardingStore';
 import { useOnboardingData } from '../model/useOnboardingData';
 import { AuroraBackdrop, Kbd } from './onboardingUi';
-import { StepCompany } from './StepCompany';
 import { StepDone, type DoneTarget } from './StepDone';
 import { StepGeneral } from './StepGeneral';
 import { StepModel } from './StepModel';
 import { WelcomeHero } from './WelcomeHero';
 
-const VIEWS = ['general', 'model', 'company', 'done'] as const;
+const VIEWS = ['general', 'model', 'done'] as const;
 type ViewId = (typeof VIEWS)[number];
 
 const ROUTES: Record<DoneTarget, string> = { chat: '/chat', settings: '/settings' };
@@ -31,7 +30,7 @@ export function OnboardingGuide() {
 /**
  * The first-run guide.
  *
- * 三步：偏好 → 模型引擎 → 工作台身份，然后一页总结。所有写入都走设置页用的同一套 IPC，
+ * 三步：偏好 → 模型引擎 → 完成。所有写入都走设置页用的同一套 IPC，
  * 所以关掉向导不会留下一个假的配置。
  */
 function OnboardingDialog() {
@@ -137,8 +136,6 @@ function OnboardingDialog() {
         return <StepGeneral />;
       case 'model':
         return <StepModel />;
-      case 'company':
-        return <StepCompany workerCount={data.workerCount} />;
       case 'done':
         return (
           <StepDone

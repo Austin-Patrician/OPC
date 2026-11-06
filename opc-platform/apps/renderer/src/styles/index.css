@@ -1,5 +1,7 @@
 @import 'tailwindcss';
 @import './tokens.css';
+@import 'katex/dist/katex.min.css';
+@import 'katex/dist/katex.min.css';
 
 /*
  * Map design tokens into Tailwind's theme. `inline` keeps the var() reference at
@@ -221,8 +223,16 @@
     position: absolute;
     inset: -20%;
     background:
-      radial-gradient(closest-side, color-mix(in srgb, var(--accent) 40%, transparent), transparent),
-      radial-gradient(closest-side, color-mix(in srgb, var(--warning) 30%, transparent), transparent);
+      radial-gradient(
+        closest-side,
+        color-mix(in srgb, var(--accent) 40%, transparent),
+        transparent
+      ),
+      radial-gradient(
+        closest-side,
+        color-mix(in srgb, var(--warning) 30%, transparent),
+        transparent
+      );
     background-position:
       18% 22%,
       78% 68%;
@@ -247,6 +257,426 @@
   .app-drag {
     -webkit-app-region: drag;
   }
+}
+
+/* The Electron client area is the one and only Buddy window surface. */
+:root {
+  --buddy-window-radius: 18px;
+}
+.buddy-viewport {
+  border: 1px solid rgb(255 255 255 / 88%);
+  border-radius: var(--buddy-window-radius);
+  background: #f7f7f8;
+  color: #1d1d1f;
+  box-shadow: 0 24px 70px rgb(25 50 75 / 9%), 0 2px 10px rgb(0 0 0 / 3%);
+  backdrop-filter: blur(22px);
+}
+.buddy-desktop {
+  min-width: 0;
+}
+.buddy-layout {
+  gap: 0;
+  background: transparent;
+}
+.buddy-titlebar {
+  height: 42px;
+  background: transparent;
+}
+.buddy-window-control {
+  display: inline-flex;
+  width: 29px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: #59675f;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.buddy-window-control:hover {
+  background: rgb(30 55 39 / 7%);
+  color: #1e2e26;
+}
+.buddy-window-close:hover {
+  background: #e45f5a;
+  color: white;
+}
+.buddy-rail {
+  border-right: 1px solid #ecf0ee;
+  background: transparent;
+}
+.buddy-rail-button {
+  display: flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  color: #586560;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+.buddy-rail-button:hover {
+  background: #edf2ef;
+  color: #26372e;
+}
+.buddy-rail-button:active {
+  transform: scale(0.96);
+}
+.buddy-rail-button-active {
+  color: #22a85a;
+  background: #e1f4e8;
+  box-shadow: 0 2px 8px rgb(34 181 96 / 10%);
+}
+.buddy-settings-button {
+  width: 42px;
+  height: 42px;
+  background: #edf1ef;
+}
+.buddy-main {
+  min-height: 0;
+  background: transparent;
+}
+.buddy-chat {
+  background: transparent;
+}
+.buddy-chat-header {
+  color: #4a5550;
+}
+.buddy-header-action {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: #4a5550;
+}
+.buddy-header-action:hover {
+  background: rgb(0 0 0 / 4%);
+}
+.buddy-search {
+  border-color: #e3eae6;
+  background: #f2f5f3;
+  color: #7a8781;
+}
+.buddy-message-gutter {
+  max-width: 920px;
+  margin-inline: auto;
+  width: 100%;
+}
+.buddy-user-bubble {
+  color: #1e2e26;
+  background: #e3f3e9;
+  box-shadow: 0 2px 10px rgb(34 181 96 / 5%);
+}
+.buddy-agent-bubble {
+  border: 1px solid #eff3f1;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(18 38 28 / 4.5%);
+}
+.buddy-composer-bar {
+  border: 1px solid #e6ece9;
+  border-radius: 15px;
+  background: #f3f6f4;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.buddy-composer-bar:focus-within {
+  border-color: #cbe5d6;
+  background: #fff;
+  box-shadow: 0 4px 20px rgb(34 181 96 / 7%);
+}
+.buddy-composer-toolbar {
+  padding-inline: 8px !important;
+}
+.buddy-composer-input {
+  color: #1e2e26;
+}
+.buddy-composer-input::placeholder {
+  color: #98a6a0;
+}
+.buddy-composer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #586660;
+  transition: color 140ms ease;
+}
+.buddy-mic-button {
+  background: #e8efeb;
+  color: #53645a;
+  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+.buddy-mic-button:hover:not(:disabled) {
+  background: #dcebe1;
+}
+.buddy-composer-icon:hover {
+  color: #1fa958;
+}
+.buddy-composer-icon:disabled {
+  color: var(--text-quaternary);
+}
+.buddy-recording-button {
+  color: #fff;
+  animation: buddy-recording-pulse 1.4s ease-in-out infinite;
+}
+@keyframes buddy-recording-pulse {
+  0%,
+  100% {
+    border-radius: 999px;
+    background: #22b560;
+    box-shadow: 0 0 0 0 rgb(34 181 96 / 28%);
+  }
+  50% {
+    border-radius: 999px;
+    background: #1ca354;
+    box-shadow: 0 0 0 6px rgb(34 181 96 / 0%);
+  }
+}
+.buddy-send-button {
+  background: #22b560;
+  box-shadow: 0 2px 8px rgb(34 181 96 / 30%);
+}
+.buddy-send-button:hover:not(:disabled) {
+  background: #1ca354;
+}
+.buddy-welcome {
+  animation: buddy-welcome-in 680ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.buddy-welcome-halo {
+  background: rgb(211 239 222 / 55%);
+}
+.buddy-online-badge {
+  border-color: #cfead9;
+  background: #e6f6ec;
+  color: #1f7a46;
+}
+.buddy-welcome-title {
+  color: #18221e;
+}
+.buddy-welcome-copy,
+.buddy-welcome-label {
+  color: #748179;
+}
+.buddy-starter {
+  border-color: #e8eeea;
+  background: rgb(255 255 255 / 88%);
+  box-shadow: 0 4px 16px rgb(18 38 28 / 3%);
+}
+.buddy-starter:hover {
+  border-color: #bde2cc;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(34 181 96 / 7%);
+}
+.buddy-starter-icon {
+  background: #eef8f2;
+  color: #229653;
+}
+.buddy-starter-title {
+  color: #26372e;
+}
+.buddy-starter-description,
+.buddy-starter-arrow {
+  color: #839087;
+}
+.buddy-starter:hover .buddy-starter-arrow {
+  color: #22a85a;
+}
+.buddy-welcome-action {
+  color: #39734e;
+  background: rgb(232 246 237 / 80%);
+  border: 1px solid rgb(194 225 204 / 70%);
+}
+.buddy-welcome-action:hover {
+  background: #e1f4e8;
+}
+.buddy-welcome-result {
+  color: #1f7a46;
+  background: #eef8f2;
+}
+.buddy-landscape {
+  border-color: #dfece5;
+  background: #cde4ee;
+}
+.buddy-more-menu {
+  animation: buddy-menu-in 140ms ease-out both;
+}
+.buddy-traffic span {
+  border: 1px solid rgb(0 0 0 / 6%);
+}
+[data-shell='electron'] .buddy-traffic {
+  display: none;
+}
+@keyframes buddy-welcome-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes buddy-menu-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+@media (max-width: 640px) {
+  .buddy-rail {
+    width: 64px;
+  }
+  .buddy-composer-wrap {
+    padding-inline: 14px;
+  }
+  .buddy-message-gutter {
+    padding-inline: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .buddy-welcome,
+  .buddy-more-menu {
+    animation: none;
+  }
+}
+[data-theme='dark'] .buddy-viewport {
+  border-color: rgb(255 255 255 / 12%);
+  background: #191a1c;
+  color: #eef5f0;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
+}
+[data-theme='dark'] .buddy-rail {
+  border-color: #2e3832;
+  background: transparent;
+}
+[data-theme='dark'] .buddy-window-control {
+  color: #aebbb2;
+}
+[data-theme='dark'] .buddy-window-control:hover {
+  background: rgb(255 255 255 / 9%);
+  color: #f1f8f3;
+}
+[data-theme='dark'] .buddy-window-close:hover {
+  background: #d94f4b;
+  color: #fff;
+}
+[data-theme='dark'] .buddy-rail-button {
+  color: #aebbb2;
+}
+[data-theme='dark'] .buddy-rail-button:hover {
+  background: #29362e;
+  color: #e3f4e8;
+}
+[data-theme='dark'] .buddy-rail-button-active {
+  color: #79d79c;
+  background: #263b2e;
+}
+[data-theme='dark'] .buddy-settings-button {
+  background: #29332d;
+}
+[data-theme='dark'] .buddy-main,
+[data-theme='dark'] .buddy-chat {
+  background: transparent;
+}
+[data-theme='dark'] .buddy-agent-bubble {
+  border-color: #303a34;
+  background: #252d28;
+}
+[data-theme='dark'] .buddy-agent-bubble,
+[data-theme='dark'] .buddy-welcome > p:first-of-type {
+  color: #e0ebe3;
+}
+[data-theme='dark'] .buddy-user-bubble {
+  color: #e9fff1;
+  background: #294936;
+}
+[data-theme='dark'] .buddy-composer-bar {
+  border-color: #38443c;
+  background: #222a25;
+}
+[data-theme='dark'] .buddy-composer-bar:focus-within {
+  border-color: #42684e;
+  background: #252e28;
+}
+[data-theme='dark'] .buddy-composer-input {
+  color: #e9fff1;
+}
+[data-theme='dark'] .buddy-composer-input::placeholder {
+  color: #90a397;
+}
+[data-theme='dark'] .buddy-mic-button {
+  background: #303b34;
+  color: #b5c5ba;
+}
+[data-theme='dark'] .buddy-mic-button:hover:not(:disabled) {
+  background: #37483c;
+}
+[data-theme='dark'] .buddy-search {
+  border-color: #3b473f;
+  background: #222a25;
+}
+[data-theme='dark'] .buddy-more-menu {
+  border-color: #3b473f;
+  background: rgb(34 42 37 / 97%);
+}
+[data-theme='dark'] .buddy-welcome-action {
+  color: #a6dfb8;
+  border-color: #385643;
+  background: #26392d;
+}
+[data-theme='dark'] .buddy-welcome-halo {
+  background: rgb(48 101 67 / 28%);
+}
+[data-theme='dark'] .buddy-welcome p {
+  color: #d7e4dc;
+}
+[data-theme='dark'] .buddy-online-badge {
+  border-color: #385643;
+  background: #26392d;
+  color: #a6dfb8;
+}
+[data-theme='dark'] .buddy-welcome-label,
+[data-theme='dark'] .buddy-welcome-copy {
+  color: #9aa99f;
+}
+[data-theme='dark'] .buddy-starter {
+  border-color: #303a34;
+  background: rgb(34 42 37 / 88%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 10%);
+}
+[data-theme='dark'] .buddy-starter:hover {
+  border-color: #42684e;
+  background: #252e28;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+[data-theme='dark'] .buddy-starter-icon {
+  background: #26392d;
+  color: #8bd9a7;
+}
+[data-theme='dark'] .buddy-starter-title {
+  color: #e3eee6;
+}
+[data-theme='dark'] .buddy-starter-description,
+[data-theme='dark'] .buddy-starter-arrow {
+  color: #9aa99f;
+}
+[data-theme='dark'] .buddy-welcome-result {
+  color: #a6dfb8;
+  background: #26392d;
+}
+[data-theme='dark'] .buddy-landscape {
+  border-color: #3a4a40;
 }
 
 /*
@@ -522,7 +952,8 @@
   animation: onb-burst 1.4s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 .onb-confetti {
-  animation: onb-confetti var(--onb-dur, 2.8s) cubic-bezier(0.25, 0.6, 0.4, 1) var(--onb-delay, 0s) both;
+  animation: onb-confetti var(--onb-dur, 2.8s) cubic-bezier(0.25, 0.6, 0.4, 1) var(--onb-delay, 0s)
+    both;
 }
 
 .onb-gradient-text {
@@ -547,7 +978,11 @@
 .onb-grid-soft {
   background-image:
     linear-gradient(color-mix(in srgb, var(--text-primary) 5%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 5%, transparent) 1px, transparent 1px);
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--text-primary) 5%, transparent) 1px,
+      transparent 1px
+    );
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 80% 70% at 50% 42%, #000 25%, transparent 80%);
 }
