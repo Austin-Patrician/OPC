@@ -10,6 +10,7 @@ import {
   readRunningTasks,
   readSnapshot,
   readTask,
+  readTaskStatus,
   readTrace,
   WatchdogStore,
 } from './store';
@@ -75,8 +76,12 @@ let timer: NodeJS.Timeout | null = null;
 let stopping = false;
 /** 正在等父进程回答的那一条。发出去之前不再发第二条。 */
 let pendingJudge: string | null = null;
+/** 这一条判断的发出时刻与对象：它不返回时要能自己放掉，而不是永远堵着。 */
+let pendingJudgeAt = 0;
+let pendingJudgeFinding: string | null = null;
 /** 正在等结果的维修请求。 */
 let pendingAction: string | null = null;
+let pendingActionAt = 0;
 /** 上一轮体检的时刻，用来识别"整机被挂起"（W8）。 */
 let lastEvaluationAt = 0;
 /** 父进程已断：只记录，不再请求判断与动作。 */
@@ -90,6 +95,18 @@ let localJudge: CompleteFn | null = null;
 let localJudgeUnavailable = false;
 /** 断连后还活多久：足够把当下的证据落下来，又不至于变成永久孤儿进程。 */
 const ORPHAN_GRACE_MS = positive(process.env.OPC_WATCHDOG_ORPHAN_MS, 2 * 60_000);
+/**
+ * 等一次判断 / 一次动作的上限。
+ *
+ * 为什么必须有：`pendingJudge` 是单飞的——一条永远不返回的请求会把后面所有判断
+ * 都堵死，而且没有任何日志能说明"语义层从此停了"。动作那边同理（父进程卡在
+ * 重连里时，`pendingAction` 会一直挂着一个 requestId）。
+ *
+ * 动作的上限故意比主进程的 `STALE_PENDING_MS`（5 分钟）长：超过它之后，主进程
+ * 那边的动作账本才会允许重新认领，两边不会互相打断。
+ */
+const JUDGE_TIMEOUT_MS = positive(process.env.OPC_WATCHDOG_JUDGE_TIMEOUT_MS, 3 * 60_000);
+const ACTION_TIMEOUT_MS = positive(process.env.OPC_WATCHDOG_ACTION_TIMEOUT_MS, 12 * 60_000);
 
 function send(event: WatchdogEvent): void {
   try {
@@ -209,19 +226,28 @@ function evaluate(): void {
         seen.add(`${candidate.kind}\u0000${candidate.taskId}`);
       }
     }
-    // 这一轮没再判出来的，说明它自己好了——关掉记录。
-    // 只在"这一轮看全了"的时候关：任务比一页多时，没看到不等于不存在。
-    if (scan.wrapped) {
-      for (const finding of store?.active() ?? []) {
-        if (finding.subjectType !== 'task') continue;
-        if (finding.kind !== 'repeat_failure' && finding.kind !== 'no_progress') continue;
-        if (seen.has(`${finding.kind}\u0000${finding.subjectId}`)) continue;
-        store?.resolve(finding.kind, 'task', finding.subjectId, now);
+    // 这一轮真看过的任务里，没再判出来的说明它自己好了——关掉记录。
+    //
+    // 判据必须是"**这个任务**这一轮被看过"，不能是"这一轮扫到了队尾"：
+    // 任务多于一页时，每轮只扫一段，把"这一轮没看见"当成"已经恢复"会把上一段
+    // 还在打转的任务全部关掉，下一轮再开一条新的——incident 会来回翻。
+    // 反过来，已经不在 running 的任务不会再进扫描，只能按状态关。
+    const examined = new Set(tasks.map((task) => task.id));
+    for (const finding of store?.active() ?? []) {
+      if (finding.subjectType !== 'task') continue;
+      if (finding.kind !== 'repeat_failure' && finding.kind !== 'no_progress') continue;
+      if (seen.has(`${finding.kind}\u0000${finding.subjectId}`)) continue;
+      if (!examined.has(finding.subjectId)) {
+        // 不在这一页：可能排在后面的页里（还在跑），也可能早就结束了。
+        // 只有"已经不在 running"才允许关。
+        if (readTaskStatus(business, finding.subjectId) === 'running') continue;
       }
+      store?.resolve(finding.kind, 'task', finding.subjectId, now);
     }
 
     // 父进程已经没了（孤儿模式）：还能记录，但没人能做判断、也没人能执行动作。
     if (!orphaned) {
+      releaseStuck(now);
       void runJudgment(now, policy.judgeCooldownMs);
       maybeAct(now, policy.actionCooldownMs);
     }
@@ -266,6 +292,8 @@ async function runJudgment(now: number, cooldownMs: number): Promise<void> {
   const trace = readTrace(business, task.id, JUDGE_TRACE_ROWS);
   const requestId = randomUUID();
   pendingJudge = requestId;
+  pendingJudgeAt = now;
+  pendingJudgeFinding = finding.id;
 
   const complete = await ensureLocalJudge();
   if (complete) {
@@ -281,7 +309,10 @@ async function runJudgment(now: number, cooldownMs: number): Promise<void> {
         }),
       );
       applyVerdict(finding.id, parseVerdict(text), 'child');
-      if (pendingJudge === requestId) pendingJudge = null;
+      if (pendingJudge === requestId) {
+        pendingJudge = null;
+        pendingJudgeFinding = null;
+      }
       return;
     } catch (error) {
       // 本地调用失败（网络、鉴权、模型改名）：退回主进程，并留一句原因。
@@ -424,6 +455,7 @@ function maybeAct(now: number, cooldownMs: number): void {
   if (!action) return;
 
   pendingAction = randomUUID();
+  pendingActionAt = now;
   send({
     type: 'action',
     requestId: pendingAction,
@@ -434,6 +466,35 @@ function maybeAct(now: number, cooldownMs: number): void {
       evidence: finding.detail,
     },
   });
+}
+
+/**
+ * 放掉超时的等待。
+ *
+ * `pendingJudge` / `pendingAction` 是单飞的（一次只等一个）。没有这一层，
+ * 一条永远不返回的请求会让后面所有判断或动作停摆，而日志里只有"安静"——
+ * 那是最难查的一种故障。
+ *
+ * 判断超时要**记一次"判过"**：放掉之后立刻重试的话，模型不可用就变成
+ * 一分钟一次的重试风暴。
+ */
+function releaseStuck(now: number): void {
+  if (pendingJudge && now - pendingJudgeAt > JUDGE_TIMEOUT_MS) {
+    if (pendingJudgeFinding) store?.markJudged(pendingJudgeFinding, now);
+    pendingJudge = null;
+    pendingJudgeFinding = null;
+    send({
+      type: 'error',
+      message: `判断等了 ${Math.round(JUDGE_TIMEOUT_MS / 1000)} 秒没有结果，先放掉这一条。`,
+    });
+  }
+  if (pendingAction && now - pendingActionAt > ACTION_TIMEOUT_MS) {
+    pendingAction = null;
+    send({
+      type: 'error',
+      message: `动作请求等了 ${Math.round(ACTION_TIMEOUT_MS / 1000)} 秒没有结果，先放掉这一条。`,
+    });
+  }
 }
 
 function handle(message: unknown): void {
@@ -462,7 +523,10 @@ function handle(message: unknown): void {
   }
 
   if (command.type === 'judge-result') {
-    if (pendingJudge === command.requestId) pendingJudge = null;
+    if (pendingJudge === command.requestId) {
+      pendingJudge = null;
+      pendingJudgeFinding = null;
+    }
     const now = Date.now();
     if (command.result.ok) {
       const escalate =

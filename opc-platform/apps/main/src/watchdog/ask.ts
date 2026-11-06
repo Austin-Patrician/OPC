@@ -129,7 +129,9 @@ function collect(deps: {
   });
 
   for (const action of deps.actions.listRecent(5)) {
-    const id = short(`${action.incidentId}:${action.action}`.padEnd(8, '0'));
+    // 引用编号必须**指向这一条动作**：以前是拿 incidentId 前 8 位再 padEnd，
+    // 同一个 incident 上的多条动作会共用同一个编号，"可核对"就成了摆设。
+    const id = hash8(`${action.incidentId}:${action.action}`);
     ids.push(`a:${id}`);
     lines.push(
       `[a:${id}] 动作 ${action.action} · ${action.status} · ${when(action.at)}\n    结果：${action.result || '（没有记录）'}`,
@@ -150,6 +152,21 @@ function collect(deps: {
  */
 function short(id: string): string {
   return id.replace(/-/g, '').slice(0, 8);
+}
+
+/**
+ * 任意字符串 → 8 位十六进制。
+ *
+ * 用于动作：它的身份是 `incidentId + action`，不是任何一个 UUID 的前缀。
+ * FNV-1a 够用——这里要的是"稳定且分布得开"，不是密码学。
+ */
+function hash8(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function when(at: number): string {

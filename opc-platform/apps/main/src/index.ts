@@ -315,6 +315,11 @@ async function bootstrap(): Promise<void> {
   const watchdogPolicy = new WatchdogPolicyStore(db);
   // 它自己的模型（W5）：没配就退回默认 LLM。
   const watchdogModel = new WatchdogModelStore(db);
+  /**
+   * 子进程的宿主。注册 IPC 时它还没建出来（下面要拿 `work` 等装配），
+   * 所以用一个晚绑定的引用：设置页改了模型要能立刻通知到它。
+   */
+  let watchdogHost: WatchdogHost | null = null;
   const instanceId = randomUUID();
   const previousRun = systemEvents.uncleanExit(instanceId);
   if (previousRun) {
@@ -732,6 +737,8 @@ async function bootstrap(): Promise<void> {
         actions: watchdogActions,
         events: systemEvents,
       }),
+      // 模型/钥匙在别的页面改的：这里把子进程手里的那份刷新掉。
+      onModelChanged: () => watchdogHost?.refreshModel(),
     },
     memories: {
       list: () =>
@@ -842,7 +849,11 @@ async function bootstrap(): Promise<void> {
       // "没认领到"有四种原因，每一种的下一步都不同。旧实现把它们都说成
       // "已经执行过"——一次认领后崩溃会被永久当成修好了。
       if (claim === 'done') return { ok: true, message: '这条动作已经执行过（幂等跳过）' };
-      if (claim === 'in_flight') return { ok: true, message: '这条动作正在执行，等结果' };
+      // "正在执行"不是"已经执行"：另一次请求还没回，这一条**没有**被执行。
+      // 回 ok 会让子进程把它记成修过了——与动作账本的本意相反。
+      if (claim === 'in_flight') {
+        return { ok: false, message: '这条动作正在别处执行，本次没有重复执行' };
+      }
       if (claim === 'refused') return { ok: false, message: '这条动作之前被拒绝过，不再重试' };
       if (claim === 'exhausted') return { ok: false, message: '这条动作已经试满次数，不再重试' };
 
@@ -874,11 +885,13 @@ async function bootstrap(): Promise<void> {
      * 它在库里、在镜像里，等 W7 的入口。
      */
     onEscalated: (incident) => {
-      if (incident.subjectType !== 'task') return;
+      // 只有挂在任务上的升级才有"线"可以说话。进程级的事没有线，这句现在
+      // 发不出去——返回 false，让镜像保持"未通知"，而不是假装已经通知过。
+      if (incident.subjectType !== 'task') return false;
       const row = db
         .prepare(`SELECT thread_id, title FROM task WHERE id = ?`)
         .get(incident.subjectId) as { thread_id: string | null; title: string } | undefined;
-      if (!row?.thread_id) return;
+      if (!row?.thread_id) return false;
       threads.addReport({
         threadId: row.thread_id,
         level: 'decide',
@@ -886,9 +899,11 @@ async function bootstrap(): Promise<void> {
         body: incident.summary,
         taskId: incident.subjectId,
       });
+      return true;
     },
     ...(isWatchdogProbe ? { intervalMs: 1_000 } : {}),
   });
+  watchdogHost = watchdog;
   if (!isHeadlessMode) watchdog.start();
   app.on('before-quit', () => {
     void watchdog.stop();

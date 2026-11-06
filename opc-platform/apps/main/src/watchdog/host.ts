@@ -44,11 +44,16 @@ export interface WatchdogHostOptions {
    *
    * 这是它唯一的用户可见出口：旧的主进程 Watchdog 退休后，"这条线可能卡住了"
    * 这句话必须还有人说出来。判据是状态迁移，不是内存里的"报过了"。
+   *
+   * **必须返回"真的说出去了没有"**：`escalated` 与"已经通知到人"是两件事。
+   * 返回 `false`（比如这条事件没有线可以说话）时，镜像不会记 `announced_at`，
+   * 下一轮还会再试——而不是把没送出去的说成送过了。
    */
-  onEscalated?: (incident: WatchdogIncident) => void;
+  onEscalated?: (incident: WatchdogIncident) => boolean;
   /**
-   * 语义判断（W5）。子进程出题、主进程作答：模型凭据只在主进程解密。
-   * 没有它就是"只做程序层"——子进程会照常发现、记录、结案，只是没有语义结论。
+   * 语义判断的**兜底路径**（W5）。主路径已经搬进子进程（`modelRunner.ts`）；
+   * 只有 OAuth-only（没有静态 key）或子进程调用失败时才会走到这里。
+   * 模型凭据仍然只在主进程解密。
    */
   judge?: (payload: JudgePayload) => Promise<JudgeResult>;
   /**
@@ -370,6 +375,16 @@ export class WatchdogHost {
   }
 
   /**
+   * 设置页刚改了模型（或换了钥匙）：立刻重发一遍。
+   *
+   * 不这么做的话，`configure-model` 只在 ready 时发一次——用户把模型从 A 换成 B，
+   * 界面显示 B，子进程还在用 A 的 provider 和钥匙，直到下一次重启。
+   */
+  refreshModel(): void {
+    this.configureModel();
+  }
+
+  /**
    * 刷镜像。失败只记一条警告：镜像坏了不该让子进程的消息通道失效，
    * 下一轮 tick 会把同一页再送一遍。
    */
@@ -380,13 +395,16 @@ export class WatchdogHost {
       const announced: string[] = [];
       const failed: string[] = [];
       for (const incident of result.escalated) {
+        let delivered = false;
         try {
-          this.options.onEscalated?.(incident);
-          announced.push(incident.id);
+          delivered = this.options.onEscalated?.(incident) === true;
         } catch (error) {
-          failed.push(incident.id);
           console.warn('[watchdog] 升级通知没发出去', messageOf(error));
         }
+        // 送出去与没送出去分开记：送过的以后再也不会打扰，没送的下轮还会再试
+        // （有上限）。**不能**把"调过一次"当成"送到了"。
+        if (delivered) announced.push(incident.id);
+        else failed.push(incident.id);
       }
       // 成功与失败分开记：成功的以后再也不会打扰，失的下轮还会再试（有上限）。
       this.options.incidents.markAnnounced(announced);

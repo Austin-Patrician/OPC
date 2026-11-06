@@ -68,6 +68,11 @@ interface RegisterOptions {
     };
     /** 它自己的模型；`null` = 跟随默认 LLM。 */
     model: { get(): unknown; set(ref: unknown): unknown };
+    /**
+     * 模型或钥匙变了：让 Watchdog 子进程重拿一份配置。
+     * 它只在内存里拿着上次的 provider + 钥匙，不发这一下就要等重启才生效。
+     */
+    onModelChanged?: () => void;
     ask(question: string): Promise<unknown>;
   };
   speech: SpeechService;
@@ -309,17 +314,25 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.models.saveProvider, (_event, draft: unknown) => {
     if (!isProviderDraft(draft)) throw new Error('models:saveProvider 参数非法');
-    return models.saveProvider(draft);
+    const saved = models.saveProvider(draft);
+    // Watchdog 手里有一份 provider 副本（含钥匙）：改了地址/接口就要重发。
+    watchdog.onModelChanged?.();
+    return saved;
   });
   ipcMain.handle(IPC.models.removeProvider, (_event, providerId: unknown) => {
     if (typeof providerId !== 'string') throw new Error('models:removeProvider 参数非法');
-    return models.removeProvider(providerId);
+    const removed = models.removeProvider(providerId);
+    watchdog.onModelChanged?.();
+    return removed;
   });
   ipcMain.handle(IPC.models.setKey, (_event, providerId: unknown, apiKey: unknown) => {
     if (typeof providerId !== 'string' || typeof apiKey !== 'string') {
       throw new Error('models:setKey 参数非法');
     }
-    return models.setKey(providerId, apiKey);
+    const saved = models.setKey(providerId, apiKey);
+    // 钥匙换了但子进程还拿着旧的：不发这一下，判断会一直用旧钥匙直到重启。
+    watchdog.onModelChanged?.();
+    return saved;
   });
   ipcMain.handle(IPC.models.getKey, (_event, providerId: unknown) => {
     if (typeof providerId !== 'string') throw new Error('models:getKey 参数非法');
@@ -373,7 +386,10 @@ export function registerIpc({
       throw new Error('models:setDefault role 非法');
     }
     if (ref !== null && !isModelRef(ref)) throw new Error('models:setDefault ref 非法');
-    return models.setDefault(role as ModelRole, ref);
+    const saved = models.setDefault(role as ModelRole, ref);
+    // 没配 `watchdog.model` 时，判断跟随默认 LLM——默认换了也要重发。
+    if (role === 'llm') watchdog.onModelChanged?.();
+    return saved;
   });
   ipcMain.handle(IPC.models.importFromPi, () => models.importFromPi());
   ipcMain.handle(IPC.models.getCompaction, () => models.getCompaction());
@@ -559,13 +575,20 @@ export function registerIpc({
   ipcMain.handle(IPC.watchdog.rollbackPolicy, () => watchdog.policy.rollback());
   ipcMain.handle(IPC.watchdog.getModel, () => watchdog.model.get());
   ipcMain.handle(IPC.watchdog.setModel, (_event, ref: unknown) => {
-    if (ref === null) return watchdog.model.set(null);
+    if (ref === null) {
+      const next = watchdog.model.set(null);
+      watchdog.onModelChanged?.();
+      return next;
+    }
     if (typeof ref !== 'object' || Array.isArray(ref)) throw new Error('watchdog:setModel 参数非法');
     const input = ref as { providerId?: unknown; modelId?: unknown };
     if (typeof input.providerId !== 'string' || typeof input.modelId !== 'string') {
       throw new Error('watchdog:setModel 需要 providerId 与 modelId');
     }
-    return watchdog.model.set({ providerId: input.providerId, modelId: input.modelId });
+    const next = watchdog.model.set({ providerId: input.providerId, modelId: input.modelId });
+    // 保存了就立刻生效：子进程手里那份配置是内存里的旧值。
+    watchdog.onModelChanged?.();
+    return next;
   });
 
   ipcMain.handle(IPC.facts.list, (_event, filter: unknown) => {

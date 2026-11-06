@@ -173,8 +173,9 @@ tickAdvancedWhileBlocked: true
 
 **这一版有意没做的两件事**（都记在这里，不留给读者猜）：
 
-1. **模型会话**：W2 的骨架里没有 pi harness。语义判断到 W5 才接；接法是
-   "子进程出题、主进程调用"——**这是过渡形态，不是最终的独立 Session**（见 §8）。
+1. **模型会话**：W2 的骨架里没有 pi harness。语义判断到 W5 才接；最初是
+   "子进程出题、主进程调用"，后来补齐成**子进程自己调用**（见 W5 与 §8）——
+   凭据经 IPC 交付、只在内存，主进程仍不参与调用。
 2. ~~旧的程序层 Watchdog 还在跑~~ —— W4 已删除，见下。
 
 实测（真实库）：升级到 47、心跳落库、正常退出写 `stopping`；第二次启动不再重复记
@@ -259,6 +260,18 @@ no_progress     t2  「已经 40 分钟没有任何新动作」
    所以 fork 时补一句 `NODE_USE_ENV_PROXY=1`，否则判断会被直连失败逼回主进程。
 2. pi 的模型描述必须带 `provider`（以及 `input`/`cost`）。少一个 `provider`，
    `complete()` 就报 `Unknown provider: undefined`，表现为"模型返回空文本"。
+
+**两条必须自己管住的时限**（复核时补上）：
+
+- 一次模型调用 2 分钟没回来就放弃这一次，**不假设 provider 支持 AbortSignal**；
+- `pendingJudge` / `pendingAction` 是单飞的，3 分钟 / 12 分钟还没结果就自己放掉。
+  没有这一层，一条永不返回的请求会让语义层或动作层永久停摆，而日志里只有"安静"。
+  判断超时会记一次 `judged_at`（否则放掉之后立刻重试，模型不可用就变成重试风暴）；
+  动作的上限故意比账本的 5 分钟认领窗口长，两边不会互相打断。
+
+**改配置要立刻生效**：`configure-model` 不只在 `ready` 时发。设置页换模型、
+换 provider 的钥匙、改默认 LLM，都会触发 `WatchdogHost.refreshModel()` 重发一遍——
+否则界面显示 B、子进程还拿着 A 的钥匙，直到下一次重启。
 
 **结论只有五种**，且 `insufficient_evidence` 是一个合法答案——逼模型给结论只会多一种误判：
 
@@ -402,9 +415,9 @@ exit=0
 |---|---|
 | 动作认领把 `pending`/`failed` 当成"已执行" | 认领改成五态：`claimed / done / refused / in_flight / exhausted`；pending 超过 5 分钟视为执行者已死，可重新认领；同一动作最多 3 次 |
 | 通知失败后永久静音 | 镜像新增 `announced_at` / `announce_attempts`：**升级 ≠ 已通知**，失败下轮重试，5 次为止 |
-| 只扫最旧的 20 个运行任务，后者长期饿死 | 游标分页（`watchdog_cursor`，跨重启保留），到队尾才允许关闭"没再出现"的发现 |
+| 只扫最旧的 20 个运行任务，后者长期饿死 | 游标分页（`watchdog_cursor`，跨重启保留）；**是否关闭一条发现按"这个任务这一轮被没被看到"判**，不再按"扫没扫到队尾"（见下） |
 | 主进程断开时子进程立刻退出 | 改为**孤儿宽限**（默认 2 分钟）：继续记录、不再请求判断与动作，窗口到了自己退出 |
-| `summary` 可能带出凭据 | 新增 `scrubSecrets`，对摘要与 detail 值都做脱敏（Bearer/token/URL 凭据/`key=…`） |
+| `summary` 可能带出凭据 | 新增 `scrubSecrets`（`data/scrub.ts`），`system_event` 与 `watchdog_finding` 的摘要/detail 都过一遍（Bearer/token/URL 凭据/`key=…`） |
 | 回答可以伪造证据编号 | 只保留确实存在于本次证据的引用，其余从回答里剔除并计数；编号从 4 位加长到 8 位 |
 | 问答看不到 trace 细节 | incident 镜像带 `detail`，问答把它一起喂给模型 |
 | 规则保存/回退不是事务 | 包进 SQLite 事务；另存最近 10 版用于审计（回退仍只回上一版） |
@@ -413,6 +426,38 @@ exit=0
 | 业务库打不开仍报 ready | `ready.businessDbOpen === false` 时 `whenReady` 返回 false 并记一条故障 |
 | 没有独立模型配置 | 新增 `watchdog.model`（设置页可选），没配才退回默认 LLM |
 | 判断在主进程执行，主进程卡住时语义层也停 | 判断搬进子进程：主进程只解密与授权，钥匙经 IPC 交付、只在内存；OAuth-only 才退回代判 |
+
+### 8.1 第二轮复核（本次）
+
+上一次的修复有一半是对的，另一半**在真实形状下不成立**。逐条复核后的结果：
+
+| 复核发现 | 处理 |
+|---|---|
+| 游标分页后，"到队尾才关"被实现成"这一页没看见就关"：任务多于一页时，上一页还在打转的发现每轮都被关掉、下一轮再开一条 | 改为按任务判：**这一轮看过的**任务没再成立才关；没在本页的，只有"已经不在 `running`"才关 |
+| 升级通知的"送到了"是假的：`onEscalated` 返回 `void`，而它对进程级事件、没有 `thread_id` 的任务直接 `return`——宿主照样写 `announced_at` | `onEscalated` 必须返回 `boolean`；只有 `true` 才 `markAnnounced`，其余记一次尝试（5 次封顶） |
+| "正在执行"被回报成 `ok: true`，子进程记成"已执行" | `in_flight` 回 `ok: false`：它**没有**被执行 |
+| 判断/动作请求没有时限：一条永不返回的请求会永久堵住后面所有判断或动作 | 子进程侧 3 分钟 / 12 分钟超时释放；单次模型调用 2 分钟超时 |
+| 设置页换了模型，子进程还在用旧的 provider 与钥匙（`configure-model` 只在 `ready` 发） | 新增 `WatchdogHost.refreshModel()`；`watchdog:setModel`、`setKey`、`saveProvider`、`removeProvider`、默认 LLM 变更都会触发 |
+| 问答里动作的引用编号其实是 incidentId 前 8 位（`padEnd` 在长串上是空操作），同一 incident 的多条动作会共用一个编号 | 改成对 `incidentId + action` 做 FNV-1a，取 8 位十六进制 |
+| Watchdog 自己的摘要没有脱敏（只有 `system_event` 做了） | `scrubSecrets` 抽到 `data/scrub.ts`，`WatchdogStore.raise` / `setVerdict` 也过一遍 |
+
+**实测（25 个运行中任务、每个都连续失败 3 次，同一份临时库）**：
+
+```
+修复前：出现发现的 25 个任务里，20 个被反复关/开
+        每个任务留下 8 条记录、全部 resolved（同一条被关了又开 7 次）—— 一轮驱动一代
+修复后：25 个任务各 1 条，0 个被反复关/开
+        把其中一个任务改成 done 再跑：它的发现 resolved=1/1，其余 24 个 0 误关
+```
+
+**实测（进程级升级，`staleMainMs=1ms`）**：
+
+```
+镜像：state=escalated, announced_at=null, announce_attempts=5
+```
+
+试满 5 次就停手，并且**没有**把"没送出去"写成"已通知"。进程级事件目前没有线
+可以说话，这条记录就是它的去处——等 §7 的入口。
 
 **仍然存在的偏差**（不掩盖）：
 

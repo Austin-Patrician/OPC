@@ -17,6 +17,9 @@ import type { ModelWire } from './protocol';
 
 export type CompleteFn = (prompt: string) => Promise<string>;
 
+/** 一次判断最多等这么久（含网络往返）。 */
+const COMPLETE_TIMEOUT_MS = 2 * 60_000;
+
 export async function createLocalJudge(wire: ModelWire): Promise<CompleteFn> {
   const { createModels, createProvider } = await import('@earendil-works/pi-ai/models');
   const api = await apiFor(wire.api);
@@ -54,18 +57,35 @@ export async function createLocalJudge(wire: ModelWire): Promise<CompleteFn> {
   if (!model) throw new Error('模型没有注册成功');
 
   return async (prompt: string) => {
-    const answer = await models.complete(model, {
-      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-    } as never);
-    const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('');
-    if (!text.trim()) {
-      // 空回答不是"判不了"，是这条通道没通：把原始返回的形状带出去，好查。
-      throw new Error(`模型没有返回文本：${JSON.stringify(answer).slice(0, 300)}`);
+    // 一次调用必须有上限：`pendingJudge` 是单飞的，请求挂住就等于语义层停摆。
+    // 这里不假设 provider 支持 AbortSignal，用 race 保证"人这边能继续"。
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`模型 ${Math.round(COMPLETE_TIMEOUT_MS / 1000)} 秒没有返回`)),
+        COMPLETE_TIMEOUT_MS,
+      );
+      timer.unref?.();
+    });
+    try {
+      const answer = await Promise.race([
+        models.complete(model, {
+          messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        } as never),
+        timeout,
+      ]);
+      const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join('');
+      if (!text.trim()) {
+        // 空回答不是"判不了"，是这条通道没通：把原始返回的形状带出去，好查。
+        throw new Error(`模型没有返回文本：${JSON.stringify(answer).slice(0, 300)}`);
+      }
+      return text;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return text;
   };
 }
 

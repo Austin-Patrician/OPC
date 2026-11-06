@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { scrubSecrets } from '../data/scrub';
 import type { TraceRow } from './candidates';
 
 /**
@@ -201,7 +202,12 @@ export class WatchdogStore {
   raise(input: RaiseInput, now: number): StoredFinding {
     const subjectType = input.subjectType ?? '';
     const subjectId = input.subjectId ?? '';
-    const detail = JSON.stringify(input.detail ?? {});
+    // 摘要来自任务标题与动作摘要，里面可能夹着一段命令或 URL。
+    // 它会被镜像到业务库、喂给模型、在问答里念出来——所以入口就要脱敏。
+    const summary = scrubSecrets(input.summary);
+    // detail 是一段 JSON 文本，只被当字符串用（镜像、问答、证据），所以整段过一遍
+    // 是安全的——它不会被反解析。
+    const detail = scrubSecrets(JSON.stringify(input.detail ?? {}));
     const active = this.findActive(input.kind, subjectType, subjectId);
 
     if (active) {
@@ -212,7 +218,7 @@ export class WatchdogStore {
               SET at = ?, last_seen_at = ?, summary = ?, detail = ?, state = ?
             WHERE id = ?`,
         )
-        .run(now, now, clip(input.summary, 400), clip(detail, 2000), state, active.id);
+        .run(now, now, clip(summary, 400), clip(detail, 2000), state, active.id);
       return toFinding({ ...active, at: now, last_seen_at: now, state });
     }
 
@@ -229,7 +235,7 @@ export class WatchdogStore {
       kind: clip(input.kind, 80),
       subject_type: clip(subjectType, 40),
       subject_id: clip(subjectId, 120),
-      summary: clip(input.summary, 400),
+      summary: clip(summary, 400),
       detail: clip(detail, 2000),
       active: 1,
       state: 'active',
@@ -341,7 +347,7 @@ export class WatchdogStore {
         judgment.confidence,
         now,
         by,
-        clip(`${current.summary}｜模型判断：${label(judgment)}`, 400),
+        clip(`${scrubSecrets(current.summary)}｜模型判断：${label(judgment)}`, 400),
         escalate ? 1 : 0,
         id,
       );
@@ -598,7 +604,13 @@ export interface TaskScanCursor {
 
 export interface TaskScan {
   tasks: RunningTaskView[];
-  /** 这一轮是否看全了整批（到了队尾）。只有看全了才允许关掉"没再出现"的发现。 */
+  /**
+   * 这一轮是否扫到了队尾。
+   *
+   * 它**不是**"关发现"的判据：任务多于一页时，每轮只扫一段，拿"这一轮没看见"
+   * 当"已经恢复"会把上一段还在打转的发现全部关掉。关不关由调用方按任务判
+   * （这一轮看过它没有 / 它还在不在 running）。
+   */
   wrapped: boolean;
   next: TaskScanCursor;
 }
@@ -669,7 +681,9 @@ export function readTrace(db: Database.Database, taskId: string, limit = 20): Tr
     at: row.at,
     kind: row.kind,
     name: row.name,
-    argsDigest: row.args_digest,
+    // 动作摘要来自工具参数，里面可能是一整条命令或 URL。它会被喂给模型
+    // （本地或主进程代判），所以在**读**这里抹一遍——写端修是另一件事。
+    argsDigest: scrubSecrets(row.args_digest),
     ok: row.ok === null ? null : row.ok !== 0,
   }));
 }
@@ -681,6 +695,19 @@ export interface TaskDetailView {
   goal: string;
   updatedAt: number;
   startedAt: number | null;
+}
+
+/**
+ * 一个任务现在的状态；行不在了返回 `null`。
+ *
+ * 只在"这条发现这一轮没被扫到"时用：它可能排在后面的页里（还在跑），
+ * 也可能早就结束了。只有后者才允许把发现关掉。
+ */
+export function readTaskStatus(db: Database.Database, taskId: string): string | null {
+  const row = db.prepare(`SELECT status FROM task WHERE id = ?`).get(taskId) as
+    | { status: string }
+    | undefined;
+  return row?.status ?? null;
 }
 
 export function readTask(db: Database.Database, taskId: string): TaskDetailView | null {

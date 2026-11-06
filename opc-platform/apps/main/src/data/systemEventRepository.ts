@@ -1,5 +1,6 @@
 import type { CompanyDatabase } from './companyDatabase';
 import crypto from 'node:crypto';
+import { scrubSecrets } from './scrub';
 
 /**
  * 系统自身的故障记录（`11-watchdog-spec.md` W1）。
@@ -64,19 +65,11 @@ const MAX_DETAIL_VALUE = 400;
 const SECRET_KEY = /pass|secret|token|key|auth|cookie|credential/i;
 
 /**
- * 摘要里的凭据也要抹掉。
+ * 摘要里的凭据也要抹掉（实现见 `./scrub`）。
  *
- * `detail` 有键名可判，`summary` 没有——它常是拼出来的错误信息，可能带着
- * `Authorization: Bearer …`、URL 里的 `user:pass@`、或者 `api_key=…`。
- * 只按长度裁剪等于没脱敏。
+ * 这里再导出一次是为了保住已有的调用点；新代码直接从 `./scrub` 引。
  */
-export function scrubSecrets(text: string): string {
-  return text
-    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]')
-    .replace(/\b(sk|pk|ghp|gho|glpat|xox[baprs])[-_][A-Za-z0-9_-]{8,}/gi, '[redacted]')
-    .replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, '//[redacted]@')
-    .replace(/\b([A-Za-z0-9_-]*(?:key|token|secret|password)[A-Za-z0-9_-]*)\s*=\s*[^\s,;]+/gi, '$1=[redacted]');
-}
+export { scrubSecrets } from './scrub';
 
 interface EventRow {
   id: string;
