@@ -10,6 +10,13 @@ import {
 import { readFile, readMcpConfig } from './config';
 import { connectMcp, type McpConnection } from './connection';
 import { McpAuthStore, authFile, isHttp } from './auth';
+import {
+  setToolApproval,
+  clearServerToolApprovals,
+  retainServerToolApprovals,
+  toolApproval,
+} from './policy';
+import type { McpApprovalPolicy } from './policy';
 
 /**
  * MCP 服务器的那一页（M2）。
@@ -26,6 +33,7 @@ export interface McpServerView {
   /** 「npx -y server-fs」或 URL：一行里能认出它连的是什么。 */
   target: string;
   enabled: boolean;
+  autoApprove: boolean;
   exposure: McpExposure;
   description?: string;
   tools?: number;
@@ -34,6 +42,16 @@ export interface McpServerView {
   error?: string;
   /** 只有 HTTP 服务器有：登录了没有。stdio 的凭据是它自己的环境变量。 */
   auth?: 'signed-in' | 'signed-out';
+}
+
+export interface McpToolView {
+  name: string;
+  title?: string;
+  description?: string;
+  highImpact: boolean;
+  risk: ('destructive' | 'openWorld')[];
+  autoApprove: boolean;
+  overridden: boolean;
 }
 
 const fileName = (userDataDir: string) => path.join(userDataDir, 'mcp.json');
@@ -61,6 +79,7 @@ export function toView(config: McpServerConfig, userDataDir?: string): McpServer
       ? [config.command, ...(config.args ?? [])].join(' ')
       : config.url,
     enabled: isEnabled(config),
+    autoApprove: config.autoApprove === true,
     exposure: exposureOf(config),
     ...(config.description ? { description: config.description } : {}),
     ...(auth ? { auth } : {}),
@@ -102,6 +121,104 @@ export function saveServer(
   return listServers(options);
 }
 
+export function setAutoApprove(
+  options: { userDataDir: string; homeDir?: string },
+  name: string,
+  enabled: boolean,
+): { servers: McpServerView[]; sources: string[] } {
+  const file = fileName(options.userDataDir);
+  const current = readFile(file) ?? [];
+  const existing = current.find((server) => server.name === name)
+    ?? readMcpConfig(options).servers.find((server) => server.name === name);
+  if (!existing) throw new Error(`没有这个服务器：${name}`);
+  const updated = { ...existing, autoApprove: enabled ? true : undefined };
+  const hasLocal = current.some((server) => server.name === name);
+  writeServers(
+    file,
+    hasLocal
+      ? current.map((server) => server.name === name ? updated : server)
+      : [...current, updated],
+  );
+  return listServers(options);
+}
+
+/** Read one server's live directory for the settings page. The connection is short-lived. */
+export async function listTools(
+  options: { userDataDir: string; homeDir?: string },
+  name: string,
+  connect: (config: McpServerConfig) => Promise<McpConnection> = connectMcp,
+): Promise<McpToolView[]> {
+  const config = readMcpConfig(options).servers.find((server) => server.name === name);
+  if (!config) throw new Error(`没有这个服务器：${name}`);
+  let connection: McpConnection | null = null;
+  try {
+    connection = await connect(config);
+    const highImpact = connection.tools.filter((tool) => tool.annotations?.destructiveHint === true || tool.annotations?.openWorldHint === true);
+    const policy = retainServerToolApprovals(
+      options.userDataDir,
+      name,
+      new Set(highImpact.map((tool) => tool.name)),
+    );
+    const overrides = policy.servers[name] ?? {};
+    return highImpact.map((tool) => {
+        const overridden = typeof overrides[tool.name] === 'boolean';
+        return {
+          name: tool.name,
+          ...(tool.title ? { title: tool.title } : {}),
+          ...(tool.description ? { description: tool.description } : {}),
+          highImpact: true,
+          risk: [
+            ...(tool.annotations?.destructiveHint === true ? ['destructive' as const] : []),
+            ...(tool.annotations?.openWorldHint === true ? ['openWorld' as const] : []),
+          ],
+          autoApprove: toolApproval(policy, name, tool.name, config.autoApprove === true),
+          overridden,
+        };
+      });
+  } finally {
+    await connection?.close().catch(() => undefined);
+  }
+}
+
+export async function setToolAutoApprove(
+  options: { userDataDir: string; homeDir?: string },
+  server: string,
+  tool: string,
+  enabled: boolean | null,
+): Promise<McpApprovalPolicyView> {
+  const config = readMcpConfig(options).servers.find((entry) => entry.name === server);
+  if (!config) throw new Error(`没有这个服务器：${server}`);
+  const available = await listTools(options, server);
+  if (!available.some((entry) => entry.name === tool)) {
+    throw new Error(`服务器 ${server} 没有这个高影响工具：${tool}`);
+  }
+  const policy = setToolApproval(options.userDataDir, server, tool, enabled);
+  return policyView(policy, server, config.autoApprove === true);
+}
+
+export function resetToolApprovals(
+  options: { userDataDir: string; homeDir?: string },
+  server: string,
+  enabled: boolean,
+): McpApprovalPolicyView {
+  const config = readMcpConfig(options).servers.find((entry) => entry.name === server);
+  if (!config) throw new Error(`没有这个服务器：${server}`);
+  // Explicit bulk operations change the server default and clear all exceptions.
+  setAutoApprove(options, server, enabled);
+  const policy = clearServerToolApprovals(options.userDataDir, server);
+  return policyView(policy, server, enabled);
+}
+
+export interface McpApprovalPolicyView {
+  server: string;
+  autoApprove: boolean;
+  overrides: Record<string, boolean>;
+}
+
+function policyView(policy: McpApprovalPolicy, server: string, autoApprove: boolean): McpApprovalPolicyView {
+  return { server, autoApprove, overrides: { ...(policy.servers[server] ?? {}) } };
+}
+
 export function removeServer(
   options: { userDataDir: string; homeDir?: string },
   name: string,
@@ -112,6 +229,7 @@ export function removeServer(
     file,
     current.filter((server) => server.name !== name),
   );
+  clearServerToolApprovals(options.userDataDir, name);
   return listServers(options);
 }
 
@@ -136,6 +254,7 @@ function writeServers(file: string, servers: readonly McpServerConfig[]): void {
 export function toEntry(config: McpServerConfig): Record<string, unknown> {
   const common = {
     ...(config.enabled === false ? { enabled: false } : {}),
+    ...(config.autoApprove === true ? { autoApprove: true } : {}),
     ...(config.exposure ? { exposure: config.exposure } : {}),
     ...(config.timeoutSeconds ? { timeoutSeconds: config.timeoutSeconds } : {}),
     ...(config.description ? { description: config.description } : {}),

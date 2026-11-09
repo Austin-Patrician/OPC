@@ -97,7 +97,7 @@ export function TriagePage() {
   return (
     <>
       <PageHeader
-        crumbs={[t('settings.title'), t('settings.group.general')]}
+        crumbs={[t('settings.group.behavior'), t('settings.page.triage')]}
         title={t('settings.page.triage')}
         description={t('settings.triage.desc')}
       />

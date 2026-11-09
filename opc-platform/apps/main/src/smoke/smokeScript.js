@@ -375,8 +375,8 @@
     [...document.querySelectorAll('[role="tablist"] [role="tab"]')][3]?.getAttribute('aria-selected') ===
     'true';
 
-  // ── 主页：注意力队列要能渲染（空队列也要有入口） ────────────────────────
-  await go('#/attention', 800);
+  // ── 主页：对话是唯一的人机入口，旧 attention 深链接会回到这里 ────────────
+  await go('#/chat', 800);
   const attentionHeading = document.querySelector('h1')?.textContent ?? null;
   const goalForm = Boolean(document.querySelector('input, textarea'));
 

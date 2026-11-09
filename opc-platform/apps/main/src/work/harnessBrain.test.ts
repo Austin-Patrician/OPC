@@ -317,4 +317,41 @@ describe('把话插进正在跑的活', () => {
     // 跑完就从表里删掉：再插话不该插进一条已经结束的会话。
     expect(await brain.interject('task-1', '还有一句')).toBe(false);
   });
+
+  it('把 durable submission 的最终 assistant 文本回传给任务结果', async () => {
+    const answerEntry = {
+      model: [{ role: 'assistant', content: [{ type: 'text', text: '这是最终汇报正文。' }] }],
+    };
+    const conversation = {
+      id: 'conv-answer',
+      submit: async () => ({
+        wait: async () => ({ type: 'input', status: 'done', answer: 'entry-answer' }),
+      }),
+      commit: async (change: (tx: { entry: (id: string) => Promise<typeof answerEntry> }) => unknown) =>
+        change({ entry: async () => answerEntry }),
+    };
+    const harness = {
+      createConversation: async () => conversation,
+      commit: async () => undefined,
+      conversation: async () => conversation,
+      usage: async () => ({}),
+    };
+    const brain = new HarnessBrain({
+      harnessFor: async () => ({ harness: harness as never }),
+      context: async () => ({}) as never,
+      model: () => ({ providerId: 'p', modelId: 'm' }),
+      thinking: () => 'low',
+      price: () => ({ inputUsdPerM: 0, outputUsdPerM: 0 }),
+      onTokens: () => undefined,
+    });
+
+    const result = await brain.execute({
+      task: task(),
+      workspaceDir: tmpdir(),
+      durableTaskId: 'durable-task-1',
+      log: () => undefined,
+    });
+
+    expect(result.answer).toBe('这是最终汇报正文。');
+  });
 });

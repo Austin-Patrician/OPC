@@ -10,11 +10,13 @@ import {
   type McpServerConfig,
 } from './contract';
 import { mountMcp, toOutput } from './extension';
+import { createToolSearchExtension } from '@earendil-works/pi-durable/tool-search';
 import type { McpConnection } from './connection';
 import { normalize, readFile } from './config';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setToolApproval } from './policy';
 
 /**
  * MCP：把服务器上的工具变成执行体的工具。
@@ -185,6 +187,21 @@ describe('要不要先问一句', () => {
 });
 
 describe('挂载', () => {
+  it('单工具例外覆盖服务器默认审批策略', async () => {
+    const userDataDir = mkdtempSync(path.join(tmpdir(), 'opc-mcp-policy-'));
+    const gated = { ...echoTool, annotations: { destructiveHint: true } };
+    const { connection } = await connectionWith([gated]);
+    live.push(connection);
+    setToolApproval(userDataDir, 'fixture', 'echo', true);
+    const allowed = await mountMcp({
+      servers: [{ ...config(), autoApprove: false }],
+      userDataDir,
+      connect: async () => connection,
+    });
+    expect(allowed.extension?.hooks ?? []).toHaveLength(0);
+    rmSync(userDataDir, { recursive: true, force: true });
+  });
+
   it('每个工具一个 deferred 工具，名字可预测，说明里带服务器名', async () => {
     const { connection } = await connectionWith([echoTool]);
     live.push(connection);
@@ -196,6 +213,16 @@ describe('挂载', () => {
     expect(echo).toBeTruthy();
     expect(echo?.deferred).toBe(true);
     expect(echo?.description).toContain('[fixture]');
+  });
+
+  it('自动放行的服务器不会为高影响工具安装审批门', async () => {
+    const { connection } = await connectionWith([{ ...echoTool, annotations: { destructiveHint: true } }]);
+    live.push(connection);
+    const mount = await mountMcp({
+      servers: [{ ...config(), autoApprove: true }],
+      connect: async () => connection,
+    });
+    expect(mount.extension?.hooks ?? []).toHaveLength(0);
   });
 
   it('direct 的服务器不延迟：模型一上手就看得见', async () => {
@@ -273,6 +300,37 @@ describe('挂载', () => {
     expect(rendered).toContain('文件与代码搜索');
     expect(rendered).not.toContain('echo');
     expect(rendered).toContain('tool_search');
+  });
+
+  it('同一个 tool_search 可以发现并调用任意名称的 MCP 服务器工具', async () => {
+    const alpha = await connectionWith([echoTool], 'alpha result');
+    const beta = await connectionWith([echoTool], 'beta result');
+    live.push(alpha.connection, beta.connection);
+
+    const mount = await mountMcp({
+      servers: [config('alpha'), config('beta')],
+      connect: async (server) => (server.name === 'alpha' ? alpha.connection : beta.connection),
+    });
+    const mountedTools = mount.extension?.tools ?? [];
+    const search = createToolSearchExtension().tools?.[0];
+    expect(search).toBeTruthy();
+
+    const searchResult = await search!.execute(
+      { query: 'beta', limit: 1 },
+      {
+        agent: async () => ({
+          deferred: mountedTools.filter((tool) => tool.deferred === true),
+        }),
+      } as never,
+      {} as never,
+    );
+
+    expect(searchResult.control?.addTools).toEqual(['mcp__beta__echo']);
+    const betaTool = mountedTools.find((tool) => tool.name === 'mcp__beta__echo');
+    expect(betaTool).toBeTruthy();
+    await betaTool!.execute({ text: '动态发现' }, {} as never, {} as never);
+    expect(beta.calls).toEqual([{ name: 'echo', arguments: { text: '动态发现' } }]);
+    expect(alpha.calls).toEqual([]);
   });
 });
 

@@ -137,6 +137,19 @@ describe('一次工具调用 → 一行动作', () => {
     expect(traceRowFor(call({ name: 'bash' }), result(true)).ok).toBe(false);
   });
 
+  it('失败的 bash 轨迹保留退出码和最后一行错误', () => {
+    const failed = {
+      isError: true,
+      structuredOutput: { exitCode: 1, output: 'first line\nls: assets: No such file or directory' },
+      output: [],
+    } as unknown as ToolExecutionResult;
+    const row = traceRowFor(call({ name: 'bash', arguments: { command: 'ls assets/' } }), failed);
+    expect(row.ok).toBe(false);
+    expect(row.argsDigest ?? '').toContain('退出码 1');
+    expect(row.argsDigest ?? '').toContain('No such file or directory');
+    expect(row.argsDigest?.length ?? 0).toBeLessThanOrEqual(120);
+  });
+
   it('嵌套调用标出来：它不是模型的直接一步，是工具内部的分岔', () => {
     const row = traceRowFor(
       call({ name: 'mcp__github__search', parent: { taskId: 't-1' as never, callId: 'c-0' } }),

@@ -2,6 +2,9 @@ import type { ProviderConfig } from '@opc/shared/domain';
 import type { ModelConfigService } from './modelConfigService';
 import { generateImage } from './imageGeneration';
 import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
+import type { ImageModelCapabilities } from '@opc/shared/domain';
+import { imageCapabilitiesForModel } from './imageCapabilities';
+import type { GenerateImageOptions } from './imageGeneration';
 
 interface ResolvedTarget {
   providerId: string;
@@ -26,7 +29,7 @@ export class ImageService {
     private readonly network: NetworkClient = defaultNetworkClient,
   ) {}
 
-  generateBytes = async (input: { prompt: string; modelId?: string }) => {
+  generateBytes = async (input: { prompt: string; modelId?: string; options?: GenerateImageOptions }) => {
     const resolved = this.resolveTarget(input);
     if ('error' in resolved) return { ok: false as const, error: resolved.error };
 
@@ -36,6 +39,7 @@ export class ImageService {
         apiKey: resolved.apiKey,
         model: resolved.modelId,
         prompt: input.prompt,
+        options: input.options,
         providerId: resolved.providerId,
         protocol: resolved.protocol,
         network: this.network,
@@ -52,19 +56,24 @@ export class ImageService {
   };
 
   /** True when at least one provider owns an image model and has credentials. */
-  isAvailable = (): boolean =>
-    this.models
-      .listProviders()
-      .some((provider) => provider.hasKey && provider.models.some((model) => model.capability === 'image'));
+  isAvailable = (): boolean => !('error' in this.resolveTarget({}));
+
+  getCapabilities = (): ImageModelCapabilities | null => {
+    const target = this.resolveTarget({});
+    if ('error' in target) return null;
+    const provider = this.models.listProviders().find((entry) => entry.id === target.providerId);
+    const model = provider?.models.find((entry) => entry.id === target.modelId);
+    return model ? imageCapabilitiesForModel(model) : null;
+  };
 
   private resolveTarget(input: { modelId?: string }): ResolvedTarget | { error: string } {
     const providers = this.models.listProviders();
     const defaults = this.models.getDefaults();
     const ownsImage = (provider: ProviderConfig) =>
-      provider.models.some((model) => model.capability === 'image');
+      provider.models.some((model) => model.capability === 'image' && model.imageEnabled === true);
 
     const explicit = input.modelId
-      ? providers.find((provider) => provider.models.some((model) => model.id === input.modelId))
+      ? providers.find((provider) => provider.models.some((model) => model.id === input.modelId && model.imageEnabled === true))
       : undefined;
     // Prefer a provider that can actually authenticate: after importing several
     // built-ins (OpenRouter + OpenAI + Gemini), the first one in the list may
@@ -85,6 +94,9 @@ export class ImageService {
     }
 
     const provider = providers.find((entry) => entry.id === providerId);
+    if (!provider?.models.some((model) => model.id === modelId && model.capability === 'image' && model.imageEnabled === true)) {
+      return { error: `图片模型未启用：${modelId}` };
+    }
     if (!provider?.hasKey) return { error: `请先在 LLM 页配置 ${providerId} 的凭证` };
 
     const apiKey = this.models.readKey(providerId);

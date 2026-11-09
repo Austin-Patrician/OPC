@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 55;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS task (
   brief               TEXT NOT NULL DEFAULT '',
   -- What must exist when the task is done, in plain language (§9.3).
   deliverable_spec    TEXT NOT NULL DEFAULT '',
+  contract_json       TEXT,
   -- 谁来干：一个执行体。§2.2 之后任务属于 worker，不属于某个人。
   owner_id            TEXT NOT NULL,
   -- Denormalised on purpose: a task card must still render after its worker is
@@ -193,7 +194,7 @@ CREATE TABLE IF NOT EXISTS task (
   -- argv JSON, never a shell string.
   acceptance_command  TEXT NOT NULL DEFAULT '[]',
   acceptance_template TEXT NOT NULL DEFAULT 'http-ok'
-                      CHECK (acceptance_template IN ('http-ok','image-200','review-verdict')),
+                      CHECK (acceptance_template IN ('http-ok','node-test','image-200','review-verdict')),
   status              TEXT NOT NULL DEFAULT 'open'
                       CHECK (status IN ('open','running','review','accepted','delivered',
                                         'rejected','failed','cancelled')),
@@ -204,6 +205,7 @@ CREATE TABLE IF NOT EXISTS task (
   tokens_used         INTEGER NOT NULL DEFAULT 0,
   cost_usd            REAL NOT NULL DEFAULT 0,
   error               TEXT,
+  answer              TEXT,
   started_at          INTEGER,
   finished_at         INTEGER,
   created_at          INTEGER NOT NULL,
@@ -1201,10 +1203,10 @@ ALTER TABLE project_group ADD COLUMN owner_employee_id TEXT;
  * 因为一次切换主语会让半个仓库同时编译不过。
  *
  * 设计要点：
- * - `thread.attention` 决定它能不能打扰老板，默认 `silent`；
+ * - `thread.attention` 保留为历史兼容字段，用户动作统一通过对话卡片处理；
  * - `worker` 不再有职位、汇报线、在职状态机；`thread_id` 为空即"用完了"；
  * - `event` 是 Super-agent 的 Trigger，`triage` 的两级过滤状态机就在这里；
- * - `report` 是唯一一个允许出现在老板注意力队列里的东西。
+ * - `report` 是持久化的工作记录，也是对话卡片的恢复来源。
  */
 const V25 = `
 CREATE TABLE IF NOT EXISTS thread (
@@ -2005,7 +2007,157 @@ ALTER TABLE watchdog_incident ADD COLUMN judged_at INTEGER;
 ALTER TABLE watchdog_incident ADD COLUMN judged_by TEXT NOT NULL DEFAULT '';
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51];
+/** V52: explicit Worker delivery contracts and captured final answers. */
+const V52 = `
+ALTER TABLE task ADD COLUMN contract_json TEXT;
+ALTER TABLE task ADD COLUMN answer TEXT;
+`;
+
+/** V53: SQLite-backed personal context ontology.
+ *
+ * The existing business tables remain authoritative. These tables add durable
+ * graph semantics (entities, evidence, temporal assertions and commands) without
+ * copying or replacing task/worker/approval rows.
+ */
+const V53 = String.raw`
+CREATE TABLE IF NOT EXISTS ontology_entity (
+  id              TEXT PRIMARY KEY,
+  entity_type     TEXT NOT NULL,
+  canonical_name  TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  properties_json TEXT NOT NULL DEFAULT '{}',
+  status          TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active','archived')),
+  version         INTEGER NOT NULL DEFAULT 1,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_entity_type ON ontology_entity(entity_type, status);
+CREATE INDEX IF NOT EXISTS idx_ontology_entity_name ON ontology_entity(entity_type, canonical_name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS ontology_entity_alias (
+  id          TEXT PRIMARY KEY,
+  entity_id   TEXT NOT NULL,
+  alias       TEXT NOT NULL,
+  normalized  TEXT NOT NULL,
+  source      TEXT NOT NULL DEFAULT 'user',
+  created_at  INTEGER NOT NULL,
+  UNIQUE (entity_id, normalized),
+  FOREIGN KEY (entity_id) REFERENCES ontology_entity(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_alias_lookup ON ontology_entity_alias(normalized);
+
+CREATE TABLE IF NOT EXISTS ontology_episode (
+  id             TEXT PRIMARY KEY,
+  source_type    TEXT NOT NULL,
+  source_id      TEXT,
+  actor          TEXT NOT NULL DEFAULT 'system',
+  content        TEXT NOT NULL,
+  content_hash   TEXT NOT NULL,
+  occurred_at    INTEGER NOT NULL,
+  metadata_json  TEXT NOT NULL DEFAULT '{}',
+  created_at     INTEGER NOT NULL,
+  UNIQUE (source_type, source_id, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_episode_time ON ontology_episode(occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS ontology_predicate (
+  name             TEXT PRIMARY KEY,
+  subject_types    TEXT NOT NULL DEFAULT '[]',
+  object_types     TEXT NOT NULL DEFAULT '[]',
+  cardinality      TEXT NOT NULL DEFAULT 'many'
+                   CHECK (cardinality IN ('one','many')),
+  sensitivity      TEXT NOT NULL DEFAULT 'normal'
+                   CHECK (sensitivity IN ('normal','sensitive')),
+  description      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS ontology_assertion (
+  id                  TEXT PRIMARY KEY,
+  subject_entity_id   TEXT NOT NULL,
+  predicate           TEXT NOT NULL,
+  object_entity_id    TEXT,
+  object_value        TEXT,
+  value_type          TEXT NOT NULL DEFAULT 'text'
+                      CHECK (value_type IN ('entity','text','number','boolean','json')),
+  confidence          REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+  status              TEXT NOT NULL DEFAULT 'current'
+                      CHECK (status IN ('current','superseded','retracted')),
+  source_episode_id   TEXT NOT NULL,
+  evidence_span       TEXT,
+  valid_from          INTEGER NOT NULL,
+  valid_until         INTEGER,
+  superseded_by       TEXT,
+  version             INTEGER NOT NULL DEFAULT 1,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  FOREIGN KEY (subject_entity_id) REFERENCES ontology_entity(id),
+  FOREIGN KEY (object_entity_id) REFERENCES ontology_entity(id),
+  FOREIGN KEY (predicate) REFERENCES ontology_predicate(name),
+  FOREIGN KEY (source_episode_id) REFERENCES ontology_episode(id),
+  FOREIGN KEY (superseded_by) REFERENCES ontology_assertion(id),
+  CHECK ((value_type = 'entity' AND object_entity_id IS NOT NULL AND object_value IS NULL)
+      OR (value_type <> 'entity' AND object_value IS NOT NULL AND object_entity_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_assertion_subject ON ontology_assertion(subject_entity_id, predicate, status, valid_from DESC);
+CREATE INDEX IF NOT EXISTS idx_ontology_assertion_object ON ontology_assertion(object_entity_id, status) WHERE object_entity_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ontology_assertion_episode ON ontology_assertion(source_episode_id);
+
+CREATE TABLE IF NOT EXISTS ontology_profile_projection (
+  subject_entity_id       TEXT PRIMARY KEY,
+  profile_json            TEXT NOT NULL DEFAULT '{}',
+  source_assertion_ids    TEXT NOT NULL DEFAULT '[]',
+  version                 INTEGER NOT NULL DEFAULT 1,
+  generated_at            INTEGER NOT NULL,
+  FOREIGN KEY (subject_entity_id) REFERENCES ontology_entity(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ontology_action_command (
+  command_id          TEXT PRIMARY KEY,
+  actor               TEXT NOT NULL CHECK (actor IN ('user','router','worker')),
+  object_type         TEXT NOT NULL,
+  object_id           TEXT NOT NULL,
+  action              TEXT NOT NULL,
+  args_json           TEXT NOT NULL DEFAULT '{}',
+  expected_version    INTEGER,
+  idempotency_key     TEXT NOT NULL UNIQUE,
+  status              TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending','approved','running','succeeded','failed','rejected')),
+  approval_id         TEXT,
+  result_json         TEXT,
+  error               TEXT,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  completed_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_command_status ON ontology_action_command(status, created_at);
+
+CREATE TABLE IF NOT EXISTS ontology_outbox_event (
+  id             TEXT PRIMARY KEY,
+  event_type     TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id   TEXT NOT NULL,
+  payload_json   TEXT NOT NULL DEFAULT '{}',
+  occurred_at    INTEGER NOT NULL,
+  delivered_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_outbox_pending ON ontology_outbox_event(delivered_at, occurred_at);
+`;
+
+/** V54: durable outbox retry metadata. */
+const V54 = `
+ALTER TABLE ontology_outbox_event ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ontology_outbox_event ADD COLUMN last_error TEXT;
+ALTER TABLE ontology_outbox_event ADD COLUMN next_attempt_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_ontology_outbox_due ON ontology_outbox_event(delivered_at, next_attempt_at, occurred_at);
+`;
+
+/** V55: structured Worker result retained alongside the human-readable report. */
+const V55 = `
+ALTER TABLE report ADD COLUMN result_json TEXT;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

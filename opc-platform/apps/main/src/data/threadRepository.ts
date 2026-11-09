@@ -10,6 +10,7 @@ import type {
   WorkerStatus,
   WorkerTemplate,
   WorkReport,
+  WorkResult,
   WorkThread,
 } from '@opc/shared/domain';
 import crypto from 'node:crypto';
@@ -81,8 +82,8 @@ export interface EnqueueEventInput {
   dedupeKey?: string | null;
 }
 
-/** A queue row with the line of work attached, for the attention screen. */
-export interface QueueEntry extends WorkReport {
+/** A pending report card, enriched for recovery into the Router conversation. */
+export interface ConversationReport extends WorkReport {
   threadTitle: string;
   threadState: ThreadState;
 }
@@ -98,6 +99,8 @@ export interface AddReportInput {
   subject?: string | null;
   /** `question` 是"要你回答一句"，收件动词因此不同。 */
   kind?: ReportKind;
+  /** Structured Worker result, persisted independently from the display body. */
+  result?: WorkResult | null;
 }
 
 interface ThreadRow {
@@ -158,6 +161,7 @@ interface ReportRow {
   task_id?: string | null;
   subject?: string | null;
   kind?: ReportKind;
+  result_json?: string | null;
 }
 
 /** States a finished thread can land in; both stop the router from resuming it. */
@@ -171,6 +175,10 @@ export interface ThreadRepositoryOptions {
 }
 
 export class ThreadRepository {
+  /** Chat-first consumers can observe actionable reports as they are created. */
+  onReportCreated?: (report: WorkReport) => void;
+  /** Keeps persisted chat cards in sync when an old report is acknowledged. */
+  onReportRead?: (reportId: string) => void;
   private readonly now: () => number;
   private readonly id: () => string;
 
@@ -396,6 +404,14 @@ export class ThreadRepository {
     return rows.map(toWorker);
   }
 
+  /** Runtime observatory roster: include recently retired workers for its exit animation. */
+  listRuntimeWorkers(retiredSince: number): Worker[] {
+    const rows = this.statement(
+      "SELECT * FROM worker WHERE status != 'retired' OR retired_at >= ? ORDER BY created_at DESC",
+    ).all(retiredSince) as WorkerRow[];
+    return rows.map(toWorker);
+  }
+
   setWorkerStatus(id: string, status: WorkerStatus): Worker {
     this.statement('UPDATE worker SET status = ?, retired_at = ? WHERE id = ?').run(
       status,
@@ -510,7 +526,7 @@ export class ThreadRepository {
     return toEvent(row);
   }
 
-  // ── report (the attention queue) ────────────────────────────────────────
+  // ── durable reports and conversation cards ─────────────────────────────
 
   addReport(input: AddReportInput): WorkReport {
     const row = {
@@ -522,48 +538,70 @@ export class ThreadRepository {
       task_id: input.taskId ?? null,
       subject: input.subject ?? null,
       kind: input.kind ?? ('report' as ReportKind),
+      result_json: input.result ? JSON.stringify(input.result) : null,
       created_at: this.now(),
       read_at: null,
     };
     this.statement(
-      `INSERT INTO report (id, thread_id, level, title, body, task_id, subject, kind, created_at, read_at)
-       VALUES (@id, @thread_id, @level, @title, @body, @task_id, @subject, @kind, @created_at, @read_at)`,
+      `INSERT INTO report (id, thread_id, level, title, body, task_id, subject, kind, result_json, created_at, read_at)
+       VALUES (@id, @thread_id, @level, @title, @body, @task_id, @subject, @kind, @result_json, @created_at, @read_at)`,
     ).run(row);
     this.touch(input.threadId);
-    return toReport(row as ReportRow);
+    const report = toReport(row as ReportRow);
+    // Notify observers for every report. Consumers decide whether a silent
+    // record should remain background-only or wake an active conversation.
+    // This lets a user-dispatched task promote its completion without changing
+    // the durable semantics of speculative/background work.
+    if (report.kind !== 'approval') this.onReportCreated?.(report);
+    return report;
   }
 
-  /**
-   * The your queue: unread, most urgent first.
-   *
-   * The ordering is the product: a `decide` row costs you a decision, so it
-   * outranks every `notify` no matter how old. `silent` is deliberately absent —
-   * it is a record, not an interruption.
-   */
-  listQueue(limit = 50): WorkReport[] {
-    const rows = this.statement(
+  /** Promote a durable silent result when an active chat is waiting for it. */
+  promoteReport(id: string): WorkReport | null {
+    this.statement('UPDATE report SET level = ? WHERE id = ? AND level = ?').run('notify', id, 'silent');
+    const row = this.statement('SELECT * FROM report WHERE id = ?').get(id) as ReportRow | undefined;
+    return row ? toReport(row) : null;
+  }
+
+  /** An approval is an audit record; the interactive copy lives in Router chat. */
+  pendingApproval(taskId: string, tool: string): WorkReport | null {
+    const row = this.statement(
       `SELECT * FROM report
-        WHERE read_at IS NULL AND level != 'silent'
-        ORDER BY CASE level WHEN 'decide' THEN 0 ELSE 1 END, created_at DESC, rowid DESC
-        LIMIT ?`,
-    ).all(limit) as ReportRow[];
-    return rows.map(toReport);
+         WHERE task_id = ? AND kind = 'approval' AND subject = ? AND read_at IS NULL
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(taskId, tool) as ReportRow | undefined;
+    return row ? toReport(row) : null;
   }
 
   /**
-   * The same queue, joined to the line of work it came from.
+   * Development cleanup for approvals created before chat cards existed.
    *
-   * The your screen never shows a report id; it shows "整理 Q3 财报
-   * 需要你拍板". Without the join the UI would have to fetch every thread just to
-   * put a title on a row.
+   * Cards are persisted with the chat transcript, so callers pass the report
+   * ids that have a recoverable card. Those approvals remain durable across a
+   * restart; only orphaned legacy rows are removed.
    */
-  listQueueWithThread(limit = 50): QueueEntry[] {
+  clearPendingApprovals(preservedReportIds: ReadonlySet<string> = new Set()): string[] {
+    const rows = this.statement(
+      `SELECT DISTINCT thread_id FROM report
+         WHERE kind = 'approval' AND read_at IS NULL
+           ${preservedReportIds.size > 0 ? `AND id NOT IN (${[...preservedReportIds].map(() => '?').join(',')})` : ''}`,
+    ).all(...(preservedReportIds.size > 0 ? [...preservedReportIds] : [])) as { thread_id: string }[];
+    this.statement(
+      `DELETE FROM report WHERE kind = 'approval' AND read_at IS NULL
+       ${preservedReportIds.size > 0 ? `AND id NOT IN (${[...preservedReportIds].map(() => '?').join(',')})` : ''}`,
+    ).run(...(preservedReportIds.size > 0 ? [...preservedReportIds] : []));
+    return rows.map((row) => row.thread_id);
+  }
+
+  /** Reports still needing a chat card, used only to recover after restart. */
+  listPendingConversationReports(limit = 200): ConversationReport[] {
     const rows = this.statement(
       `SELECT r.*, t.title AS thread_title, t.state AS thread_state
          FROM report r
          JOIN thread t ON t.id = r.thread_id
-        WHERE r.read_at IS NULL AND r.level != 'silent'
-        ORDER BY CASE r.level WHEN 'decide' THEN 0 ELSE 1 END, r.created_at DESC, r.rowid DESC
+        WHERE r.read_at IS NULL AND r.kind != 'approval'
+          AND (r.level != 'silent' OR r.kind = 'question')
+        ORDER BY r.created_at ASC, r.rowid ASC
         LIMIT ?`,
     ).all(limit) as (ReportRow & { thread_title: string; thread_state: ThreadState })[];
     return rows.map((row) => ({
@@ -577,6 +615,7 @@ export class ThreadRepository {
     this.statement('UPDATE report SET read_at = ? WHERE id = ?').run(this.now(), id);
     const row = this.statement('SELECT * FROM report WHERE id = ?').get(id) as ReportRow | undefined;
     if (!row) throw new Error(`未知汇报: ${id}`);
+    this.onReportRead?.(id);
     return toReport(row);
   }
 
@@ -835,6 +874,7 @@ function toEvent(row: EventRow): TriggerEvent {
 }
 
 function toReport(row: ReportRow): WorkReport {
+  const result = parseWorkResult(row.result_json);
   return {
     id: row.id,
     threadId: row.thread_id,
@@ -844,10 +884,24 @@ function toReport(row: ReportRow): WorkReport {
     level: row.level,
     title: row.title,
     body: row.body,
+    ...(result ? { result } : {}),
     replyTarget: parseReplyTarget(row.thread_reply_target ?? null),
     createdAt: row.created_at,
     readAt: row.read_at,
   };
+}
+
+function parseWorkResult(json: string | null | undefined): WorkResult | null {
+  if (!json) return null;
+  try {
+    const value = JSON.parse(json) as Partial<WorkResult>;
+    if (!value || typeof value !== 'object' || typeof value.taskId !== 'string' || typeof value.conclusion !== 'string') {
+      return null;
+    }
+    return value as WorkResult;
+  } catch {
+    return null;
+  }
 }
 
 function parseList(json: string): string[] {

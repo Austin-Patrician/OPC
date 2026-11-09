@@ -68,8 +68,6 @@ export function threadOutcomeFor(
           },
         };
       }
-      // The expected ending. It is recorded (level `silent` keeps it out of the
-      // queue) so the thread keeps a history you can read later.
       return {
         state: 'done',
         report: { level: 'silent', title: task.title, body: summarise(task) },
@@ -147,6 +145,10 @@ function withAdvice(kind: TaskFailureKind, message: string): string {
 
 function summarise(task: WorkTask): string {
   const files = task.artifacts.map((artifact) => artifact.relPath);
-  if (files.length === 0) return '没有产出文件';
-  return `产出：${files.join('、')}`;
+  const answer = task.answer?.trim();
+  const parts = [
+    ...(answer ? [`回答：${answer}`] : []),
+    ...(files.length > 0 ? [`产出：${files.join('、')}`] : []),
+  ];
+  return parts.length > 0 ? parts.join('\n') : '没有文本回答或文件产出';
 }

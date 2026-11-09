@@ -32,12 +32,34 @@ export function createDecomposeToolExtension(deps: DecomposeToolDeps) {
           subtasks: Type.Array(
             Type.Object({
               title: Type.String(),
-              brief: Type.String(),
-              deliverableSpec: Type.String(),
+              contract: Type.Object({
+                objective: Type.String(),
+                deliverable: Type.String(),
+                outputs: Type.Array(
+                  Type.Union([
+                    Type.Object({ kind: Type.Literal('text'), description: Type.String() }),
+                    Type.Object({ kind: Type.Literal('file'), description: Type.String(), path: Type.String() }),
+                  ]),
+                  { minItems: 1 },
+                ),
+                acceptance: Type.Optional(
+                  Type.Object({
+                    command: Type.Array(Type.String(), { minItems: 1 }),
+                    template: Type.Optional(
+                      Type.Union([
+                        Type.Literal('http-ok'),
+                        Type.Literal('node-test'),
+                        Type.Literal('image-200'),
+                        Type.Literal('review-verdict'),
+                      ]),
+                    ),
+                  }),
+                ),
+              }),
               assigneeId: Type.String({ description: 'id of a direct report' }),
               estTokens: Type.Number({ minimum: 100 }),
               acceptanceTemplate: Type.Optional(
-                Type.Union([Type.Literal('http-ok'), Type.Literal('image-200')]),
+                Type.Union([Type.Literal('http-ok'), Type.Literal('node-test'), Type.Literal('image-200'), Type.Literal('review-verdict')]),
               ),
             }),
             { minItems: 1, maxItems: 8 },

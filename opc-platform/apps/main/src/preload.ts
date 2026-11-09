@@ -3,7 +3,12 @@ import {
   type AuthPromptRequest,
   type ChatSnapshot,
   type OpcBridge,
+  type RuntimeObservatorySnapshot,
+  type RuntimeObservatoryRequest,
+  type RuntimeEventView,
   type SendMessageInput,
+  type BrowserStatus,
+  type DesktopStatus,
 } from "@opc/shared/ipc";
 import type { OcrSettings } from "@opc/shared/ocr";
 import type {
@@ -74,6 +79,13 @@ const bridge: OpcBridge = {
   runtime: {
     snapshot: () =>
       ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
+    observatory: (request?: RuntimeObservatoryRequest) =>
+      ipcRenderer.invoke(IPC.runtime.observatory, request) as Promise<RuntimeObservatorySnapshot>,
+    onChanged: (listener: (event: RuntimeEventView) => void) => {
+      const handler = (_event: IpcRendererEvent, payload: RuntimeEventView) => listener(payload);
+      ipcRenderer.on(IPC.runtime.changedEvent, handler);
+      return () => ipcRenderer.off(IPC.runtime.changedEvent, handler);
+    },
     probe: () =>
       ipcRenderer.invoke(IPC.runtime.probe) as Promise<RuntimeSnapshot>,
     setActive: (kind: RuntimeKind, profileId: string | null) =>
@@ -124,6 +136,9 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
     sendMessage: (input: SendMessageInput) =>
       ipcRenderer.invoke(IPC.chat.sendMessage, input),
+    chooseAttachments: () => ipcRenderer.invoke(IPC.chat.chooseAttachments),
+    materializeClipboardAttachment: (input: { name: string; mimeType?: string; bytes: ArrayBuffer }) =>
+      ipcRenderer.invoke(IPC.chat.materializeClipboardAttachment, input),
     markRead: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.markRead, conversationId),
     ensureAssistant: () =>
@@ -147,14 +162,56 @@ const bridge: OpcBridge = {
   mcp: {
     list: () => ipcRenderer.invoke(IPC.mcp.list),
     save: (draft: unknown) => ipcRenderer.invoke(IPC.mcp.save, draft),
+    setAutoApprove: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.mcp.setAutoApprove, { name, enabled }),
+    listTools: (name: string) => ipcRenderer.invoke(IPC.mcp.listTools, name),
+    setToolAutoApprove: (server: string, tool: string, enabled: boolean | null) =>
+      ipcRenderer.invoke(IPC.mcp.setToolAutoApprove, { server, tool, enabled }),
+    resetToolApprovals: (server: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.mcp.resetToolApprovals, { server, enabled }),
     remove: (name: string) => ipcRenderer.invoke(IPC.mcp.remove, name),
     test: (name: string) => ipcRenderer.invoke(IPC.mcp.test, name),
     login: (name: string) => ipcRenderer.invoke(IPC.mcp.login, name),
     logout: (name: string) => ipcRenderer.invoke(IPC.mcp.logout, name),
   },
+  browser: {
+    status: () => ipcRenderer.invoke(IPC.browser.status),
+    install: () => ipcRenderer.invoke(IPC.browser.install),
+    uninstall: (deleteProfile?: boolean, deleteBrowserCache?: boolean) => ipcRenderer.invoke(IPC.browser.uninstall, { deleteProfile: deleteProfile === true, deleteBrowserCache: deleteBrowserCache === true }),
+    doctor: () => ipcRenderer.invoke(IPC.browser.doctor),
+    getSettings: () => ipcRenderer.invoke(IPC.browser.getSettings),
+    setSettings: (patch: unknown) => ipcRenderer.invoke(IPC.browser.setSettings, patch),
+    show: (taskId: string) => ipcRenderer.invoke(IPC.browser.show, taskId),
+    hide: (taskId?: string) => ipcRenderer.invoke(IPC.browser.hide, taskId),
+    resetProfile: (userId?: string) => ipcRenderer.invoke(IPC.browser.resetProfile, userId),
+    onChanged: (listener: (status: BrowserStatus) => void) => {
+      const handler = (_event: IpcRendererEvent, status: BrowserStatus) => listener(status);
+      ipcRenderer.on(IPC.browser.changedEvent, handler);
+      return () => ipcRenderer.off(IPC.browser.changedEvent, handler);
+    },
+  },
+  desktop: {
+    status: () => ipcRenderer.invoke(IPC.desktop.status) as Promise<DesktopStatus>,
+    install: () => ipcRenderer.invoke(IPC.desktop.install) as Promise<DesktopStatus>,
+    uninstall: (deleteRuntime?: boolean) => ipcRenderer.invoke(IPC.desktop.uninstall, deleteRuntime !== false) as Promise<DesktopStatus>,
+    doctor: () => ipcRenderer.invoke(IPC.desktop.doctor) as Promise<DesktopStatus>,
+    permissions: () => ipcRenderer.invoke(IPC.desktop.permissions) as Promise<DesktopStatus>,
+    permissionsGuide: () => ipcRenderer.invoke(IPC.desktop.permissionsGuide) as Promise<DesktopStatus>,
+    getSettings: (userId?: string) => ipcRenderer.invoke(IPC.desktop.getSettings, userId),
+    setSettings: (patch: unknown, userId?: string) => ipcRenderer.invoke(IPC.desktop.setSettings, patch, userId),
+    listApps: () => ipcRenderer.invoke(IPC.desktop.listApps),
+    listWindows: () => ipcRenderer.invoke(IPC.desktop.listWindows),
+    inspect: (taskId: string) => ipcRenderer.invoke(IPC.desktop.inspect, taskId),
+    show: (taskId: string) => ipcRenderer.invoke(IPC.desktop.show, taskId),
+    hide: (taskId?: string) => ipcRenderer.invoke(IPC.desktop.hide, taskId),
+    onChanged: (listener: (status: DesktopStatus) => void) => {
+      const handler = (_event: IpcRendererEvent, status: DesktopStatus) => listener(status);
+      ipcRenderer.on(IPC.desktop.changedEvent, handler);
+      return () => ipcRenderer.off(IPC.desktop.changedEvent, handler);
+    },
+  },
   threads: {
     start: (goal: string) => ipcRenderer.invoke(IPC.threads.start, goal),
-    queue: () => ipcRenderer.invoke(IPC.threads.queue),
     list: (limit?: number) => ipcRenderer.invoke(IPC.threads.list, limit),
     markRead: (reportId: string) =>
       ipcRenderer.invoke(IPC.threads.markRead, reportId),
@@ -192,6 +249,14 @@ const bridge: OpcBridge = {
     list: (filter?: { threadId?: string }) =>
       ipcRenderer.invoke(IPC.facts.list, filter),
     write: (input: unknown) => ipcRenderer.invoke(IPC.facts.write, input),
+  },
+  ontology: {
+    context: (input?: unknown) => ipcRenderer.invoke(IPC.ontology.context, input),
+    history: (input: unknown) => ipcRenderer.invoke(IPC.ontology.history, input),
+    command: (input: unknown) => ipcRenderer.invoke(IPC.ontology.command, input),
+    commandStatus: (commandId: string, status: 'approved' | 'rejected', result?: unknown, error?: string) =>
+      ipcRenderer.invoke(IPC.ontology.commandStatus, { commandId, status, result, error }),
+    outbox: (limit?: number) => ipcRenderer.invoke(IPC.ontology.outbox, limit),
   },
   router: {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),

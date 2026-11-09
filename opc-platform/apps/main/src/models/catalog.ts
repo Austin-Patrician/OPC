@@ -1,3 +1,5 @@
+import { imageCapabilitiesForProtocol } from './imageCapabilities';
+
 export interface CatalogPrice {
   input: number;
   output: number;
@@ -22,6 +24,7 @@ export interface CatalogModel {
   /** pi 的 `getSupportedThinkingLevels()` 结果，见 shared/domain 的同名字段。 */
   thinkingLevels?: string[];
   vision?: boolean;
+  imageParameters?: import('@opc/shared/domain').ImageModelCapabilities;
   price?: CatalogPrice;
 }
 
@@ -220,6 +223,7 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
       // 只有对话模型才有思考档位；图片 / 分类 / 语音模型不挂这个字段。
       ...(type === 'chat' ? { thinkingLevels: supportedLevels(model) } : {}),
       vision: model.input?.includes('image') ?? false,
+      ...(type === 'image' ? { imageParameters: imageCapabilitiesForProtocol(model.api) } : {}),
       price: model.cost,
     });
 

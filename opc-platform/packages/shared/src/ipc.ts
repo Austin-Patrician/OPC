@@ -40,6 +40,7 @@ import type {
   SpeechTranscribeResult,
   TaskTrace,
   WorkTask,
+  ChatAttachmentRef,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -59,6 +60,8 @@ export const IPC = {
     archive: "chat:archive",
     restore: "chat:restore",
     snapshotEvent: "chat:snapshot",
+    chooseAttachments: "chat:chooseAttachments",
+    materializeClipboardAttachment: "chat:materializeClipboardAttachment",
   },
   diagnostics: {
     report: "diagnostics:report",
@@ -99,6 +102,13 @@ export const IPC = {
     list: "facts:list",
     write: "facts:write",
   },
+  ontology: {
+    context: "ontology:context",
+    history: "ontology:history",
+    command: "ontology:command",
+    commandStatus: "ontology:commandStatus",
+    outbox: "ontology:outbox",
+  },
   memory: {
     consolidationRuns: "memory:consolidationRuns",
     list: "memory:list",
@@ -119,7 +129,6 @@ export const IPC = {
   threads: {
     start: "threads:start",
     list: "threads:list",
-    queue: "threads:queue",
     markRead: "threads:markRead",
     decide: "threads:decide",
     /** 回答执行体的请示（`ReportKind = 'question'` 的那一类）。 */
@@ -129,10 +138,42 @@ export const IPC = {
   mcp: {
     list: "mcp:list",
     save: "mcp:save",
+    setAutoApprove: "mcp:setAutoApprove",
+    listTools: "mcp:listTools",
+    setToolAutoApprove: "mcp:setToolAutoApprove",
+    resetToolApprovals: "mcp:resetToolApprovals",
     remove: "mcp:remove",
     test: "mcp:test",
     login: "mcp:login",
     logout: "mcp:logout",
+  },
+  browser: {
+    status: "browser:status",
+    install: "browser:install",
+    uninstall: "browser:uninstall",
+    doctor: "browser:doctor",
+    getSettings: "browser:getSettings",
+    setSettings: "browser:setSettings",
+    show: "browser:show",
+    hide: "browser:hide",
+    resetProfile: "browser:resetProfile",
+    changedEvent: "browser:changed",
+  },
+  desktop: {
+    status: "desktop:status",
+    install: "desktop:install",
+    uninstall: "desktop:uninstall",
+    doctor: "desktop:doctor",
+    permissions: "desktop:permissions",
+    permissionsGuide: "desktop:permissionsGuide",
+    getSettings: "desktop:getSettings",
+    setSettings: "desktop:setSettings",
+    listApps: "desktop:listApps",
+    listWindows: "desktop:listWindows",
+    inspect: "desktop:inspect",
+    show: "desktop:show",
+    hide: "desktop:hide",
+    changedEvent: "desktop:changed",
   },
   watchdog: {
     incidents: "watchdog:incidents",
@@ -192,6 +233,8 @@ export const IPC = {
   },
   runtime: {
     snapshot: "runtime:snapshot",
+    observatory: "runtime:observatory",
+    changedEvent: "runtime:changed",
     probe: "runtime:probe",
     setActive: "runtime:setActive",
     chooseBinary: "runtime:chooseBinary",
@@ -225,12 +268,32 @@ export interface ChatSnapshot {
   conversations: Conversation[];
   /** conversationId → display names currently working. */
   typingByConversation: Readonly<Record<string, readonly string[]>>;
+  /** The user-facing phase of the assistant for each conversation. */
+  activityByConversation: Readonly<Record<string, AssistantActivity>>;
+}
+
+export type AssistantActivityPhase =
+  | "idle"
+  | "delivered"
+  | "thinking"
+  | "delegating"
+  | "working"
+  | "organizing"
+  | "typing"
+  | "waiting_user"
+  | "completed"
+  | "error";
+
+export interface AssistantActivity {
+  phase: AssistantActivityPhase;
+  updatedAt: number;
 }
 
 export interface SendMessageInput {
   conversationId: string;
   text: string;
   mentionIds?: string[];
+  attachments?: ChatAttachmentRef[];
 }
 
 /** Node/Electron platform strings, minus the dependency on @types/node. */
@@ -272,6 +335,8 @@ export interface ChatBridge {
   getSnapshot(): Promise<ChatSnapshot>;
   onSnapshot(listener: (snapshot: ChatSnapshot) => void): () => void;
   sendMessage(input: SendMessageInput): Promise<void>;
+  chooseAttachments(): Promise<ChatAttachmentRef[]>;
+  materializeClipboardAttachment(input: { name: string; mimeType?: string; bytes: ArrayBuffer }): Promise<ChatAttachmentRef>;
   markRead(conversationId: string): Promise<void>;
   /** 1v1 with an employee; creates the conversation on first use. */
   /** 唯一的那条会话：没有就建一条。没有执行体时返回 null。 */
@@ -808,6 +873,9 @@ export interface NetworkBridge {
 export interface RuntimeBridge {
   /** Stored profiles plus the last known availability, without spawning. */
   snapshot(): Promise<RuntimeSnapshot>;
+  /** Live operational data for the Runtime observatory. */
+  observatory(request?: RuntimeObservatoryRequest): Promise<RuntimeObservatorySnapshot>;
+  onChanged(listener: (event: RuntimeEventView) => void): () => void;
   /** Re-detects every profile (spawns `--version` with a timeout). */
   probe(): Promise<RuntimeSnapshot>;
   setActive(kind: RuntimeKind, profileId: string | null): Promise<RuntimeState>;
@@ -826,6 +894,42 @@ export interface RuntimeBridge {
   /** On/off and output shape for `ocr_image`; applies to the next call. */
   ocr(): Promise<OcrSettings>;
   setOcr(next: OcrSettings): Promise<OcrSettings>;
+}
+
+/** A safe, read-only view of the currently running desktop runtime. */
+export interface RuntimeObservatorySnapshot {
+  generatedAt: number;
+  workers: Worker[];
+  tasks: WorkTask[];
+  traces: Record<string, TaskTrace[]>;
+  incidents: WatchdogIncidentView[];
+  actions: WatchdogActionView[];
+  events: RuntimeEventView[];
+  heartbeat: RuntimeHeartbeatView | null;
+}
+
+export interface RuntimeObservatoryRequest {
+  mode?: "summary" | "detail";
+  workerId?: string;
+  taskId?: string;
+}
+
+export interface RuntimeEventView {
+  id: string;
+  at: number;
+  kind: string;
+  severity: "info" | "warning" | "error";
+  subjectType: string;
+  subjectId: string;
+  summary: string;
+  detail: string;
+}
+
+export interface RuntimeHeartbeatView {
+  instanceId: string;
+  pid: number;
+  at: number;
+  state: "running" | "stopping";
 }
 
 /**
@@ -948,40 +1052,54 @@ export interface OpcBridge {
   extensions: ExtensionsBridge;
   skills: SkillsBridge;
   facts: FactsBridge;
+  ontology: OntologyBridge;
   memory: MemoryBridge;
   router: RouterBridge;
   trigger: TriggerBridge;
   billing: BillingBridge;
   threads: ThreadsBridge;
   mcp: McpBridge;
+  browser: BrowserBridge;
+  desktop: DesktopBridge;
   watchdog: WatchdogBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
 }
 
-/**
- * v2 注意力队列（docs/v2/01-core.md）。
- *
- * 你打开应用看到的不是会话列表，而是"有什么事需要我"。一个 report 的级别
- * 决定它出现在这里还是只留在记录里：silent 永远不进来。
- */
-export interface AttentionEntry {
-  id: string;
-  threadId: string;
-  /** 这条汇报是哪件活说的；空 = 这条线本身。 */
-  taskId: string | null;
-  /**
-   * `question` 是执行体卡住了在问你，收件动词是「回答」；
-   * `report` 是结果给你看，收件动词是「认可 / 重做」。
-   */
-  kind: "report" | "question" | "approval";
-  /** 「整理 Q3 财报」——你认的是这件事，不是 id。 */
-  threadTitle: string;
-  level: "decide" | "notify" | "silent";
-  title: string;
-  body: string;
+export interface OntologyContextView {
+  subjectEntityId: string;
+  prompt: string;
+  profile: Record<string, unknown>;
+  entities: unknown[];
+  assertions: unknown[];
+}
+
+export interface OntologyCommandView {
+  commandId: string;
+  actor: "user" | "router" | "worker";
+  objectType: string;
+  objectId: string;
+  action: string;
+  args: unknown;
+  expectedVersion: number | null;
+  idempotencyKey: string;
+  status: string;
+  approvalId: string | null;
+  result: unknown;
+  error: string | null;
   createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
+export interface OntologyBridge {
+  context(input?: { subjectEntityId?: string; query?: string; maxHops?: number; maxAssertions?: number }): Promise<OntologyContextView>;
+  history(input: { subjectEntityId: string; predicate?: string }): Promise<unknown[]>;
+  command(input: { actor: "user" | "router" | "worker"; objectType: string; objectId: string; action: string; args?: unknown; expectedVersion?: number; idempotencyKey: string; approvalId?: string }): Promise<OntologyCommandView>;
+  /** Only the chat approval surface may transition a command from the renderer. */
+  commandStatus(commandId: string, status: "approved" | "rejected", result?: unknown, error?: string): Promise<OntologyCommandView | null>;
+  outbox(limit?: number): Promise<unknown[]>;
 }
 
 /**
@@ -995,6 +1113,7 @@ export interface McpServerView {
   transport: "stdio" | "http";
   target: string;
   enabled: boolean;
+  autoApprove: boolean;
   exposure: "deferred" | "direct" | "hidden";
   description?: string;
   tools?: number;
@@ -1012,8 +1131,25 @@ export interface McpServerDraft {
   target: string;
   args?: string[];
   enabled?: boolean;
+  autoApprove?: boolean;
   exposure?: "deferred" | "direct" | "hidden";
   description?: string;
+}
+
+export interface McpToolView {
+  name: string;
+  title?: string;
+  description?: string;
+  highImpact: boolean;
+  risk: ("destructive" | "openWorld")[];
+  autoApprove: boolean;
+  overridden: boolean;
+}
+
+export interface McpApprovalPolicyView {
+  server: string;
+  autoApprove: boolean;
+  overrides: Record<string, boolean>;
 }
 
 export interface McpBridge {
@@ -1023,6 +1159,18 @@ export interface McpBridge {
   save(
     draft: McpServerDraft,
   ): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  /** Change only one server's approval policy without re-entering its command or URL. */
+  setAutoApprove(
+    name: string,
+    enabled: boolean,
+  ): Promise<{ servers: McpServerView[]; sources: string[] }>;
+  listTools(name: string): Promise<McpToolView[]>;
+  setToolAutoApprove(
+    server: string,
+    tool: string,
+    enabled: boolean | null,
+  ): Promise<McpApprovalPolicyView>;
+  resetToolApprovals(server: string, enabled: boolean): Promise<McpApprovalPolicyView>;
   remove(
     name: string,
   ): Promise<{ servers: McpServerView[]; sources: string[] }>;
@@ -1040,19 +1188,100 @@ export interface McpBridge {
   ): Promise<{ servers: McpServerView[]; sources: string[] }>;
 }
 
+export type BrowserInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'error';
+export interface BrowserStatus {
+  installState: BrowserInstallState;
+  enabled: boolean;
+  version?: string;
+  binary?: string;
+  healthy: boolean;
+  downloadEstimateBytes: number;
+  diskUsageBytes?: number;
+  error?: string;
+  profilePath: string;
+}
+export interface BrowserSettings {
+  enabled: boolean;
+  allowedDomains: string[];
+  blockedDomains: string[];
+  allowAllDomains: boolean;
+  requireApprovalFor: string[];
+  maxOutputBytes: number;
+}
+export interface BrowserBridge {
+  status(): Promise<BrowserStatus>;
+  install(): Promise<BrowserStatus>;
+  uninstall(deleteProfile?: boolean, deleteBrowserCache?: boolean): Promise<BrowserStatus>;
+  doctor(): Promise<BrowserStatus>;
+  getSettings(): Promise<BrowserSettings>;
+  setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
+  show(taskId: string): Promise<void>;
+  hide(taskId?: string): Promise<void>;
+  resetProfile(userId?: string): Promise<void>;
+  onChanged(listener: (status: BrowserStatus) => void): () => void;
+}
+
+export type DesktopInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'permission-required' | 'error';
+export interface DesktopPermissionStatus {
+  accessibility: 'granted' | 'denied' | 'unknown' | 'not_required';
+  screenRecording: 'granted' | 'denied' | 'unknown' | 'not_required';
+  automation: 'granted' | 'denied' | 'unknown' | 'not_required';
+}
+export interface DesktopAppAllowlistEntry {
+  id: string;
+  label: string;
+  platform: string;
+  enabled: boolean;
+  source: 'system' | 'user';
+}
+export interface DesktopSettings {
+  enabled: boolean;
+  allowedApps: DesktopAppAllowlistEntry[];
+  requireApprovalFor: string[];
+  maxOutputBytes: number;
+}
+export interface DesktopStatus {
+  installState: DesktopInstallState;
+  enabled: boolean;
+  version?: string;
+  binary?: string;
+  healthy: boolean;
+  packageBytes?: number;
+  diskUsageBytes?: number;
+  permissions: DesktopPermissionStatus;
+  supportedSurfaces: string[];
+  error?: string;
+}
+export interface DesktopAppView { name: string; process?: string; bundleId?: string; windows?: number; }
+export interface DesktopWindowView { id: string; title?: string; app?: string; process?: string; }
+export interface DesktopBridge {
+  status(): Promise<DesktopStatus>;
+  install(): Promise<DesktopStatus>;
+  uninstall(deleteRuntime?: boolean): Promise<DesktopStatus>;
+  doctor(): Promise<DesktopStatus>;
+  permissions(): Promise<DesktopStatus>;
+  permissionsGuide(): Promise<DesktopStatus>;
+  getSettings(userId?: string): Promise<DesktopSettings>;
+  setSettings(patch: Partial<DesktopSettings>, userId?: string): Promise<DesktopSettings>;
+  listApps(): Promise<DesktopAppView[]>;
+  listWindows(): Promise<DesktopWindowView[]>;
+  inspect(taskId: string): Promise<unknown>;
+  show(taskId: string): Promise<void>;
+  hide(taskId?: string): Promise<void>;
+  onChanged(listener: (status: DesktopStatus) => void): () => void;
+}
+
 export interface ThreadsBridge {
   /**
    * 你丢一个目标进来：开一条工作线 + 一条 manual 事件，立刻推一次 Router。
    * 不直接建任务——"这件事值不值得做、该给谁做"仍然是 Router 的决定。
    */
   start(goal: string): Promise<WorkThread>;
-  /** 未读、且级别不是 silent 的汇报，decide 永远排在前面。 */
-  queue(): Promise<AttentionEntry[]>;
   /** 最近的工作线；静默完成的活也在这里，否则你没法确认它真的在干。 */
   list(limit?: number): Promise<WorkThread[]>;
   markRead(reportId: string): Promise<void>;
   /**
-   * 你在队列上做的那两个动作：认可（`approve`）或带着意见重做（`rework`）。
+   * 在对话报告卡片上做的两个动作：认可（`approve`）或带着意见重做（`rework`）。
    * 这是唯一一处「人判定对不对」的入口——系统自己不宣称验收。
    */
   decide(input: {

@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { createImageToolExtension } from './imageTool';
+import type { ImageModelCapabilities } from '@opc/shared/domain';
 
 interface FakeApi {
   env: { writeFile: (path: string, content: Uint8Array) => Promise<{ ok: boolean }> };
 }
 
-function runTool(generate: () => Promise<{ ok: boolean; bytes?: Uint8Array; error?: string; model?: string }>, filename?: string) {
-  const extension = createImageToolExtension({ generate });
+function runTool(
+  generate: (input: { prompt: string; options?: Record<string, string | number | boolean> }) => Promise<{ ok: boolean; bytes?: Uint8Array; error?: string; model?: string }>,
+  filename?: string,
+  capabilities: ImageModelCapabilities | null = { parameters: { size: { type: 'enum', values: ['1024x1024', '1024x1536'] } } },
+) {
+  const calls: { prompt: string; options?: Record<string, string | number | boolean> }[] = [];
+  const extension = createImageToolExtension({
+    generate: async (input) => { calls.push(input); return generate(input); },
+    capabilities: () => capabilities,
+  });
   const tool = (extension.tools ?? [])[0]!;
   const writes: { path: string; bytes: number }[] = [];
   const api: FakeApi = {
@@ -23,6 +32,7 @@ function runTool(generate: () => Promise<{ ok: boolean; bytes?: Uint8Array; erro
     // The tool's execute is typed against pi's api; the fake only needs env.
     result: (tool as unknown as { execute: (args: unknown, api: unknown, context: unknown) => Promise<{ isError?: boolean; output?: { text: string }[] }> })
       .execute({ prompt: 'a cat', filename }, api, {}),
+    calls,
   };
 }
 
@@ -34,6 +44,38 @@ describe('generate_image tool', () => {
     expect(writes).toEqual([{ path: 'icon.png', bytes: 3 }]);
     expect(output.isError).toBeUndefined();
     expect(output.output?.[0]?.text).toContain('icon.png');
+  });
+
+  it('exposes only model-supported options and forwards them to generation', async () => {
+    const capabilities = { parameters: { size: { type: 'enum' as const, values: ['1024x1024', '1024x1536'] } } };
+    const calls: unknown[] = [];
+    const tool = (createImageToolExtension({
+      generate: async (input) => { calls.push(input); return { ok: true, bytes: new Uint8Array([1]) }; },
+      capabilities: () => capabilities,
+    }).tools ?? [])[0]!;
+    expect(tool.parameters).toHaveProperty('properties.size');
+    expect(tool.parameters).not.toHaveProperty('properties.quality');
+    await (tool as unknown as { execute: (args: unknown, api: unknown, context: unknown) => Promise<unknown> }).execute(
+      { prompt: 'a cat', size: '1024x1536' },
+      { env: { writeFile: async () => ({ ok: true }) } },
+      {},
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ options: { size: '1024x1536' } });
+  });
+
+  it('rejects parameters outside the selected model capabilities', async () => {
+    const writes: unknown[] = [];
+    const calls: unknown[] = [];
+    const extension = createImageToolExtension({
+      generate: async (input) => { calls.push(input); return { ok: true, bytes: new Uint8Array([1]) }; },
+      capabilities: () => ({ parameters: {} }),
+    });
+    const tool = extension.tools?.[0] as unknown as { execute: (args: unknown, api: unknown, context: unknown) => Promise<{ isError?: boolean }> };
+    const output = await tool.execute({ prompt: 'a cat', quality: 'high' }, { env: { writeFile: async () => ({ ok: true }) } }, {});
+    expect(output.isError).toBe(true);
+    expect(calls).toHaveLength(0);
+    expect(writes).toHaveLength(0);
   });
 
   it('keeps the file flat even when the model asks for a path', async () => {

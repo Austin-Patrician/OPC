@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listServers, removeServer, saveServer, testServer } from './settings';
+import { listServers, removeServer, saveServer, setAutoApprove, testServer } from './settings';
 import type { McpConnection } from './connection';
 import type { McpServerConfig } from './contract';
 
@@ -68,6 +68,33 @@ describe('服务器的增删改', () => {
     const raw = JSON.parse(readFileSync(path.join(userData, 'mcp.json'), 'utf8'));
     expect(raw.mcpServers.docs).toMatchObject({ url: 'https://example.com/mcp' });
     expect(raw.mcpServers.docs.command).toBeUndefined();
+  });
+
+  it('保存每台服务器的自动放行策略，并写回 mcp.json', () => {
+    saveServer(options(), { name: 'search', url: 'https://example.com/mcp', autoApprove: true });
+    const { servers } = listServers(options());
+    expect(servers[0]).toMatchObject({ name: 'search', autoApprove: true });
+    const raw = JSON.parse(readFileSync(path.join(userData, 'mcp.json'), 'utf8'));
+    expect(raw.mcpServers.search.autoApprove).toBe(true);
+  });
+
+  it('已接入列表可切换本地配置的审批策略', () => {
+    saveServer(options(), { name: 'search', url: 'https://example.com/mcp' });
+    const enabled = setAutoApprove(options(), 'search', true);
+    expect(enabled.servers[0]?.autoApprove).toBe(true);
+    const disabled = setAutoApprove(options(), 'search', false);
+    expect(disabled.servers[0]?.autoApprove).toBe(false);
+  });
+
+  it('来自 pi 配置的服务器也可在列表里单独设置审批策略', () => {
+    mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });
+    writeFileSync(
+      path.join(home, '.pi', 'agent', 'mcp.json'),
+      JSON.stringify({ mcpServers: { search: { url: 'https://example.com/mcp', headers: { authorization: 'secret' } } } }),
+    );
+    const enabled = setAutoApprove(options(), 'search', true);
+    expect(enabled.servers[0]?.autoApprove).toBe(true);
+    expect(enabled.servers[0]?.target).toBe('https://example.com/mcp');
   });
 
   it('我们自己的配置文件赢过 pi 那一份（同名时）', () => {

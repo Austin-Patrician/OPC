@@ -154,7 +154,7 @@ export function WatchdogPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        crumbs={[t('settings.group.general'), t('settings.page.watchdog')]}
+        crumbs={[t('settings.group.behavior'), t('settings.page.watchdog')]}
         title={t('settings.page.watchdog')}
         description={t('settings.watchdog.desc')}
       />

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CornerDownLeft, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { brandColor, companyName } from '@/entities/company/model/options';
+import { companyName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { CompanyMark } from '@/entities/company/ui/CompanyMark';
 import { useOnboarding, useOnboardingOpen } from '../model/onboardingStore';
@@ -49,7 +49,6 @@ function OnboardingDialog() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const currentId = VIEWS[step] as ViewId;
-  const accent = brandColor(profile.colorId);
 
   const go = useCallback((next: number) => {
     setDirection(next > step ? 'next' : 'prev');
@@ -156,7 +155,7 @@ function OnboardingDialog() {
       aria-label={t('onboarding.ariaLabel')}
       className="onb-root fixed inset-0 z-[100] overflow-hidden bg-app text-ink select-none"
     >
-      <AuroraBackdrop dimmed={phase === 'wizard'} accentFrom={accent.from} accentTo={accent.to} />
+      <AuroraBackdrop dimmed={phase === 'wizard'} />
 
       {phase !== 'wizard' ? (
         <WelcomeHero

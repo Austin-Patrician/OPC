@@ -53,6 +53,18 @@ export interface Conversation {
   messages: Message[];
 }
 
+/** A user-provided file reference. The bytes stay on disk; the runtime carries this path. */
+export interface ChatAttachmentRef {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  mimeType?: string;
+  source: 'file' | 'clipboard';
+  /** Main-process projection for historical messages; never trusted for authorization. */
+  availability?: 'available' | 'missing';
+}
+
 export interface DeliverableMeta {
   workId: string;
   accountName: string;
@@ -76,7 +88,64 @@ export type MessageKind = 'text' | 'deliverable' | 'system' | 'task';
 /** Ordered, renderer-safe content in an assistant reply. */
 export type ChatContentBlock =
   | { type: 'markdown'; text: string }
-  | { type: 'image' | 'video' | 'audio'; source: { type: 'url'; url: string } | { type: 'artifact'; taskId: string; relPath: string }; alt?: string; title?: string };
+  | {
+      type: 'approval';
+      reportId: string;
+      threadId: string;
+      taskId: string;
+      tool: string;
+      browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+      desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+      title: string;
+      body: string;
+      state: 'pending' | 'allowed' | 'denied';
+    }
+  | {
+      /** A write command approval that is not tied to a WorkTask/report. */
+      type: 'ontologyApproval';
+      commandId: string;
+      action: string;
+      objectType: string;
+      title: string;
+      body: string;
+      state: 'pending' | 'approved' | 'rejected';
+    }
+  | {
+      type: 'workflow';
+      reportId: string;
+      threadId: string;
+      taskId?: string;
+      kind: 'question' | 'report';
+      title: string;
+      body: string;
+      state: 'pending' | 'resolved';
+    }
+  | { type: 'image' | 'video' | 'audio'; source: { type: 'url'; url: string } | { type: 'artifact'; taskId: string; relPath: string }; alt?: string; title?: string }
+  | { type: 'file'; source: { type: 'artifact'; taskId: string; relPath: string }; name?: string; title?: string };
+
+/** The only user-visible response boundary of the Router. */
+export interface RouterResponse {
+  /** Blocks are rendered in this exact order. */
+  blocks: ChatContentBlock[];
+  /** An explicitly supplied external reply address, when one was present. */
+  replyTarget?: string;
+}
+
+/** A durable, evidence-backed result handed from a Worker to the Router. */
+export interface WorkResult {
+  taskId: string;
+  status: 'accepted' | 'rejected' | 'failed' | 'waiting';
+  conclusion: string;
+  artifacts: TaskArtifact[];
+  acceptance: TaskAcceptance | null;
+  evidence: Array<{
+    kind: 'source' | 'record';
+    label: string;
+    url?: string;
+    refId?: string;
+    excerpt?: string;
+  }>;
+}
 
 /** ── Work / task pipeline (Phase 0) ─────────────────────────────────────── */
 
@@ -233,6 +302,8 @@ export interface WorkTask {
   brief: string;
   /** What must exist when the task is done, in plain language. */
   deliverableSpec: string;
+  /** The Router-owned completion contract. */
+  contract?: TaskContract;
   assigneeId: string;
   assigneeName: string;
   parentTaskId?: string;
@@ -271,6 +342,8 @@ export interface WorkTask {
   /** The job's responsibilities, read live from `position → job` at task load. */
   /** Memories recalled for this run (L2 personal experience, L5 episodic). */
   memories?: { kind: string; content: string; scopeType: string }[];
+  /** Bounded ontology context pack, with evidence-backed graph assertions. */
+  ontologyContext?: string;
   /** Current company/department facts (fact), most specific last. */
   facts?: { statement: string; scopeType: string }[];
   /**
@@ -318,6 +391,8 @@ export interface WorkTask {
   startedAt?: number;
   finishedAt?: number;
   artifacts: TaskArtifact[];
+  /** Final assistant answer captured from the worker conversation. */
+  answer?: string;
   acceptance?: TaskAcceptance;
   /** How many times the system checked this task (1 = no repair needed). */
   attempts: number;
@@ -505,6 +580,31 @@ export interface BundledRuntime {
 
 export type ModelCapability = 'chat' | 'image' | 'classifier' | 'asr' | 'tts' | 'video';
 
+/** Normalized controls exposed by the image tool. Provider adapters translate them to wire fields. */
+export type ImageParameterName =
+  | 'size'
+  | 'aspect_ratio'
+  | 'quality'
+  | 'style'
+  | 'background'
+  | 'output_format'
+  | 'seed'
+  | 'negative_prompt';
+
+export interface ImageParameterSpec {
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'enum';
+  values?: string[];
+  minimum?: number;
+  maximum?: number;
+  default?: string | number | boolean;
+  description?: string;
+}
+
+/** Per-model image controls. Omitted parameters must not be sent to the provider. */
+export interface ImageModelCapabilities {
+  parameters: Partial<Record<ImageParameterName, ImageParameterSpec>>;
+}
+
 /** One selectable model, flattened for the UI. */
 export interface ModelOption {
   id: string;
@@ -533,6 +633,8 @@ export interface ModelOption {
    * exists" must never be read as "this model is enabled for images".
    */
   imageEnabled?: boolean;
+  /** Parameters the model accepts when used by `generate_image`. */
+  imageParameters?: ImageModelCapabilities;
   /**
    * Switched on for speech (Settings → Voice). Separate from `capability`
    * because the LLM page materialises a provider's whole catalog, voice models
@@ -603,6 +705,8 @@ export interface CatalogModel {
    */
   thinkingLevels?: string[];
   vision?: boolean;
+  /** Parameters the model accepts when used by `generate_image`. */
+  imageParameters?: ImageModelCapabilities;
   price?: {
     input: number;
     output: number;
@@ -945,11 +1049,30 @@ export type AcceptanceTemplate =
   | 'image-200'
   | 'review-verdict';
 
+export type TaskOutputSpec =
+  | { kind: 'text'; description: string }
+  | { kind: 'file'; description: string; path: string };
+
+/** Router's explicit task contract. It constrains completion, not implementation. */
+export interface TaskContract {
+  objective: string;
+  deliverable: string;
+  outputs: TaskOutputSpec[];
+  attachments?: ChatAttachmentRef[];
+  acceptance?: {
+    command: string[];
+    template?: AcceptanceTemplate;
+  };
+}
+
 /** One subtask a manager wants to create. */
 export interface SubtaskDraft {
   title: string;
-  brief: string;
-  deliverableSpec: string;
+  /** New callers should provide an explicit contract. Legacy decomposition
+   * payloads are normalized at the service boundary during migration. */
+  contract?: TaskContract;
+  brief?: string;
+  deliverableSpec?: string;
   assigneeId: string;
   estTokens: number;
   acceptanceTemplate?: AcceptanceTemplate;
@@ -957,8 +1080,10 @@ export interface SubtaskDraft {
 
 export interface CreateTaskInput {
   title: string;
-  brief: string;
-  deliverableSpec: string;
+  contract?: TaskContract;
+  /** Legacy internal callers are converted into a contract at the service boundary. */
+  brief?: string;
+  deliverableSpec?: string;
   assigneeId: string;
   /** Charges this project's budget as well; subtasks inherit it (§8.1). */
   projectGroupId?: string;
@@ -973,8 +1098,8 @@ export interface CreateTaskInput {
    */
   workerId?: string;
   estTokens: number;
-  acceptanceCommand: string[];
-  acceptanceTemplate: AcceptanceTemplate;
+  acceptanceCommand?: string[];
+  acceptanceTemplate?: AcceptanceTemplate;
   /** Service-internal: mandatory system steps (manager sign-off) may overdraw. */
   allowOverdraft?: boolean;
 }
@@ -1046,10 +1171,13 @@ export interface Message {
   text?: string;
   /** Structured assistant content; absent on legacy text-only messages. */
   content?: ChatContentBlock[];
+  /** True while the Router is still producing this assistant message. */
+  streaming?: boolean;
   deliverable?: Deliverable;
   /** Task card payload when `kind === 'task'`. */
   task?: WorkTask;
   mentions?: string[];
+  attachments?: ChatAttachmentRef[];
 }
 
 /**
@@ -1257,7 +1385,7 @@ export interface TriagePolicyPatch {
  *
  * - `report`：给你看的结果（验收过了/没过、静默线跑完了）→ 认可 / 返工；
  * - `question`：执行体**卡住**了，要你回答一句 → 回答；
- * - `approval`：它要做一件可能造成后果的事（改东西、往外发），要你**点头** → 允许 / 不允许。
+ * - `approval`：它要做一件可能造成后果的事（改东西、往外发），要你**点头** → 聊天卡片允许 / 不允许。
  *
  * 后两种都不是"结果给你看"，但也不是同一件事：一个要的是**内容**，一个要的是**放行**。
  * 用一个框收两种东西，收件端就只能猜它要什么。
@@ -1279,6 +1407,8 @@ export interface WorkReport {
   level: AttentionLevel;
   title: string;
   body: string;
+  /** Structured Worker result. Absent on legacy reports and non-task reports. */
+  result?: WorkResult;
   /** 原始信道地址；没有就是桌面 Router 会话。 */
   replyTarget?: TriggerReplyTarget | null;
   createdAt: number;

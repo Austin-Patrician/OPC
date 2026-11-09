@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildSeatbeltProfile, isInside, resolveToolPath, wrapCommand } from './policy';
+import { sandboxedShellCommand } from './workspaces';
 
 const workspace = path.resolve('/tmp/opc-workspace');
 const policy = {
@@ -44,11 +45,16 @@ describe('buildSeatbeltProfile', () => {
     const profile = buildSeatbeltProfile(policy);
 
     expect(profile).toContain('(deny file-write*)');
+    expect(profile).toContain('(allow file-write* (literal "/dev/null"))');
     expect(profile).toContain(`(allow file-write* (subpath "${workspace}"))`);
     expect(profile).toContain('(deny network-outbound)');
     // Local bind must stay possible, otherwise a dev server cannot start.
     expect(profile).not.toContain('(deny network*)');
     expect(profile).toContain('(deny file-read* (subpath "/Users/someone/.ssh"))');
+    // A real task workspace can itself be nested below a denied application-data
+    // root. The explicit read exception must be present so shell cwd resolution
+    // does not fail before the command starts.
+    expect(profile).toContain(`(allow file-read* (subpath "${workspace}"))`);
   });
 
   it('can allow the network when policy says so', () => {
@@ -69,10 +75,41 @@ describe('wrapCommand', () => {
     const argv = wrapCommand('bwrap', policy, 'echo hi');
     expect(argv[0]).toBe('bwrap');
     expect(argv).toContain('--unshare-net');
+    const workspaceBind = argv.indexOf('--bind');
+    expect(argv.slice(workspaceBind, workspaceBind + 3)).toEqual(['--bind', workspace, '/workspace']);
+    expect(argv.slice(workspaceBind + 3, workspaceBind + 5)).toEqual(['--chdir', '/workspace']);
     expect(argv.slice(-3)).toEqual(['/bin/sh', '-c', 'echo hi']);
   });
 
   it('refuses to run without a backend', () => {
     expect(() => wrapCommand('none', policy, 'echo hi')).toThrow(/没有可用的沙箱后端/);
+  });
+});
+
+describe('sandboxedShellCommand', () => {
+  it('passes the shell command once, without leaving literal quote characters', () => {
+    const command = sandboxedShellCommand('bwrap', policy, 'echo hi');
+
+    expect(command).toContain("/bin/sh -c 'echo hi'");
+    expect(command).not.toContain("-c ''\\''echo hi'\\'''");
+  });
+
+  it('mounts authorized read-only roots in the bwrap command', () => {
+    const command = sandboxedShellCommand('bwrap', policy, 'cat /Users/someone/photo.png');
+
+    expect(command).toContain('--ro-bind-try /Users/someone/.venv /Users/someone/.venv');
+  });
+
+  it('maps an authorized attachment out from a denied parent on bwrap', () => {
+    const command = sandboxedShellCommand(
+      'bwrap',
+      policy,
+      'file /Users/someone/Library/Application Support/OPC/photo.png',
+      [{ source: '/Users/someone/Library/Application Support/OPC/photo.png', target: '/opc-attachments/01-photo.png' }],
+    );
+
+    expect(command).toContain('--dir /opc-attachments');
+    expect(command).toContain('--ro-bind-try \'/Users/someone/Library/Application Support/OPC/photo.png\' /opc-attachments/01-photo.png');
+    expect(command).toContain('file /opc-attachments/01-photo.png');
   });
 });

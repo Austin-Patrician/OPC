@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import { defineExtension, defineTool, type ToolExecutionResult } from '@earendil-works/pi-durable';
 import type { OcrDetail, OcrResult } from '@opc/shared/ocr';
 import type { OcrEngine } from '../ocr/service';
+import { attachmentRefsOf } from '../sandbox/workspaces';
 
 const MAX_BYTES = 15 * 1024 * 1024;
 const MAX_CHARS = 8_000;
@@ -29,10 +30,10 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
       defineTool({
         name: 'ocr_image',
         description:
-          'Extract the text from an image file in the workspace (OCR). Use it when you cannot see images or when the exact wording of a screenshot, scan or photo matters. The answer follows the company setting (plain reading order, or one line at a time); set detail only to override it for this call. Supports png, jpg, webp, bmp, tiff and gif up to 15MB.',
+          'Extract the text from an image file in the workspace or a user-provided attachment (OCR). Use it when you cannot see images or when the exact wording of a screenshot, scan or photo matters. The answer follows the company setting (plain reading order, or one line at a time); set detail only to override it for this call. Supports png, jpg, webp, bmp, tiff and gif up to 15MB.',
         parameters: Type.Object({
           path: Type.String({
-            description: 'Image path relative to the workspace, e.g. screenshots/login.png.',
+            description: 'Image path relative to the workspace (e.g. screenshots/login.png) or the name/path of an authorized user attachment.',
           }),
           detail: Type.Optional(
             Type.String({
@@ -45,10 +46,12 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
           const detail = resolveDetail(args.detail, deps.ocr.settings?.().detail);
           const agent = await api.agent(context);
           const root = path.resolve(agent.cwd ?? deps.defaultRoot);
-          const target = path.resolve(root, args.path);
+          const requestedPath = args.path.trim();
+          const attachment = resolveAttachment(requestedPath, attachmentRefsOf(api.conversationId));
+          const target = attachment ? path.resolve(attachment.path) : path.resolve(root, requestedPath);
 
-          if (!contains(root, target)) {
-            return fail(`只能识别工作区内的图片：${args.path}`);
+          if (!attachment && !contains(root, target)) {
+            return fail(`只能识别工作区内的图片或已授权附件：${args.path}`);
           }
           if (!IMAGE_EXTENSIONS.has(path.extname(target).toLowerCase())) {
             return fail(`不支持的图片格式：${path.extname(target) || '（无扩展名）'}。支持 png、jpg、webp、bmp、tiff、gif。`);
@@ -62,7 +65,7 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
           } catch {
             return fail(`找不到图片：${args.path}（路径相对工作区，且必须是已存在的文件）`);
           }
-          if (!contains(realRoot, realTarget)) {
+          if (!attachment && !contains(realRoot, realTarget)) {
             return fail(`符号链接指向工作区外，已拒绝：${args.path}`);
           }
 
@@ -150,4 +153,35 @@ function contains(root: string, target: string): boolean {
 
 function formatBytes(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(bytes / 1024))}KB`;
+}
+
+/**
+ * Models usually repeat the attachment name from the task prompt rather than
+ * the host's absolute path. Resolve that name only against the attachments
+ * explicitly registered for this conversation; never search the filesystem.
+ */
+function resolveAttachment(
+  requested: string,
+  attachments: readonly { name: string; path: string }[],
+): { name: string; path: string } | undefined {
+  if (attachments.length === 0 || !requested) return undefined;
+  if (path.isAbsolute(requested)) {
+    const requestedAbsolute = path.resolve(requested);
+    const exact = attachments.filter((attachment) => path.resolve(attachment.path) === requestedAbsolute);
+    return exact.length === 1 ? exact[0] : undefined;
+  }
+  const normalized = path.normalize(requested);
+  // Keep traversal paths in the workspace validation branch. A request such
+  // as ../../secret.png must never become an attachment merely because its
+  // basename happens to match one.
+  if (normalized === '..' || normalized.startsWith(`..${path.sep}`)) return undefined;
+  const candidates = attachments.filter((attachment) => {
+    const absolute = path.resolve(attachment.path);
+    return (
+      normalized === path.normalize(attachment.name) ||
+      path.basename(normalized) === path.basename(attachment.name) ||
+      normalized === path.basename(absolute)
+    );
+  });
+  return candidates.length === 1 ? candidates[0] : undefined;
 }

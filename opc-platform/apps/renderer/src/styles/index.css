@@ -268,9 +268,18 @@
   border-radius: var(--buddy-window-radius);
   background: #f7f7f8;
   color: #1d1d1f;
-  box-shadow: 0 24px 70px rgb(25 50 75 / 9%), 0 2px 10px rgb(0 0 0 / 3%);
+  box-shadow:
+    0 24px 70px rgb(25 50 75 / 9%),
+    0 2px 10px rgb(0 0 0 / 3%);
   backdrop-filter: blur(22px);
 }
+
+/* Electron's native window shape is the outer boundary; avoid a second CSS
+ * radius that can disagree with the OS radius at the four corners. */
+[data-shell='electron'] .buddy-viewport {
+  border-radius: 0;
+}
+
 .buddy-desktop {
   min-width: 0;
 }
@@ -280,6 +289,10 @@
 }
 .buddy-titlebar {
   height: 42px;
+  /* Match the conversation body while staying opaque over wallpapers. */
+  background: var(--panel-bg-base);
+}
+.buddy-titlebar-overlay {
   background: transparent;
 }
 .buddy-window-control {
@@ -304,7 +317,8 @@
 }
 .buddy-rail {
   border-right: 1px solid #ecf0ee;
-  background: transparent;
+  /* Keep the navigation rail opaque when a wallpaper is configured. */
+  background: var(--rail-bg-base);
 }
 .buddy-rail-button {
   display: flex;
@@ -341,10 +355,96 @@
   background: transparent;
 }
 .buddy-chat {
-  background: transparent;
+  /* Keep wallpapers from showing through the conversation surface. */
+  background: var(--panel-bg-base);
 }
 .buddy-chat-header {
   color: #4a5550;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  flex: 0 0 36px !important;
+  overflow: hidden;
+}
+.buddy-assistant-status {
+  color: #68766e;
+}
+.buddy-assistant-status .buddy-mark {
+  transform: translateY(-3px);
+}
+.buddy-assistant-status-label {
+  max-width: 24ch;
+}
+.buddy-assistant-status-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: #22b560;
+  animation: buddy-status-dot 1.1s ease-in-out infinite;
+}
+.buddy-assistant-status-dots i:nth-child(2) { animation-delay: 140ms; }
+.buddy-assistant-status-dots i:nth-child(3) { animation-delay: 280ms; }
+.buddy-mark-svg {
+  transform-origin: 50% 70%;
+}
+.buddy-mark-idle .buddy-mark-svg {
+  animation: buddy-pet-breathe 3.2s ease-in-out infinite;
+}
+.buddy-mark-delivered .buddy-mark-svg {
+  animation: buddy-pet-delivered 520ms cubic-bezier(.22,.8,.32,1);
+}
+.buddy-mark-thinking .buddy-mark-svg,
+.buddy-mark-organizing .buddy-mark-svg {
+  animation: buddy-pet-think 1.8s ease-in-out infinite;
+}
+.buddy-mark-delegating .buddy-mark-svg,
+.buddy-mark-working .buddy-mark-svg {
+  animation: buddy-pet-work 900ms ease-in-out infinite;
+}
+.buddy-mark-typing .buddy-mark-svg {
+  animation: buddy-pet-type 680ms ease-in-out infinite;
+}
+.buddy-mark-completed .buddy-mark-svg {
+  animation: buddy-pet-complete 620ms cubic-bezier(.2,.9,.25,1);
+}
+.buddy-mark-error .buddy-mark-svg {
+  animation: buddy-pet-error 500ms ease-in-out 2;
+}
+@keyframes buddy-pet-breathe {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-1px) rotate(-1deg); }
+}
+@keyframes buddy-pet-delivered {
+  0% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(-3px) scale(1.04); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes buddy-pet-think {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-1px) rotate(2deg); }
+}
+@keyframes buddy-pet-work {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  35% { transform: translateY(-1px) rotate(-2deg); }
+  70% { transform: translateY(0) rotate(2deg); }
+}
+@keyframes buddy-pet-type {
+  0%, 100% { transform: translateY(0) scaleX(1); }
+  50% { transform: translateY(1px) scaleX(.98); }
+}
+@keyframes buddy-pet-complete {
+  0% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(-4px) scale(1.06); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes buddy-pet-error {
+  0%, 100% { transform: rotate(0deg); }
+  35% { transform: rotate(-4deg); }
+  70% { transform: rotate(4deg); }
+}
+@keyframes buddy-status-dot {
+  0%, 100% { opacity: .3; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
 }
 .buddy-header-action {
   display: inline-flex;
@@ -368,10 +468,85 @@
   margin-inline: auto;
   width: 100%;
 }
+
+@keyframes buddy-approval-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .buddy-approval,
+  .buddy-attachment-tray,
+  .buddy-composer-drop-hint,
+  .buddy-mark-svg,
+  .buddy-assistant-status-dots i { animation: none !important; }
+}
 .buddy-user-bubble {
   color: #1e2e26;
   background: #e3f3e9;
   box-shadow: 0 2px 10px rgb(34 181 96 / 5%);
+}
+.buddy-sent-attachments {
+  display: flex;
+  max-width: min(100%, 286px);
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 9px;
+}
+.buddy-sent-attachment {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 6px;
+  border: 1px solid rgb(26 111 57 / 12%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 48%);
+  text-align: left;
+}
+.buddy-sent-attachment-icon {
+  display: inline-flex;
+  width: 26px;
+  height: 28px;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.buddy-sent-attachment-icon svg {
+  width: 26px;
+  height: 28px;
+}
+.buddy-sent-attachment-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.buddy-sent-attachment-name,
+.buddy-sent-attachment-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buddy-sent-attachment-name {
+  color: #2e4a38;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.buddy-sent-attachment-detail {
+  color: #6f8a79;
+  font-size: 10px;
+  line-height: 1.25;
+}
+.buddy-sent-attachment-missing {
+  border-color: rgb(191 95 83 / 24%);
+  background: rgb(255 244 241 / 58%);
+}
+.buddy-sent-attachment-missing .buddy-sent-attachment-detail {
+  color: #b85d53;
 }
 .buddy-agent-bubble {
   border: 1px solid #eff3f1;
@@ -379,6 +554,7 @@
   box-shadow: 0 8px 28px rgb(18 38 28 / 4.5%);
 }
 .buddy-composer-bar {
+  position: relative;
   border: 1px solid #e6ece9;
   border-radius: 15px;
   background: #f3f6f4;
@@ -391,6 +567,145 @@
   border-color: #cbe5d6;
   background: #fff;
   box-shadow: 0 4px 20px rgb(34 181 96 / 7%);
+}
+.buddy-composer-dragging {
+  border-color: #35b86a;
+  background: #f0fbf4;
+  box-shadow: 0 0 0 3px rgb(53 184 106 / 13%), 0 8px 24px rgb(34 181 96 / 10%);
+}
+.buddy-composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 15px;
+  background: rgb(240 251 244 / 94%);
+  color: #168848;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  pointer-events: none;
+  animation: buddy-attachment-drop-in 140ms ease-out;
+}
+.buddy-attachment-tray {
+  animation: buddy-attachment-tray-in 180ms ease-out;
+}
+.buddy-attachment-tray-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 6px 2px;
+  color: #6c7c72;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.buddy-attachment-tray-count {
+  color: #a0aaa4;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+}
+.buddy-attachment-list {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 1px 1px 3px;
+  scrollbar-width: thin;
+}
+.buddy-attachment-chip {
+  position: relative;
+  display: flex;
+  width: 212px;
+  min-width: 212px;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px 8px 8px;
+  border: 1px solid #e3ebe6;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 86%);
+  box-shadow: 0 3px 12px rgb(31 54 40 / 4%);
+  transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+.buddy-attachment-chip:hover {
+  border-color: #c8e5d2;
+  background: #fff;
+  box-shadow: 0 5px 16px rgb(31 54 40 / 8%);
+  transform: translateY(-1px);
+}
+.buddy-attachment-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 34px;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.buddy-attachment-icon svg {
+  width: 30px;
+  height: 34px;
+}
+.buddy-attachment-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.buddy-attachment-name {
+  overflow: hidden;
+  color: #324239;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buddy-attachment-size {
+  overflow: hidden;
+  color: #8b9890;
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buddy-attachment-remove {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: #9aa69f;
+  opacity: .45;
+  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+.buddy-attachment-chip:hover .buddy-attachment-remove,
+.buddy-attachment-remove:focus-visible {
+  opacity: 1;
+}
+.buddy-attachment-remove:hover {
+  background: #fff0ee;
+  color: #d56f65;
+}
+.buddy-attachment-error {
+  color: #bc5e55;
+  font-size: 11px;
+  line-height: 1.4;
+}
+@keyframes buddy-attachment-tray-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes buddy-attachment-drop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .buddy-composer-toolbar {
   padding-inline: 8px !important;
@@ -411,7 +726,10 @@
 .buddy-mic-button {
   background: #e8efeb;
   color: #53645a;
-  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
 }
 .buddy-mic-button:hover:not(:disabled) {
   background: #dcebe1;
@@ -543,6 +861,9 @@
   .buddy-message-gutter {
     padding-inline: 14px;
   }
+  .buddy-assistant-status-label {
+    max-width: 13ch;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .buddy-welcome,
@@ -558,7 +879,7 @@
 }
 [data-theme='dark'] .buddy-rail {
   border-color: #2e3832;
-  background: transparent;
+  background: var(--rail-bg-base);
 }
 [data-theme='dark'] .buddy-window-control {
   color: #aebbb2;
@@ -586,8 +907,11 @@
   background: #29332d;
 }
 [data-theme='dark'] .buddy-main,
-[data-theme='dark'] .buddy-chat {
+[data-theme='dark'] .buddy-main {
   background: transparent;
+}
+[data-theme='dark'] .buddy-chat {
+  background: var(--panel-bg-base);
 }
 [data-theme='dark'] .buddy-agent-bubble {
   border-color: #303a34;
@@ -601,9 +925,59 @@
   color: #e9fff1;
   background: #294936;
 }
+[data-theme='dark'] .buddy-sent-attachment {
+  border-color: rgb(161 218 177 / 16%);
+  background: rgb(10 28 17 / 28%);
+}
+[data-theme='dark'] .buddy-sent-attachment-name {
+  color: #d5f0dc;
+}
+[data-theme='dark'] .buddy-sent-attachment-detail {
+  color: #9bc5a6;
+}
+[data-theme='dark'] .buddy-sent-attachment-missing {
+  border-color: rgb(240 149 138 / 28%);
+  background: rgb(73 39 37 / 36%);
+}
+[data-theme='dark'] .buddy-sent-attachment-missing .buddy-sent-attachment-detail {
+  color: #f0958a;
+}
 [data-theme='dark'] .buddy-composer-bar {
   border-color: #38443c;
   background: #222a25;
+}
+[data-theme='dark'] .buddy-composer-dragging {
+  border-color: #4b9e68;
+  background: #23382a;
+}
+[data-theme='dark'] .buddy-composer-drop-hint {
+  background: rgb(35 56 42 / 95%);
+  color: #8bd5a1;
+}
+[data-theme='dark'] .buddy-attachment-tray-head {
+  color: #9eafa4;
+}
+[data-theme='dark'] .buddy-attachment-tray-count {
+  color: #6f8175;
+}
+[data-theme='dark'] .buddy-attachment-chip {
+  border-color: #3b4a40;
+  background: #29342d;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 12%);
+}
+[data-theme='dark'] .buddy-attachment-chip:hover {
+  border-color: #50775b;
+  background: #303d34;
+}
+[data-theme='dark'] .buddy-attachment-name {
+  color: #e1ece4;
+}
+[data-theme='dark'] .buddy-attachment-size {
+  color: #9baa9f;
+}
+[data-theme='dark'] .buddy-attachment-remove:hover {
+  background: #4a302e;
+  color: #f0958a;
 }
 [data-theme='dark'] .buddy-composer-bar:focus-within {
   border-color: #42684e;
@@ -692,9 +1066,8 @@
 }
 
 /* ── Electron window chrome ─────────────────────────────────────────────
- * Inside Electron the OS owns the window buttons: hide the decorative traffic
- * lights. The macOS avatar drops below the real lights (see `TitleBar`), so the
- * rail's first row starts lower to clear it.
+ * The renderer owns the right-side window controls. Decorative traffic lights
+ * stay hidden, and the main process hides macOS's native controls on the left.
  */
 [data-shell='electron'] .titlebar-traffic {
   display: none;
@@ -985,6 +1358,60 @@
     );
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 80% 70% at 50% 42%, #000 25%, transparent 80%);
+}
+
+/* Runtime Observatory motion: status dots, live lanes, and inspector progress. */
+@keyframes rt-pulse-1200 {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.88);
+  }
+}
+
+@keyframes rt-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes rt-ping-1200 {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+.rt-pulse {
+  animation: rt-pulse-1200 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.rt-progress-bar {
+  animation: rt-progress-slide 1.8s ease-in-out infinite;
+}
+
+.rt-ping {
+  animation: rt-ping-1200 1.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rt-ping,
+  .rt-pulse,
+  .rt-progress-bar {
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

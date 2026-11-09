@@ -22,6 +22,7 @@
   "nav": {
     "attention": "注意力队列",
     "im": "对话",
+    "runtime": "系统运行态",
     "skills": "技能与工具",
     "menu": "设置与总控",
     "issues": "工作项",
@@ -31,6 +32,200 @@
     "welcomeTitle": "有什么事需要我？",
     "welcomeHint": "聊聊一个目标，或把一件待办交给我。工作进展和结果都会回到这条对话里。",
     "dispatchTask": "派发一件任务"
+  },
+  "runtime": {
+    "title": "系统运行态",
+    "status": {
+      "live": "运行中",
+      "paused": "已暂停",
+      "stale": "已过期",
+      "standby": "待命",
+      "waiting": "等待中",
+      "completed": "本轮已完成",
+      "failed": "执行失败"
+    },
+    "node": {
+      "ingress": "收件入口 · 点击投递",
+      "router": "分拣中心",
+      "watchdog": "健康巡检",
+      "watchdogStale": "心跳超时"
+    },
+    "station": {
+      "research": "探索检索",
+      "code": "代码构建",
+      "content": "内容生成",
+      "data": "数据整理",
+      "review": "质检把关"
+    },
+    "controls": {
+      "scene": "场景",
+      "dispatch": "投递任务",
+      "pause": "暂停实时更新",
+      "resume": "继续接收",
+      "openDetails": "展开详情",
+      "closeDetails": "收起详情",
+      "switchScenario": "切换运行场景"
+    },
+    "inspector": {
+      "currentTask": "当前任务",
+      "pipeline": "流水线 {{count}}",
+      "model": "模型",
+      "thread": "线程",
+      "started": "启动时间",
+      "tokens": "Tokens",
+      "trace": "执行记录",
+      "messages": "消息",
+      "messagesUnavailable": "当前 IPC 只提供任务、工具 trace 和运行事件，不包含 Worker 会话消息正文。",
+      "noMessages": "暂无消息记录。",
+      "watchdog": "Watchdog",
+      "stages": "执行阶段",
+      "toolTrace": "工具调用",
+      "calls": "{{count}} 次调用",
+      "noTools": "暂无工具调用",
+      "structuredOnly": "仅展示结构化摘要，不含原始推理",
+      "close": "关闭详情",
+      "dispatch": "投递任务",
+      "routingTable": "路由表",
+      "routingHint": "当前执行体 {{count}} 个",
+      "queueItems": "{{count}} 件",
+      "sorting": "正在分拣",
+      "transit": "轨道在途",
+      "queued": "待入队",
+      "routingRules": "分拣规则",
+      "routingStepFilter": "先过滤自身回环、空内容和重复环境事件；人发的消息不去重。",
+      "routingStepMatch": "按会话归属查找已订阅的 Worker；匹配后直接派发。",
+      "routingStepFallback": "没有匹配 Worker 时交给 Router；语义筛选未配置或失败时默认放行。",
+      "heartbeat": "系统心跳",
+      "heartbeatAgo": "前收到最近一次心跳",
+      "heartbeatMissing": "未收到守护回执",
+      "heartbeatUnavailable": "尚未读取到心跳",
+      "workerAcks": "Worker 回执",
+      "watchdogStats": "周期 {{interval}} · 回报 {{reports}} · 异常 {{faults}}",
+      "heartbeatInterval": "心跳周期",
+      "lastAck": "最近回执",
+      "memory": "常驻内存",
+      "budget": "Token 预算",
+      "stable": "心跳稳定",
+      "slow": "挂起等待，回执偏慢",
+      "expired": "心跳回执已超时"
+    },
+    "activity": {
+      "idle": "空闲，等待分派",
+      "incoming": "任务正在途中",
+      "holding": "任务已到达，等待上游",
+      "unboxing": "正在拆解任务",
+      "working": "已接收任务，正在处理",
+      "completed": "本轮已完成，等待这条工作线的后续任务",
+      "fault": "处理时发生异常"
+    },
+    "stage": {
+      "received": "接收任务",
+      "loading": "加载上下文",
+      "calling": "调用工具",
+      "synthesizing": "生成报告"
+    },
+    "state": {
+      "idle": "系统空闲 · 监听收件入口",
+      "lastUpdated": "最后更新 {{seconds}} 秒前",
+      "liveUnavailable": "实时运行数据暂不可用，当前显示预览数据",
+      "interactionHint": "拖拽旋转视角，点击建筑查看详情",
+      "paused": "实时更新已暂停，画面停在当前帧",
+      "stale": "Watchdog 已 {{seconds}} 秒未收到心跳回执",
+      "heartbeatUnavailable": "尚未读取到心跳",
+      "resetHeartbeat": "重置心跳",
+      "emptyTitle": "当前没有进行中的任务",
+      "emptyDescription": "Router 正在监听收件入口。投递一个任务，查看它如何被分拣、派送和处理。",
+      "dispatchExample": "投递示例任务"
+    },
+    "pipeline": {
+      "title": "处理流程",
+      "subtitle": "任务生命周期 · 实时",
+      "ingress": "收件入站",
+      "sorting": "扫码分拣",
+      "transit": "轨道派送",
+      "unboxing": "拆解开工",
+      "reports": "回报巡检"
+    },
+    "metrics": {
+      "deliveredToday": "今日交付",
+      "running": "运行中",
+      "inFlight": "在途任务",
+      "heartbeat": "心跳"
+    },
+    "scenario": {
+      "normal": { "short": "正常运行", "description": "Router 与 2 个 Worker 正常并发处理，Watchdog 心跳稳定" },
+      "waiting": { "short": "Worker 等待", "description": "Content Worker 处于上游锁或外部确认等待态" },
+      "failed": { "short": "Worker 异常", "description": "Review Worker 触发 schema.validate 断言超时错误" },
+      "stale": { "short": "心跳超时", "description": "Watchdog 超过 45 秒未收到守护回执，触发告警状态" },
+      "empty": { "short": "空闲待命", "description": "当前无活跃线程与队列任务，所有 Worker 处于 Idle 待命态" },
+      "paused": { "short": "暂停更新", "description": "已冻结画布与事件流滚动，便于排查当前状态" }
+    },
+    "workerData": {
+      "emptyTask": "待命 · 队列为空",
+      "worker-research": {
+        "task": "整理用户反馈中的重复问题",
+        "stages": {
+          "st-1": "接收 Router 分派任务与上下文指针",
+          "st-2": "挂载历史反馈索引与语义向量片段",
+          "st-3": "执行 search.web 与 memory.recall 交叉检索",
+          "st-4": "聚合高频重复问题并生成结构化报告"
+        },
+        "messages": {
+          "bm-1": "Router 下发反馈去重聚类任务",
+          "bm-2": "调用本地向量记忆检索 memory.recall",
+          "bm-3": "向 Report 节点输出阶段性聚类摘要 (4/6 簇)"
+        }
+      },
+      "worker-code": {
+        "task": "重构网关鉴权与重试中间件",
+        "stages": {
+          "st-c1": "读取网关模块 AST 与依赖边界",
+          "st-c2": "解析 retry.ts 与单元测试套件",
+          "st-c3": "执行 ast.grep 与 patch.apply",
+          "st-c4": "等待单测通过后生成变更报告"
+        },
+        "messages": {
+          "bm-c1": "Router 分派网关重试逻辑重构任务",
+          "bm-c2": "触发沙盒单测运行器 test.runner"
+        }
+      },
+      "worker-content": {
+        "task": "等待上游结构化摘要确认",
+        "stages": {
+          "st-w1": "接收版本变更说明撰写任务",
+          "st-w2": "读取近期合并 PR 列表与里程碑标签",
+          "st-w3": "等待 Research Worker 输出问题聚类终稿",
+          "st-w4": "待上游解除阻塞后生成发布日志"
+        },
+        "messages": {
+          "bm-w1": "挂起执行：等待依赖任务 research-042 完成"
+        }
+      },
+      "worker-data": {
+        "task": "待命 · 监听队列分派",
+        "stages": {
+          "st-d1": "工作线程池空闲，等待 Router 唤醒",
+          "st-d2": "未挂载活跃上下文",
+          "st-d3": "无工具调用",
+          "st-d4": "无输出任务"
+        },
+        "messages": {
+          "bm-d1": "上一轮批处理完成，已释放显存并归还连接池"
+        }
+      },
+      "worker-review": {
+        "task": "校验 schema.validate 断言超时",
+        "stages": {
+          "st-f1": "接收输出结构合规性审查任务",
+          "st-f2": "加载 JSON Schema 严格校验规则集",
+          "st-f3": "调用 schema.validate 连续 3 次返回字段缺失",
+          "st-f4": "任务已中止并上报 Watchdog 异常队列"
+        },
+        "messages": {
+          "bm-f1": "schema.validate 断言超时，已触发熔断隔离"
+        }
+      }
+    }
   },
   "titleBar": {
     "hire": "聘用 Agent 执行体",
@@ -51,6 +246,18 @@
       "cooling": "冷却中",
       "escalated": "已升级"
     },
+    "activity": {
+      "idle": "在线",
+      "delivered": "已送达",
+      "thinking": "正在思考",
+      "delegating": "任务已委派",
+      "working": "执行体正在处理",
+      "organizing": "正在整理结果",
+      "typing": "正在输入",
+      "waiting_user": "等你确认",
+      "completed": "已完成",
+      "error": "处理遇到问题"
+    },
     "members": "{{count}} 人",
     "mention": "提及执行体",
     "mentionAll": "@全体成员",
@@ -58,6 +265,10 @@
     "quickPrompts": "常用指令模板",
     "quickPromptsHint": "快捷指令",
     "inputPlaceholder": "和 Buddy 说点什么…",
+    "copyCode": "复制代码",
+    "codeCopied": "代码已复制",
+    "copyResponse": "复制回复",
+    "responseCopied": "回复已复制",
     "welcome": {
       "online": "在线 · 随时听你招呼",
       "title": "嗨，我是 Buddy",
@@ -174,7 +385,10 @@
     "autoSave": "修改后自动保存到本机",
     "group": {
       "general": "通用",
+      "behavior": "行为",
       "models": "模型",
+      "runtime": "运行时",
+      "mcp": "MCP",
       "network": "网络",
       "selfcheck": "自检",
       "about": "关于"
@@ -723,6 +937,13 @@
       "orphanCount": "{{count}} 条",
       "claim": "收下",
       "discard": "丢掉"
+      ,"ontologyTitle": "关系记忆"
+      ,"ontologyDesc": "可追溯的实体关系与当前画像。每条关系都关联证据，可单独撤回。"
+      ,"ontologyRefresh": "刷新"
+      ,"ontologyEmpty": "还没有关系记忆"
+      ,"ontologyEmptyHint": "当助手从对话中确认偏好、任务或协作关系后，会在这里形成可追溯的关系。"
+      ,"ontologyRetract": "撤回"
+      ,"ontologyHistory": "查看历史与证据"
     },
     "mcp": {
       "title": "外部能力",
@@ -732,6 +953,24 @@
       "empty": "还没有接入任何服务器。下面填一条就能加上。",
       "enabled": "启用",
       "disabled": "停用",
+      "autoApproveOn": "自动放行",
+      "autoApproveOff": "逐次审批",
+      "autoApprove": "自动放行高风险工具",
+      "autoApproveHint": "开启后，该 MCP 声明为 destructive 或 open-world 的工具将不再逐次请求审批。",
+      "autoApproveEnable": "开启自动放行",
+      "autoApproveDisable": "关闭自动放行",
+      "autoApproveEnabledNotice": "{{name}} 已开启自动放行。",
+      "autoApproveDisabledNotice": "{{name}} 已恢复逐次审批。",
+      "tools": "工具策略",
+      "highImpactTools": "高影响工具",
+      "noHighImpactTools": "此服务器没有声明高影响工具。",
+      "allAutoApprove": "全部自动放行",
+      "allRequireApproval": "全部要求审批",
+      "customOverride": "单独设置",
+      "risk": { "destructive": "有破坏性", "openWorld": "外部写入/访问" },
+      "toolAutoApproveEnabled": "{{tool}} 已设为自动放行。",
+      "toolAutoApproveDisabled": "{{tool}} 已恢复逐次审批。",
+      "toolsBulkNotice": "{{name}} 的工具策略已批量更新。",
       "counts": "{{tools}} 个工具 · {{resources}} 个资源",
       "test": "测试",
       "testOk": "{{name}} 通了：{{tools}} 个工具、{{resources}} 个资源。",

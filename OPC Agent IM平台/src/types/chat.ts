@@ -1,4 +1,10 @@
-export type View = "chat" | "tasks" | "gallery" | "memory" | "settings"
+export type View =
+  | "chat"
+  | "tasks"
+  | "gallery"
+  | "memory"
+  | "runtime"
+  | "settings"
 
 export interface ChatMessage {
   id: string

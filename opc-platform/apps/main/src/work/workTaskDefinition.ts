@@ -1,4 +1,4 @@
-import type { TaskAcceptance, TaskRecord, WorkTask } from '@opc/shared/domain';
+import type { TaskAcceptance, TaskOutputSpec, TaskRecord, WorkReport, WorkTask } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 import type { Context } from '@earendil-works/chord/context';
 import { defineTask, type TaskDefinition } from '@earendil-works/pi-durable';
@@ -26,8 +26,7 @@ import {
 export interface WorkTaskInput {
   workTaskId: string;
   title: string;
-  brief: string;
-  deliverableSpec: string;
+  contract: NonNullable<WorkTask['contract']>;
   acceptanceCommand: string[];
   workspaceDir: string;
   checksDir: string;
@@ -47,6 +46,7 @@ type WorkTaskState =
       lastEvidence?: AcceptanceFeedback['evidence'];
       lastReason?: string;
     }
+  | { phase: 'approval'; attempt: number; reportId: string }
   /**
    * 等子任务交回（团队收口）。
    *
@@ -60,6 +60,7 @@ export interface WorkTaskResult {
   verdict: 'pass' | 'fail';
   attempts: number;
   reason: string;
+  answer?: string;
 }
 
 /**
@@ -77,6 +78,8 @@ export interface WorkTaskServices {
     /** 这条工作线自己的经验能一起召回（v2 的记忆作用域）。 */
     threadId?: string;
   }) => Promise<{ kind: string; content: string; scopeType: string }[]>;
+  /** Evidence-backed, bounded personal ontology context. */
+  recallOntology?: (task: { workTaskId: string; assigneeId: string; threadId?: string; title: string; brief: string }) => string | undefined;
   /** Company/department facts that apply to this assignee. */
   /**
    * 常驻约束（`standing` 层）。
@@ -118,6 +121,9 @@ export interface WorkTaskServices {
   repository: TaskRepository;
   recordDurableStep: (taskId: string, text: string) => Promise<void>;
   onTaskChanged: (taskId: string) => void;
+  /** Returns true while the task still has an unanswered MCP approval. */
+  approvalPending?: (taskId: string, reportId?: string) => boolean;
+  approvalReport?: (taskId: string) => WorkReport | null;
   /** Proxy policy for acceptance commands (git/npm/scripts). */
   network?: NetworkClient;
   /** Company base environment; absent = ambient PATH with the Electron node fallback. */
@@ -192,6 +198,25 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
           }
         } catch (error) {
           logStep(task.input.workTaskId, `记忆检索失败（${error instanceof Error ? error.message : String(error)}）`, {
+            repository,
+            recordDurableStep,
+            onTaskChanged,
+          });
+        }
+      }
+
+      if (services?.recallOntology) {
+        try {
+          const ontologyContext = services.recallOntology({
+            workTaskId: task.input.workTaskId,
+            assigneeId: workTask.assigneeId,
+            title: workTask.title,
+            brief: workTask.brief,
+            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
+          });
+          if (ontologyContext) workTask.ontologyContext = ontologyContext;
+        } catch (error) {
+          logStep(task.input.workTaskId, `本体上下文读取失败（${error instanceof Error ? error.message : String(error)}）`, {
             repository,
             recordDurableStep,
             onTaskChanged,
@@ -318,15 +343,40 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         });
 
       try {
-        await runBrain(brain);
+        const answer = (await runBrain(brain)).answer?.trim() ?? '';
+        if (answer) repository.setAnswer(workTask.id, answer);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logStep(task.input.workTaskId, `主执行器失败（${message}），回退到脚本化执行`, {
+        if (services?.approvalPending?.(task.input.workTaskId)) {
+          logStep(task.input.workTaskId, `等待审批（${message}）`, {
+            repository,
+            recordDurableStep,
+            onTaskChanged,
+          });
+        } else {
+          logStep(task.input.workTaskId, `主执行器失败（${message}），回退到脚本化执行`, {
+            repository,
+            recordDurableStep,
+            onTaskChanged,
+          });
+          const answer = (await runBrain(requireServices().fallbackBrain)).answer?.trim() ?? '';
+          if (answer) repository.setAnswer(workTask.id, answer);
+        }
+      }
+
+      const approval = services?.approvalReport?.(workTask.id) ?? undefined;
+      if (approval) {
+        logStep(task.input.workTaskId, `任务暂停，等待审批：${approval.title}`, {
           repository,
           recordDurableStep,
           onTaskChanged,
         });
-        await runBrain(requireServices().fallbackBrain);
+        await runtime.sleepUntil(
+          Date.now() + 500,
+          { phase: 'approval', attempt, reportId: approval.id },
+          context,
+        );
+        return;
       }
 
       /*
@@ -393,6 +443,21 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
       );
     },
 
+    approval: async (task, runtime, context) => {
+      const { repository, recordDurableStep, onTaskChanged } = requireServices();
+      const { reportId, attempt } = task.state.checkpoint;
+      if (services?.approvalPending?.(task.input.workTaskId, reportId)) {
+        await runtime.sleepUntil(Date.now() + 500, { phase: 'approval', attempt, reportId }, context);
+        return;
+      }
+      logStep(task.input.workTaskId, '审批已处理，继续原任务', {
+        repository,
+        recordDurableStep,
+        onTaskChanged,
+      });
+      await runtime.commit(() => ({ status: 'running', checkpoint: { phase: 'produce', attempt } }), context);
+    },
+
     verify: async (task, runtime, context) => {
       const { repository, recordDurableStep, onTaskChanged } = requireServices();
       const workTask = toWorkTask(repository, task.input.workTaskId);
@@ -411,8 +476,54 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
       );
 
       const files = listWorkspaceFiles(workspaceDir);
-      if (files.length === 0) {
-        throw new Error('执行体没有产出任何文件');
+      const answer = workTask.answer?.trim() ?? '';
+      const contract = workTask.contract ?? {
+        objective: workTask.brief,
+        deliverable: workTask.deliverableSpec,
+        outputs: [],
+      };
+      const outputFailure = missingOutput(contract.outputs, files, answer);
+      if (outputFailure) {
+        const attempts = task.state.checkpoint.attempt;
+        const result: WorkTaskResult = {
+          verdict: 'fail',
+          attempts,
+          reason: outputFailure,
+          ...(answer ? { answer } : {}),
+        };
+        repository.addAcceptance(workTask.id, {
+          verdict: 'fail',
+          reason: outputFailure,
+          evidence: {
+            command: ['opc', 'output-contract'],
+            exitCode: 1,
+            stdoutTail: '',
+            stderrTail: outputFailure,
+            durationMs: 0,
+          },
+        });
+        if (attempts >= task.input.maxAttempts) {
+          await runtime.commit(() => ({ status: 'terminal', outcome: { status: 'completed', result } }), context);
+        } else {
+          await runtime.commit(
+            () => ({
+              status: 'running',
+              checkpoint: {
+                ...task.state.checkpoint,
+                phase: 'produce',
+                lastEvidence: {
+                  command: ['opc', 'output-contract'],
+                  exitCode: 1,
+                  stdoutTail: '',
+                  stderrTail: outputFailure,
+                },
+                lastReason: outputFailure,
+              },
+            }),
+            context,
+          );
+        }
+        return;
       }
 
       repository.clearArtifacts(workTask.id);
@@ -436,6 +547,7 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
           verdict: acceptance.verdict,
           attempts,
           reason: acceptance.reason,
+          ...(answer ? { answer } : {}),
         };
         await runtime.commit(
           () => ({ status: 'terminal', outcome: { status: 'completed', result } }),
@@ -489,6 +601,16 @@ function toWorkTask(
   return task;
 }
 
+function missingOutput(outputs: readonly TaskOutputSpec[], files: readonly { relPath: string }[], answer: string): string | null {
+  for (const output of outputs) {
+    if (output.kind === 'text' && !answer) return `缺少文本回答：${output.description}`;
+    if (output.kind === 'file' && !files.some((file) => file.relPath === output.path)) {
+      return `缺少文件交付物：${output.path}`;
+    }
+  }
+  return null;
+}
+
 function logStep(
   taskId: string,
   text: string,
@@ -512,10 +634,14 @@ async function accept(
   // The acceptance command runs in the same base environment as the agent's
   // tools. `env` below still wins per-key for the OPC_* contract variables.
   const runtimeEnv = requireServices().runtime?.acceptanceEnv();
+  const answer = task.answer ?? '';
   const result = await runCommand(argv, {
     cwd: workspaceDir,
     timeoutMs: 25_000,
-    env: { OPC_ENTRY: 'server.js', OPC_EXPECT: 'ok' },
+    // The report is part of the task result, not a file in the workspace. Keep
+    // the legacy REPORT name for existing acceptance scripts and expose the
+    // namespaced form for new ones.
+    env: { OPC_ENTRY: 'server.js', OPC_EXPECT: 'ok', REPORT: answer, OPC_ANSWER: answer },
     network: requireServices().network,
     ...(runtimeEnv ? { runtime: { env: runtimeEnv } } : {}),
   });

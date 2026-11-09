@@ -22,6 +22,7 @@
   "nav": {
     "attention": "Attention",
     "im": "Messages",
+    "runtime": "System runtime",
     "skills": "Skills & tools",
     "menu": "Settings",
     "issues": "Issues",
@@ -31,6 +32,200 @@
     "welcomeTitle": "What can I help you with?",
     "welcomeHint": "Tell me a goal or hand off a task. Progress and results will come back to this conversation.",
     "dispatchTask": "Dispatch a task"
+  },
+  "runtime": {
+    "title": "System runtime",
+    "status": {
+      "live": "Live",
+      "paused": "Paused",
+      "stale": "Stale",
+      "standby": "Standby",
+      "waiting": "Waiting",
+      "completed": "Task complete",
+      "failed": "Failed"
+    },
+    "node": {
+      "ingress": "Click to dispatch",
+      "router": "Routing hub",
+      "watchdog": "Health checks",
+      "watchdogStale": "Heartbeat timeout"
+    },
+    "station": {
+      "research": "Research",
+      "code": "Code",
+      "content": "Content",
+      "data": "Data",
+      "review": "Review"
+    },
+    "controls": {
+      "scene": "Scene",
+      "dispatch": "Dispatch task",
+      "pause": "Pause live updates",
+      "resume": "Resume updates",
+      "openDetails": "Open details",
+      "closeDetails": "Close details",
+      "switchScenario": "Switch runtime scenario"
+    },
+    "inspector": {
+      "currentTask": "Current task",
+      "pipeline": "Pipeline {{count}}",
+      "model": "Model",
+      "thread": "Thread",
+      "started": "Started",
+      "tokens": "Tokens",
+      "trace": "Trace",
+      "messages": "Messages",
+      "messagesUnavailable": "The current runtime bridge exposes tasks, tool traces, and runtime events, but not Worker conversation messages.",
+      "noMessages": "No messages recorded.",
+      "watchdog": "Watchdog",
+      "stages": "Execution stages",
+      "toolTrace": "Tool trace",
+      "calls": "{{count}} calls",
+      "noTools": "No tool calls yet",
+      "structuredOnly": "Structured summaries only; raw reasoning is hidden",
+      "close": "Close details",
+      "dispatch": "Dispatch task",
+      "routingTable": "Routing table",
+      "routingHint": "{{count}} active workers",
+      "queueItems": "{{count}} items",
+      "sorting": "Sorting",
+      "transit": "In transit",
+      "queued": "Queued",
+      "routingRules": "Routing rules",
+      "routingStepFilter": "Drop self-generated loops, empty input, and duplicate environment events; human messages are never deduplicated.",
+      "routingStepMatch": "Match the conversation to a subscribed Worker and dispatch directly.",
+      "routingStepFallback": "Without a Worker match, send it to Router; semantic screening defaults to allow when unavailable or failing.",
+      "heartbeat": "System heartbeat",
+      "heartbeatAgo": "since the last heartbeat",
+      "heartbeatMissing": "No watchdog acknowledgement",
+      "heartbeatUnavailable": "Heartbeat has not been received yet",
+      "workerAcks": "Worker acknowledgements",
+      "watchdogStats": "Interval {{interval}} · reports {{reports}} · faults {{faults}}",
+      "heartbeatInterval": "Heartbeat interval",
+      "lastAck": "Last acknowledgement",
+      "memory": "Resident memory",
+      "budget": "Token budget",
+      "stable": "Heartbeat stable",
+      "slow": "Waiting; acknowledgement is slow",
+      "expired": "Heartbeat acknowledgement expired"
+    },
+    "activity": {
+      "idle": "Idle, waiting for dispatch",
+      "incoming": "Task in transit",
+      "holding": "Task arrived, waiting upstream",
+      "unboxing": "Breaking down the task",
+      "working": "Task received, processing",
+      "completed": "Task complete; ready for the next task on this thread",
+      "fault": "Processing failed"
+    },
+    "stage": {
+      "received": "Received task",
+      "loading": "Loading context",
+      "calling": "Calling tool",
+      "synthesizing": "Generating report"
+    },
+    "state": {
+      "idle": "System idle · listening for incoming work",
+      "lastUpdated": "Last updated {{seconds}} seconds ago",
+      "liveUnavailable": "Live runtime data is unavailable; showing preview data",
+      "interactionHint": "Drag to rotate the view; click a station for details",
+      "paused": "Live updates paused on the current frame",
+      "stale": "Watchdog has not acknowledged a heartbeat for {{seconds}} seconds",
+      "heartbeatUnavailable": "Heartbeat has not been received yet",
+      "resetHeartbeat": "Reset heartbeat",
+      "emptyTitle": "No active tasks",
+      "emptyDescription": "Router is listening for incoming work. Dispatch a task to see it routed, delivered, and processed.",
+      "dispatchExample": "Dispatch example task"
+    },
+    "pipeline": {
+      "title": "Processing flow",
+      "subtitle": "Task lifecycle · live",
+      "ingress": "Ingress",
+      "sorting": "Route scan",
+      "transit": "Dispatch",
+      "unboxing": "Start work",
+      "reports": "Report check"
+    },
+    "metrics": {
+      "deliveredToday": "Delivered today",
+      "running": "Running",
+      "inFlight": "In transit",
+      "heartbeat": "Heartbeat"
+    },
+    "scenario": {
+      "normal": { "short": "Normal live", "description": "Router and two Workers are processing concurrently; Watchdog is healthy" },
+      "waiting": { "short": "Worker waiting", "description": "Content Worker is waiting on an upstream lock or confirmation" },
+      "failed": { "short": "Worker failed", "description": "Review Worker hit a schema.validate assertion timeout" },
+      "stale": { "short": "Heartbeat stale", "description": "Watchdog has not received an acknowledgement for 45 seconds" },
+      "empty": { "short": "Standby", "description": "No active threads or queued tasks; all Workers are idle" },
+      "paused": { "short": "Updates paused", "description": "Canvas and event flow are frozen for inspection" }
+    },
+    "workerData": {
+      "emptyTask": "Standby · queue empty",
+      "worker-research": {
+        "task": "Cluster recurring issues in user feedback",
+        "stages": {
+          "st-1": "Accept Router task and context pointer",
+          "st-2": "Mount feedback index and semantic vector slices",
+          "st-3": "Cross-search with search.web and memory.recall",
+          "st-4": "Aggregate recurring issues into a structured report"
+        },
+        "messages": {
+          "bm-1": "Router dispatched a feedback clustering task",
+          "bm-2": "Queried local vector memory with memory.recall",
+          "bm-3": "Sent a partial cluster summary to the Report node (4/6 clusters)"
+        }
+      },
+      "worker-code": {
+        "task": "Refactor gateway auth and retry middleware",
+        "stages": {
+          "st-c1": "Read gateway module AST and dependency boundaries",
+          "st-c2": "Parse retry.ts and the unit test suite",
+          "st-c3": "Run ast.grep and patch.apply",
+          "st-c4": "Generate the change report after tests pass"
+        },
+        "messages": {
+          "bm-c1": "Router dispatched the gateway retry refactor",
+          "bm-c2": "Started the sandbox test runner test.runner"
+        }
+      },
+      "worker-content": {
+        "task": "Waiting for upstream structured summary",
+        "stages": {
+          "st-w1": "Accept release notes drafting task",
+          "st-w2": "Read recent merged PRs and milestone labels",
+          "st-w3": "Wait for Research Worker issue cluster finalization",
+          "st-w4": "Generate release notes after the upstream block clears"
+        },
+        "messages": {
+          "bm-w1": "Execution suspended while research-042 completes"
+        }
+      },
+      "worker-data": {
+        "task": "Standby · listening for queue dispatch",
+        "stages": {
+          "st-d1": "Worker pool idle, waiting for Router",
+          "st-d2": "No active context mounted",
+          "st-d3": "No tool calls",
+          "st-d4": "No output task"
+        },
+        "messages": {
+          "bm-d1": "Batch completed; released memory and returned the connection pool"
+        }
+      },
+      "worker-review": {
+        "task": "Validate schema.validate assertion timeout",
+        "stages": {
+          "st-f1": "Accept output schema compliance review",
+          "st-f2": "Load strict JSON Schema validation rules",
+          "st-f3": "schema.validate returned missing fields three times",
+          "st-f4": "Task aborted and reported to the Watchdog fault queue"
+        },
+        "messages": {
+          "bm-f1": "schema.validate assertion timed out; circuit breaker isolated the task"
+        }
+      }
+    }
   },
   "titleBar": {
     "hire": "Hire an agent",
@@ -51,6 +246,18 @@
       "cooling": "Cooling",
       "escalated": "Escalated"
     },
+    "activity": {
+      "idle": "Online",
+      "delivered": "Delivered",
+      "thinking": "Thinking",
+      "delegating": "Task delegated",
+      "working": "Worker is processing",
+      "organizing": "Organizing the result",
+      "typing": "Typing",
+      "waiting_user": "Waiting for you",
+      "completed": "Done",
+      "error": "Something went wrong"
+    },
     "members": "{{count}} members",
     "mention": "Mention",
     "mentionAll": "@everyone",
@@ -58,6 +265,10 @@
     "quickPrompts": "Saved instructions",
     "quickPromptsHint": "Quick instructions",
     "inputPlaceholder": "Say something to Buddy…",
+    "copyCode": "Copy code",
+    "codeCopied": "Code copied",
+    "copyResponse": "Copy response",
+    "responseCopied": "Response copied",
     "welcome": {
       "online": "Online · ready when you are",
       "title": "Hi, I'm Buddy",
@@ -174,7 +385,10 @@
     "autoSave": "Saved automatically on this device",
     "group": {
       "general": "General",
+      "behavior": "Behavior",
       "models": "Models",
+      "runtime": "Runtimes",
+      "mcp": "MCP",
       "network": "Network",
       "selfcheck": "Self-check",
       "about": "About"
@@ -723,6 +937,13 @@
       "orphanCount": "{{count}} entries",
       "claim": "Claim",
       "discard": "Discard"
+      ,"ontologyTitle": "Relation memory"
+      ,"ontologyDesc": "Traceable entities and relationships that shape the current profile. Every relation keeps its evidence and can be retracted."
+      ,"ontologyRefresh": "Refresh"
+      ,"ontologyEmpty": "No relation memory yet"
+      ,"ontologyEmptyHint": "Confirmed preferences, tasks, and collaboration relationships will appear here with traceable evidence."
+      ,"ontologyRetract": "Retract"
+      ,"ontologyHistory": "View history and evidence"
     },
     "mcp": {
       "title": "External capabilities",
@@ -732,6 +953,24 @@
       "empty": "Nothing connected yet. Fill in a row below.",
       "enabled": "On",
       "disabled": "Off",
+      "autoApproveOn": "Auto-allow",
+      "autoApproveOff": "Approval required",
+      "autoApprove": "Auto-allow high-impact tools",
+      "autoApproveHint": "When enabled, tools this MCP marks destructive or open-world will not ask for approval each time.",
+      "autoApproveEnable": "Enable auto-allow",
+      "autoApproveDisable": "Disable auto-allow",
+      "autoApproveEnabledNotice": "Auto-allow enabled for {{name}}.",
+      "autoApproveDisabledNotice": "Per-call approval restored for {{name}}.",
+      "tools": "Tool policies",
+      "highImpactTools": "High-impact tools",
+      "noHighImpactTools": "This server declares no high-impact tools.",
+      "allAutoApprove": "Allow all",
+      "allRequireApproval": "Require all",
+      "customOverride": "Custom override",
+      "risk": { "destructive": "Destructive", "openWorld": "External access" },
+      "toolAutoApproveEnabled": "{{tool}} is now auto-allowed.",
+      "toolAutoApproveDisabled": "{{tool}} now requires approval.",
+      "toolsBulkNotice": "Tool policies updated for {{name}}.",
       "counts": "{{tools}} tools · {{resources}} resources",
       "test": "Test",
       "testOk": "{{name}} is reachable: {{tools}} tools, {{resources}} resources.",

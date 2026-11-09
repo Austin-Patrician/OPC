@@ -114,6 +114,14 @@ describe('worker', () => {
     expect(threads.listWorkers(thread.id)).toHaveLength(0);
     expect(threads.getWorker(worker.id)).not.toBeNull();
   });
+
+  it('includes recently retired workers only in the observatory roster window', () => {
+    const worker = threads.createWorker({ name: '小周' });
+    const retired = threads.retireWorker(worker.id);
+    expect(threads.listAllWorkers()).toHaveLength(0);
+    expect(threads.listRuntimeWorkers(retired.retiredAt! - 1).map((item) => item.id)).toEqual([worker.id]);
+    expect(threads.listRuntimeWorkers(retired.retiredAt! + 1)).toHaveLength(0);
+  });
 });
 
 describe('event', () => {
@@ -143,24 +151,39 @@ describe('event', () => {
 });
 
 describe('report', () => {
+  it('keeps ask-user questions out of attention while emitting a chat action', () => {
+    const thread = threads.createThread({ title: 'A' });
+    const created: string[] = [];
+    threads.onReportCreated = (report) => created.push(report.id);
+    const report = threads.addReport({
+      threadId: thread.id,
+      level: 'silent',
+      kind: 'question',
+      title: '需要你回复',
+      body: '选哪个方案？',
+    });
+    expect(created).toEqual([report.id]);
+    expect(threads.listPendingConversationReports().map((item) => item.id)).toEqual([report.id]);
+  });
+
   it('puts a decision above a newer notification', () => {
     const thread = threads.createThread({ title: 'A' });
     threads.addReport({ threadId: thread.id, level: 'notify', title: '做完了' });
     threads.addReport({ threadId: thread.id, level: 'decide', title: '要不要发出去？' });
-    expect(threads.listQueue().map((row) => row.level)).toEqual(['decide', 'notify']);
+    expect(threads.listPendingConversationReports().map((row) => row.level)).toEqual(['notify', 'decide']);
   });
 
   it('keeps silent reports out of the interruption queue', () => {
     const thread = threads.createThread({ title: 'A' });
     threads.addReport({ threadId: thread.id, level: 'silent', title: '已归档' });
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('drops a read report from the queue and stamps the time', () => {
     const thread = threads.createThread({ title: 'A' });
     const report = threads.addReport({ threadId: thread.id, title: '做完了' });
     expect(threads.markReportRead(report.id).readAt).not.toBeNull();
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('touches its thread, so the queue and the thread list agree on what moved', () => {

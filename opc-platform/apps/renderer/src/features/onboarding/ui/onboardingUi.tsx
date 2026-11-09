@@ -11,32 +11,11 @@ import { cn } from '@/shared/lib/cn';
  * instead of being a light-only island inside the app.
  */
 
-/** Soft, luminous editorial backdrop: three drifting accent blobs over the app canvas. */
-export function AuroraBackdrop({
-  dimmed = false,
-  accentFrom = '#38B6FF',
-  accentTo = '#7A4CE0',
-}: {
-  dimmed?: boolean;
-  accentFrom?: string;
-  accentTo?: string;
-}) {
+/** Flat onboarding backdrop with a subtle grid over the app canvas. */
+export function AuroraBackdrop({ dimmed = false }: { dimmed?: boolean }) {
   return (
     <div aria-hidden className="absolute inset-0 overflow-hidden bg-app">
-      <div
-        className="onb-aurora absolute -top-[24%] left-[4%] size-[56vw] rounded-full opacity-35 blur-[110px] transition-[background] duration-700"
-        style={{ background: `radial-gradient(circle at center, ${accentFrom}55, transparent 68%)` }}
-      />
-      <div
-        className="onb-aurora-b absolute top-[6%] -right-[14%] size-[52vw] rounded-full opacity-30 blur-[120px] transition-[background] duration-700"
-        style={{ background: `radial-gradient(circle at center, ${accentTo}48, transparent 68%)` }}
-      />
-      <div
-        className="onb-aurora-c absolute -bottom-[28%] left-[22%] size-[54vw] rounded-full opacity-35 blur-[120px]"
-        style={{ background: 'radial-gradient(circle at center, color-mix(in srgb, var(--accent) 30%, transparent), transparent 68%)' }}
-      />
       <div className="onb-grid-soft absolute inset-0" />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_90%_65%_at_50%_38%,var(--surface)_0%,transparent_72%)] opacity-60" />
       <div
         className={cn(
           'absolute inset-0 bg-app/45 transition-opacity duration-700',

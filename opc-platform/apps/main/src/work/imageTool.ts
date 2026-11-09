@@ -1,5 +1,7 @@
 import { Type } from 'typebox';
 import { defineExtension, defineTool, type ToolExecutionResult } from '@earendil-works/pi-durable';
+import type { ImageModelCapabilities, ImageParameterName, ImageParameterSpec } from '@opc/shared/domain';
+import type { GenerateImageOptions } from '../models/imageGeneration';
 
 export interface GeneratedBytes {
   ok: boolean;
@@ -11,7 +13,8 @@ export interface GeneratedBytes {
 
 export interface ImageToolDeps {
   /** Resolves the configured image provider/model and returns the raw bytes. */
-  generate: (input: { prompt: string; modelId?: string }) => Promise<GeneratedBytes>;
+  generate: (input: { prompt: string; modelId?: string; options?: GenerateImageOptions }) => Promise<GeneratedBytes>;
+  capabilities: () => ImageModelCapabilities | null;
 }
 
 /**
@@ -23,6 +26,10 @@ export interface ImageToolDeps {
  * the normal artifact/acceptance pipeline picks it up.
  */
 export function createImageToolExtension(deps: ImageToolDeps) {
+  const capabilities = deps.capabilities();
+  const imageProperties = Object.fromEntries(
+    Object.entries(capabilities?.parameters ?? {}).map(([name, spec]) => [name, toSchema(spec!)]),
+  );
   return defineExtension({
     name: 'opc.image',
     tools: [
@@ -35,9 +42,14 @@ export function createImageToolExtension(deps: ImageToolDeps) {
           filename: Type.Optional(
             Type.String({ description: 'Target file name, e.g. icon.png. Defaults to a timestamped name.' }),
           ),
+          ...imageProperties,
         }),
         execute: async (args, api, context): Promise<ToolExecutionResult> => {
-          const generated = await deps.generate({ prompt: args.prompt });
+          const options = parseOptions(args, capabilities);
+          if ('error' in options) {
+            return { isError: true, output: [{ type: 'text' as const, text: options.error }] };
+          }
+          const generated = await deps.generate({ prompt: args.prompt, options: options.value });
           if (!generated.ok || !generated.bytes) {
             return {
               isError: true,
@@ -66,6 +78,7 @@ export function createImageToolExtension(deps: ImageToolDeps) {
             details: {
               file: filename,
               bytes: generated.bytes.byteLength,
+                mimeType: generated.mimeType ?? 'image/png',
               model: generated.model ?? 'unknown',
             },
           };
@@ -73,6 +86,54 @@ export function createImageToolExtension(deps: ImageToolDeps) {
       }),
     ],
   });
+}
+
+function toSchema(spec: ImageParameterSpec) {
+  const options = {
+    description: spec.description,
+    ...(spec.default !== undefined ? { default: spec.default } : {}),
+  };
+  switch (spec.type) {
+    case 'enum':
+      if (!spec.values?.length) return Type.Optional(Type.String(options));
+      return Type.Optional(Type.Union((spec.values ?? []).map((value) => Type.Literal(value)) as [ReturnType<typeof Type.Literal>, ...ReturnType<typeof Type.Literal>[]], options));
+    case 'number':
+      return Type.Optional(Type.Number({ ...options, minimum: spec.minimum, maximum: spec.maximum }));
+    case 'integer':
+      return Type.Optional(Type.Integer({ ...options, minimum: spec.minimum, maximum: spec.maximum }));
+    case 'boolean':
+      return Type.Optional(Type.Boolean(options));
+    default:
+      return Type.Optional(Type.String(options));
+  }
+}
+
+function parseOptions(
+  args: Record<string, unknown>,
+  capabilities: ImageModelCapabilities | null,
+): { value: GenerateImageOptions } | { error: string } {
+  const options: GenerateImageOptions = {};
+  const names = Object.keys(args).filter((name) => name !== 'prompt' && name !== 'filename');
+  for (const rawName of names) {
+    const name = rawName as ImageParameterName;
+    const spec = capabilities?.parameters[name];
+    if (!spec) return { error: `当前图片模型不支持参数：${rawName}` };
+    const value = args[rawName];
+    if (spec.type === 'enum' && (typeof value !== 'string' || !spec.values?.includes(value))) {
+      return { error: `参数 ${rawName} 的值不受支持` };
+    }
+    if (spec.type === 'string' && typeof value !== 'string') return { error: `参数 ${rawName} 必须是字符串` };
+    if (spec.type === 'boolean' && typeof value !== 'boolean') return { error: `参数 ${rawName} 必须是布尔值` };
+    if ((spec.type === 'number' || spec.type === 'integer') && typeof value !== 'number') {
+      return { error: `参数 ${rawName} 必须是数字` };
+    }
+    if (spec.type === 'integer' && !Number.isInteger(value)) return { error: `参数 ${rawName} 必须是整数` };
+    if (typeof value === 'number' && (spec.minimum !== undefined && value < spec.minimum || spec.maximum !== undefined && value > spec.maximum)) {
+      return { error: `参数 ${rawName} 超出允许范围` };
+    }
+    options[name] = value as GenerateImageOptions[ImageParameterName];
+  }
+  return { value: options };
 }
 
 /** Flat names only: the workspace is shared with the sandbox hook. */

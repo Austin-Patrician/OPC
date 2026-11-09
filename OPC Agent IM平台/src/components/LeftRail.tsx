@@ -15,19 +15,23 @@ export const LeftRail: React.FC<LeftRailProps> = ({
   assistantName,
   pendingTaskCount = 0,
 }) => {
+  const isRuntime = view === "runtime"
+
   const navBtnClass = (active: boolean) =>
-    `relative w-[44px] h-[44px] rounded-[13px] flex items-center justify-center transition-all cursor-pointer ${
+    `relative w-[42px] h-[42px] ${
+      isRuntime ? "rounded-[8px]" : "rounded-[12px]"
+    } flex items-center justify-center transition-colors duration-200 cursor-pointer ${
       active
-        ? "bg-[#E1F4E8] text-[#22B560] shadow-[0_2px_8px_rgba(34,181,96,0.08)]"
-        : "text-[#3E4C46] hover:bg-[#ECF2EE]"
+        ? "bg-[#E6F5EC] text-[#16A34A] border border-[#BBF7D0]"
+        : "text-[#3E4C46] hover:bg-[#EAECE9]"
     }`
 
   return (
-    <aside className="w-[90px] shrink-0 bg-[#F6F9F7]/90 border-r border-[#ECF0EE] flex flex-col items-center justify-between py-4 select-none">
+    <aside className="w-[76px] sm:w-[84px] shrink-0 bg-[#F6F7F5] border-r border-[#E2E4E0] flex flex-col items-center justify-between py-3.5 select-none">
       {/* Top: macOS Traffic Lights + Buddy Identity + 4 Sidebar Icons matching attachment */}
       <div className="flex flex-col items-center">
         {/* macOS Traffic Lights */}
-        <div className="flex items-center gap-[7px] mb-5" aria-hidden>
+        <div className="flex items-center gap-[7px] mb-4" aria-hidden>
           <span className="w-[11px] h-[11px] rounded-full bg-[#FF5F57] border border-black/[0.06]" />
           <span className="w-[11px] h-[11px] rounded-full bg-[#FEBC2E] border border-black/[0.06]" />
           <span className="w-[11px] h-[11px] rounded-full bg-[#28C840] border border-black/[0.06]" />
@@ -40,14 +44,14 @@ export const LeftRail: React.FC<LeftRailProps> = ({
           className="flex flex-col items-center group cursor-pointer focus:outline-none"
           title={`与 ${assistantName} 对话`}
         >
-          <BuddyAvatar size="lg" showSpark />
-          <span className="mt-1.5 text-[15px] font-bold text-[#18221E] tracking-tight">
+          <BuddyAvatar size="md" showSpark />
+          <span className="mt-1 text-[13.5px] font-bold text-[#18181B] tracking-tight">
             {assistantName}
           </span>
         </button>
 
         {/* 4 Primary Sidebar Icons matching the uploaded reference image 1:1 */}
-        <nav aria-label="主导航" className="mt-5 flex flex-col items-center gap-2.5">
+        <nav aria-label="主导航" className="mt-4 flex flex-col items-center gap-2">
           {/* 1. Chat (Green speech bubble with 3 dots) */}
           <button
             type="button"
@@ -182,6 +186,36 @@ export const LeftRail: React.FC<LeftRailProps> = ({
               />
             </svg>
           </button>
+
+          {/* 5. System Runtime Observatory (Router · Workers · Watchdog) */}
+          <button
+            type="button"
+            onClick={() => onChangeView("runtime")}
+            aria-current={view === "runtime" ? "page" : undefined}
+            title="系统运行态 (System Runtime)"
+            aria-label="系统运行态 (System Runtime)"
+            className={navBtnClass(view === "runtime")}
+          >
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+              <rect
+                x="3"
+                y="4"
+                width="18"
+                height="16"
+                rx="3"
+                stroke="currentColor"
+                strokeWidth="1.8"
+              />
+              <path
+                d="M6.5 12.5H9.2L10.8 9L13.2 15L14.8 11.5H17.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#16A34A] rt-pulse" />
+          </button>
         </nav>
       </div>
 
@@ -193,9 +227,11 @@ export const LeftRail: React.FC<LeftRailProps> = ({
           aria-current={view === "settings" ? "page" : undefined}
           title="个人与设置"
           aria-label="个人与设置"
-          className={`w-[42px] h-[42px] rounded-[12px] flex items-center justify-center transition-all cursor-pointer ${
+          className={`w-[40px] h-[40px] ${
+            isRuntime ? "rounded-[8px]" : "rounded-[12px]"
+          } flex items-center justify-center transition-colors cursor-pointer ${
             view === "settings"
-              ? "bg-[#E1F4E8] text-[#22B560] shadow-[0_2px_8px_rgba(34,181,96,0.1)]"
+              ? "bg-[#E6F5EC] text-[#16A34A] border border-[#BBF7D0]"
               : "bg-[#EDF1EF] text-[#3E4C46] hover:bg-[#E2EAE6]"
           }`}
         >

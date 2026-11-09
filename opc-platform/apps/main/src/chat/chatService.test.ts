@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openCompanyDatabase } from '../data/companyDatabase';
 import { ChatService, ROUTER_ID } from './chatService';
 
 /**
@@ -38,6 +42,36 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(conversation.messages[0]!.senderId).toBe('user');
   });
 
+  it('为当前会话维护助手阶段，并在完成后短暂回到在线', async () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+
+    chat.sendMessage({ conversationId: id, text: '生成一张图片' });
+    expect(chat.getActivity(id)?.phase).toBe('delivered');
+    chat.setActivity(id, 'thinking');
+    chat.setActivity(id, 'delegating');
+    chat.setActivity(id, 'working');
+    chat.setActivity(id, 'organizing');
+    chat.setActivity(id, 'typing');
+    chat.completeActivity(id);
+    expect(chat.getActivity(id)?.phase).toBe('completed');
+
+    await vi.advanceTimersByTimeAsync(1_800);
+    expect(chat.getActivity(id)?.phase).toBe('idle');
+  });
+
+  it('新一轮消息会使旧的完成回调失效', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    const first = chat.beginActivity(id)!;
+    chat.completeActivity(id, first);
+    const second = chat.beginActivity(id)!;
+
+    expect(chat.completeActivity(id, first)).toBe(false);
+    expect(chat.getActivity(id)?.phase).toBe('delivered');
+    expect(second).toBeGreaterThan(first);
+  });
+
   it('Router 说话走唯一的出口，署名是它自己', () => {
     const chat = new ChatService({ agents: [], conversations: [] });
     const id = chat.ensureAssistant();
@@ -63,11 +97,178 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(chat.readTranscript(id).at(-1)?.content).toEqual(content);
   });
 
+  it('工具审批处理后移除整条审批消息，并更新会话预览', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+
+    chat.appendRouterMessage(id, '前一条结论');
+    chat.appendApprovalCard(id, {
+      type: 'approval',
+      reportId: 'report-1',
+      threadId: 'thread-1',
+      taskId: 'task-1',
+      tool: 'mcp__fs__write',
+      title: '需要允许写入文件',
+      body: '请确认是否继续',
+      state: 'pending',
+    });
+
+    chat.updateApprovalCard('report-1', 'allowed');
+
+    const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0]?.text).toBe('前一条结论');
+    expect(conversation.lastMessage).toBe('助手: 前一条结论');
+  });
+
+  it('Ontology 命令审批卡处理后从聊天中移除', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    chat.appendOntologyApprovalCard(id, {
+      type: 'ontologyApproval',
+      commandId: 'command-1',
+      action: 'delegate_task',
+      objectType: 'Task',
+      title: '助手请求执行一项操作',
+      body: '请确认',
+      state: 'pending',
+    });
+    chat.updateOntologyApprovalCard('command-1', 'approved');
+    expect(chat.readTranscript(id)).toEqual([]);
+  });
+
+  it('混合消息只移除审批块，保留其他内容', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+
+    chat.appendRouterMessage(id, '结果和权限请求', [
+      { type: 'markdown', text: '结果已经准备好' },
+      {
+        type: 'approval',
+        reportId: 'report-2',
+        threadId: 'thread-2',
+        taskId: 'task-2',
+        tool: 'mcp__fs__write',
+        title: '需要允许写入文件',
+        body: '请确认是否继续',
+        state: 'pending',
+      },
+    ]);
+
+    chat.updateApprovalCard('report-2', 'denied');
+
+    const message = chat.getSnapshot().conversations.find((item) => item.id === id)!.messages[0]!;
+    expect(message.content).toEqual([{ type: 'markdown', text: '结果已经准备好' }]);
+  });
+
+  it('工作流确认处理后也移除卡片，而不是留下已处理状态', () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    chat.appendWorkflowCard(id, {
+      type: 'workflow',
+      reportId: 'report-workflow-1',
+      threadId: 'thread-workflow-1',
+      taskId: 'task-workflow-1',
+      kind: 'report',
+      title: '任务需要确认',
+      body: '请确认结果',
+      state: 'pending',
+    });
+
+    chat.updateWorkflowCard('report-workflow-1', 'resolved');
+
+    const conversation = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+    expect(conversation.messages).toEqual([]);
+    expect(conversation.lastMessage).toBe('还没有对话');
+  });
+
+  it('工作流卡移除后切换页面重载不会再次出现等待确认', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-workflow-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      const id = chat.ensureAssistant();
+      chat.appendWorkflowCard(id, {
+        type: 'workflow',
+        reportId: 'report-workflow-2',
+        threadId: 'thread-workflow-2',
+        kind: 'report',
+        title: '任务需要确认',
+        body: '请确认结果',
+        state: 'pending',
+      });
+      chat.updateWorkflowCard('report-workflow-2', 'resolved');
+
+      const reloaded = new ChatService({ agents: [], conversations: [], db });
+      const conversation = reloaded.getSnapshot().conversations.find((item) => item.id === id)!;
+      expect(conversation.messages).toEqual([]);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('审批消息删除后不会在数据库重载时复现', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-approval-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      const id = chat.ensureAssistant();
+      chat.appendApprovalCard(id, {
+        type: 'approval',
+        reportId: 'report-3',
+        threadId: 'thread-3',
+        taskId: 'task-3',
+        tool: 'mcp__fs__write',
+        title: '需要允许写入文件',
+        body: '请确认是否继续',
+        state: 'pending',
+      });
+      chat.updateApprovalCard('report-3', 'allowed');
+
+      const reloaded = new ChatService({ agents: [], conversations: [], db });
+      const conversation = reloaded.getSnapshot().conversations.find((item) => item.id === id)!;
+      expect(conversation.messages).toEqual([]);
+      expect(conversation.lastMessage).toBe('还没有对话');
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('任务进度不会写入对话消息流', () => {
     const chat = new ChatService({ agents: [], conversations: [] });
     const id = chat.ensureAssistant();
     chat.upsertTaskCard({ id: 'task-1' } as never);
     expect(chat.readTranscript(id)).toEqual([]);
+  });
+
+  it('Router 流式消息只在完成后落库，清理时不留下半截正文', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-stream-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      const id = chat.ensureAssistant();
+      const messageId = chat.beginRouterStream(id)!;
+      chat.updateRouterStream(id, messageId, '半截');
+      const during = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+      expect(during.messages[0]?.streaming).toBe(true);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM message').get() as { count: number }).count).toBe(0);
+
+      chat.finishRouterStream(id, messageId, '完整答复');
+      const after = chat.getSnapshot().conversations.find((item) => item.id === id)!;
+      expect(after.messages[0]?.text).toBe('完整答复');
+      expect(after.messages[0]?.streaming).toBe(false);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM message').get() as { count: number }).count).toBe(1);
+
+      const second = chat.beginRouterStream(id)!;
+      chat.updateRouterStream(id, second, '会被清除');
+      chat.clearRouterStream(id);
+      expect(chat.getSnapshot().conversations.find((item) => item.id === id)!.messages.map((m) => m.text)).toEqual(['完整答复']);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('初始旧会话会隐藏历史任务卡并从最新可见消息生成预览', () => {

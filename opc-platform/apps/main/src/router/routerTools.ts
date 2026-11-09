@@ -1,6 +1,6 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
-import type { ChatContentBlock } from '@opc/shared/domain';
+import type { ChatContentBlock, TaskContract } from '@opc/shared/domain';
 import { recallView } from './inline';
 
 /**
@@ -17,7 +17,7 @@ import { recallView } from './inline';
  *   recall             链式召回（§3.3：任何对象都能顺着 id 往下跳）
  *   list_lines         看一眼全局：哪条线在动、哪条线卡住
  *   steer_line         中途改方向（你改主意了，下一轮 worker 会看到）
- *   ask_user           需要拍板时进注意力队列
+ *   ask_user           在当前对话发起问题卡片（不进入注意力队列）
  *   close_line         收线
  *   remember           记住一件关于你的事（§2.1：Router 是"序点、协调点和记忆"）
  *   recall_memory      回想以前记过什么
@@ -60,7 +60,7 @@ export interface LineSummary {
 export interface RouterToolDeps {
   /** 派活。同步返回 id；任务在后台跑，结果之后作为汇报回来。 */
   openLine(input: {
-    goal: string;
+    contract: TaskContract;
     title?: string;
     /** 环境身份：同一个 key 的后续事件会并到这条线上。 */
     threadKey?: string | null;
@@ -72,7 +72,7 @@ export interface RouterToolDeps {
 
   /** 对你说话。这是 Router 唯一能让人看见它的方式。 */
   /** `replyTarget` 是输入里提供的原始信道地址；不传则回桌面助手。 */
-  reply(text: string, replyTarget?: string, content?: ChatContentBlock[]): unknown | Promise<unknown>;
+  reply(response: any, replyTarget?: string, content?: ChatContentBlock[]): unknown | Promise<unknown>;
 
   /** 链式召回：返回一个对象的压缩视图 + 相邻对象的 id（Inline & Spill）。 */
   recall(id: string): string;
@@ -109,6 +109,16 @@ export interface RouterToolDeps {
 
   /** 按一句话回想以前记过什么。带 id，别人才追得回出处。 */
   recallMemory(query: string): Promise<{ ok: boolean; items?: MemoryHit[]; reason?: string }>;
+
+  /** Durable, evidence-backed write boundary for ontology actions. */
+  ontologyCommand?(input: {
+    objectType: string;
+    objectId: string;
+    action: string;
+    args?: Record<string, unknown>;
+    expectedVersion?: number;
+    idempotencyKey: string;
+  }): Promise<{ ok: boolean; command: { commandId: string; status: string; approvalId: string | null; error: string | null }; error?: string }>;
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -154,17 +164,23 @@ export function createRouterTools(deps: RouterToolDeps) {
           '输入里如果带着"工作台的规矩"，那是长期有效的约定，优先于你这一次的临时判断。',
           '',
           '## 你不做什么',
-          '你没有文件读写、没有 shell、没有代码执行。活不是你干的。',
-          '所以：**绝不声称自己读过文件、跑过命令、改过代码、查过资料**——你没做。',
-          '绝不编造执行结果。手上没有证据时，就说没有，或者去开一条线查。',
+          '具体任务由后台执行体完成，你不直接读写文件、跑命令、改代码或查资料。',
+          '所以：**绝不声称自己做过尚未完成的事，也绝不编造执行结果**。',
+          '这是内部边界，不是给用户的解释。手上没有证据时，去开一条线查，或简短说明确实缺什么。',
           '',
           '## 怎么说话',
-          '用户在聊天窗口里跟你说话。他问「怎么样了」，就照实说手上有哪几条线、各到哪一步；',
-          '不知道进度时不要用猜测填空。回答简短、具体，不复述他的原话。',
+          '你是一个自然、可靠、简洁的助手。用户只关心结果、当前状态和下一步，不关心你的工具、模型、工作线、执行体或内部协议。',
+          '不要向用户解释你如何派活、如何调工具、如何验收，也不要暴露 thread、worker、task、工具名或内部能力边界；除非用户明确询问系统实现。',
+          '执行体汇报是供你判断的内部材料，不是可直接转发的对话稿；不要照抄它的第一人称、自我介绍、借口、情绪、工具过程或失败预案，只提炼有证据的结果。',
+          '刚启动后台任务但还没有结果时，只用一句自然的话确认已开始，例如「我先处理一下，完成后把结果发给你。」不要预先猜测成功率、描述失败预案，或把“派出去一条线”当成回复。',
+          '有结果时直接交付结果和产物；失败时只说明已经确认的具体原因和一个可执行的下一步。',
+          '回答先给结论，通常一到三句；不复述用户原话，不使用“主人”“莉莉丝”等角色化称呼，除非用户明确要求。',
+          '用户问「怎么样了」时，只说对用户有用的状态；不要把内部工作线清单或运行日志抄给他。',
           '',
           '## 打扰的纪律',
           '大部分事情不需要他知道。干完了就安静地记在线上，只有两种情形值得开口：',
-          '需要他拍板（ask_user），或者他要的那件事完成了（reply_to_user）。',
+          '需要他拍板（ask_user 问题卡片），或者他要的那件事完成了。任何面向用户的最终回复都必须调用 reply_to_user；' +
+            '普通文字放进 markdown block，媒体和文件按顺序放进对应 block。工具调用、思考和中间文字不会展示给用户。',
           '每一次打扰都要有理由；没有理由的汇报是噪音。',
         ].join('\n'),
       ),
@@ -173,10 +189,45 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'open_line_of_work',
         description:
-          '把一件事派出去：开一条工作线，起一个执行体，让它去跑。立即返回 id，不会等它跑完。' +
-          '需要知道结果时用 recall 查，或者等它自己汇报回来。',
+          '把一件事派出去：提供明确的 objective、deliverable、outputs 和可选验收条件，' +
+          '起一个执行体让它自由选择工具完成。立即返回 id，不会等它跑完。' +
+          '需要知道结果时用 recall 查，或者等它自己汇报回来。返回的 id 是内部引用，不能原样放进用户回复。',
         parameters: Type.Object({
-          goal: Type.String({ description: '要达成什么。写清目标和验收标准，执行体只看得到这些。' }),
+          contract: Type.Object({
+            objective: Type.String({ description: '要解决的问题或要达成的目标。' }),
+            deliverable: Type.String({ description: '完成后必须交付什么。' }),
+            outputs: Type.Array(
+              Type.Union([
+                Type.Object({
+                  kind: Type.Literal('text'),
+                  description: Type.String({ description: '文本回答的内容和形状。' }),
+                }),
+                Type.Object({
+                  kind: Type.Literal('file'),
+                  description: Type.String({ description: '文件交付物的内容和用途。' }),
+                  path: Type.String({ description: '工作区内的相对路径。' }),
+                }),
+              ]),
+              { minItems: 1, description: '声明需要验收的文本或文件输出；不限制 Worker 的实现方式。' },
+            ),
+            attachments: Type.Optional(Type.Array(Type.Object({
+              id: Type.String(), name: Type.String(), path: Type.String(), size: Type.Number(),
+              mimeType: Type.Optional(Type.String()), source: Type.Union([Type.Literal('file'), Type.Literal('clipboard')]),
+            }), { description: '用户提供的附件路径引用；只读使用，不要复制到工作区。' })),
+            acceptance: Type.Optional(
+              Type.Object({
+                command: Type.Array(Type.String(), { minItems: 1, description: 'argv 形式的验收命令。' }),
+                template: Type.Optional(
+                  Type.Union([
+                    Type.Literal('http-ok'),
+                    Type.Literal('node-test'),
+                    Type.Literal('image-200'),
+                    Type.Literal('review-verdict'),
+                  ]),
+                ),
+              }),
+            ),
+          }),
           title: Type.Optional(Type.String({ description: '一句话的线名，给人看的。' })),
           thread_key: Type.Optional(
             Type.String({
@@ -206,7 +257,7 @@ export function createRouterTools(deps: RouterToolDeps) {
         }),
         execute: async (args) => {
           const result = deps.openLine({
-            goal: args.goal,
+            contract: args.contract,
             ...(args.title ? { title: args.title } : {}),
             ...(args.thread_key ? { threadKey: args.thread_key } : {}),
             ...(args.template ? { template: args.template } : {}),
@@ -216,9 +267,9 @@ export function createRouterTools(deps: RouterToolDeps) {
           });
           if (!result.ok) return fail(`没派出去：${result.reason}`);
           return ok(
-            `已派出去并启动。\nthread=${result.threadId}\nworker=${result.workerId}\n` +
-              (result.taskId ? `task=${result.taskId}\n` : '') +
-              `跑完会回来汇报；想看进度用 recall ${result.threadId}。`,
+            '后台任务已启动；完成或需要用户输入时会产生新事件。',
+            // IDs remain in structured details for the Router to use with recall;
+            // keeping them out of prose reduces the chance they leak into chat.
             { threadId: result.threadId, workerId: result.workerId, taskId: result.taskId },
           );
         },
@@ -227,16 +278,27 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'reply_to_user',
         description:
-          '对用户说一句话。这是用户唯一能看到你的途径——不调用它，你等于没说话。' +
-          '简短、具体、只说你知道的。',
-          parameters: Type.Object({
-            text: Type.String({ description: '要说的话。' }),
-            content: Type.Optional(Type.Array(Type.Object({
-              type: Type.Union([Type.Literal('markdown'), Type.Literal('image'), Type.Literal('video'), Type.Literal('audio')]),
-              text: Type.Optional(Type.String()), url: Type.Optional(Type.String()),
-              taskId: Type.Optional(Type.String()), relPath: Type.Optional(Type.String()),
-              alt: Type.Optional(Type.String()), title: Type.Optional(Type.String()),
-            }), { description: '按顺序混排的 Markdown 与 HTTPS 媒体链接。' })),
+          '提交本轮唯一的最终用户回复。必须用 blocks 按顺序混排 markdown、图片、视频、音频和文件；' +
+          '工具调用、思考和中间文本不会展示给用户。markdown 只写面向用户的结论、状态、产物或下一步，' +
+          '通常一到三句；不要写派活过程、工作线/执行体/工具/模型/验收细节、自我介绍或失败预案。' +
+          '可选 reply_target 只能使用当前输入里明确出现过的地址。',
+        parameters: Type.Object({
+            blocks: Type.Array(Type.Union([
+              Type.Object({ type: Type.Literal('markdown'), text: Type.String() }),
+              Type.Object({
+                type: Type.Union([Type.Literal('image'), Type.Literal('video'), Type.Literal('audio')]),
+                source: Type.Union([
+                  Type.Object({ type: Type.Literal('url'), url: Type.String() }),
+                  Type.Object({ type: Type.Literal('artifact'), taskId: Type.String(), relPath: Type.String() }),
+                ]),
+                alt: Type.Optional(Type.String()), title: Type.Optional(Type.String()),
+              }),
+              Type.Object({
+                type: Type.Literal('file'),
+                source: Type.Object({ type: Type.Literal('artifact'), taskId: Type.String(), relPath: Type.String() }),
+                name: Type.Optional(Type.String()), title: Type.Optional(Type.String()),
+              }),
+            ]), { minItems: 1, description: '按顺序混排的最终内容块。' }),
             reply_target: Type.Optional(
               Type.String({
                 description:
@@ -246,13 +308,18 @@ export function createRouterTools(deps: RouterToolDeps) {
             ),
           }),
           execute: async (args) => {
-          const content = args.content?.map((block) => block.type === 'markdown'
-            ? ({ type: 'markdown' as const, text: block.text ?? '' })
-            : ({ type: block.type as 'image' | 'video' | 'audio', source: block.url
-                ? { type: 'url' as const, url: block.url }
-                : { type: 'artifact' as const, taskId: block.taskId ?? '', relPath: block.relPath ?? '' }, alt: block.alt, title: block.title }));
-          await deps.reply(args.text, args.reply_target, content);
-          return ok('已发出。');
+            const legacy = args as typeof args & { text?: string; content?: unknown };
+            const blocks = normalizeReplyBlocks(args.blocks, legacy.text, legacy.content);
+            if (blocks.length === 0) return fail('最终回复不能为空：请提交至少一个 markdown block。');
+            // The dependency adapter accepts the legacy triplet while the tool
+            // protocol itself remains blocks-only. RouterHost converts it into
+            // the atomic RouterResponse before any delivery occurs.
+            await deps.reply(
+              legacy.text ?? blocks.filter((block): block is Extract<ChatContentBlock, { type: 'markdown' }> => block.type === 'markdown').map((block) => block.text).join('\n\n'),
+              args.reply_target,
+              blocks,
+            );
+            return ok('已提交最终回复。');
         },
       }),
 
@@ -318,7 +385,7 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'ask_user',
         description:
-          '需要用户拍板时用。这会进他的注意力队列并打断他——只在真的需要一个人做决定时才用；' +
+          '需要用户回复时用。这会在当前对话里发一张问题卡片——只在真的需要一个人做决定时才用；' +
           '能自己判断的一律自己判断。',
         parameters: Type.Object({
           thread_id: Type.Optional(Type.String()),
@@ -326,7 +393,7 @@ export function createRouterTools(deps: RouterToolDeps) {
         }),
         execute: async (args) => {
           const result = deps.askUser(args.thread_id ?? null, args.question);
-          return result.ok ? ok('已经进队列。') : fail(`没进队列：${result.reason}`);
+          return result.ok ? ok('已在当前对话发出问题卡片。') : fail(`问题卡片发送失败：${result.reason}`);
         },
       }),
 
@@ -417,6 +484,38 @@ export function createRouterTools(deps: RouterToolDeps) {
       }),
 
       defineTool({
+        name: 'ontology_command',
+        description:
+          '通过个人本体的唯一写入边界执行结构化动作。用于更新 Goal、Preference、Project，' +
+          '或撤回一条有证据的断言。动作会幂等记录；高风险动作会在当前对话展示审批卡，' +
+          '批准后继续执行同一条命令。不要用它替代普通的 open_line_of_work。',
+        parameters: Type.Object({
+          object_type: Type.String({ description: '对象类型，例如 Goal、Project、User。' }),
+          object_id: Type.String({ description: '对象 id；新建 Project 时可使用临时标识。' }),
+          action: Type.String({ description: '动作，例如 update_goal、update_preference、create_project、retract_assertion。' }),
+          args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+          expected_version: Type.Optional(Type.Number()),
+          idempotency_key: Type.String({ description: '同一业务动作的稳定幂等键。' }),
+        }),
+        execute: async (args) => {
+          if (!deps.ontologyCommand) return fail('当前运行环境没有启用本体命令服务。');
+          const result = await deps.ontologyCommand({
+            objectType: args.object_type,
+            objectId: args.object_id,
+            action: args.action,
+            ...(args.args ? { args: args.args as Record<string, unknown> } : {}),
+            ...(typeof args.expected_version === 'number' ? { expectedVersion: args.expected_version } : {}),
+            idempotencyKey: args.idempotency_key,
+          });
+          if (!result.ok) return fail(`本体命令未执行：${result.error ?? result.command.error ?? '未知原因'}`);
+          return ok(`本体命令 ${result.command.commandId} 当前状态：${result.command.status}`, {
+            commandId: result.command.commandId,
+            approvalId: result.command.approvalId,
+          });
+        },
+      }),
+
+      defineTool({
         name: 'forget_memory',
         description:
           '撤掉一条记忆。用户说「以后别这样了」「那条不算」的时候用它。' +
@@ -447,4 +546,48 @@ export function createRouterTools(deps: RouterToolDeps) {
       }),
     ],
   });
+}
+
+/** Normalize the current protocol and the two pre-structured-response shapes. */
+function normalizeReplyBlocks(
+  blocks: unknown,
+  text?: string,
+  legacyContent?: unknown,
+): ChatContentBlock[] {
+  if (Array.isArray(blocks)) {
+    return blocks.filter(isReplyBlock);
+  }
+  if (Array.isArray(legacyContent)) {
+    const converted: ChatContentBlock[] = [];
+    for (const value of legacyContent) {
+      if (!value || typeof value !== 'object') continue;
+      const block = value as Record<string, unknown>;
+      const type = block.type;
+      if (type === 'markdown' && typeof block.text === 'string') { converted.push({ type: 'markdown', text: block.text }); continue; }
+      if (type === 'image' || type === 'video' || type === 'audio') {
+        if (typeof block.url === 'string') { converted.push({ type, source: { type: 'url', url: block.url }, ...(typeof block.alt === 'string' ? { alt: block.alt } : {}), ...(typeof block.title === 'string' ? { title: block.title } : {}) }); continue; }
+        if (typeof block.taskId === 'string' && typeof block.relPath === 'string') { converted.push({ type, source: { type: 'artifact', taskId: block.taskId, relPath: block.relPath }, ...(typeof block.alt === 'string' ? { alt: block.alt } : {}), ...(typeof block.title === 'string' ? { title: block.title } : {}) }); continue; }
+      }
+    }
+    return converted;
+  }
+  return typeof text === 'string' && text.trim() ? [{ type: 'markdown', text }] : [];
+}
+
+function isReplyBlock(value: unknown): value is ChatContentBlock {
+  if (!value || typeof value !== 'object') return false;
+  const block = value as Record<string, unknown>;
+  if (block.type === 'markdown') return typeof block.text === 'string';
+  if (block.type === 'file') {
+    const source = block.source;
+    return Boolean(source && typeof source === 'object' && (source as Record<string, unknown>).type === 'artifact' && typeof (source as Record<string, unknown>).taskId === 'string' && typeof (source as Record<string, unknown>).relPath === 'string');
+  }
+  if (block.type === 'image' || block.type === 'video' || block.type === 'audio') {
+    const source = block.source;
+    if (!source || typeof source !== 'object') return false;
+    const sourceRecord = source as Record<string, unknown>;
+    return (sourceRecord.type === 'url' && typeof sourceRecord.url === 'string') ||
+      (sourceRecord.type === 'artifact' && typeof sourceRecord.taskId === 'string' && typeof sourceRecord.relPath === 'string');
+  }
+  return false;
 }

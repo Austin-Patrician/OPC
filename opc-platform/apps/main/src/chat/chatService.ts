@@ -8,7 +8,13 @@ import type {
 } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import { USER_MEMORY_OWNER } from '../memory/owners';
-import type { ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
+import type {
+  AssistantActivity,
+  AssistantActivityPhase,
+  ChatSnapshot,
+  SendMessageInput,
+} from '@opc/shared/ipc';
+import type { ChatAttachmentRef } from '@opc/shared/domain';
 
 /** Minimal id helper (main process only; never a database key). */
 function createId(prefix: string): string {
@@ -40,6 +46,11 @@ interface Speaker {
   avatarUrl?: string;
 }
 
+function isActionCard(block: ChatContentBlock, type: 'approval' | 'workflow' | 'ontologyApproval', id: string): boolean {
+  if (type === 'ontologyApproval') return block.type === 'ontologyApproval' && block.commandId === id;
+  return (block.type === 'approval' || block.type === 'workflow') && block.type === type && block.reportId === id;
+}
+
 const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
 
 /**
@@ -63,6 +74,9 @@ export interface ChatServiceSeed {
 export class ChatService {
   private snapshot: ChatSnapshot;
   private readonly db?: CompanyDatabase;
+  private readonly routerStreams = new Map<string, { messageId: string; started: boolean; generation?: number }>();
+  private readonly activityGenerations = new Map<string, number>();
+  private readonly activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
    * Injected by bootstrap: turns a settled conversation into long-term memory.
    * Absent (or model-less) means nothing is written — never invented lessons.
@@ -79,7 +93,7 @@ export class ChatService {
    * 注意方向：**这里不生成回复**。聊天是信道，不是大脑。你说什么进 Router，
    * Router 决定是自己接住还是派活；要说话时通过 `appendRouterMessage` 送回来。
    */
-  onUserMessage?: (input: { conversationId: string; text: string }) => void;
+  onUserMessage?: (input: { conversationId: string; text: string; attachments?: ChatAttachmentRef[] }) => void;
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
   private activeConversationId: string | null = null;
 
@@ -91,6 +105,7 @@ export class ChatService {
         ? this.loadConversations(seed.conversations)
         : seed.conversations.map(withVisibleMessages),
       typingByConversation: {},
+      activityByConversation: {},
     };
   }
 
@@ -122,14 +137,20 @@ export class ChatService {
     if (!this.db) return;
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
-    const { messages, ...rest } = conversation;
+    const messages = conversation.messages.filter((message) => !message.streaming);
+    const latest = messages.filter((message) => message.kind !== 'task' && message.kind !== 'deliverable').at(-1);
+    const { messages: _transientMessages, ...rest } = conversation;
     const now = Date.now();
     this.db
       .prepare(
         `INSERT INTO conversation (id, payload, created_at, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
       )
-      .run(conversation.id, JSON.stringify(rest), now, now);
+      .run(conversation.id, JSON.stringify({
+        ...rest,
+        lastMessage: latest ? previewOf(latest) : '还没有对话',
+        ...(latest ? { timestamp: latest.timestamp } : {}),
+      }), now, now);
 
     const insert = this.db.prepare(
       'INSERT OR REPLACE INTO message (id, conversation_id, payload, created_at) VALUES (?, ?, ?, ?)',
@@ -145,6 +166,73 @@ export class ChatService {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
+
+  /** Start a user-visible assistant turn and return its stale-update guard. */
+  beginActivity = (conversationId: string): number | undefined => {
+    if (!this.snapshot.conversations.some((item) => item.id === conversationId)) return undefined;
+    const generation = (this.activityGenerations.get(conversationId) ?? 0) + 1;
+    this.activityGenerations.set(conversationId, generation);
+    this.clearActivityTimer(conversationId);
+    this.setActivity(conversationId, 'delivered', generation);
+    return generation;
+  };
+
+  getActivity = (conversationId: string): AssistantActivity | undefined =>
+    this.snapshot.activityByConversation[conversationId];
+
+  getActivityGeneration = (conversationId: string): number | undefined =>
+    this.activityGenerations.get(conversationId);
+
+  /** Update a phase only when it belongs to the current assistant turn. */
+  setActivity = (
+    conversationId: string,
+    phase: AssistantActivityPhase,
+    generation?: number,
+  ): boolean => {
+    if (!this.snapshot.conversations.some((item) => item.id === conversationId)) return false;
+    if (generation !== undefined && generation !== this.activityGenerations.get(conversationId)) return false;
+    const previous = this.snapshot.activityByConversation[conversationId];
+    if (previous?.phase === phase) return true;
+    this.clearActivityTimer(conversationId);
+    this.commit({
+      activityByConversation: {
+        ...this.snapshot.activityByConversation,
+        [conversationId]: { phase, updatedAt: Date.now() },
+      },
+    });
+    return true;
+  };
+
+  /** Show the short completion acknowledgement, then return to the idle state. */
+  completeActivity = (conversationId: string, generation?: number): boolean => {
+    if (!this.setActivity(conversationId, 'completed', generation)) return false;
+    const timer = setTimeout(() => {
+      if (generation !== undefined && generation !== this.activityGenerations.get(conversationId)) return;
+      this.setActivity(conversationId, 'idle', generation);
+      this.activityTimers.delete(conversationId);
+    }, 1_800);
+    (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+    this.activityTimers.set(conversationId, timer);
+    return true;
+  };
+
+  showActivityError = (conversationId: string, generation?: number): boolean => {
+    if (!this.setActivity(conversationId, 'error', generation)) return false;
+    const timer = setTimeout(() => {
+      if (generation !== undefined && generation !== this.activityGenerations.get(conversationId)) return;
+      this.setActivity(conversationId, 'idle', generation);
+      this.activityTimers.delete(conversationId);
+    }, 2_500);
+    (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+    this.activityTimers.set(conversationId, timer);
+    return true;
+  };
+
+  private clearActivityTimer(conversationId: string): void {
+    const timer = this.activityTimers.get(conversationId);
+    if (timer) clearTimeout(timer);
+    this.activityTimers.delete(conversationId);
+  }
 
   /**
    * 你和 Router 之间唯一的那条会话。
@@ -410,7 +498,7 @@ export class ChatService {
     });
   };
 
-  sendMessage = ({ conversationId, text }: SendMessageInput): void => {
+  sendMessage = ({ conversationId, text, attachments }: SendMessageInput): void => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
 
@@ -425,9 +513,11 @@ export class ChatService {
         senderName: '我',
         timestamp: now,
         text,
+        ...(attachments?.length ? { attachments } : {}),
       },
       { read: true },
     );
+    this.beginActivity(conversationId);
 
     // §7.5: 你介入即解除升级/冷却。You answering *is* the resolution.
     if (conversation.status && conversation.status !== 'open') {
@@ -441,7 +531,7 @@ export class ChatService {
     // Trigger——写成"发给某个人"就等于又有了第二个人在回答你。
     //
     // `mentionIds`（@ 某人）随之失去意义：这里没有人可以被叫来，能接话的只有 Router。
-    this.onUserMessage?.({ conversationId: conversation.id, text });
+    this.onUserMessage?.({ conversationId: conversation.id, text, ...(attachments?.length ? { attachments } : {}) });
   };
 
   /**
@@ -455,7 +545,179 @@ export class ChatService {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
     this.appendReply(conversation, ROUTER_FACE, text, content);
+    this.completeActivity(conversationId);
   };
+
+  /** Start an ephemeral Router message. It becomes durable only when finished. */
+  beginRouterStream = (conversationId: string): string | undefined => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return undefined;
+    this.clearRouterStream(conversationId);
+    const messageId = createId('msg');
+    this.routerStreams.set(conversationId, {
+      messageId,
+      started: false,
+      ...(this.getActivityGeneration(conversationId) !== undefined
+        ? { generation: this.getActivityGeneration(conversationId) }
+        : {}),
+    });
+    return messageId;
+  };
+
+  /** Replace the visible partial text without writing every token to SQLite. */
+  updateRouterStream = (conversationId: string, messageId: string, text: string): void => {
+    const state = this.routerStreams.get(conversationId);
+    if (!state || state.messageId !== messageId || !text) return;
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    this.setActivity(conversationId, 'typing', state.generation);
+    const content: ChatContentBlock[] = [{ type: 'markdown', text }];
+    if (!state.started) {
+      state.started = true;
+      this.appendMessage(
+        conversation,
+        {
+          id: messageId,
+          kind: 'text',
+          senderId: ROUTER_FACE.id,
+          senderName: ROUTER_FACE.name,
+          senderRole: ROUTER_FACE.role,
+          timestamp: formatClock(),
+          text,
+          content,
+          streaming: true,
+        },
+        { read: conversation.id === this.activeConversationId, persist: false },
+      );
+      return;
+    }
+    this.patchStreamMessage(conversationId, messageId, (message) => ({
+      ...message,
+      text,
+      content,
+      streaming: true,
+    }), false);
+  };
+
+  /** Commit the final answer, or remove the transient message on a tool reply/error. */
+  finishRouterStream = (conversationId: string, messageId: string, text?: string): void => {
+    const state = this.routerStreams.get(conversationId);
+    if (!state || state.messageId !== messageId) return;
+    this.routerStreams.delete(conversationId);
+    if (!state.started) {
+      if (text?.trim()) this.appendRouterMessage(conversationId, text);
+      return;
+    }
+    if (!text?.trim()) {
+      this.removeStreamMessage(conversationId, messageId, false);
+      return;
+    }
+    this.patchStreamMessage(conversationId, messageId, (message) => ({
+      ...message,
+      text,
+      content: [{ type: 'markdown', text }],
+      streaming: false,
+    }), true);
+    this.completeActivity(conversationId, state.generation);
+  };
+
+  /** Drop a partial answer that is superseded by a structured `reply_to_user` call. */
+  clearRouterStream = (conversationId: string): void => {
+    const state = this.routerStreams.get(conversationId);
+    if (!state) return;
+    this.routerStreams.delete(conversationId);
+    if (state.started) this.removeStreamMessage(conversationId, state.messageId, false);
+  };
+
+  appendApprovalCard = (conversationId: string, input: Extract<ChatContentBlock, { type: 'approval' }>): void => {
+    this.appendRouterMessage(conversationId, input.body, [input]);
+    this.setActivity(conversationId, 'waiting_user');
+  };
+
+  appendWorkflowCard = (conversationId: string, input: Extract<ChatContentBlock, { type: 'workflow' }>): void => {
+    this.appendRouterMessage(conversationId, input.body, [input]);
+    this.setActivity(conversationId, 'waiting_user');
+  };
+
+  appendOntologyApprovalCard = (conversationId: string, input: Extract<ChatContentBlock, { type: 'ontologyApproval' }>): void => {
+    this.appendRouterMessage(conversationId, input.body, [input]);
+    this.setActivity(conversationId, 'waiting_user');
+  };
+
+  updateApprovalCard = (
+    reportId: string,
+    _state: Extract<ChatContentBlock, { type: 'approval' }>['state'],
+  ): void => {
+    this.removeActionCard('approval', reportId);
+  };
+
+  updateWorkflowCard = (reportId: string, state: Extract<ChatContentBlock, { type: 'workflow' }>['state']): void => {
+    // A resolved workflow card is an acknowledgement, not a historical chat
+    // message. Remove it just like a resolved tool approval so it cannot come
+    // back from the persisted transcript when the user changes pages.
+    if (state === 'resolved') {
+      this.removeActionCard('workflow', reportId);
+      return;
+    }
+    this.commit({
+      conversations: this.snapshot.conversations.map((conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) => ({
+          ...message,
+          content: message.content?.map((block) =>
+            block.type === 'workflow' && block.reportId === reportId ? { ...block, state } : block,
+          ),
+        })),
+      })),
+    });
+  };
+
+  updateOntologyApprovalCard = (commandId: string, state: Extract<ChatContentBlock, { type: 'ontologyApproval' }>['state']): void => {
+    if (state === 'approved' || state === 'rejected') {
+      this.removeActionCard('ontologyApproval', commandId);
+    }
+  };
+
+  private removeActionCard(
+    type: 'approval' | 'workflow' | 'ontologyApproval',
+    reportId: string,
+  ): void {
+    const removedMessageIds: { conversationId: string; messageId: string }[] = [];
+    const conversations = this.snapshot.conversations.map((conversation) => {
+      let changed = false;
+      const messages = conversation.messages.flatMap((message) => {
+        const content = message.content;
+        if (!content?.some((block) => isActionCard(block, type, reportId))) {
+          return [message];
+        }
+
+        changed = true;
+        const remaining = content.filter(
+          (block) => !isActionCard(block, type, reportId),
+        );
+        if (remaining.length > 0) return [{ ...message, content: remaining }];
+        removedMessageIds.push({ conversationId: conversation.id, messageId: message.id });
+        return [];
+      });
+
+      if (!changed) return conversation;
+      const latest = messages
+        .filter((message) => message.kind !== 'task' && message.kind !== 'deliverable')
+        .at(-1);
+      return {
+        ...conversation,
+        messages,
+        lastMessage: latest ? previewOf(latest) : '还没有对话',
+        ...(latest ? { timestamp: latest.timestamp } : {}),
+      };
+    });
+
+    if (this.db) {
+      const remove = this.db.prepare('DELETE FROM message WHERE conversation_id = ? AND id = ?');
+      for (const removed of removedMessageIds) remove.run(removed.conversationId, removed.messageId);
+    }
+    this.commit({ conversations });
+  }
 
   /**
    * Inserts or refreshes the task card in the assignee's DM, so you watches
@@ -493,7 +755,7 @@ export class ChatService {
   private appendMessage(
     conversation: Conversation,
     message: Message,
-    { read }: { read: boolean },
+    { read, persist = true }: { read: boolean; persist?: boolean },
   ): void {
     this.commit({
       conversations: this.snapshot.conversations.map((item) => {
@@ -507,7 +769,49 @@ export class ChatService {
           unreadCount: unread || undefined,
         };
       }),
-    });
+    }, { persist });
+  }
+
+  private patchStreamMessage(
+    conversationId: string,
+    messageId: string,
+    update: (message: Message) => Message,
+    persist: boolean,
+  ): void {
+    const current = this.snapshot.conversations
+      .find((conversation) => conversation.id === conversationId)
+      ?.messages.find((message) => message.id === messageId);
+    if (!current) return;
+    const next = update(current);
+    this.commit({
+      conversations: this.snapshot.conversations.map((conversation) =>
+        conversation.id !== conversationId
+          ? conversation
+          : {
+              ...conversation,
+              messages: conversation.messages.map((message) =>
+                message.id === messageId ? next : message,
+              ),
+              lastMessage: previewOf(next),
+            },
+      ),
+    }, { persist });
+  }
+
+  private removeStreamMessage(conversationId: string, messageId: string, persist: boolean): void {
+    this.commit({
+      conversations: this.snapshot.conversations.map((conversation) => {
+        if (conversation.id !== conversationId) return conversation;
+        const messages = conversation.messages.filter((message) => message.id !== messageId);
+        const latest = messages.filter((message) => message.kind !== 'task' && message.kind !== 'deliverable').at(-1);
+        return {
+          ...conversation,
+          messages,
+          lastMessage: latest ? previewOf(latest) : '还没有对话',
+          ...(latest ? { timestamp: latest.timestamp } : {}),
+        };
+      }),
+    }, { persist });
   }
 
   /** Replaces one conversation object; `commit` persists whichever rows changed. */
@@ -522,10 +826,10 @@ export class ChatService {
     });
   }
 
-  private commit(patch: Partial<ChatSnapshot>): void {
+  private commit(patch: Partial<ChatSnapshot>, options: { persist?: boolean } = {}): void {
     const previous = this.snapshot;
     this.snapshot = { ...this.snapshot, ...patch };
-    if (patch.conversations) {
+    if (patch.conversations && options.persist !== false) {
       const touched = new Set(
         this.snapshot.conversations
           .filter((conversation) => {

@@ -7,6 +7,7 @@ import { ThreadRepository } from '../data/threadRepository';
 import { Router, composeInput, threadKeyOf, type RouterDeps } from './router';
 import { DEFAULT_INLINE_BUDGET, spillText } from './inline';
 import type { SemanticScreenResult, SemanticScreener } from './semanticGate';
+import type { ChatAttachmentRef } from '@opc/shared/domain';
 
 /**
  * 调度循环。
@@ -413,6 +414,29 @@ describe('上下文打包（Inline & Spill）', () => {
     // id 就是链式召回的入口：模型看到 evt-1 就能 recall 出整条线。
     expect(text).toContain('evt-1');
     expect(text).toContain('folder:inbox/a.md');
+  });
+
+  it('把用户附件引用带进 Router 输入，并传给下一条工作线', async () => {
+    const attachment = {
+      id: 'att-1',
+      name: 'zhihu_home.png',
+      path: '/tmp/chat-attachments/zhihu_home.png',
+      size: 123,
+      source: 'file' as const,
+    };
+    let context: { attachments: readonly ChatAttachmentRef[] } | undefined;
+    const router = new Router({
+      threads,
+      deliver: (text, _targets, input) => {
+        expect(text).toContain('zhihu_home.png');
+        context = input;
+      },
+    });
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '识别这张图', attachments: [attachment] } });
+
+    await router.tick();
+
+    expect(context?.attachments).toEqual([attachment]);
   });
 
   it('长内容不整段塞进窗口，截断处留 recall 入口', () => {

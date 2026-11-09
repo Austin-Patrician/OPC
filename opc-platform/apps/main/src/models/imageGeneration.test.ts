@@ -116,6 +116,7 @@ describe('generateImage · openai-images', () => {
       model: 'gpt-image-1',
       prompt: 'a red cube',
       protocol: 'openai-images',
+      options: { size: '1536x1024', quality: 'high', style: 'natural' },
     });
 
     expect(lastPath).toBe('/v1/images/generations');
@@ -123,7 +124,9 @@ describe('generateImage · openai-images', () => {
       model: 'gpt-image-1',
       prompt: 'a red cube',
       n: 1,
-      size: '1024x1024',
+      size: '1536x1024',
+      quality: 'high',
+      style: 'natural',
     });
     // gpt-image-* rejects response_format; DALL·E-style URLs are still handled.
     expect(lastBody).not.toHaveProperty('response_format');

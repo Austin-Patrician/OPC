@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react"
+import React, { Suspense, lazy, useCallback, useRef, useState } from "react"
 import {
   ASSISTANT_NAME,
   INITIAL_CREATIONS,
@@ -17,6 +17,10 @@ import {
 import { LeftRail } from "./components/LeftRail"
 import { ChatView } from "./components/ChatView"
 import { GalleryView, MemoryView, TasksView } from "./components/SidebarViews"
+// The 3D observatory pulls in three.js; load it only when that view is opened.
+const SystemRuntimeView = lazy(() =>
+  import("./components/runtime/SystemRuntimeView").then((m) => ({ default: m.SystemRuntimeView })),
+)
 import { SettingsView } from "./components/settings/SettingsView"
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
@@ -28,7 +32,8 @@ let idSeq = 0
 const nextId = () => `msg-${Date.now()}-${idSeq++}`
 
 export default function App() {
-  const [view, setView] = useState<View>("chat")
+  // Default to "runtime" so the System Runtime observatory opens immediately
+  const [view, setView] = useState<View>("runtime")
   // Start in the first-time empty state so the user immediately sees the welcome window;
   // they can click any starter card, send a message, or click "查看对话示例" in the top bar.
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -124,24 +129,22 @@ export default function App() {
   }
 
   const pendingTaskCount = tasks.filter((t) => !t.done).length
+  const isRuntime = view === "runtime"
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex items-center justify-center p-0 sm:p-4 md:p-6 relative bg-[#DFEBF6] text-[#1D1D1F]">
-      {/* Soft diagonal pastel backdrop matching the uploaded reference image */}
-      <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "linear-gradient(135deg, #D9E9F9 0%, #E7EFFA 38%, #D8EFE3 72%, #E2E7FA 100%)",
-          }}
-        />
-        <div className="absolute -top-24 right-[12%] w-[560px] h-[420px] rounded-full bg-[#CCEAD9]/65 blur-[90px]" />
-        <div className="absolute -bottom-24 left-[18%] w-[540px] h-[400px] rounded-full bg-[#F7F9FC]/80 blur-[90px]" />
-      </div>
-
-      {/* Main Floating Frosted Window matching the attachment */}
-      <div className="relative z-10 w-full h-full max-w-[1220px] max-h-[820px] bg-[#FAFCFB]/95 backdrop-blur-2xl sm:rounded-[18px] border border-white/90 shadow-[0_24px_70px_rgba(25,50,75,0.09),0_2px_10px_rgba(0,0,0,0.03)] flex overflow-hidden">
+    <div
+      className={`h-screen w-screen overflow-hidden flex items-center justify-center relative text-[#18181B] ${
+        isRuntime ? "p-0 bg-[#EAECE8]" : "p-0 sm:p-3 md:p-5 bg-[#EBEFEA]"
+      }`}
+    >
+      {/* Desktop Electron Application Frame (1440 x 1024 target, solid surfaces, max 8px radius in runtime) */}
+      <div
+        className={`relative z-10 w-full h-full flex overflow-hidden ${
+          isRuntime
+            ? "max-w-[1440px] max-h-[1024px] bg-[#F3F4F1] sm:rounded-[8px] border border-[#D4D6D2] shadow-[0_2px_10px_rgba(0,0,0,0.05)]"
+            : "max-w-[1260px] max-h-[860px] bg-[#FAFCFB] sm:rounded-[14px] border border-[#E2E6E3] shadow-[0_12px_40px_rgba(20,35,30,0.06)]"
+        }`}
+      >
         <LeftRail
           view={view}
           onChangeView={setView}
@@ -179,6 +182,17 @@ export default function App() {
             onAddMemory={handleAddMemory}
             onDeleteMemory={handleDeleteMemory}
           />
+        )}
+        {view === "runtime" && (
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center bg-[#F2EEE7] font-mono text-[11px] uppercase tracking-[0.18em] text-[#9A9389]">
+                Loading runtime…
+              </div>
+            }
+          >
+            <SystemRuntimeView />
+          </Suspense>
         )}
         {view === "settings" && <SettingsView />}
       </div>

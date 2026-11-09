@@ -75,6 +75,7 @@ export function normalize(name: string, value: unknown): McpServerConfig | null 
   const common = {
     name,
     ...(entry.enabled === false ? { enabled: false } : {}),
+    ...(entry.autoApprove === true ? { autoApprove: true } : {}),
     ...(isExposure(entry.exposure) ? { exposure: entry.exposure } : {}),
     ...(typeof entry.timeoutSeconds === 'number' ? { timeoutSeconds: entry.timeoutSeconds } : {}),
     ...(typeof entry.description === 'string' ? { description: entry.description } : {}),

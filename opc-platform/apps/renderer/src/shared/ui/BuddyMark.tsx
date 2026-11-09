@@ -1,12 +1,20 @@
+import type { AssistantActivityPhase } from '@opc/shared/ipc';
+
 /** Small inline Buddy robot mark, adapted from the supplied IM reference. */
-export function BuddyMark({ size = 'md' }: { size?: 'md' | 'lg' | 'xl' }) {
-  const dimension = size === 'xl' ? 'size-[78px]' : size === 'lg' ? 'size-[58px]' : 'size-10';
+export function BuddyMark({
+  size = 'md',
+  phase = 'idle',
+}: {
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  phase?: AssistantActivityPhase;
+}) {
+  const dimension = size === 'xl' ? 'size-[78px]' : size === 'lg' ? 'size-[58px]' : size === 'sm' ? 'size-8' : size === 'xs' ? 'size-7' : 'size-10';
   return (
     <span
-      className={`buddy-mark relative inline-flex shrink-0 items-center justify-center ${dimension}`}
+      className={`buddy-mark buddy-mark-${phase} relative inline-flex shrink-0 items-center justify-center ${dimension}`}
       aria-hidden
     >
-      <svg viewBox="0 0 64 64" className="size-full overflow-visible">
+      <svg viewBox="0 0 64 64" className="buddy-mark-svg size-full overflow-visible">
         <defs>
           <linearGradient id="buddy-mint-base" x1="0" y1="0" x2="1" y2="1">
             <stop stopColor="#e6f7ed" />

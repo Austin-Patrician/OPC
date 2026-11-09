@@ -5,6 +5,7 @@ import type {
   LinkType,
   CreateTaskInput,
   CreateTaskResult,
+  TaskContract,
   SubtaskDraft,
   TaskError,
   TaskRecord,
@@ -22,7 +23,9 @@ import type {
 import type { Context } from '@earendil-works/chord/context';
 import { createRegistry, defineExtension } from '@earendil-works/pi-durable';
 import type { Conversation, Extension, Harness, Registry } from '@earendil-works/pi-durable';
+import { createToolSearchExtension } from '@earendil-works/pi-durable/tool-search';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
 import { createToolLimitExtension } from '../sandbox/toolLimit';
@@ -93,11 +96,34 @@ import { RuntimeService } from '../runtime/service';
 import type { PiExtensionHost } from '../extensions/host';
 import type { PiSkillHost } from '../skills/host';
 import { createSkillsExtension } from '../skills/extension';
+import type { ContextGraphStore } from '../ontology/types';
+import type { BrowserBroker } from '../browser/broker';
+import { createBrowserToolExtension } from './browserTool';
+import { createDesktopToolExtension } from './desktopTool';
+import type { DesktopBroker } from '../desktop/broker';
 
 /** How many manager rework rounds a task may take before it is parked for you. */
 
 /** Which work task each employee is executing right now (for tools that need it). */
 const runningTaskByEmployee = new Map<string, string>();
+
+function legacyContract(input: CreateTaskInput): TaskContract {
+  const objective = input.brief?.trim() || input.deliverableSpec?.trim() || input.title;
+  const deliverable = input.deliverableSpec?.trim() || input.title;
+  const command = input.acceptanceCommand?.filter((part) => part.trim().length > 0) ?? [];
+  return {
+    objective,
+    deliverable,
+    outputs: [],
+    ...(command.length > 0 || input.acceptanceTemplate
+      ? { acceptance: { command, ...(input.acceptanceTemplate ? { template: input.acceptanceTemplate } : {}) } }
+      : {}),
+  };
+}
+
+function contractOf(task: Pick<WorkTask, 'contract' | 'brief' | 'deliverableSpec'>): TaskContract {
+  return task.contract ?? { objective: task.brief, deliverable: task.deliverableSpec, outputs: [] };
+}
 
 function currentTaskIdFor(ownerId: string): string | undefined {
   return runningTaskByEmployee.get(ownerId);
@@ -130,11 +156,16 @@ interface ToolSlot {
 
 export interface WorkServiceDeps {
   db: CompanyDatabase;
+  /** Shared thread repository used by the chat/router lifecycle observers. */
+  threads?: ThreadRepository;
   /** 系统故障的去处（`system_event`）。没有就只打到控制台。 */
   faults?: FaultSink;
   paths: AppPaths;
   /** Injects / updates the task card in the conversation. */
   upsertTaskCard: (task: WorkTask) => void;
+  /** Delivers an interactive approval to the Router chat. */
+  onApprovalCard?: (input: { report: WorkReport; task: WorkTask; tool: string; browser?: { action: string; url?: string; preview?: string; sessionId?: string }; desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string } }) => void;
+  onApprovalResolved?: (reportId: string, state: 'allowed' | 'denied') => void;
   modelConfig?: ModelConfigService;
   images?: ImageService;
   /** Speech recognition / synthesis; each tool is installed only when usable. */
@@ -149,6 +180,7 @@ export interface WorkServiceDeps {
   decisions?: DecisionService;
   memory?: MemoryService;
   facts?: FactService;
+  contextGraph?: ContextGraphStore;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
   /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
   network?: NetworkClient;
@@ -163,6 +195,12 @@ export interface WorkServiceDeps {
   piExtensions?: PiExtensionHost;
   /** `SKILL.md` folders found on disk; same optionality as above. */
   piSkills?: PiSkillHost;
+  /** Wakes the Router after a worker report is committed. */
+  wakeRouter?: () => void;
+  /** Optional native browser capability. It is deliberately not an MCP server. */
+  browser?: BrowserBroker;
+  /** Optional native desktop computer-use capability. */
+  desktop?: DesktopBroker;
 }
 
 /**
@@ -222,7 +260,20 @@ export class WorkService {
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
-    this.threads = new ThreadRepository(deps.db);
+    deps.browser?.setTaskWorkspaceResolver((taskId) => {
+      const task = this.repository.getTask(taskId);
+      return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
+    });
+    deps.browser?.setArtifactRegistrar((taskId, absolutePath) => {
+      const task = this.repository.getTask(taskId);
+      if (!task) return;
+      const root = path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath);
+      const resolved = path.resolve(absolutePath);
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error('浏览器产物越过任务工作区');
+      if (!fs.existsSync(resolved)) throw new Error('浏览器产物文件不存在');
+      this.repository.addArtifact(taskId, path.relative(root, resolved), resolved);
+    });
+    this.threads = deps.threads ?? new ThreadRepository(deps.db);
     this.signals = new SignalStore(deps.db);
 
     // One environment for the whole company: every tool call and acceptance
@@ -276,10 +327,24 @@ export class WorkService {
       context: () => getBackgroundContext(),
       onTaskChanged: (taskId) => {
         const task = this.repository.getTask(taskId);
-        if (task) this.emit(task);
+        if (task) {
+          if (task.status === 'running') this.setWorkerRuntimeStatus(task, 'running');
+          this.emit(task);
+        }
+      },
+      isApprovalPending: (taskId) => {
+        const task = this.repository.getTask(taskId);
+        return task?.threadId
+          ? this.threads.listReportsOf(task.threadId, 50)
+              .some((report) => report.taskId === taskId && report.kind === 'approval' && report.readAt === null)
+          : false;
       },
       onResumed: () => undefined,
       onFinished: (taskId, outcome, result) => {
+        // Native desktop sessions are task-scoped. Close them as soon as the
+        // durable task settles so profiles and accessibility handles do not
+        // accumulate until the idle sweeper runs.
+        if (this.deps.desktop) void this.deps.desktop.disposeTask(taskId);
         // 放行条属于那条正在跑的活：活收尾了它就没有意义（下一次要重新问）。
         this.repository.clearMcpPermits(taskId);
         const finishedEmployees: string[] = [];
@@ -295,6 +360,9 @@ export class WorkService {
           if (this.dirtyHarnesses.delete(ownerId)) void this.evictRuntime(ownerId);
         }
         const task = this.repository.getTask(taskId);
+        if (task && ['delivered', 'accepted', 'rejected', 'cancelled', 'failed'].includes(task.status)) {
+          this.setWorkerRuntimeStatus(task, 'idle');
+        }
         // A session that failed at the storage layer is closed for good; keeping it
         // cached would make every later run of this employee fail with "Harness is closed".
         if (outcome === 'faulted' && task) {
@@ -328,6 +396,7 @@ export class WorkService {
         // Last thing, so the status the thread hears about is the settled one.
         this.reportToThread(taskId);
         if (task?.reviewOfTaskId) this.reportToThread(task.reviewOfTaskId);
+        this.deps.wakeRouter?.();
       },
     });
 
@@ -357,6 +426,27 @@ export class WorkService {
                 content: snippet.content,
                 scopeType: snippet.scopeType,
               }));
+          }
+        : undefined,
+      recallOntology: this.deps.contextGraph
+        ? (task) => {
+            const graph = this.deps.contextGraph!;
+            // Materialize stable business ids as graph entities at read time;
+            // task/worker tables remain authoritative and this projection is
+            // idempotent, bounded, and evidence-backed.
+            const user = graph.resolveEntity('ontology-user')!;
+            const taskEntity = graph.ensureEntity({ id: `ontology-task-${task.workTaskId}`, entityType: 'Task', canonicalName: task.title, description: task.brief });
+            const workerEntity = graph.ensureEntity({ id: `ontology-worker-${task.assigneeId}`, entityType: 'Worker', canonicalName: task.assigneeId });
+            const episode = graph.appendEpisode({ sourceType: 'runtime.context', sourceId: task.workTaskId, actor: 'system', content: `${task.title}\n${task.brief}` });
+            graph.assertFact({ subjectEntityId: user.id, predicate: 'has_task', objectEntityId: taskEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
+            graph.assertFact({ subjectEntityId: user.id, predicate: 'has_worker', objectEntityId: workerEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
+            graph.assertFact({ subjectEntityId: taskEntity.id, predicate: 'assigned_to', objectEntityId: workerEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
+            return graph.contextPack('ontology-user', {
+              query: `${task.title} ${task.brief}`,
+              maxHops: 2,
+              maxAssertions: 16,
+              maxTokens: 1800,
+            }).prompt;
           }
         : undefined,
       /**
@@ -407,6 +497,24 @@ export class WorkService {
       fallbackBrain: scriptedBrain,
       repository: this.repository,
       recordDurableStep: (taskId, text) => this.recordDurableStep(taskId, text),
+      approvalReport: (taskId) => {
+        const task = this.repository.getTask(taskId);
+        if (!task?.threadId) return null;
+        return this.threads.listReportsOf(task.threadId, 50).find(
+          (report) => report.taskId === taskId && report.kind === 'approval' && report.readAt === null,
+        ) ?? null;
+      },
+      approvalPending: (taskId, reportId) => {
+        if (reportId) {
+          const report = this.threads.getReport(reportId);
+          return report?.kind === 'approval' && report.readAt === null;
+        }
+        const task = this.repository.getTask(taskId);
+        return task?.threadId
+          ? this.threads.listReportsOf(task.threadId, 50)
+              .some((report) => report.taskId === taskId && report.kind === 'approval' && report.readAt === null)
+          : false;
+      },
       onTaskChanged: (taskId) => {
         const task = this.repository.getTask(taskId);
         if (task) this.emit(task);
@@ -430,6 +538,7 @@ export class WorkService {
         return this.runner.run(taskId);
       },
       onError: (taskId, error) => {
+        if (this.deps.desktop) void this.deps.desktop.disposeTask(taskId);
         // 记账这一步本身可能失败（库已经关了、盘满了），而它失败不该再抛一次：
         // 一次没记上的失败会以 unhandled rejection 结束整个进程，而真正的问题是
         // 原来那个 error——它就在下面这行里。
@@ -439,6 +548,14 @@ export class WorkService {
             `启动失败：${error instanceof Error ? error.message : String(error)}`,
           );
           this.repository.setStatus(taskId, 'failed', { finishedAt: Date.now(), error: String(error) });
+          const failed = this.repository.getTask(taskId);
+          if (failed) {
+            // `runner.run()` marks the worker running before opening its harness.
+            // If that bootstrap throws, there is no durable `onFinished` callback
+            // to return the roster to idle, so settle it here with the task row.
+            this.setWorkerRuntimeStatus(failed, 'idle');
+            this.emit(failed);
+          }
         } catch (recordError) {
           console.error('记失败这一步也失败了', recordError);
         }
@@ -598,21 +715,21 @@ export class WorkService {
    * 等级一律 `decide`：拦住一次已经够贵了（它得换个做法或者停在那儿），再降级就等于
    * 让人永远看不到自己被拦住过。
    */
-  askForApproval = (input: { taskId: string; tool: string; title: string }): void => {
+  askForApproval = (input: { taskId: string; tool: string; title: string; browser?: { action: string; url?: string; preview?: string; sessionId?: string }; desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string } }): void => {
     const task = this.repository.getTask(input.taskId);
     if (!task?.threadId) return;
     this.repository.addStep(task.id, `要你点头：${input.title}`);
 
     // 同一件活、同一个工具只问一次：问第二遍是噪音（和 escalate 那条规则同一个理由）。
     // 按 `subject` 判，不按标题：标题是写给人看的那句话。
-    const already = this.threads
-      .listQueueWithThread(200)
-      .some((report) => report.taskId === task.id && report.kind === 'approval' && report.subject === input.tool);
+    const already = this.threads.pendingApproval(task.id, input.tool);
     if (already) return;
 
-    this.threads.addReport({
+    const report = this.threads.addReport({
       threadId: task.threadId,
-      level: 'decide',
+      // The report is retained for audit and card recovery, but approvals are
+      // delivered through the Router chat instead of the attention queue.
+      level: 'silent',
       title: `要你点头：${input.title}`,
       body: [
         `它要调 ${input.tool}，这类工具会改动东西或者伸到外面去。`,
@@ -625,6 +742,13 @@ export class WorkService {
       kind: 'approval',
     });
     this.threads.setState(task.threadId, 'waiting');
+    try {
+      this.deps.onApprovalCard?.({ report, task, tool: input.tool, ...(input.browser ? { browser: input.browser } : {}), ...(input.desktop ? { desktop: input.desktop } : {}) });
+    } catch (error) {
+      // A renderer/chat delivery problem must not turn a valid approval pause
+      // into a failed task. The report remains available for recovery.
+      console.warn('approval card delivery failed', error);
+    }
     const updated = this.repository.getTask(task.id);
     if (updated) this.emit(updated);
   };
@@ -715,19 +839,55 @@ export class WorkService {
     { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
   > {
     const { report, task, tool, text, allow } = input;
+    if (report.readAt !== null) {
+      // A card can outlive the report resolution (for example after a renderer
+      // reload or a duplicate click). Treat the operation as idempotent, but
+      // still notify the chat so the stale card is removed instead of appearing
+      // to ignore the user's click.
+      this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
+      return { ok: true, delivered: 'next-attempt' };
+    }
+
+    if (task.status !== 'open' && task.status !== 'running') {
+      // Legacy data may contain an approval whose task already settled. Keep
+      // the original line and execution body when creating the only necessary
+      // compatibility continuation; normal approvals never take this path.
+      this.threads.markReportRead(report.id);
+      this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
+      const note = allow
+        ? `放行（${tool}）：${text || '可以'}`
+        : `不放行（${tool}）：${text || '不许'}`;
+      const created = this.createTask({
+        title: task.title,
+        contract: {
+          ...contractOf(task),
+          objective: `${contractOf(task).objective}\n\n${note}`,
+        },
+        assigneeId: task.assigneeId,
+        estTokens: task.estTokens,
+        acceptanceCommand: task.acceptanceCommand,
+        acceptanceTemplate: task.acceptanceTemplate,
+        threadId: task.threadId ?? undefined,
+        workerId: task.workerId,
+      });
+      if (!created.ok) return { ok: false, error: created.error.message };
+      if (allow) this.repository.grantMcpPermit(created.task.id, tool);
+      this.repository.addSteering(created.task.id, note, 'answer');
+      this.repository.addStep(created.task.id, allow ? `你允许了：${tool}` : `你不允许：${tool}`);
+      if (created.task.threadId) this.threads.setState(created.task.threadId, 'running');
+      this.runTask(created.task.id);
+      return { ok: true, delivered: 'new-task' };
+    }
+
     if (allow) this.repository.grantMcpPermit(task.id, tool);
     this.threads.markReportRead(report.id);
+    this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
 
     const note = allow
       ? `放行（${tool}）：${text || '可以'}`
       : `不放行（${tool}）：${text || '不许'}`;
     this.repository.addSteering(task.id, note, 'answer');
     this.repository.addStep(task.id, allow ? `你允许了：${tool}` : `你不允许：${tool}`);
-
-    if (task.status !== 'open' && task.status !== 'running') {
-      // 已经收尾了：放行条留在库里没意义（活不会再来），但话要记下来。
-      return { ok: true, delivered: 'next-attempt' };
-    }
 
     const live =
       this.modelBrain !== null &&
@@ -746,7 +906,7 @@ export class WorkService {
   };
 
   /**
-   * 你在注意力队列上的两个动作（steering 层）。
+   * 你在对话报告卡片上的两个动作（steering 层）。
    *
    * `approve` —— 认可。这活只有人能判，所以认可就是终审：任务记成你通过，
    * 工作线关掉。`rework` —— 不满意，带着意见再做一次：**新建一个任务**而不是
@@ -757,6 +917,7 @@ export class WorkService {
     threadId: string,
     decision: 'approve' | 'rework',
     note?: string,
+    reportId?: string,
   ): { ok: true; thread: WorkThread } | { ok: false; error: string } => {
     const latest = this.repository.latestForThread(threadId);
     const text = note?.trim() || '';
@@ -771,21 +932,34 @@ export class WorkService {
       }
       const thread = this.threads.getThread(threadId);
       if (!thread) return { ok: false, error: `未知工作线：${threadId}` };
+      if (reportId) {
+        const report = this.threads.getReport(reportId);
+        // `decide` is idempotent for cards restored from an older transcript;
+        // mark again so the chat callback also removes a stale pending card.
+        if (report) this.threads.markReportRead(reportId);
+      }
       return { ok: true, thread };
     }
 
     if (!latest) return { ok: false, error: '这条工作线上还没有任务，无法返工' };
     const created = this.createTask({
       title: latest.title,
-      brief: text ? `${latest.brief}\n\n你的意见：${text}` : `${latest.brief}\n\n你要求重做`,
-      deliverableSpec: latest.deliverableSpec,
+      contract: {
+        ...contractOf(latest),
+        objective: text ? `${contractOf(latest).objective}\n\n你的意见：${text}` : `${contractOf(latest).objective}\n\n你要求重做`,
+      },
       assigneeId: latest.assigneeId,
       estTokens: latest.estTokens,
       acceptanceCommand: latest.acceptanceCommand,
       acceptanceTemplate: latest.acceptanceTemplate,
       threadId,
+      workerId: latest.workerId,
     });
     if (!created.ok) return { ok: false, error: created.error.message };
+    if (reportId) {
+      const report = this.threads.getReport(reportId);
+      if (report) this.threads.markReportRead(reportId);
+    }
 
     // 收集器要立刻收下，不能等：这句话就是"这版不对，应该是 X"，是整条链路上最干净的
     // 偏好证据。处理是后置的（抽取管线），收是同步的。
@@ -833,8 +1007,7 @@ export class WorkService {
       const child = this.repository.createTask(
         {
           title: subtask.title,
-          brief: subtask.brief,
-          deliverableSpec: subtask.deliverableSpec,
+          contract: subtask.contract,
           assigneeId: subtask.assigneeId,
           estTokens: subtask.estTokens,
           acceptanceCommand: ['node', '{checks}/verify.mjs'],
@@ -892,21 +1065,24 @@ export class WorkService {
   createTask = (input: CreateTaskInput): CreateTaskResult => {
     const taskId = `task-${crypto.randomUUID()}`;
     const workspaceRelPath = taskWorkspaceRelPath(taskId);
+    const contract = input.contract ?? legacyContract(input);
     const draft: CreateTaskDraft = {
       ...input,
-      acceptanceTemplate: input.acceptanceTemplate ?? 'http-ok',
+      contract,
+      acceptanceTemplate: contract.acceptance?.template ?? input.acceptanceTemplate ?? 'http-ok',
       acceptanceCommand:
-        input.acceptanceCommand.length > 0
-          ? input.acceptanceCommand
+        (contract.acceptance?.command ?? input.acceptanceCommand ?? []).length > 0
+          ? (contract.acceptance?.command ?? input.acceptanceCommand ?? [])
           : ['node', '{checks}/verify.mjs'],
     };
+    const normalizedContract = draft.contract ?? legacyContract(input);
 
     // Every task belongs to a line of work, so a finished task always has somewhere
     // to report to. Today that is one thread per task; a goal that decomposes into
     // several tasks keeps them together because children inherit the parent's id.
     const threadId =
       draft.threadId ??
-      this.threads.createThread({ title: draft.title, goal: draft.brief }).id;
+      this.threads.createThread({ title: draft.title, goal: normalizedContract.objective }).id;
     draft.threadId = threadId;
     // The dispatcher may already have chosen an execution body (workerPool); it
     // wins over the default "one worker per person per thread". A worker from a
@@ -939,7 +1115,7 @@ export class WorkService {
    *
    * v2 里没有经理，这条链也就没有了。三层验收的边界写死在 docs/v2/01-core.md §9：
    * ① Watchdog 判"还在不在往前走" ② 可执行闸门（退出码）③ 人的确认。
-   * 闸门过了就关单；闸门不存在或没过，就进注意力队列等人——中间不需要一个同事。
+   * 闸门过了就关单；闸门不存在或没过，就通过对话报告卡片交给用户——中间不需要一个同事。
    */
 
   /**
@@ -1063,6 +1239,11 @@ export class WorkService {
       await entry.harness.close(context).catch(() => undefined);
     }
     this.harnesses.clear();
+    for (const [workerId, opening] of this.mcpMounts) {
+      this.mcpMounts.delete(workerId);
+      await opening.then((mount) => mount.close()).catch(() => undefined);
+      this.mcpServers.delete(workerId);
+    }
   };
 
   /**
@@ -1122,7 +1303,7 @@ export class WorkService {
     const cached = this.mcpMounts.get(workerId);
     if (cached) return cached;
 
-    const opening = mountMcp({ servers });
+    const opening = mountMcp({ servers, userDataDir: this.deps.paths.userData });
     this.mcpMounts.set(workerId, opening);
     try {
       const mount = await opening;
@@ -1175,7 +1356,10 @@ export class WorkService {
             name: 'opc.image',
             essential: false,
             available: true,
-            extension: createImageToolExtension({ generate: images.generateBytes }),
+            extension: createImageToolExtension({
+              generate: images.generateBytes,
+              capabilities: images.getCapabilities,
+            }),
           }
         : { name: 'opc.image', essential: false, available: false, reason: 'no-image-provider' },
     );
@@ -1386,6 +1570,61 @@ export class WorkService {
         : { name: 'opc.mcp', essential: false, available: false, reason: 'no-mcp-servers' },
     );
 
+    const browser = this.deps.browser;
+    const browserAvailable = browser?.status().healthy === true && browser.settings().enabled === true;
+    slots.push(
+      browserAvailable && browser
+        ? {
+            name: 'opc.browser',
+            essential: false,
+            available: true,
+            extension: createBrowserToolExtension({
+              broker: browser,
+              taskId: () => currentTaskIdFor(personId),
+              workerId: subject.id,
+              userId: personId,
+              workspace: () => {
+                const taskId = currentTaskIdFor(personId);
+                const task = taskId ? this.repository.getTask(taskId) : undefined;
+                return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
+              },
+              authorize: (tool, title, metadata) => {
+                const taskId = currentTaskIdFor(personId);
+                if (!taskId) return false;
+                if (this.repository.hasMcpPermit(taskId, tool)) return true;
+                this.askForApproval({ taskId, tool, title, ...(metadata ? { browser: metadata } : {}) });
+                return false;
+              },
+            }),
+          }
+        : { name: 'opc.browser', essential: false, available: false, reason: 'browser-not-installed-or-disabled' },
+    );
+
+    const desktop = this.deps.desktop;
+    const desktopAvailable = desktop?.status().healthy === true && desktop.settings(personId).enabled === true;
+    slots.push(
+      desktopAvailable && desktop
+        ? {
+            name: 'opc.desktop',
+            essential: false,
+            available: true,
+            extension: createDesktopToolExtension({
+              broker: desktop,
+              taskId: () => currentTaskIdFor(personId),
+              workerId: subject.id,
+              userId: personId,
+              authorize: (tool, title, metadata) => {
+                const taskId = currentTaskIdFor(personId);
+                if (!taskId) return false;
+                if (this.repository.hasMcpPermit(taskId, tool)) return true;
+                this.askForApproval({ taskId, tool, title, ...(metadata ? { desktop: metadata } : {}) });
+                return false;
+              },
+            }),
+          }
+        : { name: 'opc.desktop', essential: false, available: false, reason: 'desktop-not-installed-or-disabled' },
+    );
+
     return slots;
   }
 
@@ -1434,6 +1673,30 @@ export class WorkService {
     );
     registry.install(createToolLimitExtension());
     for (const slot of slots) if (!slot.essential) install(slot);
+
+    // Deferred tools are deliberately kept out of the model's initial tool list,
+    // but they still need one universal discovery entry point.  This must be
+    // derived from the installed extension catalogue rather than from an MCP
+    // server name: any future deferred extension gets the same capability.
+    const hasDeferredTools = slots.some((slot) => {
+      if (!slot.available || !slot.extension) return false;
+      if (!slot.essential && !isExtensionEnabled(policy, slot.name)) return false;
+      return (slot.extension.tools ?? []).some(
+        (tool) => tool.deferred === true && isToolEnabled(policy, tool.name),
+      );
+    });
+    // `tool_search` is itself a model-facing capability, so the worker policy
+    // must be able to turn it off just like any other tool.  Without this
+    // guard, disabling the last deferred tool (or explicitly denying
+    // `tool_search`) would still leave a misleading empty discovery tool in
+    // the model's menu.
+    if (
+      hasDeferredTools &&
+      isExtensionEnabled(policy, 'tool-search') &&
+      isToolEnabled(policy, 'tool_search')
+    ) {
+      registry.install(createToolSearchExtension());
+    }
 
     return registry;
   }
@@ -1536,7 +1799,19 @@ export class WorkService {
   private async evictRuntime(workerId: string): Promise<void> {
     // 挂载也要丢：注册表要重建，而挂载是"这个执行体看到的那份目录"——留着它，
     // 设置页改完 `mcp.json` 之后新的服务器不会出现。
+    const mountOpening = this.mcpMounts.get(workerId);
     this.mcpMounts.delete(workerId);
+    this.mcpServers.delete(workerId);
+    if (mountOpening) {
+      try {
+        // Unsubscribe from tools/list_changed before discarding the mount.  A
+        // plain map clear would leave the old connection's listener alive and
+        // let a stale MCP directory repopulate a newly built registry.
+        await (await mountOpening).close();
+      } catch (error) {
+        console.warn('关闭执行体 MCP 挂载失败（栈已变更）', error);
+      }
+    }
     const entry = this.harnesses.get(workerId);
     if (!entry) return;
     this.harnesses.delete(workerId);
@@ -1554,7 +1829,11 @@ export class WorkService {
    * time, so without this the change would only apply after a restart.
    */
   invalidateAllHarnesses = async (): Promise<void> => {
-    for (const runtimeKey of [...this.harnesses.keys()]) {
+    // A mount can be created by the capability/stack pages before any harness
+    // exists.  Include mount-only keys and close every mount so a newly saved
+    // server cannot reuse a stale directory or listener until restart.
+    const runtimeKeys = new Set([...this.harnesses.keys(), ...this.mcpMounts.keys()]);
+    for (const runtimeKey of runtimeKeys) {
       await this.evictRuntime(runtimeKey);
     }
   };
@@ -1564,6 +1843,20 @@ export class WorkService {
   private emit(task: WorkTask): void {
     this.deps.upsertTaskCard(task);
     this.listeners.forEach((listener) => listener(task));
+  }
+
+  /** Keep the worker roster truthful while the task ledger remains authoritative. */
+  private setWorkerRuntimeStatus(task: WorkTask, status: 'idle' | 'running'): void {
+    const workerId = task.workerId;
+    if (!workerId) return;
+    const worker = this.threads.getWorker(workerId);
+    if (!worker || worker.status === status) return;
+    try {
+      this.threads.setWorkerStatus(workerId, status);
+    } catch (error) {
+      // Runtime presentation must never make a durable task fail.
+      console.warn('[work] worker runtime status update failed', error);
+    }
   }
 
   /**
@@ -1641,6 +1934,7 @@ export class WorkService {
       level: 'decide',
       title: task.title,
       body: `我把这件事交回了：${input.reason}\n（${task.id}）`,
+      taskId: task.id,
     });
 
     const updated = this.repository.getTask(task.id);
@@ -1932,6 +2226,26 @@ export class WorkService {
       this.threads.addReport({
         threadId,
         ...outcome.report,
+        taskId: task.id,
+        result: {
+          taskId: task.id,
+          status: task.status === 'accepted' || task.status === 'delivered'
+            ? 'accepted'
+            : task.status === 'rejected'
+              ? 'rejected'
+              : task.status === 'failed'
+                ? 'failed'
+                : 'waiting',
+          conclusion: outcome.report.body,
+          artifacts: task.artifacts,
+          acceptance: task.acceptance ?? null,
+          evidence: (task.records ?? []).map((record) => ({
+            kind: record.kind === 'event' ? ('source' as const) : ('record' as const),
+            label: record.title,
+            refId: record.id,
+            excerpt: record.excerpt,
+          })),
+        },
         // 子任务的终局一律只留记录：它该由父先消化（父知道全局，你只知道这一条），
         // 不该赶在父汇总之前占用你的一次注意。
         ...(isChild ? { level: 'silent' as AttentionLevel } : {}),
@@ -1945,6 +2259,7 @@ export class WorkService {
           level: thread?.speculative ? 'notify' : 'decide',
           title: task.title,
           body: '这条工作线已经超出它自己的额度，继续还是收手？',
+          taskId: task.id,
         });
       }
     }

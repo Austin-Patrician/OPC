@@ -19,6 +19,7 @@ export const EMPTY_SNAPSHOT: ChatSnapshot = {
   agents: [],
   conversations: [],
   typingByConversation: {},
+  activityByConversation: {},
 };
 
 let current: ChatTransport | null = null;

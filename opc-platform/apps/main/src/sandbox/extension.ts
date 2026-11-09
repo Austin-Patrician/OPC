@@ -1,7 +1,7 @@
 import { defineExtension, hook, ToolTask } from '@earendil-works/pi-durable';
 import { buildPolicy, detectBackend } from './detect';
 import { isInside, resolveToolPath } from './policy';
-import { sandboxedShellCommand, workspaceOf } from './workspaces';
+import { attachmentMountsOf, attachmentsOf, sandboxedShellCommand, workspaceOf } from './workspaces';
 
 const PATH_TOOLS = new Set(['read', 'write', 'edit']);
 
@@ -56,7 +56,12 @@ export function createSandboxExtension(
             return {
               arguments: {
                 ...args,
-                command: sandboxedShellCommand(status.backend, buildPolicy(workspace, false, options.readOnlyRoots?.() ?? []), command),
+                command: sandboxedShellCommand(
+                  status.backend,
+                  buildPolicy(workspace, false, [...(options.readOnlyRoots?.() ?? []), ...attachmentsOf(api.conversationId)]),
+                  command,
+                  attachmentMountsOf(api.conversationId),
+                ),
               },
             };
           }

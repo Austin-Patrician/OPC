@@ -16,8 +16,10 @@ import { MemoryPage } from './pages/MemoryPage';
 import { TriagePage } from './pages/TriagePage';
 import { WatchdogPage } from './pages/WatchdogPage';
 import { McpPage } from './pages/McpPage';
+import { BrowserPage } from './pages/BrowserPage';
+import { DesktopPage } from './pages/DesktopPage';
 import { useTranslation } from 'react-i18next';
-import { Boxes, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
+import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Plug, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
 const PAGE_IDS = [
@@ -34,6 +36,8 @@ const PAGE_IDS = [
   'voice',
   'decision',
   'mcp',
+  'browser',
+  'desktop',
   'network',
   'selfcheck',
   'about',
@@ -79,10 +83,19 @@ export function SettingsShell() {
         { id: 'company', label: t('settings.page.company') },
         { id: 'billing', label: t('settings.page.billing') },
         { id: 'compaction', label: t('settings.page.compaction') },
+      ],
+    },
+    {
+      // 事件调度、进展监督、记忆都是"它怎么工作"的策略，和外观/计费这类
+      // 通用偏好分开，免得在通用下面越堆越长。
+      id: 'behavior',
+      label: t('settings.group.behavior'),
+      icon: Brain,
+      color: '#FF375F',
+      pages: [
         { id: 'triage', label: t('settings.page.triage') },
         { id: 'watchdog', label: t('settings.page.watchdog') },
         { id: 'memory', label: t('settings.page.memory') },
-        { id: 'runtime', label: t('settings.page.runtime') },
       ],
     },
     {
@@ -95,8 +108,24 @@ export function SettingsShell() {
         { id: 'image', label: 'Image' },
         { id: 'voice', label: 'Voice' },
         { id: 'decision', label: 'Decision' },
-        { id: 'mcp', label: 'MCP' },
       ],
+    },
+    {
+      // 运行时是环境本身（Node/Python/OCR），不是某个模型选项：单独成组。
+      id: 'runtime',
+      label: t('settings.group.runtime'),
+      icon: Cpu,
+      color: '#5856D6',
+      pages: [{ id: 'runtime', label: t('settings.page.runtime') }],
+    },
+    {
+      // MCP 是外部能力，不是模型选型：单独成组，避免和 LLM/Image/Voice/Decision
+      // 挤在同一个子菜单里。
+      id: 'mcp',
+      label: t('settings.group.mcp'),
+      icon: Plug,
+      color: '#30B0C7',
+      pages: [{ id: 'mcp', label: 'MCP' }],
     },
     {
       // Outgoing traffic is infrastructure, not a model concern: its own group
@@ -106,6 +135,20 @@ export function SettingsShell() {
       icon: Globe,
       color: '#FF9500',
       pages: [{ id: 'network', label: t('settings.page.network') }],
+    },
+    {
+      id: 'browser',
+      label: '浏览器',
+      icon: Globe,
+      color: '#1D7AFC',
+      pages: [{ id: 'browser', label: 'Personal Agent 浏览器' }],
+    },
+    {
+      id: 'desktop',
+      label: '桌面能力',
+      icon: AppWindow,
+      color: '#5856D6',
+      pages: [{ id: 'desktop', label: 'Computer Use' }],
     },
     {
       id: 'selfcheck',
@@ -155,6 +198,10 @@ export function SettingsShell() {
         return <DecisionPage />;
       case 'mcp':
         return <McpPage />;
+      case 'browser':
+        return <BrowserPage />;
+      case 'desktop':
+        return <DesktopPage />;
       case 'selfcheck':
         return <SelfCheckPage />;
       case 'network':

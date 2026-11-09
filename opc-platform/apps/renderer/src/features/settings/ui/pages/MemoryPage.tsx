@@ -1,7 +1,47 @@
 import { useEffect, useState } from 'react';
+import { ChevronDown, History, RotateCcw, Route, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MemoryView, OrphanMemoryGroup } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section } from '../kit';
+
+type OntologyEntityView = {
+  id: string;
+  entityType: string;
+  canonicalName: string;
+  description?: string;
+  version?: number;
+};
+
+type OntologyAssertionView = {
+  id: string;
+  subjectEntityId: string;
+  predicate: string;
+  objectEntityId: string | null;
+  objectValue: string | null;
+  valueType: string;
+  confidence: number;
+  status: string;
+  sourceEpisodeId: string;
+  evidenceSpan: string | null;
+  validFrom: number;
+  validUntil: number | null;
+};
+
+function asEntity(value: unknown): OntologyEntityView | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Record<string, unknown>;
+  return typeof item.id === 'string' && typeof item.canonicalName === 'string'
+    ? { id: item.id, entityType: typeof item.entityType === 'string' ? item.entityType : 'Entity', canonicalName: item.canonicalName, description: typeof item.description === 'string' ? item.description : undefined, version: typeof item.version === 'number' ? item.version : undefined }
+    : null;
+}
+
+function asAssertion(value: unknown): OntologyAssertionView | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Record<string, unknown>;
+  return typeof item.id === 'string' && typeof item.subjectEntityId === 'string' && typeof item.predicate === 'string'
+    ? { id: item.id, subjectEntityId: item.subjectEntityId, predicate: item.predicate, objectEntityId: typeof item.objectEntityId === 'string' ? item.objectEntityId : null, objectValue: typeof item.objectValue === 'string' ? item.objectValue : null, valueType: typeof item.valueType === 'string' ? item.valueType : 'text', confidence: typeof item.confidence === 'number' ? item.confidence : 0, status: typeof item.status === 'string' ? item.status : 'current', sourceEpisodeId: typeof item.sourceEpisodeId === 'string' ? item.sourceEpisodeId : '', evidenceSpan: typeof item.evidenceSpan === 'string' ? item.evidenceSpan : null, validFrom: typeof item.validFrom === 'number' ? item.validFrom : 0, validUntil: typeof item.validUntil === 'number' ? item.validUntil : null }
+    : null;
+}
 
 /**
  * 设置 → 它记得什么。
@@ -25,6 +65,10 @@ export function MemoryPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [ontology, setOntology] = useState<{ entities: OntologyEntityView[]; assertions: OntologyAssertionView[]; profile: Record<string, unknown> } | null>(null);
+  const [ontologyHistory, setOntologyHistory] = useState<OntologyAssertionView[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [ontologyError, setOntologyError] = useState<string | null>(null);
 
   const load = () =>
     Promise.all([
@@ -34,7 +78,55 @@ export function MemoryPage() {
 
   useEffect(() => {
     void load();
+    void loadOntology();
   }, []);
+
+  const loadOntology = async () => {
+    try {
+      const [context, history] = await Promise.all([
+        window.opc!.ontology.context({ subjectEntityId: 'ontology-user', maxHops: 2, maxAssertions: 40 }),
+        window.opc!.ontology.history({ subjectEntityId: 'ontology-user' }),
+      ]);
+      setOntology({
+        entities: (context.entities ?? []).map(asEntity).filter((item): item is OntologyEntityView => Boolean(item)),
+        assertions: (context.assertions ?? []).map(asAssertion).filter((item): item is OntologyAssertionView => Boolean(item)),
+        profile: context.profile ?? {},
+      });
+      setOntologyHistory((history ?? []).map(asAssertion).filter((item): item is OntologyAssertionView => Boolean(item)));
+      setOntologyError(null);
+    } catch (error) {
+      setOntologyError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const retract = async (assertionId: string) => {
+    setBusy(`ontology:${assertionId}`);
+    try {
+      await window.opc!.ontology.command({
+        actor: 'user',
+        objectType: 'User',
+        objectId: 'ontology-user',
+        action: 'retract_assertion',
+        args: { assertionId },
+        idempotencyKey: `retract:${assertionId}:${Date.now()}`,
+      });
+      await loadOntology();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const entityNames = new Map((ontology?.entities ?? []).map((entity) => [entity.id, entity.canonicalName]));
+  const objectLabel = (assertion: OntologyAssertionView) => {
+    if (assertion.objectEntityId) return entityNames.get(assertion.objectEntityId) ?? assertion.objectEntityId;
+    if (assertion.objectValue === null) return '—';
+    try {
+      const parsed: unknown = JSON.parse(assertion.objectValue);
+      return typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
+    } catch {
+      return assertion.objectValue;
+    }
+  };
 
   const settleOrphan = (ownerId: string, action: 'claim' | 'discard') => {
     setBusy(ownerId);
@@ -137,7 +229,7 @@ export function MemoryPage() {
   return (
     <>
       <PageHeader
-        crumbs={[t('settings.title'), t('settings.group.general')]}
+        crumbs={[t('settings.group.behavior'), t('settings.memory.title')]}
         title={t('settings.memory.title')}
         description={t('settings.memory.desc')}
       />
@@ -216,6 +308,62 @@ export function MemoryPage() {
             <ul className="divide-y divide-line/60" data-testid="memory-long">
               {long.map(row)}
             </ul>
+          )}
+        </Section>
+
+        <Section
+          title={t('settings.memory.ontologyTitle')}
+          description={t('settings.memory.ontologyDesc')}
+          action={
+            <button type="button" className={buttonClass.secondary} onClick={() => void loadOntology()} title={t('settings.memory.ontologyRefresh')}>
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              {t('settings.memory.ontologyRefresh')}
+            </button>
+          }
+        >
+          {ontologyError ? <p className="px-4 py-3 text-xs text-danger">{ontologyError}</p> : null}
+          {!ontology ? (
+            <p className="px-4 py-3 text-xs text-ink-quaternary">{t('common.loading')}</p>
+          ) : ontology.assertions.length === 0 ? (
+            <div className="px-4 py-5 text-sm text-ink-tertiary">
+              <div className="flex items-center gap-2 font-medium text-ink"><Route className="size-4" />{t('settings.memory.ontologyEmpty')}</div>
+              <p className="mt-1 text-xs text-ink-quaternary">{t('settings.memory.ontologyEmptyHint')}</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2 border-b border-line px-4 py-3">
+                {Object.entries(ontology.profile).slice(0, 8).map(([key, value]) => (
+                  <span key={key} className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-2xs text-ink-secondary">
+                    <span className="font-mono text-ink-quaternary">{key}</span><span>·</span><span>{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+                  </span>
+                ))}
+              </div>
+              <ul className="divide-y divide-line/60">
+                {ontology.assertions.map((assertion) => (
+                  <li key={assertion.id} className="flex items-start gap-3 px-4 py-3">
+                    <ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm leading-relaxed text-ink">
+                        <span className="text-ink-tertiary">{entityNames.get(assertion.subjectEntityId) ?? assertion.subjectEntityId}</span>{' '}
+                        <span className="font-mono text-xs text-accent-ink">{assertion.predicate}</span>{' '}
+                        <span>{objectLabel(assertion)}</span>
+                      </p>
+                      <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 font-mono text-2xs text-ink-quaternary">
+                        <span>{Math.round(assertion.confidence * 100)}%</span><span>· {assertion.sourceEpisodeId}</span>
+                        {assertion.evidenceSpan ? <span>· {assertion.evidenceSpan}</span> : null}
+                      </p>
+                    </div>
+                    <button type="button" className={buttonClass.danger} disabled={busy === `ontology:${assertion.id}`} onClick={() => void retract(assertion.id)}>
+                      {t('settings.memory.ontologyRetract')}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" className="flex w-full items-center gap-2 border-t border-line px-4 py-2.5 text-xs text-ink-tertiary hover:text-ink" onClick={() => setShowHistory((value) => !value)}>
+                <History className="size-3.5" />{t('settings.memory.ontologyHistory')}<ChevronDown className={`ml-auto size-3.5 transition-transform ${showHistory ? 'rotate-180' : ''}`} />
+              </button>
+              {showHistory ? <ul className="border-t border-line bg-surface-muted/30 px-4 py-2">{ontologyHistory.filter((item) => item.status !== 'current').slice(0, 20).map((item) => <li key={item.id} className="flex items-center gap-2 py-1.5 text-2xs text-ink-quaternary"><span className="font-mono">{item.status}</span><span>{item.predicate}</span><span>{objectLabel(item)}</span></li>)}</ul> : null}
+            </>
           )}
         </Section>
 

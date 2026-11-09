@@ -646,6 +646,7 @@ CREATE TABLE task_rebuild (
   title               TEXT NOT NULL,
   brief               TEXT NOT NULL DEFAULT '',
   deliverable_spec    TEXT NOT NULL DEFAULT '',
+  contract_json       TEXT,
   owner_id            TEXT NOT NULL,
   owner_name          TEXT NOT NULL DEFAULT '',
   parent_task_id      TEXT,
@@ -665,6 +666,7 @@ CREATE TABLE task_rebuild (
   tokens_used         INTEGER NOT NULL DEFAULT 0,
   cost_usd            REAL NOT NULL DEFAULT 0,
   error               TEXT,
+  answer              TEXT,
   error_kind          TEXT,
   started_at          INTEGER,
   finished_at         INTEGER,
@@ -709,10 +711,10 @@ export function repairOwnershipColumns(db: CompanyDatabase): void {
     );
 
     const carried = [
-      'id', 'title', 'brief', 'deliverable_spec', 'parent_task_id', 'review_of_task_id',
+      'id', 'title', 'brief', 'deliverable_spec', 'contract_json', 'parent_task_id', 'review_of_task_id',
       'is_review', 'depth', 'est_tokens', 'acceptance_command', 'acceptance_template',
       'status', 'workspace_rel_path', 'durable_task_id', 'attempts', 'tokens_used',
-      'cost_usd', 'error', 'error_kind', 'started_at', 'finished_at', 'created_at', 'updated_at',
+      'cost_usd', 'error', 'answer', 'error_kind', 'started_at', 'finished_at', 'created_at', 'updated_at',
       'issue_key', 'priority', 'labels', 'due_at', 'thread_id', 'worker_id',
     ].filter((name) => taskColumns.includes(name));
     const extra = carried.join(', ');

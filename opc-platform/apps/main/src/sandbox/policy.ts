@@ -29,6 +29,10 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
     '(version 1)',
     '(allow default)',
     '(deny file-write*)',
+    // Shells commonly use `2>/dev/null` for optional probes. Without this
+    // single-device exception, the redirection itself fails with EPERM and
+    // turns otherwise harmless commands into tool errors.
+    '(allow file-write* (literal "/dev/null"))',
     `(allow file-write* (subpath ${quotes(policy.workspace)}))`,
     // Node and its tooling need a scratch dir for sockets and temp files.
     '(allow file-write* (subpath "/private/tmp") (subpath "/private/var/folders"))',
@@ -37,6 +41,20 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
   for (const root of policy.deniedReadRoots) {
     lines.push(`(deny file-read* (subpath ${quotes(root)}))`);
   }
+  for (const root of policy.readOnlyRoots) {
+    // Runtime profiles are directories (and attachment refs may be files). A
+    // literal directory rule only permits opening the directory itself; every
+    // actual executable or library below it is still denied by the default
+    // profile. Re-open the complete authorized subtree instead.
+    lines.push(`(allow file-read* (subpath ${quotes(root)}))`);
+  }
+
+  // Workspaces live below the application-data directory, which is one of the
+  // default denied roots.  Re-open the task workspace after the deny rules so
+  // the sandboxed process can resolve its cwd and read files it is allowed to
+  // work on.  Without this, every shell starts with `getcwd: Operation not
+  // permitted`, even though the workspace itself is writable.
+  lines.push(`(allow file-read* (subpath ${quotes(policy.workspace)}))`);
 
   if (!policy.allowNetwork) {
     // Block egress (exfiltration) but keep local bind/inbound: an employee must be
@@ -81,15 +99,14 @@ export function buildBwrapArgv(policy: SandboxPolicy, shellCommand: string): str
     '/dev',
     '--tmpfs',
     '/tmp',
-    '--bind',
-    policy.workspace,
-    policy.workspace,
-    '--chdir',
-    policy.workspace,
   ];
 
   if (!policy.allowNetwork) args.push('--unshare-net');
   for (const root of policy.deniedReadRoots) args.push('--ro-bind-try', '/dev/null', root);
+  // The workspace may be nested below a denied application-data root. Mount it
+  // at an independent path inside the sandbox so the denied parent cannot mask
+  // it, and so its descendants stay the only writable task files.
+  args.push('--dir', '/workspace', '--bind', policy.workspace, '/workspace', '--chdir', '/workspace');
   for (const root of policy.readOnlyRoots) {
     if (!root || root === policy.workspace) continue;
     args.push('--ro-bind-try', root, root);

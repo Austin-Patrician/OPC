@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ChevronRight,
+  Activity,
   Grid3X3,
-  Inbox,
   Menu,
   MessageCircle,
   Settings,
@@ -17,11 +17,10 @@ import { BuddyMark } from '@/shared/ui/BuddyMark';
 import { IdentityPopover } from '@/widgets/title-bar/IdentityPopover';
 
 const MORE = [
-  { to: '/attention', icon: Inbox, key: 'nav.attention' },
   { to: '/skills', icon: Grid3X3, key: 'nav.skills' },
 ] as const;
 
-export function NavRail({ unreadTotal }: { unreadTotal: number }) {
+export function NavRail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -32,6 +31,7 @@ export function NavRail({ unreadTotal }: { unreadTotal: number }) {
   const updateProfile = useCompany((state) => state.update);
   const name = userName(profile, t('company.userFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
+  const runtimeActive = location.pathname.startsWith('/runtime');
 
   useEffect(() => {
     if (!identityOpen) return;
@@ -50,7 +50,7 @@ export function NavRail({ unreadTotal }: { unreadTotal: number }) {
   }, [identityOpen]);
 
   return (
-    <aside className="buddy-rail flex w-[90px] shrink-0 flex-col items-center justify-between py-4 select-none">
+    <aside className="buddy-rail relative z-40 flex w-[90px] shrink-0 flex-col items-center justify-between py-4 select-none">
       <div className="flex flex-col items-center">
         <div className="buddy-traffic mb-5 flex items-center gap-[7px]" aria-hidden>
           <span className="size-[11px] rounded-full bg-[#ff5f57]" />
@@ -76,11 +76,20 @@ export function NavRail({ unreadTotal }: { unreadTotal: number }) {
             className={cn('buddy-rail-button relative', chatActive && 'buddy-rail-button-active')}
           >
             <MessageCircle size={21} strokeWidth={1.9} />
-            {unreadTotal > 0 ? (
-              <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-[#e75555] px-1 text-[9px] leading-4 text-white">
-                {unreadTotal > 9 ? '9+' : unreadTotal}
-              </span>
-            ) : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/runtime')}
+            aria-label={t('nav.runtime')}
+            aria-current={runtimeActive ? 'page' : undefined}
+            title={t('nav.runtime')}
+            className={cn(
+              'buddy-rail-button relative',
+              runtimeActive && 'buddy-rail-button-active',
+            )}
+          >
+            <Activity size={20} strokeWidth={1.85} />
+            <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-[#22b560]" />
           </button>
           <div className="relative">
             <button

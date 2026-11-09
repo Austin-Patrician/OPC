@@ -7,13 +7,13 @@ import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
  * 对话页。
  *
  * 这里曾经是「左边会话列表 + 右边聊天」。v2 之后没有列表了：你始终只在和
- * 一个助手说话（Super-agent 的连续感），事情在注意力队列里，过程在这条会话里。
+ * 一个助手说话（Super-agent 的连续感），任务结果和需要用户处理的动作都回到这条会话里。
  */
 export function ChatPage() {
   const { searchQuery } = useOutletContext<{ searchQuery: string }>();
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
-  const { conversations, agents, typingByConversation, sendMessage, markRead } = useChatRuntime();
+  const { conversations, agents, typingByConversation, activityByConversation, sendMessage, markRead } = useChatRuntime();
 
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
   const [resolving, setResolving] = useState(false);
@@ -55,8 +55,9 @@ export function ChatPage() {
       conversation={active}
       agents={agents}
       typingNames={typingByConversation[active.id] ?? []}
+      activity={activityByConversation[active.id]}
       searchQuery={searchQuery}
-      onSend={(text, mentionIds) => sendMessage({ conversationId: active.id, text, mentionIds })}
+      onSend={(text, mentionIds, attachments) => sendMessage({ conversationId: active.id, text, mentionIds, attachments })}
     />
   );
 }

@@ -1,5 +1,10 @@
 import {
   IPC,
+  type RuntimeObservatorySnapshot,
+  type RuntimeObservatoryRequest,
+  type RuntimeEventView,
+  type WatchdogActionView,
+  type WatchdogIncidentView,
   type SendMessageInput,
   type MemoryView,
   type OrphanMemoryGroup,
@@ -21,9 +26,10 @@ import type {
   WorkThread,
 } from "@opc/shared/domain";
 import { MODEL_ROLES, type ModelRole } from "@opc/shared/domain";
-import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { getAppInfo } from "../appInfo";
 import type { ChatService } from "../chat/chatService";
 import { runDiagnostics } from "../diagnostics/report";
@@ -42,6 +48,10 @@ import {
   listServers,
   removeServer,
   saveServer,
+  setAutoApprove,
+  listTools,
+  setToolAutoApprove,
+  resetToolApprovals,
   testServer,
 } from "../mcp/settings";
 import { readMcpConfig } from "../mcp/config";
@@ -58,6 +68,11 @@ import type { PiExtensionHost } from "../extensions/host";
 import type { PiSkillHost } from "../skills/host";
 import type { WorkService } from "../work/workService";
 import type { BillingSettingsService } from "../work/billingSettings";
+import type { SystemEventRepository } from "../data/systemEventRepository";
+import type { ContextGraphStore } from "../ontology/types";
+import type { OntologyCommandService } from "../ontology/commandService";
+import type { BrowserBroker } from "../browser/broker";
+import type { DesktopBroker } from "../desktop/broker";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -65,8 +80,8 @@ interface RegisterOptions {
   models: ModelConfigService;
   /** Watchdog 的只读入口与规则（W7）。 */
   watchdog: {
-    incidents: { listRecent(limit?: number): unknown[] };
-    actions: { listRecent(limit?: number): unknown[] };
+    incidents: { listRecent(limit?: number): WatchdogIncidentView[] };
+    actions: { listRecent(limit?: number): WatchdogActionView[] };
     policy: {
       view(): unknown;
       save(patch: unknown): unknown;
@@ -102,6 +117,8 @@ interface RegisterOptions {
   workspaceRoot: string;
   /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
   threads: ThreadRepository;
+  /** Runtime observatory reads this safe, persisted event stream. */
+  events: SystemEventRepository;
   /** 你丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
   startGoal: (goal: string) => Promise<WorkThread>;
   facts: FactService;
@@ -126,6 +143,10 @@ interface RegisterOptions {
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
   piSkills: PiSkillHost;
+  ontology: ContextGraphStore;
+  ontologyCommands: OntologyCommandService;
+  browser?: BrowserBroker;
+  desktop?: DesktopBroker;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -138,6 +159,7 @@ export function registerIpc({
   auth,
   workspaceRoot,
   threads,
+  events,
   startGoal,
   facts,
   consolidationRuns,
@@ -153,6 +175,10 @@ export function registerIpc({
   triggers,
   memories,
   watchdog,
+  ontology,
+  ontologyCommands,
+  browser,
+  desktop,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -188,9 +214,21 @@ export function registerIpc({
   };
 
   const unsubscribeWork = work.subscribe((task) => {
+    const runtimeEvent: RuntimeEventView = {
+      id: `runtime-${task.id}-${task.updatedAt ?? Date.now()}`,
+      at: task.updatedAt ?? Date.now(),
+      kind: `task.${task.status}`,
+      severity: task.status === "failed" ? "error" : "info",
+      subjectType: "task",
+      subjectId: task.id,
+      summary: `${task.status} · ${task.title}`,
+      detail: JSON.stringify({ workerId: task.workerId ?? task.assigneeId, threadId: task.threadId ?? null }),
+    };
     for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed())
+      if (!window.isDestroyed()) {
         window.webContents.send(IPC.work.taskEvent, task);
+        window.webContents.send(IPC.runtime.changedEvent, runtimeEvent);
+      }
     }
   });
 
@@ -249,6 +287,52 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.runtime.snapshot, () => runtime.snapshot());
+
+  ipcMain.handle(IPC.runtime.observatory, (_event, request?: RuntimeObservatoryRequest): RuntimeObservatorySnapshot => {
+    const mode = request?.mode === "detail" ? "detail" : "summary";
+    const tasks = work.listAllTasks(200);
+    // Keep recently retired executors in the read-only observatory payload long
+    // enough for the renderer to show their last completed task after a handoff.
+    const workers = threads.listRuntimeWorkers(Date.now() - 10 * 60_000);
+    const traces: RuntimeObservatorySnapshot["traces"] = {};
+    if (mode === "detail" && (request?.taskId || request?.workerId)) {
+      const selected = request.taskId ? tasks.filter((task) => task.id === request.taskId) : tasks.filter((task) => (task.workerId ?? task.assigneeId) === request.workerId);
+      for (const task of selected) traces[task.id] = work.listTrace(task.id, 40);
+    }
+    return {
+      generatedAt: Date.now(),
+      workers,
+      tasks,
+      traces,
+      incidents: watchdog.incidents.listRecent(50),
+      actions: mode === "detail" ? watchdog.actions.listRecent(20) : [],
+      events: mode === "detail" ? events.listRecent(80) : [],
+      heartbeat: events.readHeartbeat(),
+    };
+  });
+
+  // Worker status and watchdog heartbeats are persisted outside WorkService, so
+  // they do not have a task subscription to trigger the renderer. A small
+  // unref'ed pulse keeps the live observatory responsive while the snapshot
+  // remains the single source of truth.
+  let runtimePulseSeq = 0;
+  const runtimePulse = setInterval(() => {
+    const heartbeat = events.readHeartbeat();
+    const workers = threads.listAllWorkers();
+    const now = Date.now();
+    const pulse: RuntimeEventView = {
+      id: `runtime-pulse-${now}-${runtimePulseSeq++}`,
+      at: heartbeat?.at ?? now,
+      kind: heartbeat?.state === 'stopping' ? 'system.stopping' : 'system.heartbeat',
+      severity: 'info',
+      subjectType: 'system',
+      subjectId: heartbeat?.instanceId ?? 'main',
+      summary: `runtime pulse · ${workers.length} workers`,
+      detail: JSON.stringify({ workerIds: workers.map((worker) => worker.id), heartbeat }),
+    };
+    broadcast(IPC.runtime.changedEvent, pulse);
+  }, 2000);
+  runtimePulse.unref?.();
 
   // Re-detects every profile; the settings page calls this explicitly so a
   // version is never probed during a tool call.
@@ -329,9 +413,33 @@ export function registerIpc({
 
   ipcMain.handle(IPC.chat.getSnapshot, () => chat.getSnapshot());
 
+  ipcMain.handle(IPC.chat.chooseAttachments, async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const result = window
+      ? await dialog.showOpenDialog(window, { title: '选择附件', properties: ['openFile', 'multiSelections'] })
+      : await dialog.showOpenDialog({ title: '选择附件', properties: ['openFile', 'multiSelections'] });
+    if (result.canceled) return [];
+    return validateAttachmentPaths(result.filePaths);
+  });
+
+  ipcMain.handle(IPC.chat.materializeClipboardAttachment, async (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') throw new Error('chat:materializeClipboardAttachment 参数非法');
+    const value = input as { name?: unknown; mimeType?: unknown; bytes?: unknown };
+    if (typeof value.name !== 'string' || !(value.bytes instanceof ArrayBuffer)) throw new Error('剪贴板附件参数非法');
+    if (value.bytes.byteLength > 500 * 1024 * 1024) throw new Error('单个附件不能超过 500MB');
+    const dir = path.join(app.getPath('userData'), 'chat-attachments');
+    fs.mkdirSync(dir, { recursive: true });
+    const id = crypto.randomUUID();
+    const safe = path.basename(value.name).replaceAll(/[^\w.\- ]/g, '_') || 'clipboard-file';
+    const target = path.join(dir, `${id}-${safe}`);
+    fs.writeFileSync(target, Buffer.from(value.bytes));
+    return { id, name: safe, path: target, size: value.bytes.byteLength, ...(typeof value.mimeType === 'string' ? { mimeType: value.mimeType } : {}), source: 'clipboard' as const, availability: 'available' as const };
+  });
+
   ipcMain.handle(IPC.chat.sendMessage, (_event, input: unknown) => {
     if (!isSendMessageInput(input))
       throw new Error("chat:sendMessage 参数非法");
+    if (input.attachments) validateIncomingAttachments(input.attachments);
     chat.sendMessage(input);
   });
 
@@ -755,16 +863,47 @@ export function registerIpc({
     );
   });
 
-  // ── v2: 注意力队列 ─────────────────────────────────────────────────────
-  // 你打开应用看到的是"有什么事需要我"，不是会话列表。silent 的汇报永远不进
-  // 队列——干完活不打扰是产品承诺，也是一条测试（router.test.ts）。
+  ipcMain.handle(IPC.ontology.context, (_event, raw: unknown) => {
+    const input = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {};
+    const subject = typeof input.subjectEntityId === 'string' && input.subjectEntityId.trim() ? input.subjectEntityId : 'ontology-user';
+    return ontology.contextPack(subject, {
+      query: typeof input.query === 'string' ? input.query : undefined,
+      maxHops: typeof input.maxHops === 'number' ? input.maxHops : undefined,
+      maxAssertions: typeof input.maxAssertions === 'number' ? input.maxAssertions : undefined,
+    });
+  });
+  ipcMain.handle(IPC.ontology.history, (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:history 参数非法');
+    const input = raw as Record<string, unknown>;
+    if (typeof input.subjectEntityId !== 'string' || !input.subjectEntityId.trim()) throw new Error('ontology:history 需要 subjectEntityId');
+    return ontology.assertionHistory(input.subjectEntityId, typeof input.predicate === 'string' ? input.predicate : undefined);
+  });
+  ipcMain.handle(IPC.ontology.command, (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:command 参数非法');
+    const input = raw as Record<string, unknown>;
+    if (!['user', 'router', 'worker'].includes(String(input.actor))) throw new Error('ontology:command actor 非法');
+    if (typeof input.objectType !== 'string' || typeof input.objectId !== 'string' || typeof input.action !== 'string' || typeof input.idempotencyKey !== 'string') throw new Error('ontology:command 缺少 objectType/objectId/action/idempotencyKey');
+    // Execution actors are main-process identities. The renderer may submit a
+    // user command, but must not impersonate Router/Worker to bypass policy.
+    if (input.actor !== 'user') throw new Error('ontology:command 只能由用户身份提交');
+    return ontologyCommands.execute({ actor: 'user', objectType: input.objectType, objectId: input.objectId, action: input.action, args: input.args, expectedVersion: typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined, idempotencyKey: input.idempotencyKey, approvalId: typeof input.approvalId === 'string' ? input.approvalId : undefined }).then((result) => result.command);
+  });
+  ipcMain.handle(IPC.ontology.commandStatus, (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:commandStatus 参数非法');
+    const input = raw as Record<string, unknown>;
+    if (typeof input.commandId !== 'string' || !['approved', 'rejected'].includes(String(input.status))) throw new Error('ontology:commandStatus 只能由审批流程设置为 approved / rejected');
+    if (input.status === 'approved') return ontologyCommands.approve(input.commandId).then((result) => result.command);
+    return ontologyCommands.transition(input.commandId, 'rejected', input.result, typeof input.error === 'string' ? input.error : undefined);
+  });
+  ipcMain.handle(IPC.ontology.outbox, (_event, limit: unknown) => ontology.pendingOutbox(typeof limit === 'number' ? limit : 100));
+
+  // ── Work threads ───────────────────────────────────────────────────────
   ipcMain.handle(IPC.threads.start, (_event, goal: unknown) => {
     if (typeof goal !== "string" || goal.trim().length === 0) {
       throw new Error("threads:start 需要一个目标");
     }
     return startGoal(goal.trim());
   });
-  ipcMain.handle(IPC.threads.queue, () => threads.listQueueWithThread());
   ipcMain.handle(IPC.threads.list, (_event, limit: unknown) =>
     threads.listThreads({ limit: typeof limit === "number" ? limit : 50 }),
   );
@@ -788,11 +927,9 @@ export function registerIpc({
       draft.threadId,
       draft.decision,
       typeof draft.note === "string" ? draft.note : undefined,
+      draft.reportId,
     );
     if (!result.ok) throw new Error(result.error);
-    // You answered: the row leaves the queue either way. A rework will come
-    // back with its own report when the second attempt lands.
-    threads.markReportRead(draft.reportId);
     return result.thread;
   });
   /*
@@ -812,6 +949,41 @@ export function registerIpc({
   ipcMain.handle(IPC.mcp.save, async (_event, raw: unknown) => {
     const config = draftToMcpConfig(raw);
     const result = saveServer(mcpOptions(), config);
+    await reloadMcp();
+    return result;
+  });
+  ipcMain.handle(IPC.mcp.setAutoApprove, async (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null) throw new Error("mcp:setAutoApprove 参数非法");
+    const draft = raw as Record<string, unknown>;
+    if (typeof draft.name !== "string" || typeof draft.enabled !== "boolean") {
+      throw new Error("mcp:setAutoApprove 需要服务器名和布尔值");
+    }
+    const result = setAutoApprove(mcpOptions(), draft.name.trim(), draft.enabled);
+    await reloadMcp();
+    return result;
+  });
+  ipcMain.handle(IPC.mcp.listTools, async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('mcp:listTools 需要服务器名');
+    return listTools(mcpOptions(), name.trim());
+  });
+  ipcMain.handle(IPC.mcp.setToolAutoApprove, async (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('mcp:setToolAutoApprove 参数非法');
+    const draft = raw as Record<string, unknown>;
+    if (typeof draft.server !== 'string' || typeof draft.tool !== 'string' ||
+      (typeof draft.enabled !== 'boolean' && draft.enabled !== null)) {
+      throw new Error('mcp:setToolAutoApprove 参数非法');
+    }
+    const result = await setToolAutoApprove(mcpOptions(), draft.server.trim(), draft.tool, draft.enabled);
+    await reloadMcp();
+    return result;
+  });
+  ipcMain.handle(IPC.mcp.resetToolApprovals, async (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) throw new Error('mcp:resetToolApprovals 参数非法');
+    const draft = raw as Record<string, unknown>;
+    if (typeof draft.server !== 'string' || typeof draft.enabled !== 'boolean') {
+      throw new Error('mcp:resetToolApprovals 参数非法');
+    }
+    const result = resetToolApprovals(mcpOptions(), draft.server.trim(), draft.enabled);
     await reloadMcp();
     return result;
   });
@@ -857,6 +1029,62 @@ export function registerIpc({
     await reloadMcp();
     return listServers(mcpOptions());
   });
+
+  if (browser) {
+    const browserBroadcast = () => broadcast(IPC.browser.changedEvent, browser.status());
+    ipcMain.handle(IPC.browser.status, () => browser.status());
+    ipcMain.handle(IPC.browser.install, async () => { const result = await browser.installBrowser(); browserBroadcast(); await work.invalidateAllHarnesses(); return result; });
+    ipcMain.handle(IPC.browser.uninstall, async (_event, request: unknown) => {
+      const options = request && typeof request === 'object'
+        ? request as { deleteProfile?: unknown; deleteBrowserCache?: unknown }
+        : { deleteProfile: request };
+      const result = await browser.uninstallBrowser(options.deleteProfile === true, options.deleteBrowserCache === true);
+      browserBroadcast();
+      await work.invalidateAllHarnesses();
+      return result;
+    });
+    ipcMain.handle(IPC.browser.doctor, () => { const result = browser.doctor(); browserBroadcast(); return result; });
+    ipcMain.handle(IPC.browser.getSettings, () => browser.settings());
+    ipcMain.handle(IPC.browser.setSettings, async (_event, patch: unknown) => {
+      if (!patch || typeof patch !== 'object') throw new Error('browser:setSettings 参数非法');
+      const result = browser.setSettings(patch as Record<string, unknown>);
+      await work.invalidateAllHarnesses();
+      browserBroadcast();
+      return result;
+    });
+    ipcMain.handle(IPC.browser.show, (_event, taskId: unknown) => {
+      if (typeof taskId !== 'string' || !taskId.trim()) throw new Error('browser:show 需要 taskId');
+      return browser.show(taskId);
+    });
+    ipcMain.handle(IPC.browser.hide, (_event, taskId: unknown) => browser.hide(typeof taskId === 'string' ? taskId : undefined));
+    ipcMain.handle(IPC.browser.resetProfile, (_event, userId: unknown) => browser.resetProfile(typeof userId === 'string' && userId.trim() ? userId : 'user'));
+  }
+
+  if (desktop) {
+    const desktopBroadcast = () => broadcast(IPC.desktop.changedEvent, desktop.status());
+    ipcMain.handle(IPC.desktop.status, () => desktop.status());
+    ipcMain.handle(IPC.desktop.install, async () => { const result = await desktop.installRuntime(); desktopBroadcast(); await work.invalidateAllHarnesses(); return result; });
+    ipcMain.handle(IPC.desktop.uninstall, async (_event, deleteRuntime: unknown) => { const result = await desktop.uninstallRuntime(deleteRuntime !== false); desktopBroadcast(); await work.invalidateAllHarnesses(); return result; });
+    ipcMain.handle(IPC.desktop.doctor, () => { const result = desktop.doctor(); desktopBroadcast(); return result; });
+    ipcMain.handle(IPC.desktop.permissions, async () => { const result = await desktop.permissions(); desktopBroadcast(); return result; });
+    ipcMain.handle(IPC.desktop.permissionsGuide, async () => { const result = await desktop.permissionsGuide(); desktopBroadcast(); return result; });
+    ipcMain.handle(IPC.desktop.getSettings, (_event, userId: unknown) => desktop.settings(typeof userId === 'string' && userId.trim() ? userId : 'user'));
+    ipcMain.handle(IPC.desktop.setSettings, async (_event, patch: unknown, userId: unknown) => {
+      if (!patch || typeof patch !== 'object') throw new Error('desktop:setSettings 参数非法');
+      const result = desktop.setSettings(patch as Record<string, unknown>, typeof userId === 'string' && userId.trim() ? userId : 'user');
+      await work.invalidateAllHarnesses();
+      desktopBroadcast();
+      return result;
+    });
+    ipcMain.handle(IPC.desktop.listApps, () => desktop.listApps());
+    ipcMain.handle(IPC.desktop.listWindows, () => desktop.listWindows());
+    ipcMain.handle(IPC.desktop.inspect, (_event, taskId: unknown) => {
+      if (typeof taskId !== 'string' || !taskId.trim()) throw new Error('desktop:inspect 需要 taskId');
+      return desktop.inspect({ taskId, workerId: 'inspector', userId: 'user' });
+    });
+    ipcMain.handle(IPC.desktop.show, (_event, taskId: unknown) => desktop.show(typeof taskId === 'string' ? taskId : ''));
+    ipcMain.handle(IPC.desktop.hide, (_event, taskId: unknown) => desktop.hide(typeof taskId === 'string' ? taskId : undefined));
+  }
 
   ipcMain.handle(IPC.threads.answer, async (_event, raw: unknown) => {
     if (typeof raw !== "object" || raw === null)
@@ -917,12 +1145,12 @@ export function registerIpc({
       const task = work.getTask(taskId);
       if (!task) return { ok: false, error: "未知任务" };
 
-      const read = readImageArtifact(
-        workspaceRoot,
-        task.workspaceRelPath,
-        relPath,
-      );
-      if (!read.ok) return { ok: false, error: read.error };
+      if (!task.artifacts.some((artifact) => artifact.relPath === relPath)) return { ok: false, error: '任务产物未登记' };
+      const source = path.resolve(workspaceRoot, task.workspaceRelPath, relPath);
+      const taskDir = path.resolve(workspaceRoot, task.workspaceRelPath);
+      if (source !== taskDir && !source.startsWith(`${taskDir}${path.sep}`)) return { ok: false, error: '路径越界' };
+      const stat = fs.statSync(source, { throwIfNoEntry: false });
+      if (!stat?.isFile()) return { ok: false, error: '文件不存在' };
 
       const window = BrowserWindow.fromWebContents(event.sender);
       const result = await dialog.showSaveDialog(window ?? undefined!, {
@@ -931,11 +1159,6 @@ export function registerIpc({
       if (result.canceled || !result.filePath)
         return { ok: false, error: "已取消" };
 
-      const source = path.resolve(
-        workspaceRoot,
-        task.workspaceRelPath,
-        relPath,
-      );
       fs.copyFileSync(source, result.filePath);
       return { ok: true, path: result.filePath };
     },
@@ -1107,6 +1330,7 @@ export function registerIpc({
     for (const channel of Object.values(IPC.runtime))
       ipcMain.removeHandler(channel);
     unsubscribeWork();
+    clearInterval(runtimePulse);
     ipcMain.removeHandler(IPC.billing.get);
     ipcMain.removeHandler(IPC.billing.update);
     unsubscribe();
@@ -1117,6 +1341,8 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.trace);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
+    for (const channel of Object.values(IPC.mcp)) ipcMain.removeHandler(channel);
+    for (const channel of Object.values(IPC.browser)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.app.getInfo);
     ipcMain.removeHandler(IPC.company.get);
     ipcMain.removeHandler(IPC.company.update);
@@ -1189,17 +1415,31 @@ function isModelRef(value: unknown): value is ModelRef {
 function isCreateTaskInput(value: unknown): value is CreateTaskInput {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
+  const contract = candidate.contract;
+  if (typeof contract !== 'object' || contract === null) return false;
+  const c = contract as Record<string, unknown>;
+  if (
+    typeof c.objective !== 'string' ||
+    typeof c.deliverable !== 'string' ||
+    !Array.isArray(c.outputs) ||
+    c.outputs.length === 0 ||
+    !c.outputs.every((output) => {
+      if (typeof output !== 'object' || output === null) return false;
+      const item = output as Record<string, unknown>;
+      return typeof item.description === 'string' &&
+        (item.kind === 'text' || (item.kind === 'file' && typeof item.path === 'string'));
+    })
+  ) return false;
+  if (c.acceptance !== undefined) {
+    if (typeof c.acceptance !== 'object' || c.acceptance === null) return false;
+    const acceptance = c.acceptance as Record<string, unknown>;
+    if (!Array.isArray(acceptance.command) || !acceptance.command.every((part) => typeof part === 'string')) return false;
+    if (acceptance.template !== undefined && !['http-ok', 'node-test', 'image-200', 'review-verdict'].includes(String(acceptance.template))) return false;
+  }
   return (
     typeof candidate.title === "string" &&
-    typeof candidate.brief === "string" &&
-    typeof candidate.deliverableSpec === "string" &&
     typeof candidate.assigneeId === "string" &&
-    typeof candidate.estTokens === "number" &&
-    Array.isArray(candidate.acceptanceCommand) &&
-    candidate.acceptanceCommand.every((part) => typeof part === "string") &&
-    (candidate.acceptanceTemplate === undefined ||
-      candidate.acceptanceTemplate === "http-ok" ||
-      candidate.acceptanceTemplate === "image-200")
+    typeof candidate.estTokens === "number"
   );
 }
 
@@ -1209,10 +1449,46 @@ function isSendMessageInput(value: unknown): value is SendMessageInput {
   return (
     typeof candidate.conversationId === "string" &&
     typeof candidate.text === "string" &&
+    (candidate.attachments === undefined || isAttachmentList(candidate.attachments)) &&
     (candidate.mentionIds === undefined ||
       (Array.isArray(candidate.mentionIds) &&
         candidate.mentionIds.every((id) => typeof id === "string")))
   );
+}
+
+function isAttachmentList(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 20 && value.every((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const a = item as Record<string, unknown>;
+    return typeof a.id === 'string' && typeof a.name === 'string' && typeof a.path === 'string' &&
+      typeof a.size === 'number' && a.size >= 0 && a.size <= 500 * 1024 * 1024 &&
+      (a.source === 'file' || a.source === 'clipboard');
+  });
+}
+
+function validateAttachmentPaths(paths: string[]) {
+  if (paths.length > 20) throw new Error('最多选择 20 个附件');
+  const seen = new Set<string>();
+  return paths.map((filePath) => {
+    const resolved = path.resolve(filePath);
+    if (seen.has(resolved)) throw new Error('附件不能重复');
+    seen.add(resolved);
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error('附件必须是普通文件');
+    if (stat.size > 500 * 1024 * 1024) throw new Error('单个附件不能超过 500MB');
+    return { id: crypto.createHash('sha1').update(resolved).digest('hex').slice(0, 20), name: path.basename(resolved), path: resolved, size: stat.size, source: 'file' as const, availability: 'available' as const };
+  });
+}
+
+function validateIncomingAttachments(attachments: NonNullable<SendMessageInput['attachments']>): void {
+  if (attachments.length > 20) throw new Error('最多发送 20 个附件');
+  for (const attachment of attachments) {
+    const resolved = path.resolve(attachment.path);
+    if (resolved !== attachment.path) throw new Error('附件路径必须是绝对规范路径');
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) throw new Error(`附件不是普通文件：${attachment.name}`);
+    if (stat.size > 500 * 1024 * 1024) throw new Error(`单个附件不能超过 500MB：${attachment.name}`);
+  }
 }
 
 function isRuntimeProfileDraft(value: unknown): value is RuntimeProfileDraft {
@@ -1253,6 +1529,7 @@ function draftToMcpConfig(raw: unknown): McpServerConfig {
   const common = {
     name,
     ...(draft.enabled === false ? { enabled: false } : {}),
+    ...(draft.autoApprove === true ? { autoApprove: true } : {}),
     ...(exposure ? { exposure } : {}),
     ...(typeof draft.description === "string" && draft.description.trim()
       ? { description: draft.description.trim() }

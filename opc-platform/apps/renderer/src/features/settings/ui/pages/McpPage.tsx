@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Loader2, LogOut, Plug, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronDown, KeyRound, Loader2, LogOut, Plug, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { McpServerView } from '@opc/shared/ipc';
+import type { McpServerView, McpToolView } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section, StatusBadge } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
 
@@ -18,10 +18,11 @@ interface Draft {
   transport: 'stdio' | 'http';
   target: string;
   exposure: 'deferred' | 'direct' | 'hidden';
+  autoApprove: boolean;
   description: string;
 }
 
-const EMPTY: Draft = { name: '', transport: 'stdio', target: '', exposure: 'deferred', description: '' };
+const EMPTY: Draft = { name: '', transport: 'stdio', target: '', exposure: 'deferred', autoApprove: false, description: '' };
 
 export function McpPage() {
   const { t } = useTranslation();
@@ -32,6 +33,9 @@ export function McpPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [tools, setTools] = useState<Record<string, McpToolView[]>>({});
+  const [toolsError, setToolsError] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!window.opc?.mcp) return;
@@ -59,6 +63,7 @@ export function McpPage() {
         transport: draft.transport,
         target: draft.target.trim(),
         exposure: draft.exposure,
+        autoApprove: draft.autoApprove,
         ...(draft.description.trim() ? { description: draft.description.trim() } : {}),
       });
       setServers(next.servers);
@@ -132,10 +137,81 @@ export function McpPage() {
     }
   };
 
+  const setAutoApprove = async (name: string, enabled: boolean) => {
+    setBusy(`approval:${name}`);
+    try {
+      const next = await window.opc!.mcp.setAutoApprove(name, enabled);
+      setServers(next.servers);
+      setSources(next.sources);
+      setNotice(t(enabled ? 'settings.mcp.autoApproveEnabledNotice' : 'settings.mcp.autoApproveDisabledNotice', { name }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loadTools = async (name: string) => {
+    setBusy(`tools:${name}`);
+    setToolsError((previous) => ({ ...previous, [name]: '' }));
+    try {
+      const next = await window.opc!.mcp.listTools(name);
+      setTools((previous) => ({ ...previous, [name]: next }));
+    } catch (caught) {
+      setToolsError((previous) => ({ ...previous, [name]: caught instanceof Error ? caught.message : String(caught) }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleTools = (name: string) => {
+    if (expanded === name) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(name);
+    if (!tools[name]) void loadTools(name);
+  };
+
+  const setToolAutoApprove = async (server: string, tool: McpToolView, enabled: boolean) => {
+    setBusy(`tool:${server}:${tool.name}`);
+    try {
+      await window.opc!.mcp.setToolAutoApprove(server, tool.name, enabled);
+      setTools((previous) => ({
+        ...previous,
+        [server]: (previous[server] ?? []).map((item) =>
+          item.name === tool.name ? { ...item, autoApprove: enabled, overridden: true } : item,
+        ),
+      }));
+      setNotice(t(enabled ? 'settings.mcp.toolAutoApproveEnabled' : 'settings.mcp.toolAutoApproveDisabled', { tool: tool.title ?? tool.name }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const bulkToolApproval = async (server: McpServerView, enabled: boolean) => {
+    setBusy(`bulk:${server.name}`);
+    try {
+      await window.opc!.mcp.resetToolApprovals(server.name, enabled);
+      setTools((previous) => ({
+        ...previous,
+        [server.name]: (previous[server.name] ?? []).map((tool) => ({ ...tool, autoApprove: enabled, overridden: false })),
+      }));
+      setServers((previous) => previous.map((item) => item.name === server.name ? { ...item, autoApprove: enabled } : item));
+      setNotice(t('settings.mcp.toolsBulkNotice', { name: server.name }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
       <PageHeader
-        crumbs={[t('settings.title'), t('settings.mcp.title')]}
+        crumbs={[t('settings.group.mcp')]}
         title={t('settings.mcp.title')}
         description={t('settings.mcp.description')}
         actions={
@@ -168,7 +244,7 @@ export function McpPage() {
         ) : (
           <ul className="divide-y divide-line">
             {servers.map((server) => (
-              <li key={server.name} className="flex items-start gap-3 px-4 py-3">
+              <li key={server.name} className="flex flex-wrap items-start gap-3 px-4 py-3">
                 <Plug className="mt-0.5 size-4 shrink-0 text-ink-quaternary" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -193,6 +269,30 @@ export function McpPage() {
                     ) : null}
                   </div>
                   <div className="mt-0.5 truncate text-2xs text-ink-quaternary">{server.target}</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={server.autoApprove}
+                      aria-label={`${server.name}: ${t('settings.mcp.autoApprove')}`}
+                      onClick={() => void setAutoApprove(server.name, !server.autoApprove)}
+                      disabled={busy === `approval:${server.name}`}
+                      className={cn(
+                        'relative inline-flex h-[19px] w-[34px] shrink-0 items-center rounded-full border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#87947b] disabled:cursor-wait disabled:opacity-60',
+                        server.autoApprove ? 'border-[#526d59] bg-[#526d59]' : 'border-[#c9c9bf] bg-[#e7e6df]',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'size-3.5 rounded-full bg-white shadow-sm transition-transform',
+                          server.autoApprove ? 'translate-x-[16px]' : 'translate-x-[2px]',
+                        )}
+                      />
+                    </button>
+                    <span className={cn('text-2xs font-medium', server.autoApprove ? 'text-[#8a6636]' : 'text-ink-tertiary')}>
+                      {server.autoApprove ? t('settings.mcp.autoApproveOn') : t('settings.mcp.autoApproveOff')}
+                    </span>
+                  </div>
                   {server.tools !== undefined ? (
                     <div className="mt-0.5 text-2xs text-ink-tertiary">
                       {t('settings.mcp.counts', { tools: server.tools, resources: server.resources ?? 0 })}
@@ -203,6 +303,16 @@ export function McpPage() {
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleTools(server.name)}
+                    className={buttonClass.secondary}
+                    aria-expanded={expanded === server.name}
+                    title={t('settings.mcp.tools')}
+                  >
+                    {busy === `tools:${server.name}` ? <Loader2 className="size-3.5 animate-spin" /> : <ChevronDown className={cn('size-3.5 transition-transform', expanded === server.name && 'rotate-180')} />}
+                    {t('settings.mcp.tools')}
+                  </button>
                   <button
                     type="button"
                     onClick={() => void test(server.name)}
@@ -244,6 +354,43 @@ export function McpPage() {
                     <Trash2 className="size-3.5" />
                   </button>
                 </div>
+                {expanded === server.name ? (
+                  <div className="basis-full ml-7 mt-3 border-t border-line/70 pt-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-2xs font-medium uppercase tracking-[0.08em] text-ink-quaternary">{t('settings.mcp.highImpactTools')}</span>
+                      <div className="flex items-center gap-1.5">
+                        <button type="button" className={buttonClass.secondary} onClick={() => void bulkToolApproval(server, true)} disabled={busy === `bulk:${server.name}`}>
+                          {t('settings.mcp.allAutoApprove')}
+                        </button>
+                        <button type="button" className={buttonClass.secondary} onClick={() => void bulkToolApproval(server, false)} disabled={busy === `bulk:${server.name}`}>
+                          {t('settings.mcp.allRequireApproval')}
+                        </button>
+                        <button type="button" className={buttonClass.secondary} onClick={() => void loadTools(server.name)} disabled={busy === `tools:${server.name}`} aria-label={t('attention.refresh')}>
+                          <RotateCw className={cn('size-3.5', busy === `tools:${server.name}` && 'animate-spin')} />
+                        </button>
+                      </div>
+                    </div>
+                    {toolsError[server.name] ? <div className="text-2xs text-danger">{toolsError[server.name]}</div> : null}
+                    {!toolsError[server.name] && tools[server.name]?.length === 0 ? <div className="text-2xs text-ink-tertiary">{t('settings.mcp.noHighImpactTools')}</div> : null}
+                    <div className="space-y-1.5">
+                      {(tools[server.name] ?? []).map((tool) => (
+                        <div key={tool.name} className="flex items-center gap-3 rounded-lg bg-surface-muted/45 px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-medium text-ink">{tool.title ?? tool.name}</div>
+                            <div className="flex flex-wrap items-center gap-x-2 text-2xs text-ink-quaternary">
+                              <span className="truncate">{tool.name}</span>
+                              {tool.risk.map((risk) => <span key={risk} className="rounded border border-line px-1 py-0.5">{t(`settings.mcp.risk.${risk}`)}</span>)}
+                              {tool.overridden ? <span>{t('settings.mcp.customOverride')}</span> : null}
+                            </div>
+                          </div>
+                          <button type="button" role="switch" aria-checked={tool.autoApprove} aria-label={`${tool.name}: ${t('settings.mcp.autoApprove')}`} onClick={() => void setToolAutoApprove(server.name, tool, !tool.autoApprove)} disabled={busy === `tool:${server.name}:${tool.name}`} className={cn('relative inline-flex h-[19px] w-[34px] shrink-0 items-center rounded-full border transition-colors', tool.autoApprove ? 'border-[#526d59] bg-[#526d59]' : 'border-[#c9c9bf] bg-[#e7e6df]')}>
+                            <span className={cn('size-3.5 rounded-full bg-white shadow-sm transition-transform', tool.autoApprove ? 'translate-x-[16px]' : 'translate-x-[2px]')} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -314,6 +461,30 @@ export function McpPage() {
               <option value="hidden">{t('settings.mcp.exposure.hidden')}</option>
             </select>
           </label>
+          <div className="flex items-start gap-2.5 text-2xs text-ink-tertiary sm:col-span-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={draft.autoApprove}
+              aria-label={t('settings.mcp.autoApprove')}
+              onClick={() => setDraft({ ...draft, autoApprove: !draft.autoApprove })}
+              className={cn(
+                'relative mt-0.5 inline-flex h-[19px] w-[34px] shrink-0 items-center rounded-full border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#87947b]',
+                draft.autoApprove ? 'border-[#526d59] bg-[#526d59]' : 'border-[#c9c9bf] bg-[#e7e6df]',
+              )}
+            >
+              <span
+                className={cn(
+                  'size-3.5 rounded-full bg-white shadow-sm transition-transform',
+                  draft.autoApprove ? 'translate-x-[16px]' : 'translate-x-[2px]',
+                )}
+              />
+            </button>
+            <span>
+              <span className="block text-ink-secondary">{t('settings.mcp.autoApprove')}</span>
+              <span className="mt-0.5 block text-2xs text-ink-quaternary">{t('settings.mcp.autoApproveHint')}</span>
+            </span>
+          </div>
         </div>
         <div className="flex justify-end px-4 pb-4">
           <button

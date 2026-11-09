@@ -2,12 +2,14 @@ import type {
   AcceptanceTemplate,
   CreateTaskInput,
   CreateTaskResult,
+  TaskContract,
   WorkerTemplate,
 } from '@opc/shared/domain';
 import type { TriggerReplyTarget } from '../trigger/types';
 import { inferTemplate } from '../work/workerPool';
 import { UNVERIFIED_GATE } from '../work/acceptanceGate';
 import type { ThreadRepository } from '../data/threadRepository';
+import path from 'node:path';
 
 /**
  * 把一句话变成一条在跑的工作线。
@@ -44,7 +46,7 @@ export interface LineOpenerDeps {
 
 export interface OpenLineInput {
   threadId?: string;
-  goal: string;
+  contract: TaskContract;
   title?: string;
   threadKey?: string | null;
   template?: WorkerTemplate;
@@ -56,8 +58,6 @@ export interface OpenLineInput {
    * 互相不知道对方存在的执行体各干一半。找不到这个人就退回正常挑人。
    */
   workerId?: string;
-  /** 可执行的验收命令；没有就诚实地说"验不了"。 */
-  acceptance?: readonly string[];
   /**
    * 静默线（§3.4）：跑通了才说话，没跑通就当没发生。
    *
@@ -76,8 +76,23 @@ const DEFAULT_EST_TOKENS = 20_000;
 
 export function createLineOpener(deps: LineOpenerDeps) {
   return (input: OpenLineInput): OpenLineResult => {
-    const goal = input.goal.trim();
-    if (!goal) return { ok: false, reason: '目标为空，不知道该做什么' };
+    const objective = input.contract.objective.trim();
+    const deliverable = input.contract.deliverable.trim();
+    if (!objective) return { ok: false, reason: 'objective 为空，不知道该做什么' };
+    if (!deliverable) return { ok: false, reason: 'deliverable 为空，不知道要交付什么' };
+    if (!Array.isArray(input.contract.outputs) || input.contract.outputs.length === 0) {
+      return { ok: false, reason: 'outputs 不能为空，必须明确交付文本或文件' };
+    }
+    for (const output of input.contract.outputs) {
+      if (!output || (output.kind !== 'text' && output.kind !== 'file')) {
+        return { ok: false, reason: '输出类型必须是 text 或 file' };
+      }
+      if (output.kind === 'file' && (!output.path.trim() || output.path.includes('..') || path.isAbsolute(output.path))) {
+        return { ok: false, reason: '文件交付路径必须是工作区内的相对路径' };
+      }
+      if (!output.description.trim()) return { ok: false, reason: '每个交付输出都要有 description' };
+    }
+    const goal = `${objective}\n交付：${deliverable}`;
 
     // 同一个环境身份上已经有线，就并进去，不开第二条：你在同一个话题里连说三句话，
     // 应该是同一条线的三段上下文，而不是三件互相不知道对方存在的事。
@@ -116,21 +131,20 @@ export function createLineOpener(deps: LineOpenerDeps) {
     // 订阅先于建任务：任务一落地就开始产事件，订阅晚一步就会漏掉开头那几条。
     deps.threads.subscribe(thread.id, picked.workerId);
 
-    const command = (input.acceptance ?? []).filter((part) => part.trim().length > 0);
+    const command = (input.contract.acceptance?.command ?? []).filter((part) => part.trim().length > 0);
     const verified = command.length > 0;
     const templateHint = isTemplate(input.template) ? input.template : undefined;
 
     const created = deps.createTask({
       title: thread.title,
-      brief: goal,
-      deliverableSpec: goal,
+      contract: input.contract,
       assigneeId: picked.ownerId,
       workerId: picked.workerId,
       estTokens: deps.estTokens ?? DEFAULT_EST_TOKENS,
       // 没有闸门就说没有闸门：跑还是会跑，但结论只能是"需要人看一眼"，
       // 不假装通过（docs/v2/01-core.md §9）。
       acceptanceCommand: verified ? command : [...UNVERIFIED_GATE],
-      acceptanceTemplate: acceptanceTemplateFor(templateHint),
+      acceptanceTemplate: input.contract.acceptance?.template ?? acceptanceTemplateFor(templateHint),
       threadId: thread.id,
     });
 

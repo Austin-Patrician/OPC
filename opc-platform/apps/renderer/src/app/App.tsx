@@ -1,13 +1,19 @@
+import { lazy, Suspense } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
-import { AttentionPage } from '@/pages/attention/AttentionPage';
 import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
+
+const SystemRuntimeView = lazy(() =>
+  import('@/pages/runtime/SystemRuntimeView').then(({ SystemRuntimeView: view }) => ({
+    default: view,
+  })),
+);
 
 /**
  * Hash routing keeps deep links working from `file://` inside the packaged app
@@ -22,12 +28,13 @@ export function App() {
       <ThemeSync />
       <Routes>
         <Route element={<AppShell />}>
-          {/* 对话首页是默认入口；需要确认的事情仍可从窄栏进入注意力队列。 */}
+          {/* 对话是唯一的人机入口；旧的注意力深链接统一回到 Router。 */}
           <Route index element={<Navigate to="/chat" replace />} />
-          <Route path="attention" element={<AttentionPage />} />
+          <Route path="attention" element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="skills" element={<CapabilitiesPage />} />
+          <Route path="runtime" element={<RuntimeRoute />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
@@ -35,6 +42,20 @@ export function App() {
       {/* First-run guide: overlays the shell until the install has completed it. */}
       <OnboardingGuide />
     </HashRouter>
+  );
+}
+
+function RuntimeRoute() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-[#F2EEE7] font-mono text-[11px] uppercase tracking-[0.18em] text-[#9A9389]">
+          Loading runtime…
+        </div>
+      }
+    >
+      <SystemRuntimeView />
+    </Suspense>
   );
 }
 

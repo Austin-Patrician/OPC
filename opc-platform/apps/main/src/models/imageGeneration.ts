@@ -1,4 +1,7 @@
 import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
+import type { ImageParameterName } from '@opc/shared/domain';
+
+export type GenerateImageOptions = Partial<Record<ImageParameterName, string | number | boolean>>;
 
 /** Wire protocols an image model can speak. Mirrors `ModelOption.api`. */
 export const IMAGE_PROTOCOLS = ['openai-images', 'openrouter-images', 'google-images'] as const;
@@ -8,6 +11,7 @@ export interface GenerateImageInput {
   apiKey: string;
   model: string;
   prompt: string;
+  options?: GenerateImageOptions;
   /** `ModelOption.api`; unknown values fall back to `openai-images`. */
   protocol?: string;
   /** OpenAI-compatible size string, e.g. `1024x1024`. */
@@ -68,7 +72,11 @@ async function generateOpenAiCompat(input: GenerateImageInput): Promise<Generate
       model: input.model,
       prompt: input.prompt,
       n: 1,
-      size: input.size ?? '1024x1024',
+      size: stringOption(input.options, 'size') ?? input.size ?? '1024x1024',
+      ...(stringOption(input.options, 'quality') ? { quality: stringOption(input.options, 'quality') } : {}),
+      ...(stringOption(input.options, 'style') ? { style: stringOption(input.options, 'style') } : {}),
+      ...(stringOption(input.options, 'background') ? { background: stringOption(input.options, 'background') } : {}),
+      ...(stringOption(input.options, 'output_format') ? { output_format: stringOption(input.options, 'output_format') } : {}),
       // No `response_format`: gpt-image-* always returns b64 and rejects the
       // parameter, while DALL·E-style relays can return a URL (handled below).
     },
@@ -149,7 +157,19 @@ async function generateGemini(input: GenerateImageInput): Promise<GeneratedImage
     body: {
       contents: [{ role: 'user', parts: [{ text: input.prompt }] }],
       // Gemini image models need the response modality declared explicitly.
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      generationConfig: {
+        responseModalities: ['TEXT', 'IMAGE'],
+        ...(stringOption(input.options, 'aspect_ratio') || stringOption(input.options, 'size')
+          ? {
+              imageConfig: {
+                ...(stringOption(input.options, 'aspect_ratio')
+                  ? { aspectRatio: stringOption(input.options, 'aspect_ratio') }
+                  : {}),
+                ...(stringOption(input.options, 'size') ? { imageSize: stringOption(input.options, 'size') } : {}),
+              },
+            }
+          : {}),
+      },
     },
   });
 
@@ -231,4 +251,9 @@ function finish(
 
 function trimBase(baseUrl: string): string {
   return baseUrl.replace(/\/$/, '');
+}
+
+function stringOption(options: GenerateImageOptions | undefined, key: ImageParameterName): string | undefined {
+  const value = options?.[key];
+  return typeof value === 'string' ? value : undefined;
 }

@@ -147,6 +147,7 @@ export function toImageModelOption(model: CatalogModel, imageEnabled = false): M
     cacheReadUsdPerM: model.price?.cacheRead,
     cacheWriteUsdPerM: model.price?.cacheWrite,
     imageEnabled,
+    imageParameters: model.imageParameters,
     tiers: model.price?.tiers?.map((tier) => ({
       inputTokensAbove: tier.inputTokensAbove,
       inputUsdPerM: tier.input,
@@ -176,6 +177,7 @@ export function mergeImageModels(
       name: converted.name,
       capability: 'image' as const,
       api: converted.api,
+      imageParameters: converted.imageParameters ?? model.imageParameters,
       contextWindow: converted.contextWindow ?? model.contextWindow,
       vision: converted.vision ?? model.vision,
       reasoning: converted.reasoning ?? model.reasoning,

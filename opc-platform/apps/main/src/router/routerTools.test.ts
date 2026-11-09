@@ -24,7 +24,7 @@ function host(
   const forgotten: string[] = [];
   const extension = createRouterTools({
     openLine: (input) => {
-      calls.push(`open:${input.goal}`);
+      calls.push(`open:${input.contract.objective}`);
       return { ok: true, threadId: 'th-1', workerId: 'w-1', taskId: 'task-1' };
     },
     reply: (text, target, content) => {
@@ -79,7 +79,7 @@ function host(
   });
   const registry = createRegistry();
   registry.install(extension);
-  return { registry, calls, replies, steered, remembered, forgotten };
+  return { registry, extension, calls, replies, steered, remembered, forgotten };
 }
 
 /** 直接调工具的 execute：这正是模型会做的事。 */
@@ -94,7 +94,7 @@ async function run(registry: ReturnType<typeof createRegistry>, name: string, ar
 }
 
 describe('Router 的工具带', () => {
-  it('十个动作，一个执行类工具都没有', () => {
+  it('十一个动作，一个执行类工具都没有', () => {
     const { registry } = host();
     const names = registry
       .snapshot()
@@ -107,6 +107,7 @@ describe('Router 的工具带', () => {
       'close_line',
       'forget_memory',
       'list_lines',
+      'ontology_command',
       'open_line_of_work',
       'recall',
       'recall_memory',
@@ -119,19 +120,31 @@ describe('Router 的工具带', () => {
     expect(names.some((name) => /bash|shell|write|edit|read_file/i.test(name))).toBe(false);
   });
 
+  it('把内部调度和执行体汇报隔离在用户可见回复之外', async () => {
+    const { extension } = host();
+    const text = await extension.sections![0]!.render({} as never, {} as never);
+    expect(text).toContain('不要向用户解释你如何派活');
+    expect(text).toContain('执行体汇报是供你判断的内部材料');
+    expect(text).toContain('通常一到三句');
+  });
+
   it('派活立刻返回 id，不返回任何执行结果', async () => {
     const { registry, calls } = host();
     const result = await run(registry, 'open_line_of_work', {
-      goal: '整理 Q3 财报',
+      contract: {
+        objective: '整理 Q3 财报',
+        deliverable: '整理 Q3 财报',
+        outputs: [{ kind: 'text', description: '完成后的文本结论' }],
+      },
       thread_key: 'folder:inbox/q3.md',
     });
 
     expect(calls).toEqual(['open:整理 Q3 财报']);
     const text = result.output.map((block) => block.text).join('');
-    expect(text).toContain('thread=th-1');
-    expect(text).toContain('task=task-1');
-    // 「跑完会回来汇报」——这一轮不等它。
-    expect(text).toContain('跑完会回来汇报');
+    expect(text).toContain('后台任务已启动');
+    expect(text).not.toContain('th-1');
+    expect(text).not.toContain('w-1');
+    expect(text).not.toContain('task-1');
   });
 
   it('说话是唯一能让你看见它的动作', async () => {

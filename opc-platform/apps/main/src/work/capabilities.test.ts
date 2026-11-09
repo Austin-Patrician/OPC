@@ -7,6 +7,7 @@ import { ThreadRepository } from '../data/threadRepository';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import type { DecisionService } from '../models/decisionService';
 import type { OcrEngine } from '../ocr/service';
+import type { Extension } from '@earendil-works/pi-durable';
 import { WorkService } from './workService';
 
 /**
@@ -56,13 +57,18 @@ function executor(input: { name?: string; template?: 'research' | 'code' | 'ops'
   }).id;
 }
 
-function workWith(ocr?: OcrEngine, decisions?: DecisionService): WorkService {
+function workWith(
+  ocr?: OcrEngine,
+  decisions?: DecisionService,
+  piExtensions?: { ensureLoaded: () => Promise<void>; slots: () => readonly unknown[] },
+): WorkService {
   return new WorkService({
     db,
     paths,
     upsertTaskCard: () => undefined,
     ...(ocr ? { ocr } : {}),
     ...(decisions ? { decisions } : {}),
+    ...(piExtensions ? { piExtensions: piExtensions as never } : {}),
   });
 }
 
@@ -213,6 +219,40 @@ describe('WorkService.capabilities', () => {
       expect(agent.tools.map((tool) => tool.name)).not.toContain('ocr_image');
       expect(agent.extensions.map((extension) => extension.name)).not.toContain('opc.ocr');
     }
+  });
+
+  it('为任意带 deferred 工具的扩展安装通用 tool_search，并遵守执行体策略', async () => {
+    const workerId = executor({ name: '工具探险家', template: 'research' });
+    const deferredExtension = {
+      name: 'pi.weather',
+      tools: [
+        {
+          name: 'lookup_weather',
+          description: '查询天气',
+          parameters: { type: 'object', properties: {} },
+          deferred: true as const,
+          execute: async () => ({ output: [{ type: 'text' as const, text: '晴' }] }),
+        },
+      ],
+    } as Extension;
+    const piExtensions = {
+      ensureLoaded: async () => undefined,
+      slots: () => [{ id: 'weather', name: 'pi.weather', extension: deferredExtension }],
+    };
+
+    const enabled = await workWith(undefined, undefined, piExtensions).capabilities();
+    const agent = enabled.agents.find((entry) => entry.workerId === workerId)!;
+    expect(agent.tools.find((tool) => tool.name === 'lookup_weather')).toMatchObject({ deferred: true });
+    expect(agent.tools.map((tool) => tool.name)).toContain('tool_search');
+
+    const managed = workWith(undefined, undefined, piExtensions);
+    await managed.setStack(workerId, {
+      policy: { disabledExtensions: [], disabledTools: ['tool_search'] },
+    });
+    const disabled = await managed.capabilities();
+    expect(disabled.agents.find((entry) => entry.workerId === workerId)!.tools.map((tool) => tool.name)).not.toContain(
+      'tool_search',
+    );
   });
 });
 

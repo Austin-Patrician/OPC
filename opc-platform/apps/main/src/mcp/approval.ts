@@ -16,9 +16,9 @@ import {
  *
  * ```
  * beforeTool 看到要审批的工具、没有放行条
- *   → 写一条 approval 进注意力队列（decide）
+ *   → 写一条 approval 审计记录，并推送 Router 聊天卡片
  *   → 这次调用被拦，模型收到一句"已经问到队列里了"
- * 你在队列上按「允许」
+ * 你在聊天卡片上按「允许」
  *   → 落一张放行条（这件活 × 这个工具）
  *   → 回答也插进它正在跑的会话："他批准了，你可以重试"
  * 它重试 → 放行条在 → 通过
@@ -74,7 +74,7 @@ export function approvalHook(gated: ReadonlyMap<string, string>): HookRegistrati
       return {
         block:
           `「${title}」会改动东西或者伸到外面去，需要他点头。` +
-          '这件事已经问到他的队列里了：先做不依赖这一步的部分，别换个绕路的方式做同一件事。',
+          '这件事已经在 Router 聊天里请求审批：先做不依赖这一步的部分，别换个绕路的方式做同一件事。',
       };
     },
   }) as HookRegistration;

@@ -1,4 +1,4 @@
-import type { AttentionLevel, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
+import type { AttentionLevel, ChatAttachmentRef, TriggerEvent, WorkReport, WorkThread } from '@opc/shared/domain';
 import type { FaultSink } from '../data/systemEventRepository';
 import { messageOf } from '../data/systemEventRepository';
 import type { ThreadRepository } from '../data/threadRepository';
@@ -76,7 +76,11 @@ export interface RouterDeps {
    */
   semantic?: SemanticScreener;
   /** 未订阅 → Slow Path：交给 Router 会话判断。 */
-  deliver: (text: string, replyTargets?: readonly TriggerReplyTarget[]) => unknown | Promise<unknown>;
+  deliver: (
+    text: string,
+    replyTargets?: readonly TriggerReplyTarget[],
+    context?: { attachments: readonly ChatAttachmentRef[] },
+  ) => unknown | Promise<unknown>;
   /**
    * 已订阅 → Fast Path：直接发给盯这条线的执行体。
    *
@@ -241,6 +245,7 @@ export class Router {
           this.deps.standing?.() ?? [],
         ),
         collectReplyTargets(slow, reports),
+        { attachments: collectAttachments(slow) },
       );
     } catch (error) {
       // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
@@ -329,6 +334,10 @@ export function composeInput(
       if (replyTarget) lines.push(`  原始信道回复地址（只能原样使用）：${replyTarget}`);
       const body = bodyOf(event.payload);
       if (body) lines.push(indent(spillText(body, `recall ${event.id}`, perItem)));
+      const attachments = attachmentsOfPayload(event.payload);
+      if (attachments.length > 0) {
+        lines.push(indent(`已授权附件（只读）：${attachments.map((attachment) => `${attachment.name} · ${attachment.path}`).join('；')}`));
+      }
     }
   }
 
@@ -341,13 +350,22 @@ export function composeInput(
       if (report.body.trim()) {
         lines.push(indent(spillText(report.body, `recall ${report.id}`, perItem)));
       }
+      if (report.result) {
+        lines.push(indent(`结构化结果：${report.result.status} · ${report.result.conclusion}`));
+        if (report.result.artifacts.length > 0) {
+          lines.push(indent(`产物：${report.result.artifacts.map((artifact) => `${report.result?.taskId}/${artifact.relPath}`).join('、')}`));
+        }
+      }
     }
   }
 
   lines.push('');
   lines.push(
     '判断：这些里有哪些需要用户知道？哪些该派活（open_line_of_work）？' +
-      '哪些直接不管？要说话就调用 reply_to_user——不调用它，用户听不到你。',
+      '哪些直接不管？任何用户可见的最终回复都必须调用 reply_to_user，并提交按顺序排列的 blocks；' +
+      '普通文字使用 markdown block，媒体和文件使用对应 block。不要把工具调用、思考或中间文本当成回复。' +
+      '面向用户只写结果、状态和下一步：不要解释派活、工作线、执行体、工具、模型、验收或内部能力。' +
+      '后台任务刚启动且尚无结果时，用一句自然的简短确认即可；有结果就直接交付，失败只说已确认的原因和下一步。',
   );
 
   return lines.join('\n');
@@ -382,6 +400,52 @@ function collectReplyTargets(
     if (report.replyTarget) found.set(report.replyTarget.address, report.replyTarget);
   }
   return [...found.values()];
+}
+
+/** Only carry attachment references that were explicitly supplied by the user. */
+function collectAttachments(events: readonly TriggerEvent[]): ChatAttachmentRef[] {
+  const found = new Map<string, ChatAttachmentRef>();
+  for (const event of events) {
+    // Attachment paths are authorized by the chat IPC boundary. Do not let an
+    // arbitrary webhook/folder payload smuggle a filesystem path into a Worker
+    // contract.
+    if (event.source !== 'im') continue;
+    const values = event.payload.attachments;
+    if (!Array.isArray(values)) continue;
+    for (const value of values) {
+      if (!value || typeof value !== 'object') continue;
+      const item = value as Partial<ChatAttachmentRef>;
+      if (
+        typeof item.id !== 'string' ||
+        typeof item.name !== 'string' ||
+        typeof item.path !== 'string' ||
+        typeof item.size !== 'number' ||
+        (item.source !== 'file' && item.source !== 'clipboard')
+      ) continue;
+      const key = item.id || item.path;
+      if (!found.has(key)) found.set(key, {
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        size: item.size,
+        ...(typeof item.mimeType === 'string' ? { mimeType: item.mimeType } : {}),
+        source: item.source,
+        ...(item.availability === 'available' || item.availability === 'missing' ? { availability: item.availability } : {}),
+      });
+    }
+  }
+  return [...found.values()];
+}
+
+function attachmentsOfPayload(payload: Record<string, unknown>): ChatAttachmentRef[] {
+  const values = payload.attachments;
+  if (!Array.isArray(values)) return [];
+  return values.filter((value): value is ChatAttachmentRef => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Partial<ChatAttachmentRef>;
+    return typeof item.id === 'string' && typeof item.name === 'string' && typeof item.path === 'string' &&
+      typeof item.size === 'number' && (item.source === 'file' || item.source === 'clipboard');
+  });
 }
 
 function replyTargetOf(payload: Record<string, unknown>): string | null {

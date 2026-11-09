@@ -62,6 +62,8 @@ export interface MemoryExtractionDeps {
   extract?: MemoryExtractor;
   /** 一批最多看几条。太多会让单条判断变糙，太少摊不薄调用成本。 */
   batchSize?: number;
+  /** Optional secondary projection. The callback runs after the legacy memory row is durable. */
+  onWritten?: (input: { candidate: ExtractedMemory; memoryId: string; signals: readonly MemorySignal[] }) => void | Promise<void>;
 }
 
 export function createMemoryExtraction(deps: MemoryExtractionDeps) {
@@ -94,7 +96,7 @@ export function createMemoryExtraction(deps: MemoryExtractionDeps) {
         // 归属：这条讲的是这个人，还是这条线。线级的记忆挂在线上，换人接手还在（P0）。
         const scopeOwner = candidate.scope === 'thread' ? threadOwnerOf(pending, candidate) : null;
         try {
-          await deps.memory.remember({
+          const memoryId = await deps.memory.remember({
             ownerId: scopeOwner?.ownerId ?? USER_MEMORY_OWNER,
             kind: normalizeKind(candidate.kind),
             content,
@@ -105,6 +107,7 @@ export function createMemoryExtraction(deps: MemoryExtractionDeps) {
             volatility: normalizeVolatility(candidate.volatility),
             ...(candidate.subject ? { subject: candidate.subject } : {}),
           });
+          await deps.onWritten?.({ candidate, memoryId, signals: pending });
           written += 1;
         } catch (error) {
           // 某一条写不进去（例如常驻层满了）不该连累整批。

@@ -9,6 +9,7 @@ interface TitleBarProps {
   onToggleSearch: () => void;
   onSearchQueryChange: (value: string) => void;
   onCloseSearch: () => void;
+  overlay?: boolean;
 }
 
 /** One chrome row for the search action and Electron's native window buttons. */
@@ -19,6 +20,7 @@ export function TitleBar({
   onToggleSearch,
   onSearchQueryChange,
   onCloseSearch,
+  overlay = false,
 }: TitleBarProps) {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
@@ -29,7 +31,9 @@ export function TitleBar({
   };
 
   return (
-    <header className="buddy-titlebar relative z-30 flex h-[42px] shrink-0 items-center px-4">
+    <header
+      className={`buddy-titlebar relative z-30 flex h-[42px] shrink-0 items-center px-4 ${overlay ? 'buddy-titlebar-overlay' : ''}`}
+    >
       <div className="buddy-titlebar-drag app-drag absolute inset-0" aria-hidden />
       <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-2.5">
         {searchEnabled ? (

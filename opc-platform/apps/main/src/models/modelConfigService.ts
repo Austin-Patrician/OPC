@@ -433,6 +433,7 @@ export class ModelConfigService {
           // Feature switches are part of the row: a re-import or price save
           // must not silently disable an image/voice model.
           imageEnabled: model.imageEnabled ?? previous?.imageEnabled,
+          imageParameters: model.imageParameters ?? previous?.imageParameters,
           voiceEnabled: model.voiceEnabled ?? previous?.voiceEnabled,
           chatEnabled: model.chatEnabled ?? previous?.chatEnabled,
           decisionEnabled: model.decisionEnabled ?? previous?.decisionEnabled,

@@ -2,7 +2,7 @@ import type { WorkTask } from '@opc/shared/domain';
 import type { Context } from '@earendil-works/chord/context';
 import type { ModelRef } from '@opc/shared/domain';
 import type { Harness, Conversation } from '@earendil-works/pi-durable';
-import { registerSandboxWorkspace } from '../sandbox/workspaces';
+import { registerSandboxAttachments, registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { registerTraceRecorder, type TraceRecorder } from './trace';
@@ -54,6 +54,8 @@ export class HarnessBrain implements TaskBrain {
    * 这张表永远是"正在跑的"，不是缓存。
    */
   private readonly live = new Map<string, Conversation>();
+  /** Durable task id -> conversation handle within this process. */
+  private readonly conversations = new Map<string, Conversation>();
 
   constructor(private readonly deps: HarnessBrainDeps) {}
 
@@ -111,7 +113,7 @@ export class HarnessBrain implements TaskBrain {
       total: number;
       costUsd?: number;
     }) => void;
-  }): Promise<void> {
+  }): Promise<{ answer?: string }> {
     const { task, workspaceDir, durableTaskId, log, feedback, reportUsage } = context;
 
     const model = this.deps.model(runtimeIdentityFor(task));
@@ -121,25 +123,37 @@ export class HarnessBrain implements TaskBrain {
     const ctx = await this.deps.context();
 
     const before = await harness.usage(ctx);
-    const conversation = await harness.createConversation(
-      {
-        ownership: durableTaskId
-          ? { kind: 'task', taskId: durableTaskId as never }
-          : { kind: 'ownerless' },
-        // cwd is the task workspace: every tool call is rooted there.
-        // pi's ModelRef uses `provider`; ours uses `providerId`.
-        agent: {
-          model: { provider: model.providerId, modelId: model.modelId },
-          // Thinking level is a real setting (Settings → LLM), not UI decoration.
-          thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
-          cwd: workspaceDir,
+    let conversation = durableTaskId ? this.conversations.get(durableTaskId) : undefined;
+    if (!conversation && durableTaskId) {
+      const existingId = await harness.commit(async (tx) => {
+        const page = await tx.scanConversations({ ownerTaskId: durableTaskId as never, order: 'descending' }, 1);
+        return page.items[0]?.id;
+      }, ctx);
+      if (existingId) conversation = await harness.conversation(existingId, ctx);
+    }
+    if (!conversation) {
+      conversation = await harness.createConversation(
+        {
+          ownership: durableTaskId
+            ? { kind: 'task', taskId: durableTaskId as never }
+            : { kind: 'ownerless' },
+          // cwd is the task workspace: every tool call is rooted there.
+          // pi's ModelRef uses `provider`; ours uses `providerId`.
+          agent: {
+            model: { provider: model.providerId, modelId: model.modelId },
+            // Thinking level is a real setting (Settings → LLM), not UI decoration.
+            thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
+            cwd: workspaceDir,
+          },
         },
-      },
-      ctx,
-    );
+        ctx,
+      );
+    }
+    if (durableTaskId) this.conversations.set(durableTaskId, conversation);
 
     // The sandbox hook needs to know which directory this conversation may touch.
     registerSandboxWorkspace(conversation.id, workspaceDir);
+    registerSandboxAttachments(conversation.id, task.contract?.attachments ?? []);
 
     // 动作流：从这一刻起，模型每调一个工具都会落一行（`opc.trace` 那个 hook 负责写）。
     // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
@@ -181,6 +195,16 @@ export class HarnessBrain implements TaskBrain {
       if (settled.status !== 'done') {
         throw new Error(`pi 循环未完成（${settled.status}）`);
       }
+      // `settled.answer` is the durable assistant-entry id. Read its text from
+      // the conversation so the work task can persist the response and verify a
+      // text-output contract against the actual final answer.
+      const answerEntry =
+        settled.type === 'input'
+          ? await conversation.commit((tx) => tx.entry(settled.answer), ctx)
+          : undefined;
+      const answer = assistantText(answerEntry);
+      log('pi 循环结束');
+      return answer ? { answer } : {};
     } catch (error) {
       // 失败也要留痕：这是事后回答"它为什么没干完"唯一的证据。
       recorder?.record({
@@ -196,7 +220,6 @@ export class HarnessBrain implements TaskBrain {
       stopTrace?.();
       stopApproval?.();
     }
-    log('pi 循环结束');
   }
 }
 
@@ -205,13 +228,36 @@ export class HarnessBrain implements TaskBrain {
  * 以什么顺序、什么口吻进到执行体眼前，是这套系统对外承诺的一部分，值得单独测。
  */
 export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
+  const contract = task.contract ?? {
+    objective: task.brief,
+    deliverable: task.deliverableSpec,
+    outputs: [],
+  };
   const lines = [
-    `你在工作目录里完成一个任务，必须真的用工具创建文件，不要只回复说明。`,
+    `你要完成下面的交付契约。可以自由选择工具、文件和最终回答来完成，不要为了满足系统要求创建无关文件。`,
     '',
     `任务：${task.title}`,
-    `说明：${task.brief}`,
-    `交付物：${task.deliverableSpec}`,
+    `目标：${contract.objective}`,
+    ...(task.brief ? [`说明：${task.brief}`] : []),
+    `交付物：${contract.deliverable}`,
+    '输出：',
   ];
+
+  for (const output of contract.outputs) {
+    lines.push(
+      output.kind === 'file'
+        ? `- 文件 ${output.path}：${output.description}`
+        : `- 文本回答：${output.description}`,
+    );
+  }
+
+  if (contract.attachments?.length) {
+    lines.push('', '本次输入可读取的文件（只读，可能是用户附件或本会话里先前生成并展示过的产物）：');
+    for (const attachment of contract.attachments) {
+      lines.push(`- ${attachment.name} · ${attachment.size} bytes · ${attachment.path}`);
+    }
+    lines.push('附件可能已被移动或删除；读取失败时如实汇报，不要猜测内容。');
+  }
 
   // 原始记录（§3.3）：给 ID + 摘要，全文用 recall 取。排在"要求"之前、说明之后——
   // 它是对这份说明的**证据**，不是又一条要求。
@@ -247,10 +293,10 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
   lines.push(
     '',
     `要求：`,
-    '1. 用 write 工具创建所需文件（相对当前工作目录）。',
+    '1. 按输出要求完成交付；只有契约声明的文件才需要创建。',
     '2. 用 bash 做**离线**检查（例如 `node --check server.js`）；**不要**启动长驻服务、不要访问网络——',
     '   沙箱会阻断出网，而系统会在沙箱外用真实验收脚本启动并判定。',
-    '3. 确认无误后立即结束，不要输出大段解释。',
+    '3. 确认无误后立即结束；如果要求文本回答，把结论放在最终回答里。',
   );
 
   /*
@@ -294,6 +340,10 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     for (const memory of task.memories) lines.push(`- ${memory.content}`);
   }
 
+  if (task.ontologyContext?.trim()) {
+    lines.push('', '个人本体上下文（只把有证据的内容当作事实；低置信度内容需核实）：', task.ontologyContext);
+  }
+
   if (feedback) {
     lines.push(
       '',
@@ -306,4 +356,20 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
   }
 
   return lines.join('\n');
+}
+
+function assistantText(entry: { model?: readonly unknown[] } | undefined): string {
+  if (!entry?.model) return '';
+  const parts: string[] = [];
+  for (const message of entry.model) {
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text') {
+        const text = (block as { text?: unknown }).text;
+        if (typeof text === 'string' && text.trim()) parts.push(text.trim());
+      }
+    }
+  }
+  return parts.join('\n').trim();
 }

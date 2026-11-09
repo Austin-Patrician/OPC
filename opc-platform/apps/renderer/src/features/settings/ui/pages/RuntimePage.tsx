@@ -176,7 +176,7 @@ export function RuntimePage() {
   return (
     <>
       <PageHeader
-        crumbs={[t('settings.title'), t('settings.group.general')]}
+        crumbs={[t('settings.group.runtime')]}
         title={t('settings.page.runtime')}
         description={t('settings.runtime.desc')}
         actions={

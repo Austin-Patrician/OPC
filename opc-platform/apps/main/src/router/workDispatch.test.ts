@@ -65,7 +65,7 @@ function opener(overrides: {
 describe('派活', () => {
   it('开线、订阅、建任务、启动，然后**立刻**返回', () => {
     const { open, created, started } = opener();
-    const result = open({ goal: '整理 Q3 财报，输出一页摘要' });
+    const result = open({ contract: { objective: '整理 Q3 财报，输出一页摘要', deliverable: '整理 Q3 财报，输出一页摘要', outputs: [{ kind: 'text', description: '完成后的文本结论' }] } });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -80,8 +80,8 @@ describe('派活', () => {
 
   it('同一个并线键不出第二条线', () => {
     const { open } = opener();
-    const first = open({ goal: '看这个文件', threadKey: 'folder:inbox/a.md' });
-    const second = open({ goal: '这个文件又变了', threadKey: 'folder:inbox/a.md' });
+    const first = open({ contract: { objective: '看这个文件', deliverable: '看这个文件', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, threadKey: 'folder:inbox/a.md' });
+    const second = open({ contract: { objective: '这个文件又变了', deliverable: '这个文件又变了', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, threadKey: 'folder:inbox/a.md' });
 
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
@@ -91,19 +91,19 @@ describe('派活', () => {
 
   it('没有闸门时用 UNVERIFIED_GATE，不假装验过', () => {
     const { open, created } = opener();
-    open({ goal: '写一份调研' });
+    open({ contract: { objective: '写一份调研', deliverable: '写一份调研', outputs: [{ kind: 'text', description: '完成后的文本结论' }] } });
     expect(created[0]!.acceptanceCommand).toEqual([...UNVERIFIED_GATE]);
   });
 
   it('给了可执行验收命令就用它', () => {
     const { open, created } = opener();
-    open({ goal: '加一个接口', template: 'code', acceptance: ['npm', 'test'] });
+    open({ contract: { objective: '加一个接口', deliverable: '加一个接口', outputs: [{ kind: 'text', description: '完成后的文本结论' }], acceptance: { command: ['npm', 'test'] } }, template: 'code' });
     expect(created[0]!.acceptanceCommand).toEqual(['npm', 'test']);
   });
 
   it('没人能干时如实说，不建线也不建任务', () => {
     const { open, created, started } = opener({ noWorker: true });
-    const result = open({ goal: '随便干点什么' });
+    const result = open({ contract: { objective: '随便干点什么', deliverable: '随便干点什么', outputs: [{ kind: 'text', description: '完成后的文本结论' }] } });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -116,7 +116,7 @@ describe('派活', () => {
     const { open } = opener({
       create: () => ({ ok: false, error: { code: 'X', message: '配额不足' } }) as never,
     });
-    const result = open({ goal: '干活' });
+    const result = open({ contract: { objective: '干活', deliverable: '干活', outputs: [{ kind: 'text', description: '完成后的文本结论' }] } });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain('配额不足');
@@ -143,7 +143,7 @@ describe('派活', () => {
       startTask: () => undefined,
     });
 
-    const result = open({ goal: '这个文件又变了', threadKey: 'folder:inbox/q3.md', workerId: pinned.id });
+    const result = open({ contract: { objective: '这个文件又变了', deliverable: '这个文件又变了', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, threadKey: 'folder:inbox/q3.md', workerId: pinned.id });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -159,7 +159,7 @@ describe('派活', () => {
     const stray = threads.createWorker({ name: '外人', ownerId: 'emp-x' });
 
     const { open, created } = opener();
-    const result = open({ goal: '看一眼', threadKey: 'folder:inbox/new.md', workerId: stray.id });
+    const result = open({ contract: { objective: '看一眼', deliverable: '看一眼', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, threadKey: 'folder:inbox/new.md', workerId: stray.id });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.threadId).toBe(thread.id);
@@ -176,7 +176,7 @@ describe('派活', () => {
 describe('静默线', () => {
   it('标记落在线上', () => {
     const { open } = opener();
-    const result = open({ goal: '查一下群里说的那个报错是不是真的', speculative: true });
+    const result = open({ contract: { objective: '查一下群里说的那个报错是不是真的', deliverable: '查一下群里说的那个报错是不是真的', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, speculative: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -185,18 +185,18 @@ describe('静默线', () => {
 
   it('普通派活不是静默线：老规矩，跑完了要说话', () => {
     const { open } = opener();
-    const result = open({ goal: '整理 Q3 财报' });
+    const result = open({ contract: { objective: '整理 Q3 财报', deliverable: '整理 Q3 财报', outputs: [{ kind: 'text', description: '完成后的文本结论' }] } });
     if (!result.ok) throw new Error(result.reason);
     expect(threads.getThread(result.threadId)?.speculative).toBe(false);
   });
 
   it('同一个身份已经有线时不改它的性质：已有那条线不是投机开的', () => {
     const { open } = opener();
-    const first = open({ goal: '整理 Q3 财报', threadKey: 'im:oc_1:om_1' });
+    const first = open({ contract: { objective: '整理 Q3 财报', deliverable: '整理 Q3 财报', outputs: [{ kind: 'text', description: '完成后的文本结论' }] }, threadKey: 'im:oc_1:om_1' });
     if (!first.ok) throw new Error(first.reason);
 
     const second = open({
-      goal: '补充一句：只要结论',
+      contract: { objective: '补充一句：只要结论', deliverable: '补充一句：只要结论', outputs: [{ kind: 'text', description: '完成后的文本结论' }] },
       threadKey: 'im:oc_1:om_1',
       speculative: true,
     });

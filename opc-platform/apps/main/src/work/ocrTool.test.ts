@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OcrResult } from '@opc/shared/ocr';
 import type { OcrEngine } from '../ocr/service';
+import { registerSandboxAttachments } from '../sandbox/workspaces';
 import { createOcrToolExtension } from './ocrTool';
 
 interface ToolResult {
@@ -49,6 +50,7 @@ function runTool(options: {
   ocr?: Partial<OcrEngine>;
   bytes?: Uint8Array;
   readError?: { code: string; message: string };
+  attachments?: { name: string; path: string }[];
 }) {
   const calls: number[] = [];
   const ocr: OcrEngine = {
@@ -59,8 +61,11 @@ function runTool(options: {
     dispose: async () => undefined,
     ...options.ocr,
   };
+  const conversationId = `ocr-test-${Math.random()}`;
+  registerSandboxAttachments(conversationId, options.attachments ?? []);
   const tool = (createOcrToolExtension({ ocr, defaultRoot: root }).tools ?? [])[0]!;
   const api = {
+    conversationId,
     agent: async () => ({ cwd: root }),
     env: {
       readBinaryFile: async () =>
@@ -124,6 +129,44 @@ describe('ocr_image tool', () => {
     expect(output.isError).toBe(true);
     expect(calls).toEqual([]);
     expect(output.output?.[0]?.text).toContain('只能识别工作区内的图片');
+  });
+
+  it('recognises an authorized attachment by the name shown to the model', async () => {
+    const { pending, calls } = runTool({
+      args: { path: 'assets/zhihu_home.png' },
+      attachments: [{ name: 'zhihu_home.png', path: path.join(outside, 'secret.png') }],
+    });
+    const output = await pending;
+
+    expect(output.isError).toBeUndefined();
+    expect(calls).toEqual([3]);
+    expect(output.output?.[0]?.text).toContain('订单确认单');
+  });
+
+  it('accepts the exact absolute path of an authorized attachment', async () => {
+    const attachmentPath = path.join(outside, 'secret.png');
+    const { pending, calls } = runTool({
+      args: { path: attachmentPath },
+      attachments: [{ name: 'zhihu_home.png', path: attachmentPath }],
+    });
+    const output = await pending;
+
+    expect(output.isError).toBeUndefined();
+    expect(calls).toEqual([3]);
+  });
+
+  it('does not guess when two attachments share a name', async () => {
+    const { pending, calls } = runTool({
+      args: { path: 'same.png' },
+      attachments: [
+        { name: 'same.png', path: path.join(outside, 'secret.png') },
+        { name: 'same.png', path: path.join(outside, 'secret.png') + '-other' },
+      ],
+    });
+    const output = await pending;
+
+    expect(output.isError).toBe(true);
+    expect(calls).toEqual([]);
   });
 
   it('refuses a symlink that points outside the workspace', async () => {

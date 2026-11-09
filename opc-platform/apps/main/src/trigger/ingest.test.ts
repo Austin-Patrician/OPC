@@ -111,7 +111,7 @@ describe('ingestTrigger', () => {
     );
     expect(closedThreadId).toBe(live.id);
     expect(threads.getThread(live.id)?.state).toBe('done');
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('手上还有活的时候不收线：抢在前面收线会让正在写的任务失去线索', () => {

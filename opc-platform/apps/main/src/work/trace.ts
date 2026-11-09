@@ -173,16 +173,45 @@ export function traceRowFor(
   result: ToolExecutionResult,
   ms?: number,
 ): Parameters<TraceRecorder['record']>[0] {
+  const argsDigest = digestArgs(call.arguments as Record<string, unknown> | undefined);
+  const failure = result.isError === true ? failureDigest(result) : '';
   return {
     kind: 'tool',
     // 嵌套调用（`executeTool`）标出来：它在时间线上不是模型的直接一步，
     // 而是一次工具内部的分岔——看轨迹的人需要分得清这两件事。
     name: call.parent ? `${call.name}（嵌套）` : call.name,
-    argsDigest: digestArgs(call.arguments as Record<string, unknown> | undefined),
+    // A failed command's exit code and final diagnostic are the first useful
+    // clue when a short path lookup or shell command goes wrong. Keep them in
+    // the existing bounded digest field so old databases need no migration.
+    argsDigest: failure
+      ? `${clip(argsDigest, 60)}${argsDigest ? ' → ' : ''}${clip(failure, argsDigest ? 55 : DIGEST_MAX)}`
+      : argsDigest,
     ok: result.isError !== true,
     ...(ms === undefined ? {} : { ms }),
     ...(result.usage ? { tokens: usageTotal(result.usage) } : {}),
   };
+}
+
+function failureDigest(result: ToolExecutionResult): string {
+  const structured = asRecord(result.structuredOutput);
+  const exitCode = typeof structured?.exitCode === 'number' ? structured.exitCode : undefined;
+  const output = typeof structured?.output === 'string'
+    ? structured.output
+    : (result.output ?? [])
+        .flatMap((block) => block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])
+        .join('\n');
+  const lastOutputLine = output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1);
+  const diagnostic = result.diagnostics?.map((entry) => entry.message.trim()).filter(Boolean).at(-1);
+  const reason = lastOutputLine || diagnostic;
+  return [exitCode === undefined ? '' : `退出码 ${exitCode}`, reason ? clip(oneLine(reason), 80) : '工具返回错误']
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 /** 一次调用的 token 总和。读不出来就不给（0 和"不知道"不是一回事）。 */

@@ -14,6 +14,8 @@ interface Common {
   /** 服务器名。工具名是 `mcp__<server>__<tool>`，所以它只能用字母、数字、`_`、`-`。 */
   name: string;
   enabled?: boolean;
+  /** 跳过 destructive/open-world 工具的逐次审批。默认 false，保持安全。 */
+  autoApprove?: boolean;
   /**
    * 工具怎么到模型面前：
    * - `deferred`（默认）：先 `tool_search` 搜到，再调用。几百个工具也不占上下文；

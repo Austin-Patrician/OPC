@@ -5,6 +5,7 @@ import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
+import { referencedConversationArtifacts } from './chat/conversationArtifacts';
 import { readMcpConfig } from './mcp/config';
 import { closeAllMcpConnections, configureMcpAuth } from './mcp/connection';
 import { USER_MEMORY_OWNER } from './memory/owners';
@@ -24,7 +25,8 @@ import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
-import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
+import type { ChatContentBlock, SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
+import type { RouterToolDeps } from './router/routerTools';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -59,6 +61,9 @@ import { WatchdogModelStore } from './watchdog/model';
 import { createWatchdogAnswerer } from './watchdog/ask';
 import { WatchdogPolicyStore } from './watchdog/policy';
 import { createRouterHost } from './router/routerHost';
+import { SqliteContextGraphStore } from './ontology/contextGraphStore';
+import { OntologyCommandService } from './ontology/commandService';
+import { OntologyOutboxDispatcher } from './ontology/outboxDispatcher';
 import { TriagePolicyStore } from './router/triagePolicy';
 import { createLineOpener } from './router/workDispatch';
 import type { TickReport } from './router/router';
@@ -68,6 +73,10 @@ import { createDecisionGate } from './router/semanticGate';
 import type { SemanticScreener } from './router/semanticGate';
 import { pickWorker } from './work/workerPool';
 import { DEMO_TASK } from './work/acceptanceTemplate';
+import { BrowserInstallService } from './browser/install';
+import { BrowserBroker } from './browser/broker';
+import { DesktopInstallService } from './desktop/install';
+import { DesktopBroker } from './desktop/broker';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
 const IDLE_COOLING_MS = 60 * 60 * 1000;
@@ -140,6 +149,8 @@ let mainWindow: BrowserWindow | null = null;
 let chat: ChatService | null = null;
 let work: WorkService | null = null;
 let ocrService: OcrService | null = null;
+let browserBroker: BrowserBroker | null = null;
+let desktopBroker: DesktopBroker | null = null;
 /** Kept at module scope so IPC can trigger a manual wake (§7.2 P0). */
 let disposeIpc: (() => void) | null = null;
 function createMainWindow() {
@@ -168,6 +179,11 @@ function createMainWindow() {
 			spellcheck: false
 		}
 	});
+	if (process.platform === "darwin") {
+		// The renderer owns the right-side window controls; avoid duplicating the
+		// native traffic lights on the left side of the title bar.
+		window.setWindowButtonVisibility(false);
+	}
 	window.center();
 	window.once("ready-to-show", () => {
 		if (!isSmoke) window.show();
@@ -383,6 +399,108 @@ async function bootstrap(): Promise<void> {
     db,
     conversations: [],
   });
+  threads.onReportCreated = (report) => {
+    const conversationId = chat?.ensureAssistant();
+    const activity = conversationId ? chat?.getActivity(conversationId) : undefined;
+    // Normal chat-dispatched work may finish with a silent durable report.
+    // While this conversation is active, promote that result into the Router
+    // queue so completion can be summarized back to the user. Background or
+    // speculative work stays silent when the assistant is idle.
+    const reportThread = report.threadId ? threads.getThread(report.threadId) : null;
+    // A normal user-dispatched line may finish after the short "working"
+    // activity indicator has returned to idle. In that case gating promotion on
+    // the current activity loses the completion forever: the durable report stays
+    // silent and Router is never given a chance to summarize it. Manual lines are
+    // the chat/goal path; folder/webhook and explicitly speculative lines keep
+    // their background semantics.
+    if (
+      conversationId &&
+      report.level === 'silent' &&
+      report.kind === 'report' &&
+      reportThread?.source === 'manual' &&
+      reportThread.speculative !== true
+    ) {
+      const promoted = threads.promoteReport(report.id);
+      if (promoted) report = promoted;
+    }
+    if (conversationId && activity && activity.phase !== 'idle') {
+      chat?.setActivity(conversationId, 'organizing');
+    }
+    // A completed worker writes its result through this callback. Updating the
+    // activity indicator alone is not enough: the Router must be scheduled to
+    // consume the new report, otherwise the conversation remains in thinking
+    // forever until another user message happens to wake it.
+    wakeRouter();
+    // Worker reports are input to the Router's final response. Only a direct
+    // question remains an interactive chat card; approvals have their own card
+    // callback below. This keeps the user-facing transcript free of duplicate
+    // report cards and intermediate execution details.
+    if (!conversationId || report.kind !== 'question') return;
+    chat?.appendWorkflowCard(conversationId, {
+      type: 'workflow',
+      reportId: report.id,
+      threadId: report.threadId,
+      ...(report.taskId ? { taskId: report.taskId } : {}),
+      kind: report.kind === 'question' ? 'question' : 'report',
+      title: report.title,
+      body: report.body,
+      state: 'pending',
+    });
+  };
+  threads.onReportRead = (reportId) => {
+    chat?.updateWorkflowCard(reportId, 'resolved');
+    const conversationId = chat?.ensureAssistant();
+    if (conversationId && chat?.getActivity(conversationId)?.phase === 'waiting_user') {
+      chat?.setActivity(conversationId, 'thinking');
+    }
+  };
+  // A previous process may have marked a report handled without persisting the
+  // corresponding chat snapshot update (or the app may have been closed between
+  // those two writes). Remove those stale action cards before restoring any new
+  // ones; otherwise the UI shows a pending card whose IPC action is already a
+  // no-op.
+  const persistedActionCards = chat.getSnapshot().conversations.flatMap((conversation) =>
+    conversation.messages.flatMap((message) =>
+      (message.content ?? [])
+        .filter(
+          (block): block is Extract<ChatContentBlock, { type: 'approval' | 'workflow' }> =>
+            block.type === 'approval' || block.type === 'workflow',
+        )
+        .map((block) => ({ reportId: block.reportId, type: block.type })),
+    ),
+  );
+  for (const card of persistedActionCards) {
+    const report = threads.getReport(card.reportId);
+    if (!report || report.readAt !== null || (card.type === 'workflow' && report.kind !== 'question')) {
+      if (card.type === 'approval') chat.updateApprovalCard(card.reportId, 'allowed');
+      else chat.updateWorkflowCard(card.reportId, 'resolved');
+    }
+  }
+  // Backfill actionable reports created before the chat-first UI existed. This
+  // is idempotent because persisted report ids are used as the card key.
+  const existingWorkflowCards = new Set(
+    chat.getSnapshot().conversations.flatMap((conversation) =>
+      conversation.messages.flatMap((message) =>
+        (message.content ?? [])
+          .filter((block): block is Extract<ChatContentBlock, { type: 'workflow' }> => block.type === 'workflow')
+          .map((block) => block.reportId),
+      ),
+    ),
+  );
+  const routerConversation = chat.ensureAssistant();
+  for (const report of threads.listPendingConversationReports(200).filter((item) => item.kind === 'question')) {
+    if (existingWorkflowCards.has(report.id)) continue;
+    chat.appendWorkflowCard(routerConversation, {
+      type: 'workflow',
+      reportId: report.id,
+      threadId: report.threadId,
+      ...(report.taskId ? { taskId: report.taskId } : {}),
+      kind: report.kind === 'question' ? 'question' : 'report',
+      title: report.title,
+      body: report.body,
+      state: 'pending',
+    });
+  }
 
   // Consolidation summariser: the same provider the agents answer with, so nothing
   // is invented when no model is configured (consolidation then writes nothing).
@@ -507,13 +625,53 @@ async function bootstrap(): Promise<void> {
     return parseExtracted(text);
   };
 
+  const contextGraph = new SqliteContextGraphStore(db);
+  // Created after WorkService, but Router's harness is lazy. This late-bound
+  // reference lets the Router expose the same command boundary without a
+  // second implementation or a bootstrap cycle.
+  let ontologyCommands: OntologyCommandService | null = null;
   const preferenceExtraction = createMemoryExtraction({
     signals: new SignalStore(db),
     memory,
     extract: extractPreferences,
+    onWritten: ({ candidate, memoryId, signals }) => {
+      const content = candidate.content.trim();
+      if (!content) return;
+      const episode = contextGraph.appendEpisode({
+        sourceType: 'memory.extraction',
+        sourceId: memoryId,
+        actor: 'model',
+        content,
+        metadata: { confidence: 0.65, candidate: true, sourceSignals: signals.map((signal) => signal.id) },
+      });
+      const user = contextGraph.resolveEntity('user')!;
+      // Extracted memories remain candidate evidence (confidence < 1). They
+      // never become standing constraints automatically.
+      contextGraph.assertFact({
+        subjectEntityId: user.id,
+        predicate: candidate.kind === 'fact' ? 'describes' : 'prefers',
+        objectValue: content,
+        valueType: 'text',
+        sourceEpisodeId: episode.id,
+        confidence: 0.65,
+      });
+    },
   });
-
-
+  // Ontology graph semantics live beside existing business data; task/worker/
+  // approval tables remain authoritative and are never shadow-copied.
+  const ontologyOutbox = new OntologyOutboxDispatcher(contextGraph);
+  ontologyOutbox.subscribe((event) => {
+    systemEvents.recordSafely({
+      kind: 'ontology.changed',
+      severity: 'info',
+      subjectType: 'router',
+      subjectId: event.aggregateId,
+      summary: `Ontology 事件：${event.eventType}`,
+      detail: { eventType: event.eventType, aggregateType: event.aggregateType, aggregateId: event.aggregateId, payload: event.payload },
+    });
+  });
+  ontologyOutbox.start();
+  app.on('before-quit', () => ontologyOutbox.stop());
   // One runtime service for the whole process: employees, acceptance scripts and
   // the settings page must see exactly the same interpreters. The app-owned
   // `<userData>/runtimes` directory is where the PATH shims live.
@@ -521,6 +679,11 @@ async function bootstrap(): Promise<void> {
     userDataDir: appPaths.userData,
     network: networkClient,
   });
+  const browserInstall = new BrowserInstallService(db, appPaths.userData);
+  browserBroker = new BrowserBroker(browserInstall, appPaths.artifactsDir);
+  const desktopInstall = new DesktopInstallService(db, appPaths.userData);
+  desktopBroker = new DesktopBroker(desktopInstall);
+  await desktopBroker.initialize();
 
   const ocrSettings = new OcrSettingsStore(db);
   const ocr = ensureOcr(ocrSettings);
@@ -542,11 +705,34 @@ async function bootstrap(): Promise<void> {
   if (mcpConfigured.length > 0) {
     console.warn(`[mcp] 读到 ${mcpConfigured.length} 个服务器：${mcpConfigured.map((s) => s.name).join('、')}`);
   }
+  let wakeRouter: () => void = () => undefined;
   work = new WorkService({
     db,
+    threads,
     faults: systemEvents,
     paths: appPaths,
     upsertTaskCard: () => undefined,
+    onApprovalCard: ({ report, task, tool, browser, desktop }) => {
+      const conversationId = chat?.ensureAssistant();
+      if (!conversationId) return;
+      chat?.appendApprovalCard(conversationId, {
+        type: 'approval',
+        reportId: report.id,
+        threadId: report.threadId,
+        taskId: task.id,
+        tool,
+        ...(browser ? { browser } : {}),
+        ...(desktop ? { desktop } : {}),
+        title: report.title,
+        body: report.body,
+        state: 'pending',
+      });
+    },
+    onApprovalResolved: (reportId, state) => {
+      chat?.updateApprovalCard(reportId, state);
+      const conversationId = chat?.ensureAssistant();
+      if (conversationId) chat?.setActivity(conversationId, 'thinking');
+    },
     mcp: readMcp,
     modelConfig,
     images: imageService,
@@ -554,14 +740,36 @@ async function bootstrap(): Promise<void> {
     decisions: decisionService,
     memory,
     facts,
+    contextGraph,
     network: networkClient,
     runtime: runtimeService,
     ocr,
     piExtensions,
     piSkills,
+    wakeRouter: () => wakeRouter(),
+    browser: browserBroker,
+    desktop: desktopBroker,
   });
+  // Development phase: discard approval prompts created before chat cards were
+  // introduced, otherwise old queue state can leave threads permanently waiting.
+  const persistedApprovalCards = new Set(
+    chat.getSnapshot().conversations.flatMap((conversation) =>
+      conversation.messages.flatMap((message) =>
+        (message.content ?? [])
+          .filter((block): block is Extract<ChatContentBlock, { type: 'approval' }> => block.type === 'approval')
+          .map((block) => block.reportId),
+      ),
+    ),
+  );
+  for (const threadId of threads.clearPendingApprovals(persistedApprovalCards)) {
+    const thread = threads.getThread(threadId);
+    const stillWaiting = threads.listReportsOf(threadId, 50).some(
+      (report) => report.readAt === null && report.kind !== 'approval',
+    );
+    if (thread?.state === 'waiting' && !stillWaiting) threads.setState(threadId, 'open');
+  }
 
-  // v2 路由：在 IPC 之前建好，你才能在注意力队列上直接丢一个目标进来。
+  // v2 路由：在 IPC 之前建好，聊天输入可以直接创建工作线。
   // 定时器在下面按「非无头」条件启动——这里只创建，不驱动。
   /**
    * 两层过滤的配置（§3.1）。存在 `app_setting` 里，设置页写、调度循环每一轮读。
@@ -609,8 +817,10 @@ async function bootstrap(): Promise<void> {
    * （自己的 sqlite、自己的上下文、自己的工具），外面套一层确定性的调度循环：
    * 程序层过滤 → 直通判定 → 攒批交给会话。语义判断全在会话里，不在这个循环里。
    */
+  const activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const routerHost = createRouterHost({
     db,
+    threads,
     faults: systemEvents,
     agentsDir: appPaths.agentsDir,
     workspaceDir: appPaths.workspaceDir,
@@ -634,6 +844,10 @@ async function bootstrap(): Promise<void> {
       const profile = new CompanyService(db).get();
       return { tone: profile.replyTone, detail: profile.replyDetail, instructions: profile.replyInstructions };
     },
+    contextGraph,
+    ontologyCommand: (input: Parameters<NonNullable<RouterToolDeps['ontologyCommand']>>[0]) => ontologyCommands
+      ? ontologyCommands.execute({ actor: 'router', ...input })
+      : Promise.resolve({ ok: false, command: { commandId: '', status: 'failed', approvalId: null, error: '本体命令服务尚未就绪' }, error: '本体命令服务尚未就绪' }),
     openLine: createLineOpener({
       threads,
       createTask: work!.createTask,
@@ -658,7 +872,42 @@ async function bootstrap(): Promise<void> {
       },
     }),
     // Router 对你说话：走聊天这条唯一的外观信道（§2.2）。
-    reply: (text, _target, content) => chat!.appendRouterMessage(chat!.ensureAssistant(), text, content),
+    reply: (response) => chat!.appendRouterMessage(
+      chat!.ensureAssistant(),
+      response.blocks.filter((block) => block.type === 'markdown').map((block) => block.text).join('\n\n'),
+      response.blocks,
+    ),
+    onActivity: (phase) => {
+      const conversationId = chat?.ensureAssistant();
+      if (!conversationId) return;
+      // `openLine` reports delegating and working back-to-back. Keep the
+      // hand-off visible long enough for the renderer to paint it; otherwise
+      // the two snapshots are coalesced and the user only ever sees thinking.
+      const activityWindow = activityTimers.get(conversationId);
+      if (phase !== 'working' && activityWindow) {
+        clearTimeout(activityWindow);
+        activityTimers.delete(conversationId);
+      }
+      if (phase === 'working' && chat?.getActivity(conversationId)?.phase === 'delegating') {
+        if (!activityWindow) {
+          const timer = setTimeout(() => {
+            activityTimers.delete(conversationId);
+            if (chat?.getActivity(conversationId)?.phase === 'delegating') {
+              chat.setActivity(conversationId, 'working');
+            }
+          }, 420);
+          activityTimers.set(conversationId, timer);
+        }
+        return;
+      }
+      if (phase === 'completed') {
+        chat?.completeActivity(conversationId);
+      } else if (phase === 'error') {
+        chat?.showActivityError(conversationId);
+      } else {
+        chat?.setActivity(conversationId, phase);
+      }
+    },
     /**
      * 你中途改方向（§8.2）。
      *
@@ -677,10 +926,14 @@ async function bootstrap(): Promise<void> {
    * 后自动补跑。失败只记日志，事件会回到队列等待重试。
    */
   const pushTick = (): void => {
+    const activity = chat?.getActivity(routerConversation);
+    if (activity?.phase === 'delivered') chat?.setActivity(routerConversation, 'thinking');
     void goalRouter.tick().then(logTick, (error: unknown) => {
       console.error('[router] 一轮调度失败', error);
+      chat?.showActivityError(routerConversation);
     });
   };
+  wakeRouter = pushTick;
 
   /**
    * 你在聊天里说话 = 一条 Trigger（§3「事件驱动」）。
@@ -689,15 +942,29 @@ async function bootstrap(): Promise<void> {
    * 事件流。带上键的话，一旦 Router 为这个话题开过线，后面每句话都会被直通给那个
    * 执行体，Router 就再也听不到你说话了——那是把信道和执行流混成一件事。
    */
-  chat.onUserMessage = ({ text }) => {
-    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text } });
+  chat.onUserMessage = ({ conversationId, text, attachments }) => {
+    try {
+      contextGraph.appendEpisode({ sourceType: 'conversation', sourceId: conversationId, actor: 'user', content: text });
+    } catch (error) {
+      console.warn('[ontology] 保存对话 Episode 失败', error);
+    }
+    const priorArtifacts = referencedConversationArtifacts({
+      text,
+      messages: chat!.readTranscript(conversationId),
+      workspaceRoot: appPaths.workspaceDir,
+      getTask: (taskId) => work?.getTask(taskId),
+    });
+    const files = [...(attachments ?? []), ...priorArtifacts].filter(
+      (attachment, index, all) => all.findIndex((candidate) => candidate.path === attachment.path) === index,
+    );
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text, ...(files.length ? { attachments: files } : {}) } });
     pushTick();
   };
 
   /**
-   * 你在注意力队列上丢一个目标。
+   * 你在对话里丢一个目标。
    *
-   * 只开线 + 入队事件，**不直接建任务**：这件事值不值得做、该给谁做，仍然是
+   * 只开线 + 写入事件，**不直接建任务**：这件事值不值得做、该给谁做，仍然是
    * Router 的决定。开线在这里做，是为了让 UI 立刻能显示它，而不是等下一轮 tick。
    */
   const startGoal = async (goal: string): Promise<WorkThread> => {
@@ -718,6 +985,71 @@ async function bootstrap(): Promise<void> {
     console.warn('issue key backfill failed', error);
   }
 
+  ontologyCommands = new OntologyCommandService({
+    db,
+    graph: contextGraph,
+    work,
+    company: new CompanyService(db),
+    requestApproval: ({ command, reason }) => {
+      const conversationId = chat!.ensureAssistant();
+      chat!.appendOntologyApprovalCard(conversationId, {
+        type: 'ontologyApproval',
+        commandId: command.commandId,
+        action: command.action,
+        objectType: command.objectType,
+        title: '助手请求执行一项操作',
+        body: `${reason}\n\n动作：${command.action}\n对象：${command.objectId}`,
+        state: 'pending',
+      });
+      // The command id is the durable approval handle. There is no synthetic
+      // task/report involved, so approval stays attached to this command's
+      // original execution thread.
+      return command.commandId;
+    },
+    onApprovalResolved: (command, state) => {
+      chat!.updateOntologyApprovalCard(command.commandId, state === 'failed' ? 'rejected' : state);
+      const message = state === 'approved'
+        ? `已完成：${command.action}（${command.objectId}）`
+        : state === 'failed'
+          ? `执行失败：${command.action}（${command.objectId}）${command.error ? `：${command.error}` : ''}`
+          : `已拒绝：${command.action}（${command.objectId}）`;
+      chat!.appendRouterMessage(chat!.ensureAssistant(), message);
+    },
+  });
+
+  // Remove cards whose command was already completed while the app was closed.
+  for (const card of chat.getSnapshot().conversations.flatMap((conversation) =>
+    conversation.messages.flatMap((message) => (message.content ?? []).filter(
+      (block): block is Extract<ChatContentBlock, { type: 'ontologyApproval' }> => block.type === 'ontologyApproval',
+    )),
+  )) {
+    const command = contextGraph.getCommand(card.commandId);
+    if (!command || ['succeeded', 'failed', 'rejected'].includes(command.status)) {
+      chat!.updateOntologyApprovalCard(card.commandId, command?.status === 'succeeded' ? 'approved' : 'rejected');
+    }
+  }
+  // Recover a pending command card if the process stopped between the durable
+  // command write and the chat snapshot write. The command itself remains the
+  // source of truth, so recovery never creates a second execution.
+  const existingOntologyCards = new Set(chat.getSnapshot().conversations.flatMap((conversation) =>
+    conversation.messages.flatMap((message) => (message.content ?? []).flatMap((block) =>
+      block.type === 'ontologyApproval' ? [block.commandId] : [],
+    )),
+  ));
+  const recoveryConversation = chat.ensureAssistant();
+  for (const command of contextGraph.listCommands('pending')) {
+    if (!command.approvalId || existingOntologyCards.has(command.commandId)) continue;
+    chat.appendOntologyApprovalCard(recoveryConversation, {
+      type: 'ontologyApproval',
+      commandId: command.commandId,
+      action: command.action,
+      objectType: command.objectType,
+      title: '助手请求执行一项操作',
+      body: `命令 ${command.action} 需要用户确认\n\n动作：${command.action}\n对象：${command.objectId}`,
+      state: 'pending',
+    });
+  }
+
   disposeIpc = registerIpc({
     chat,
     work,
@@ -725,7 +1057,12 @@ async function bootstrap(): Promise<void> {
     speech: speechService,
     decisions: decisionService,
     facts,
+    ontology: contextGraph,
+    ontologyCommands,
+    browser: browserBroker,
+    desktop: desktopBroker,
     consolidationRuns,
+    events: systemEvents,
     triage,
     watchdog: {
       incidents: watchdogIncidents,
@@ -2142,7 +2479,7 @@ if (!hasLock) {
       });
       modelConfig.setKey('mock-image', 'test-key');
       modelConfig.setModels('mock-image', [
-        { id: 'mock/png-1', name: 'Mock PNG', capability: 'image', api: 'openai-images' },
+        { id: 'mock/png-1', name: 'Mock PNG', capability: 'image', api: 'openai-images', imageEnabled: true },
       ]);
       modelConfig.setDefault('image', { providerId: 'mock-image', modelId: 'mock/png-1' });
 
@@ -2436,6 +2773,10 @@ if (!hasLock) {
     ocrService = null;
     void work?.dispose();
     work = null;
+    void browserBroker?.dispose();
+    browserBroker = null;
+    void desktopBroker?.dispose();
+    desktopBroker = null;
   });
 }
 

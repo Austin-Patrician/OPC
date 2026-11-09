@@ -3,6 +3,7 @@ import type {
   IssueLink,
   LinkType,
   TaskAcceptance,
+  TaskContract,
   TaskFailureKind,
   TaskStatus,
   TaskSteering,
@@ -17,8 +18,10 @@ import type { CompanyDatabase } from './companyDatabase';
 /** What a task needs at creation; anything else is derived or defaulted. */
 export interface CreateTaskDraft {
   title: string;
-  brief: string;
-  deliverableSpec: string;
+  contract?: TaskContract;
+  /** Transitional fields accepted for older internal callers. */
+  brief?: string;
+  deliverableSpec?: string;
   assigneeId: string;
   /** Charges this project's budget; stored so a resumed task keeps its axis. */
   projectGroupId?: string;
@@ -66,6 +69,7 @@ interface TaskRow {
   title: string;
   brief: string;
   deliverable_spec: string;
+  contract_json: string | null;
   owner_id: string;
   owner_name: string;
   parent_task_id: string | null;
@@ -96,6 +100,7 @@ interface TaskRow {
   created_at: number;
   updated_at: number;
   child_count: number;
+  answer: string | null;
 }
 
 /**
@@ -222,6 +227,11 @@ export class TaskRepository {
     taskId: string,
     placement?: TaskTreePlacement,
   ): WorkTask => {
+    const contract: TaskContract = draft.contract ?? {
+      objective: draft.brief?.trim() || draft.deliverableSpec?.trim() || draft.title,
+      deliverable: draft.deliverableSpec?.trim() || draft.title,
+      outputs: [],
+    };
     // 谁来干：现在是一个执行体，不是一个人。名字随执行体一起记下来，
     // 卡片在 worker 被退休之后仍然能渲染（denormalised on purpose）。
     const owner = this.statement('SELECT id, name FROM worker WHERE id = ?').get(draft.assigneeId) as
@@ -232,17 +242,19 @@ export class TaskRepository {
     const now = Date.now();
     this.statement(
       `INSERT INTO task (id, title, brief, deliverable_spec, owner_id, owner_name,
+                         contract_json,
                          parent_task_id, thread_id, worker_id, review_of_task_id, is_review, depth, est_tokens,
                          acceptance_command, acceptance_template, status, workspace_rel_path,
                          attempts, tokens_used, cost_usd, issue_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
     ).run(
       taskId,
       draft.title,
-      draft.brief,
-      draft.deliverableSpec,
+      contract.objective,
+      contract.deliverable,
       owner.id,
       owner.name,
+      JSON.stringify(contract),
       placement?.parentTaskId ?? null,
       draft.threadId ?? null,
       draft.workerId ?? null,
@@ -262,7 +274,7 @@ export class TaskRepository {
   /**
    * The most recent task on a line of work.
    *
-   * When you approves or asks for a rework from the attention queue, the
+   * When you approve or ask for a rework from a conversation report card, the
    * newest task is the one they are looking at — the thread's earlier tasks are
    * history, and a rework created a new one rather than reopening the old.
    */
@@ -309,6 +321,11 @@ export class TaskRepository {
       title: row.title,
       brief: row.brief,
       deliverableSpec: row.deliverable_spec,
+      contract: parseJson<TaskContract>(row.contract_json ?? '', {
+        objective: row.brief,
+        deliverable: row.deliverable_spec,
+        outputs: [],
+      }),
       assigneeId: row.owner_id,
       assigneeName: row.owner_name,
       issueKey: row.issue_key ?? undefined,
@@ -341,6 +358,7 @@ export class TaskRepository {
         bytes: artifact.bytes,
         sha256: artifact.sha256,
       })),
+      ...(row.answer ? { answer: row.answer } : {}),
       ...(acceptance
         ? {
             acceptance: {
@@ -598,6 +616,14 @@ export class TaskRepository {
   setDurableTaskId = (taskId: string, durableTaskId: string): void => {
     this.statement('UPDATE task SET durable_task_id = ?, updated_at = ? WHERE id = ?').run(
       durableTaskId,
+      Date.now(),
+      taskId,
+    );
+  };
+
+  setAnswer = (taskId: string, answer: string | null): void => {
+    this.statement('UPDATE task SET answer = ?, updated_at = ? WHERE id = ?').run(
+      answer?.trim() || null,
       Date.now(),
       taskId,
     );

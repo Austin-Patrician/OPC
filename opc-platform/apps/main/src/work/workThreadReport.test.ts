@@ -30,6 +30,8 @@ let work: WorkService;
 let threads: ThreadRepository;
 let assigneeId: string;
 let memory: MemoryService;
+const approvalCards: { reportId: string; taskId: string; tool: string }[] = [];
+const approvalResolutions: { reportId: string; state: 'allowed' | 'denied' }[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'opc-thread-report-'));
@@ -54,10 +56,15 @@ beforeEach(() => {
   assigneeId = threads.createWorker({ name: '李雷', threadId: home.id }).id;
 
   memory = new MemoryService(db);
+  approvalCards.length = 0;
+  approvalResolutions.length = 0;
   work = new WorkService({
     db,
+    threads,
     paths,
     upsertTaskCard: () => undefined,
+    onApprovalCard: ({ report, task, tool }) => approvalCards.push({ reportId: report.id, taskId: task.id, tool }),
+    onApprovalResolved: (reportId, state) => approvalResolutions.push({ reportId, state }),
     memory,
   });
 });
@@ -234,7 +241,7 @@ describe('请示与交回', () => {
     expect(reports.every((report) => report.level === 'silent')).toBe(true);
     expect(reports.some((report) => report.title.startsWith('请示'))).toBe(false);
     // 队列空的：干完的活不打扰人。
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('交回：退订、线回 open、留一条说明', async () => {
@@ -294,7 +301,7 @@ describe('静默线', () => {
     const finished = await work.runTaskAndWait(task.id);
     expect(finished.status).toBe('accepted');
 
-    const queue = threads.listQueue();
+    const queue = threads.listPendingConversationReports();
     expect(queue).toHaveLength(1);
     expect(queue[0]?.level).toBe('notify');
     expect(threads.getThread(thread.id)?.state).toBe('done');
@@ -310,7 +317,7 @@ describe('静默线', () => {
     });
 
     expect(result.level).toBe('notify');
-    expect(threads.listQueue().every((report) => report.level !== 'decide')).toBe(true);
+    expect(threads.listPendingConversationReports().every((report) => report.level !== 'decide')).toBe(true);
     // 线不回 waiting：没人需要为它做决定。
     expect(threads.getThread(thread.id)?.state).not.toBe('waiting');
   });
@@ -357,7 +364,7 @@ describe('回答请示', () => {
     expect(report?.kind).toBe('question');
     expect(report?.taskId).toBe(task.id);
     // 队列里也是同一条（界面据此换动词）。
-    expect(threads.listQueueWithThread()[0]?.kind).toBe('question');
+    expect(threads.listPendingConversationReports()[0]?.kind).toBe('question');
   });
 
   it('回答记在那件活上，线从"等你"回到"在跑"', async () => {
@@ -376,7 +383,7 @@ describe('回答请示', () => {
     ]);
     expect(threads.getThread(thread.id)?.state).toBe('running');
     // 答过的那一行离开队列：它不再是"等你"。
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('那件活已经收尾：答案不烂在地里，带着它新开一件', async () => {
@@ -449,12 +456,13 @@ describe('动作级审批', () => {
     const [report] = threads.listReportsOf(thread.id, 5);
     expect(report).toMatchObject({
       kind: 'approval',
-      level: 'decide',
+      level: 'silent',
       taskId: task.id,
       subject: 'mcp__fs__write',
     });
+    expect(approvalCards).toEqual([{ reportId: report!.id, taskId: task.id, tool: 'mcp__fs__write' }]);
     expect(threads.getThread(thread.id)?.state).toBe('waiting');
-    expect(threads.listQueueWithThread()[0]?.kind).toBe('approval');
+    expect(threads.listPendingConversationReports().some((entry) => entry.kind === 'approval')).toBe(false);
   });
 
   it('同一件活、同一个工具只问一次：问第二遍是噪音', () => {
@@ -472,8 +480,22 @@ describe('动作级审批', () => {
     const result = await work.answerFor({ reportId: report!.id, text: '', allow: true });
     expect(result.ok).toBe(true);
     expect(new TaskRepository(db).hasMcpPermit(task.id, 'mcp__fs__write')).toBe(true);
+    expect(approvalResolutions).toEqual([{ reportId: report!.id, state: 'allowed' }]);
     expect(threads.getThread(thread.id)?.state).toBe('running');
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
+  });
+
+  it('重复点击已处理的审批也会通知界面清掉旧卡片', async () => {
+    const { thread, task } = openTask();
+    work.askForApproval({ taskId: task.id, tool: 'mcp__fs__write', title: '[fs] write_file' });
+    const [report] = threads.listReportsOf(thread.id, 5);
+
+    await work.answerFor({ reportId: report!.id, text: '', allow: true });
+    approvalResolutions.length = 0;
+    const result = await work.answerFor({ reportId: report!.id, text: '', allow: true });
+
+    expect(result).toEqual({ ok: true, delivered: 'next-attempt' });
+    expect(approvalResolutions).toEqual([{ reportId: report!.id, state: 'allowed' }]);
   });
 
   it('不允许：不落条，而且告诉它别再试', async () => {
@@ -557,6 +579,7 @@ describe('团队收口', () => {
     // 子任务还挂着：父要停在"等"，而不是拿着半个交付物去验收。
     await waitUntil(() => stepsOf(task.id).includes('等 1 个子任务交回'));
     expect(repo().getTask(task.id)?.status).toBe('running');
+    expect(threads.getWorker(task.workerId ?? task.assigneeId)?.status).toBe('running');
 
     repo().setStatus(child.id, 'accepted');
     const final = await running;
@@ -567,6 +590,7 @@ describe('团队收口', () => {
     // 先收口，再验收。
     expect(steps.indexOf('子任务全部交回')).toBeLessThan(steps.indexOf('自动验收通过'));
     expect(final.status).toBe('accepted');
+    expect(threads.getWorker(task.workerId ?? task.assigneeId)?.status).toBe('idle');
   }, 30_000);
 
   /**
@@ -601,7 +625,7 @@ describe('团队收口', () => {
     // 线还是 open——收口人是父，不是它。
     expect(threads.getThread(thread.id)?.state).toBe('open');
     // 也不占你的注意力：记录留着，等父汇总时再说。
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
     const reports = threads.listReportsOf(thread.id, 10);
     expect(reports.every((report) => report.level === 'silent')).toBe(true);
   }, 30_000);
@@ -630,6 +654,15 @@ describe('团队收口', () => {
 });
 
 describe('task → thread reporting', () => {
+  it('uses the shared thread repository for completion observers', async () => {
+    const observed: string[] = [];
+    threads.onReportCreated = (report) => observed.push(`${report.kind}:${report.level}`);
+
+    await runOne();
+
+    expect(observed).toContain('report:silent');
+  });
+
   it('closes the line of work quietly when the work passes acceptance', async () => {
     const { thread, task } = await runOne();
 
@@ -639,7 +672,7 @@ describe('task → thread reporting', () => {
     expect(updated?.spentTokens).toBeGreaterThanOrEqual(0);
 
     // Recorded, but not in the your face: the queue stays empty.
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 
   it('carries the thread on the task, so the work line owns the work', async () => {
@@ -671,7 +704,7 @@ describe('a task dispatched without a line of work', () => {
     expect(thread?.goal).toBe('用 node 内置 http');
     expect(thread?.state).toBe('done');
     // Finished work does not interrupt: recorded, not queued.
-    expect(threads.listQueue()).toHaveLength(0);
+    expect(threads.listPendingConversationReports()).toHaveLength(0);
   });
 });
 
@@ -764,7 +797,7 @@ describe('user steering', () => {
   it('asks instead of claiming a pass it cannot prove', async () => {
     const { thread } = await needsJudgement();
     expect(threads.getThread(thread.id)?.state).toBe('waiting');
-    const queue = threads.listQueue();
+    const queue = threads.listPendingConversationReports();
     expect(queue).toHaveLength(1);
     expect(queue[0]?.level).toBe('decide');
     expect(queue[0]?.body).toContain('判定不了对错');

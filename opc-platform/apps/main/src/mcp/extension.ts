@@ -13,6 +13,7 @@ import {
 } from './contract';
 import { approvalHook } from './approval';
 import { sharedMcpConnection, type McpConnection } from './connection';
+import { readApprovalPolicy, toolApproval } from './policy';
 
 /**
  * MCP 挂进执行体的方式。
@@ -66,6 +67,7 @@ function spillToFile(text: string): string {
 export async function mountMcp(input: {
   servers: readonly McpServerConfig[];
   connect?: (config: McpServerConfig) => Promise<McpConnection>;
+  userDataDir?: string;
   /**
    * 服务器宣布工具变了之后，重新造好的那一份扩展交给它去**就地替换**。
    *
@@ -85,6 +87,7 @@ export async function mountMcp(input: {
   const opened: McpConnection[] = [];
 
   const enabled = input.servers.filter(isEnabled);
+  const approvalPolicy = input.userDataDir ? readApprovalPolicy(input.userDataDir) : { servers: {} };
   const results = await Promise.all(
     enabled.map(async (config) => {
       try {
@@ -131,7 +134,13 @@ export async function mountMcp(input: {
       const exposure = exposureOf(entry.config);
       const description = entry.tool.description ?? entry.tool.title ?? entry.tool.name;
       // 服务器自己声明的后果（`destructiveHint` / `openWorldHint`）——不是我们猜的。
-      if (needsApproval(entry.tool.annotations)) {
+      const autoApprove = toolApproval(
+        approvalPolicy,
+        entry.server,
+        entry.tool.name,
+        entry.config.autoApprove === true,
+      );
+      if (!autoApprove && needsApproval(entry.tool.annotations)) {
         gated.set(name, `[${entry.server}] ${entry.tool.title ?? entry.tool.name}`);
       }
       return defineTool({

@@ -37,7 +37,7 @@ export interface TaskBrain {
   readonly name: string;
   /** Attempts allowed including the first; a repair costs one more attempt. */
   readonly maxAttempts?: number;
-  execute(context: BrainContext): Promise<void>;
+  execute(context: BrainContext): Promise<{ answer?: string }>;
 }
 
 const SERVER_JS = `const http = require('node:http');
@@ -91,7 +91,7 @@ export const scriptedBrain: TaskBrain = {
         verdict === 'revise' ? '缺少 README，请补充使用说明后重新提交' : '产物可运行，符合交付要求';
       writeFileWithin(workspaceDir, 'verdict.json', JSON.stringify({ verdict, reason }, null, 2));
       log(`已写入 verdict.json（${verdict}），交由系统校验`);
-      return;
+      return { answer: `已生成 verdict.json：${verdict}` };
     }
     log(`核对交付物：${task.deliverableSpec}`);
     if (feedback) {
@@ -101,5 +101,6 @@ export const scriptedBrain: TaskBrain = {
     log(broken ? '生成 server.js（故意返回错误内容，用于验证验收不通过）' : '生成 server.js（node:http，无外部依赖）');
     writeFileWithin(workspaceDir, 'server.js', broken ? SERVER_JS_BROKEN : SERVER_JS);
     log('已写入 server.js，交由系统验收');
+    return { answer: '已生成 server.js，等待系统验收。' };
   },
 };

@@ -2,7 +2,6 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { useState } from 'react';
 import { useCompanySync } from '@/entities/company/model/useCompany';
 import { useBillingSync } from '@/entities/billing/model/useBilling';
-import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
 import { BackgroundLayer } from '@/shared/ui/BackgroundLayer';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
 import { NavRail } from '@/widgets/nav-rail/NavRail';
@@ -19,29 +18,46 @@ export function AppShell() {
   const [searchQuery, setSearchQuery] = useState('');
   useCompanySync();
   useBillingSync();
-  const { conversations } = useChatRuntime();
   const background = useUiPrefs((state) => state.background);
 
-  const unreadTotal = conversations.reduce((total, item) => total + (item.unreadCount ?? 0), 0);
+  const isRuntime = location.pathname.startsWith('/runtime');
 
   return (
     <div className="buddy-viewport relative isolate flex h-full w-full overflow-hidden">
       <BackgroundLayer kind={background.kind} url={background.url} />
       <div className="buddy-desktop relative z-10 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
         <div className="buddy-layout relative flex min-h-0 flex-1 overflow-hidden">
-          <NavRail unreadTotal={unreadTotal} />
-          <div className="buddy-main flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <TitleBar
-              searchEnabled={location.pathname.startsWith('/chat')}
-              searchOpen={searchOpen}
-              searchQuery={searchQuery}
-              onToggleSearch={() => setSearchOpen((open) => !open)}
-              onSearchQueryChange={setSearchQuery}
-              onCloseSearch={() => {
-                setSearchOpen(false);
-                setSearchQuery('');
-              }}
-            />
+          <NavRail />
+          <div
+            className={`buddy-main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${isRuntime ? 'buddy-runtime-main' : ''}`}
+          >
+            {isRuntime ? (
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-50">
+                <div className="pointer-events-auto">
+                  <TitleBar
+                    searchEnabled={false}
+                    searchOpen={false}
+                    searchQuery=""
+                    onToggleSearch={() => undefined}
+                    onSearchQueryChange={() => undefined}
+                    onCloseSearch={() => undefined}
+                    overlay
+                  />
+                </div>
+              </div>
+            ) : (
+              <TitleBar
+                searchEnabled={location.pathname.startsWith('/chat')}
+                searchOpen={searchOpen}
+                searchQuery={searchQuery}
+                onToggleSearch={() => setSearchOpen((open) => !open)}
+                onSearchQueryChange={setSearchQuery}
+                onCloseSearch={() => {
+                  setSearchOpen(false);
+                  setSearchQuery('');
+                }}
+              />
+            )}
             <div className="flex min-h-0 flex-1 overflow-hidden">
               <Outlet context={{ searchQuery }} />
             </div>

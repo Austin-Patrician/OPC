@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { Context } from '@earendil-works/chord/context';
 import type { Harness, Registry } from '@earendil-works/pi-durable';
 import { createRegistry } from '@earendil-works/pi-durable';
-import type { ChatContentBlock, ModelRef, TriagePolicy, WorkReport } from '@opc/shared/domain';
+import type { ChatAttachmentRef, ChatContentBlock, ModelRef, RouterResponse, TriagePolicy, WorkReport } from '@opc/shared/domain';
 import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type { FaultSink } from '../data/systemEventRepository';
@@ -16,13 +16,14 @@ import { Router } from './router';
 import { pickRouterModel } from './routerModel';
 import { RouterSession } from './routerSession';
 import { openRouterStorage } from './routerStorage';
-import { createRouterTools, type LineSummary } from './routerTools';
+import { createRouterTools, type LineSummary, type RouterToolDeps } from './routerTools';
 import { createDecisionGate, keepAll, type SemanticScreener } from './semanticGate';
 import { bodyOf, createFastPath } from './triage';
 import { unfinishedReason, unfinishedTasksOf } from './threadBusy';
 import type { OpenLineInput, OpenLineResult } from './workDispatch';
 import type { TriggerReplyTarget } from '../trigger/types';
 import { renderTrace } from '../work/trace';
+import type { ContextGraphStore } from '../ontology/types';
 
 /**
  * 把 Router 装起来。
@@ -39,6 +40,8 @@ import { renderTrace } from '../work/trace';
 
 export interface RouterHostDeps {
   db: CompanyDatabase;
+  /** Use the application's shared repository so report observers see worker results. */
+  threads?: ThreadRepository;
   /** 系统故障的去处（`system_event`）。没有就只打到控制台。 */
   faults?: FaultSink;
   /** Router 自己的运行时目录（与执行体分开，互不污染）。 */
@@ -52,7 +55,11 @@ export interface RouterHostDeps {
   openLine: (input: OpenLineInput) => OpenLineResult;
   /** 对你说话。 */
   /** Desktop fallback; external sends can be injected without coupling Router to SDKs. */
-  reply: (text: string, target?: TriggerReplyTarget, content?: import('@opc/shared/domain').ChatContentBlock[]) => void | Promise<void>;
+  reply: (response: RouterResponse, target?: TriggerReplyTarget, content?: ChatContentBlock[]) => void | Promise<void>;
+  /** Optional desktop-only stream for the Router's plain-text final answer. */
+  streamReply?: (event: { type: 'delta' | 'clear' | 'finish'; text?: string }) => void;
+  /** User-facing assistant lifecycle phase; internal tool details stay hidden. */
+  onActivity?: (phase: 'thinking' | 'delegating' | 'working' | 'organizing' | 'typing' | 'completed' | 'error') => void;
   /** Optional platform sender. If absent, a targeted reply falls back to desktop and logs. */
   externalReply?: (target: TriggerReplyTarget, text: string) => void | Promise<void>;
   /** 中途改方向。`live` 是"真的插进正在跑的会话"的条数。 */
@@ -74,6 +81,8 @@ export interface RouterHostDeps {
   facts?: FactService;
   /** User-owned response preferences, read every turn so changes apply immediately. */
   personalPreferences?: () => { tone: string; detail: string; instructions: string };
+  contextGraph?: ContextGraphStore;
+  ontologyCommand?: RouterToolDeps['ontologyCommand'];
 }
 
 export interface RouterHost {
@@ -85,7 +94,7 @@ export interface RouterHost {
 }
 
 export function createRouterHost(deps: RouterHostDeps): RouterHost {
-  const threads = new ThreadRepository(deps.db);
+  const threads = deps.threads ?? new ThreadRepository(deps.db);
   const tasks = new TaskRepository(deps.db);
 
   /**
@@ -109,6 +118,14 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     await opened.close((await deps.context()) as never).catch(() => undefined);
   };
 
+  // The target set belongs to the input currently being processed. Router tools can
+  // only select one of these exact addresses; arbitrary model-supplied destinations
+  // are never trusted.
+  let activeReplyTargets: readonly TriggerReplyTarget[] = [];
+  /** Attachments belonging to the current Router input. They are copied into
+   * every newly opened line unless the model already supplied the same refs. */
+  let activeInputAttachments: readonly ChatAttachmentRef[] = [];
+
   const session = new RouterSession({
     harness,
     resetHarness,
@@ -116,31 +133,46 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     model,
     thinking: () => deps.modelConfig?.getRouterThinking() ?? 'low',
     cwd: () => deps.workspaceDir,
+    onText: (text) => {
+      deps.onActivity?.('typing');
+      deps.streamReply?.({ type: 'delta', text });
+    },
+    onToolRound: () => {
+      deps.onActivity?.('thinking');
+      deps.streamReply?.({ type: 'clear' });
+    },
+    onTurn: ({ ok }) => {
+      if (!ok) deps.onActivity?.('error');
+    },
   });
 
-  // The target set belongs to the input currently being processed. Router tools can
-  // only select one of these exact addresses; arbitrary model-supplied destinations
-  // are never trusted.
-  let activeReplyTargets: readonly TriggerReplyTarget[] = [];
+  let pendingResponse: RouterResponse | null = null;
 
   // ── 工具背后的动作 ────────────────────────────────────────────────────
 
-  const reply = async (text: string, address?: string, content?: import('@opc/shared/domain').ChatContentBlock[]): Promise<void> => {
-    const target = address
-      ? activeReplyTargets.find((candidate) => candidate.address === address)
-      : undefined;
-    if (address && !target) throw new Error(`当前输入没有这个回复地址：${address}`);
-    if (target && deps.externalReply) {
-      // External IM adapters generally only accept text. Preserve the useful
-      // parts of a rich reply as Markdown and ordinary links, while never
-      // leaking an internal opc-media:// URL outside Electron.
-      await deps.externalReply(target, formatExternalReply(text, content));
-      return;
+  const reply = async (input: RouterResponse | string, address?: string, content?: ChatContentBlock[]): Promise<void> => {
+    const response: RouterResponse = typeof input === 'string'
+      ? { blocks: content?.length ? content : [{ type: 'markdown', text: input }], ...(address ? { replyTarget: address } : {}) }
+      : input;
+    if (pendingResponse) throw new Error('本轮已经提交过最终回复；reply_to_user 每轮只能调用一次');
+    if (response.replyTarget && !activeReplyTargets.some((target) => target.address === response.replyTarget)) {
+      throw new Error(`当前输入没有这个回复地址：${response.replyTarget}`);
     }
-    if (target) {
-      console.warn('[router] 没有外部回复器，目标信道回退到桌面会话', target.address);
+    for (const block of response.blocks) {
+      if (block.type === 'image' || block.type === 'video' || block.type === 'audio') {
+        if (block.source.type === 'url' && !/^https?:$/i.test(new URL(block.source.url).protocol)) {
+          throw new Error('媒体 URL 只允许 http/https');
+        }
+      }
+      if ((block.type === 'image' || block.type === 'video' || block.type === 'audio' || block.type === 'file') && block.source.type === 'artifact') {
+        const source = block.source as { type: 'artifact'; taskId: string; relPath: string };
+        const task = tasks.getTask(source.taskId);
+        if (!task || !task.artifacts.some((artifact) => artifact.relPath === source.relPath)) {
+          throw new Error(`未登记的任务产物：${source.taskId}/${source.relPath}`);
+        }
+      }
     }
-    await deps.reply(text, undefined, content);
+    pendingResponse = response;
   };
 
   const lines = (state: 'active' | 'all' = 'active'): LineSummary[] => {
@@ -203,7 +235,9 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       return [
         `task ${task.id}「${task.title}」`,
         `状态 ${task.status} · 线 ${task.threadId ?? '（无）'} · 执行体 ${task.workerId ?? task.assigneeId}`,
-        `要求：${task.deliverableSpec}`,
+        `目标：${task.contract?.objective ?? task.brief}`,
+        `交付：${task.contract?.deliverable ?? task.deliverableSpec}`,
+        task.answer ? `执行体回答：${task.answer}` : '执行体回答：无',
         task.artifacts.length > 0
           ? `产出：${task.artifacts.map((artifact) => artifact.relPath).join('、')}`
           : '产出：无',
@@ -229,6 +263,10 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         `线：${report.threadId}`,
         `标题：${report.title}`,
         `内容：${report.body || '（空）'}`,
+        ...(report.result ? [
+          `结构化结果：${report.result.status} · ${report.result.conclusion}`,
+          report.result.artifacts.length > 0 ? `产物：${report.result.artifacts.map((artifact) => artifact.relPath).join('、')}` : '产物：无',
+        ] : []),
       ].join('\n');
     }
 
@@ -277,9 +315,48 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const askUser = (threadId: string | null, question: string) => {
     const target = threadId ?? threads.listActiveThreads(1)[0]?.id ?? null;
     if (!target) return { ok: false, reason: '没有可以挂靠的线；用 reply_to_user 直接说话' };
-    threads.addReport({ threadId: target, level: 'decide', title: '需要你拍板', body: question });
-    threads.setAttention(target, 'decide');
+    const task = unfinishedTasksOf(tasks, target)[0] ?? tasks.latestForThread(target);
+    // Questions belong to the conversation that can answer them. Keep the
+    // durable report for audit/recovery, but do not put it in the legacy
+    // A second inbox makes it easy to answer the wrong copy; the conversation
+    // card is the only user-facing action surface.
+    threads.addReport({
+      threadId: target,
+      ...(task ? { taskId: task.id } : {}),
+      level: 'silent',
+      kind: 'question',
+      title: '需要你回复',
+      body: question,
+    });
     return { ok: true };
+  };
+
+  const dispatchLine = (input: OpenLineInput): OpenLineResult => {
+    deps.onActivity?.('delegating');
+    const result = deps.openLine(input);
+    if (result.ok) deps.onActivity?.('working');
+    else deps.onActivity?.('error');
+    return result;
+  };
+
+  const openLine = (input: OpenLineInput): OpenLineResult => {
+    const explicit = input.contract.attachments ?? [];
+    const authorized = new Map(activeInputAttachments.map((attachment) => [attachment.path, attachment]));
+    const unauthorized = explicit.find((attachment) => !authorized.has(attachment.path));
+    if (unauthorized) {
+      return { ok: false, reason: `附件未获当前输入授权：${unauthorized.name}` };
+    }
+    const byPath = new Map<string, ChatAttachmentRef>();
+    for (const attachment of [...activeInputAttachments, ...explicit]) {
+      if (!byPath.has(attachment.path)) byPath.set(attachment.path, attachment);
+    }
+    return dispatchLine({
+      ...input,
+      contract: {
+        ...input.contract,
+        ...(byPath.size > 0 ? { attachments: [...byPath.values()] } : {}),
+      },
+    });
   };
 
   /**
@@ -315,6 +392,23 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         // 库里同时躺着两条互相矛盾的要求。
         ...(options?.subject ? { subject: options.subject } : {}),
       });
+      // Explicit remember calls are high-trust ontology evidence as well as
+      // legacy memory rows. Keep the old API compatible while making the new
+      // profile graph traceable to the originating statement.
+      if (deps.contextGraph) {
+        try {
+          const user = deps.contextGraph.resolveEntity('user') ?? deps.contextGraph.ensureEntity({ id: 'ontology-user', entityType: 'User', canonicalName: '用户' });
+          const episode = deps.contextGraph.appendEpisode({ sourceType: 'memory', sourceId: id, actor: 'user', content });
+          if (options?.kind === 'goal') {
+            const goal = deps.contextGraph.ensureEntity({ entityType: 'Goal', canonicalName: content });
+            deps.contextGraph.assertFact({ subjectEntityId: user.id, predicate: 'has_goal', objectEntityId: goal.id, valueType: 'entity', sourceEpisodeId: episode.id, confidence: 1 });
+          } else {
+            deps.contextGraph.assertFact({ subjectEntityId: user.id, predicate: 'prefers', objectValue: content, valueType: 'text', sourceEpisodeId: episode.id, confidence: 1 });
+          }
+        } catch (error) {
+          console.warn('[ontology] 写入显式记忆的本体断言失败', error);
+        }
+      }
     } catch (error) {
       // 常驻层满了、或者这条已经在里面了：把原因原样交回去，别让模型自己编一个。
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };
@@ -384,7 +478,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
             return { ok: false, reason: `当前输入没有这个回复地址：${input.replyTarget}` };
           }
           const { replyTarget: _rawTarget, ...rest } = input;
-          return deps.openLine({ ...rest, ...(target ? { replyTarget: target } : {}) });
+          return openLine({ ...rest, ...(target ? { replyTarget: target } : {}) });
         },
         reply,
         recall,
@@ -402,6 +496,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         remember,
         forget,
         recallMemory,
+        ontologyCommand: deps.ontologyCommand,
       }),
     );
     return built;
@@ -447,6 +542,14 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     const detail: Record<string, string> = { concise: '优先简洁，先给结论', balanced: '详略适中', detailed: '尽量充分展开并解释依据' };
     saved.unshift(`回复偏好：语气${tone[preferences.tone] ?? tone.balanced}；详略${detail[preferences.detail] ?? detail.balanced}。`);
     if (preferences.instructions.trim()) saved.unshift(`用户补充的回复偏好：${preferences.instructions.trim()}`);
+    if (deps.contextGraph) {
+      try {
+        const pack = deps.contextGraph.contextPack('ontology-user', { maxHops: 2, maxAssertions: 16, maxTokens: 1800 });
+        if (pack.assertions.length > 0) saved.push(pack.prompt);
+      } catch (error) {
+        console.warn('[ontology] 构建 Router 个人上下文失败', error);
+      }
+    }
     return saved;
   };
 
@@ -457,11 +560,40 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     semantic,
     rules,
     standing,
-    deliver: (text, targets = []) => {
+    deliver: async (text, targets = [], context = { attachments: [] }) => {
       activeReplyTargets = targets;
-      return session.deliver(text).finally(() => {
+      activeInputAttachments = context.attachments;
+      pendingResponse = null;
+      try {
+        await session.deliver(text);
+        if (!pendingResponse) {
+          await session.deliver('协议修复：请立即调用 reply_to_user 提交至少一个 markdown block。不要输出普通文本。');
+        }
+        const response = pendingResponse as RouterResponse | null;
+        if (!response) {
+          deps.faults?.recordSafely({ kind: 'router.protocol_error', severity: 'error', subjectType: 'router', summary: 'Router 两轮都没有提交结构化最终回复。', detail: {} });
+          await deps.reply({ blocks: [{ type: 'markdown', text: '这次运行没有提交完整的最终结果，请稍后重试。' }] });
+          deps.streamReply?.({ type: 'finish' });
+          deps.onActivity?.('error');
+          return;
+        }
+        const target = response.replyTarget
+          ? activeReplyTargets.find((candidate) => candidate.address === response.replyTarget)
+          : undefined;
+        if (target && deps.externalReply) {
+          await deps.externalReply(target, formatExternalReplyFromBlocks(response.blocks));
+          deps.onActivity?.('completed');
+        } else {
+          if (target) console.warn('[router] 没有外部回复器，目标信道回退到桌面会话', target.address);
+          await deps.reply(response);
+          deps.streamReply?.({ type: 'finish' });
+          deps.onActivity?.('completed');
+        }
+      } finally {
         activeReplyTargets = [];
-      });
+        activeInputAttachments = [];
+        pendingResponse = null;
+      }
     },
     /**
      * 直通（§3.2 Fast Path）：这条事件流的归属已经确定，程序直接发给盯它的执行体，
@@ -478,8 +610,14 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
      passthrough: (intent) => {
       const payload = intent.event.payload;
        const fresh = bodyOf(payload);
-      const result = deps.openLine({
-        goal: fresh?.trim() || intent.thread.goal || intent.thread.title,
+      const objective = fresh?.trim() || intent.thread.goal || intent.thread.title;
+      const result = dispatchLine({
+        contract: {
+          objective,
+          deliverable: objective,
+          outputs: [{ kind: 'text', description: '给出完成这条工作线后的简短结论。' }],
+          ...(intent.event.source === 'im' ? attachmentsForPayload(payload) : {}),
+        },
         title: intent.thread.title,
         threadKey: intent.thread.threadKey,
         workerId: intent.workerId,
@@ -505,11 +643,23 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
 export function formatExternalReply(text: string, content?: readonly ChatContentBlock[]): string {
   const parts = [withoutDesktopMediaUrls(text.trim())].filter(Boolean);
   for (const block of content ?? []) {
+    if (block.type === 'approval') {
+      parts.push(`需要审批：${block.title}\n${block.body}`);
+      continue;
+    }
+    if (block.type === 'workflow') {
+      parts.push(`${block.kind === 'question' ? '需要回复' : '需要确认'}：${block.title}\n${block.body}`);
+      continue;
+    }
+    if (block.type === 'ontologyApproval') {
+      parts.push(`需要确认：${block.title}\n${block.body}`);
+      continue;
+    }
     if (block.type === 'markdown') {
       if (block.text.trim()) parts.push(withoutDesktopMediaUrls(block.text.trim()));
       continue;
     }
-    const label = block.alt?.trim() || block.title?.trim() || block.type;
+    const label = ('alt' in block && block.alt?.trim()) || block.title?.trim() || block.type;
     if (block.source.type === 'url') {
       // Keep the original public URL. The opc-media proxy is local to the
       // desktop renderer and must never be sent to an external IM adapter.
@@ -528,6 +678,22 @@ export function formatExternalReply(text: string, content?: readonly ChatContent
     }
   }
   return parts.join('\n\n');
+}
+
+function formatExternalReplyFromBlocks(blocks: readonly ChatContentBlock[]): string {
+  return formatExternalReply('', blocks);
+}
+
+function attachmentsForPayload(payload: Record<string, unknown>): { attachments: ChatAttachmentRef[] } | Record<string, never> {
+  const values = payload.attachments;
+  if (!Array.isArray(values)) return {};
+  const attachments = values.filter((value): value is ChatAttachmentRef => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Partial<ChatAttachmentRef>;
+    return typeof item.id === 'string' && typeof item.name === 'string' && typeof item.path === 'string' &&
+      typeof item.size === 'number' && (item.source === 'file' || item.source === 'clipboard');
+  });
+  return attachments.length > 0 ? { attachments } : {};
 }
 
 function withoutDesktopMediaUrls(value: string): string {

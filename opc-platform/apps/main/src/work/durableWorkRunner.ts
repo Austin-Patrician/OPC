@@ -22,6 +22,8 @@ export interface DurableWorkRunnerDeps {
     outcome: 'completed' | 'failed' | 'aborted' | 'orphaned' | 'faulted',
     result: WorkTaskResult | null,
   ) => void;
+  /** Approval waits are user driven and must not be treated as a 10 minute timeout. */
+  isApprovalPending?: (taskId: string) => boolean;
   onResumed?: (taskId: string) => void;
 }
 
@@ -50,8 +52,11 @@ export class DurableWorkRunner {
     const input: WorkTaskInput = {
       workTaskId: task.id,
       title: task.title,
-      brief: task.brief,
-      deliverableSpec: task.deliverableSpec,
+      contract: task.contract ?? {
+        objective: task.brief,
+        deliverable: task.deliverableSpec,
+        outputs: [],
+      },
       acceptanceCommand: task.acceptanceCommand,
       workspaceDir: path.resolve(this.deps.workspaceRoot, task.workspaceRelPath),
       checksDir: path.join(this.deps.checksRoot, task.id),
@@ -121,6 +126,7 @@ export class DurableWorkRunner {
     const context = await this.deps.context();
     let outcome: 'completed' | 'failed' | 'aborted' | 'orphaned' | 'faulted';
     let result: WorkTaskResult | null = null;
+    let terminalReason: string | undefined;
 
     try {
       // `waitForTask` resolves immediately with the current record when the task is
@@ -132,14 +138,25 @@ export class DurableWorkRunner {
       while (record.state.status !== 'terminal') {
         // 在等子任务的父，等的是**别人的算力**，不是自己的：额度按它的处境放宽。
         // 否则一次正常的团队协作会被当成"卡住十分钟"判掉——那是这一层最不该犯的错。
-        const limit = this.deps.repository.listChildren(taskId).length > 0 ? 45 * 60_000 : timeoutMs;
+        const approvalWaiting = this.deps.isApprovalPending?.(taskId) ?? false;
+        const limit = approvalWaiting
+          ? 24 * 60 * 60_000
+          : this.deps.repository.listChildren(taskId).length > 0
+            ? 45 * 60_000
+            : timeoutMs;
         if (Date.now() - startedAt > limit) throw new Error('等待 durable 任务超时');
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, approvalWaiting ? 1000 : 200));
         record = await harness.waitForTask(durableId, context);
       }
 
       const terminal = record.state.outcome;
       outcome = terminal.status;
+      terminalReason =
+        'error' in terminal && terminal.error
+          ? terminal.error.message
+          : 'reason' in terminal
+            ? terminal.reason
+            : undefined;
       const maybeResult = 'result' in terminal ? terminal.result : undefined;
       result = (maybeResult as WorkTaskResult | undefined) ?? null;
     } catch (error) {
@@ -169,11 +186,20 @@ export class DurableWorkRunner {
     );
     // 被中止不是"没通过验收"：它的 status 是 `cancelled`，由 `threadOutcomeFor`
     // 静默归档，而不是拿一条 `decide` 去打扰人。
-    const status: 'accepted' | 'rejected' | 'cancelled' =
-      accepted ? 'accepted' : kind === 'cancelled' ? 'cancelled' : 'rejected';
+    // Keep runtime failures separate from acceptance failures.  The thread
+    // outcome layer uses this distinction to tell the user whether a retry is
+    // useful; collapsing every non-success into `rejected` turns a crashed run
+    // into the misleading "验收未通过" message.
+    const status: WorkTask['status'] = accepted
+      ? 'accepted'
+      : kind === 'cancelled'
+        ? 'cancelled'
+        : outcome === 'completed'
+          ? 'rejected'
+          : 'failed';
     this.deps.repository.setStatus(taskId, status, {
       finishedAt: Date.now(),
-      error: accepted ? null : (result?.reason ?? label),
+      error: accepted ? null : (result?.reason ?? terminalReason ?? label),
       errorKind: accepted ? null : kind,
     });
 
