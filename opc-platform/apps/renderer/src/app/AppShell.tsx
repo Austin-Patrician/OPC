@@ -1,5 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import { useState } from 'react';
+import type { AssistantActivity } from '@opc/shared/ipc';
 import { useCompanySync } from '@/entities/company/model/useCompany';
 import { useBillingSync } from '@/entities/billing/model/useBilling';
 import { BackgroundLayer } from '@/shared/ui/BackgroundLayer';
@@ -16,6 +17,7 @@ export function AppShell() {
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [chatActivity, setChatActivity] = useState<AssistantActivity>();
   useCompanySync();
   useBillingSync();
   const background = useUiPrefs((state) => state.background);
@@ -56,10 +58,12 @@ export function AppShell() {
                   setSearchOpen(false);
                   setSearchQuery('');
                 }}
+                showChatStatus={location.pathname.startsWith('/chat')}
+                chatActivity={location.pathname.startsWith('/chat') ? chatActivity : undefined}
               />
             )}
             <div className="flex min-h-0 flex-1 overflow-hidden">
-              <Outlet context={{ searchQuery }} />
+              <Outlet context={{ searchQuery, setChatActivity }} />
             </div>
           </div>
         </div>

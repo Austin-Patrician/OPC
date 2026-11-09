@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  ChevronRight,
   Activity,
   Grid3X3,
-  Menu,
   MessageCircle,
   Settings,
 } from 'lucide-react';
@@ -16,15 +14,10 @@ import { cn } from '@/shared/lib/cn';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
 import { IdentityPopover } from '@/widgets/title-bar/IdentityPopover';
 
-const MORE = [
-  { to: '/skills', icon: Grid3X3, key: 'nav.skills' },
-] as const;
-
 export function NavRail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const [menuOpen, setMenuOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
   const identityRef = useRef<HTMLDivElement>(null);
   const profile = useCompanyProfile();
@@ -32,6 +25,7 @@ export function NavRail() {
   const name = userName(profile, t('company.userFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
   const runtimeActive = location.pathname.startsWith('/runtime');
+  const skillsActive = location.pathname.startsWith('/skills');
 
   useEffect(() => {
     if (!identityOpen) return;
@@ -89,39 +83,17 @@ export function NavRail() {
             )}
           >
             <Activity size={20} strokeWidth={1.85} />
-            <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-[#22b560]" />
           </button>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMenuOpen((open) => !open)}
-              aria-expanded={menuOpen}
-              aria-label={t('nav.menu')}
-              title={t('nav.menu')}
-              className={cn('buddy-rail-button', menuOpen && 'buddy-rail-button-active')}
-            >
-              <Menu size={19} strokeWidth={1.8} />
-            </button>
-            {menuOpen ? (
-              <div className="buddy-more-menu absolute top-0 left-[54px] z-50 w-48 rounded-xl border border-white/80 bg-white/95 p-1.5 shadow-[0_14px_40px_rgba(28,57,42,.14)] backdrop-blur-xl">
-                {MORE.map(({ to, icon: Icon, key }) => (
-                  <button
-                    key={to}
-                    type="button"
-                    onClick={() => {
-                      navigate(to);
-                      setMenuOpen(false);
-                    }}
-                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12.5px] text-[#435149] transition hover:bg-[#edf7f0] hover:text-[#168848]"
-                  >
-                    <Icon size={15} strokeWidth={1.8} />
-                    <span className="flex-1">{t(key)}</span>
-                    {location.pathname === to ? <ChevronRight size={13} /> : null}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/skills')}
+            aria-label={t('nav.skills')}
+            aria-current={skillsActive ? 'page' : undefined}
+            title={t('nav.skills')}
+            className={cn('buddy-rail-button relative', skillsActive && 'buddy-rail-button-active')}
+          >
+            <Grid3X3 size={19} strokeWidth={1.8} />
+          </button>
         </div>
       </div>
 

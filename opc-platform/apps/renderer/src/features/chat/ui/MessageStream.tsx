@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { Check, Copy } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { userName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
@@ -20,6 +20,8 @@ interface MessageStreamProps {
   agents: readonly Agent[];
   typingNames: readonly string[];
 }
+
+const COLLAPSED_USER_MESSAGE_HEIGHT = 192;
 
 /**
  * Virtualized message list. Only the visible window is mounted, so a
@@ -107,6 +109,7 @@ function MessageRow({
   userAvatar?: string;
   isLatestAssistant: boolean;
 }) {
+  const { t } = useTranslation();
   if (message.kind === 'system') {
     return (
       <div className="flex justify-center py-1">
@@ -117,7 +120,14 @@ function MessageRow({
     );
   }
 
-  const displayName = message.senderId === 'user' ? userName : message.senderName;
+  const isRouter = message.senderId === 'router';
+  const displayName =
+    message.senderId === 'user'
+      ? userName
+      : isRouter
+        ? t('chat.sender.routerName')
+        : message.senderName;
+  const displayRole = isRouter ? t('chat.sender.routerRole') : message.senderRole;
   const avatarUrl = message.senderId === 'user' ? userAvatar : message.senderAvatarUrl ?? agent?.avatarUrl;
   const containsActionCard = message.content?.some((block) => block.type === 'approval' || block.type === 'workflow' || block.type === 'ontologyApproval') ?? false;
 
@@ -128,8 +138,8 @@ function MessageRow({
       <div className="min-w-0 max-w-full space-y-3">
         {message.timeHeader ? <TimeHeader value={message.timeHeader} /> : null}
         <div className="flex min-w-0 max-w-full items-start justify-end gap-2.5">
-          <div className="buddy-user-bubble min-w-0 max-w-full rounded-[15px] rounded-br-[5px] px-4 py-3 text-md-plus leading-[1.58] break-words">
-            {message.text?.trim() ? <RichText text={message.text} /> : null}
+          <div className="buddy-user-bubble min-w-0 max-w-[min(100%,44em)] rounded-[15px] rounded-br-[5px] px-4 py-3 text-md-plus leading-[1.58] break-words">
+            {message.text?.trim() ? <UserMessageText text={message.text} /> : null}
             <AttachmentList attachments={message.attachments} />
           </div>
           <Avatar
@@ -151,7 +161,7 @@ function MessageRow({
           <BuddyMark size="md" />
         ) : (
           <Avatar
-            name={message.senderName}
+            name={displayName}
             src={avatarUrl}
             size="sm"
             className="mt-0.5 size-avatar-sm"
@@ -159,10 +169,10 @@ function MessageRow({
         )}
         <div className="flex min-w-0 max-w-full flex-col items-start">
           <div className="mb-1 flex items-center gap-1.5 px-0.5">
-            <span className="text-sm font-medium text-[#68756e]">{message.senderName}</span>
-            {message.senderRole ? (
+            <span className="text-sm font-medium text-[#68756e]">{displayName}</span>
+            {displayRole ? (
               <span className="rounded bg-ink/5 px-1.5 py-px text-2xs text-ink-tertiary">
-                {message.senderRole}
+                {displayRole}
               </span>
             ) : null}
             <span className="text-2xs text-ink-quaternary">{message.timestamp}</span>
@@ -192,6 +202,47 @@ function MessageRow({
         </div>
       </div>
     </div>
+  );
+}
+
+function UserMessageText({ text }: { text: string }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [isLong, setIsLong] = useState(false);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return undefined;
+
+    const measure = () => {
+      const next = content.scrollHeight > COLLAPSED_USER_MESSAGE_HEIGHT;
+      setIsLong((current) => current === next ? current : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [text]);
+
+  return (
+    <>
+      <div
+        ref={contentRef}
+        className={`min-w-0 w-full max-w-[42em] whitespace-pre-wrap [overflow-wrap:anywhere] ${isLong && !expanded ? 'max-h-48 overflow-hidden' : ''}`}
+      >
+        <RichText text={text} />
+      </div>
+      {isLong ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-2 inline-flex min-h-7 items-center gap-1 rounded-md px-1 text-xs-plus font-medium text-accent-ink transition-colors hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          {expanded ? <><ChevronUp className="size-3.5" aria-hidden="true" />收起</> : <><ChevronDown className="size-3.5" aria-hidden="true" />展开全文</>}
+        </button>
+      ) : null}
+    </>
   );
 }
 

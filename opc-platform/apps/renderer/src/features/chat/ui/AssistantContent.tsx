@@ -9,6 +9,7 @@ import rehypeHighlight from 'rehype-highlight';
 import mermaid from 'mermaid';
 import embed from 'vega-embed';
 import type { ChatContentBlock } from '@opc/shared/domain';
+import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { containsExternalVegaDataUrl } from '../lib/vegaSpec';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/github.css';
@@ -132,22 +133,60 @@ function ContentBlock({ block }: { block: ChatContentBlock }) {
 }
 
 function FileBlock({ block }: { block: Extract<ChatContentBlock, { type: 'file' }> }) {
+  const { t } = useTranslation();
   const [message, setMessage] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const sourceName = block.name ?? block.source.relPath;
+  const fileName = sourceName.split(/[\\/]/).pop() || sourceName;
+  const extension = fileName.includes('.') ? fileName.split('.').pop() : undefined;
+
   const save = async () => {
+    setMessage(null);
+    setFailed(false);
     try {
       const bridge = window.opc;
-      if (!bridge) throw new Error('桌面桥接不可用');
+      if (!bridge) throw new Error(t('chat.artifact.bridgeUnavailable'));
       const result = await bridge.artifacts.saveAs(block.source.taskId, block.source.relPath);
-      setMessage(result.ok ? `已保存${result.path ? `：${result.path}` : ''}` : (result.error ?? '保存失败'));
+      if (result.ok) {
+        setMessage(t('chat.artifact.saved'));
+        return;
+      }
+      setFailed(true);
+      setMessage(result.error ?? t('chat.artifact.saveFailed'));
     } catch (error) {
+      setFailed(true);
       setMessage(error instanceof Error ? error.message : String(error));
     }
   };
+
   return (
-    <div className="flex w-full max-w-[30rem] items-center justify-between gap-3 rounded-xl border border-ink/10 bg-white/70 px-3.5 py-3">
-      <div className="min-w-0"><div className="truncate text-sm font-medium text-ink">{block.name ?? block.source.relPath}</div><div className="truncate text-xs text-ink-tertiary">{block.title ?? block.source.relPath}</div></div>
-      <button type="button" onClick={() => void save()} className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-ink/5 px-2.5 py-1.5 text-xs text-ink-secondary hover:bg-ink/10"><Download className="size-3.5" />保存</button>
-      {message ? <span className="text-xs text-ink-tertiary">{message}</span> : null}
+    <div className="flex w-full max-w-[18rem] items-center gap-2 rounded-xl border border-ink/10 bg-white/70 px-2.5 py-2">
+      <span
+        className="flex h-7 w-[26px] shrink-0 items-center justify-center overflow-hidden [&_svg]:size-full"
+        dangerouslySetInnerHTML={{ __html: getFileIcon(extension, fileName) }}
+        aria-hidden="true"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[12px] leading-tight font-semibold text-ink" title={block.source.relPath}>
+          {fileName}
+        </div>
+        <div
+          className={`truncate text-[10px] leading-tight ${failed ? 'text-danger' : 'text-ink-tertiary'}`}
+          title={message ?? block.title ?? block.source.relPath}
+          aria-live="polite"
+        >
+          {message ?? block.title ?? block.source.relPath}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void save()}
+        aria-label={t('chat.artifact.save')}
+        title={t('chat.artifact.save')}
+        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-tertiary transition-colors hover:bg-ink/5 hover:text-ink"
+      >
+        <Download className="size-3.5" />
+      </button>
     </div>
   );
 }

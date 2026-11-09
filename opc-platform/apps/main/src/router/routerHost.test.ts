@@ -6,7 +6,7 @@ import { DEFAULT_SEMANTIC_PROMPT, DEFAULT_TRIAGE_POLICY, type TriagePolicy } fro
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
-import { createRouterHost } from './routerHost';
+import { createRouterHost, shouldRepairMissingReply } from './routerHost';
 
 /**
  * Router 装起来之后**真的能跑**。
@@ -48,6 +48,14 @@ function host(policy: TriagePolicy = DEFAULT_TRIAGE_POLICY) {
     policy: () => policy,
   });
 }
+
+describe('静默派活回复契约', () => {
+  it('只对没有回复且没有成功派活的轮次执行协议修复', () => {
+    expect(shouldRepairMissingReply(false, false)).toBe(true);
+    expect(shouldRepairMissingReply(false, true)).toBe(false);
+    expect(shouldRepairMissingReply(true, true)).toBe(false);
+  });
+});
 
 describe('Router 装起来能跑', () => {
   it('空队列不碰 harness，一个 token 都不花', async () => {

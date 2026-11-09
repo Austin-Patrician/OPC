@@ -1,5 +1,21 @@
 import { useState } from 'react';
-import { ChevronDown, Users, Wrench } from 'lucide-react';
+import {
+  AudioLines,
+  Brain,
+  ChevronDown,
+  File,
+  GitBranch,
+  Image,
+  MessageSquare,
+  Pencil,
+  ScanText,
+  Scale,
+  Terminal,
+  Users,
+  Volume2,
+  Wrench,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentCapability } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
@@ -12,14 +28,6 @@ import {
 } from '@/shared/lib/extensionCopy';
 import { cn } from '@/shared/lib/cn';
 import { toolAgentCounts, type ToolGroup } from './model/grouping';
-
-/**
- * 工具 tab: the callable surface, not the packaging.
- *
- * The extension tab answers "what is installed"; this one answers "what can the
- * model actually call", so a tool appears once no matter how many agents share
- * it, and the per-agent view at the bottom is the reverse index.
- */
 
 export function ToolsSection({
   groups,
@@ -37,14 +45,19 @@ export function ToolsSection({
       <Section
         title={t('capabilities.toolsTab.title')}
         description={t('capabilities.toolsTab.description', { count: total })}
-        action={<Wrench className="size-4 text-ink-quaternary" />}
+        action={
+          <span className="rounded-full bg-accent-soft px-2.5 py-1 text-3xs font-semibold text-accent-ink">
+            {total}
+          </span>
+        }
+        className="capabilities-section"
       >
         {groups.length > 0 ? (
-          <ul className="divide-y divide-line">
+          <div className="grid gap-3 p-4 md:grid-cols-2">
             {groups.map((group) => (
-              <ToolGroupRow key={group.name} group={group} counts={counts} />
+              <ToolGroupCard key={group.name} group={group} counts={counts} />
             ))}
-          </ul>
+          </div>
         ) : (
           <p className="px-4 py-6 text-sm text-ink-tertiary">{t('capabilities.empty')}</p>
         )}
@@ -53,14 +66,15 @@ export function ToolsSection({
       <Section
         title={t('capabilities.agentTitle')}
         description={t('capabilities.agentHint')}
-        action={<Users className="size-4 text-ink-quaternary" />}
+        action={<Users className="size-4 text-accent" />}
+        className="capabilities-section"
       >
         {agents.length > 0 ? (
-          <ul className="divide-y divide-line">
+          <div className="grid gap-3 p-4 md:grid-cols-2">
             {agents.map((agent) => (
-              <AgentRow key={agent.workerId} agent={agent} />
+              <AgentCard key={agent.workerId} agent={agent} />
             ))}
-          </ul>
+          </div>
         ) : (
           <p className="px-4 py-6 text-sm text-ink-tertiary">{t('capabilities.empty')}</p>
         )}
@@ -69,13 +83,7 @@ export function ToolsSection({
   );
 }
 
-function ToolGroupRow({
-  group,
-  counts,
-}: {
-  group: ToolGroup;
-  counts: Map<string, number>;
-}) {
+function ToolGroupCard({ group, counts }: { group: ToolGroup; counts: Map<string, number> }) {
   const { t } = useTranslation();
   const titleKey = extensionTitleKey(group.name);
   const descriptionKey = extensionDescriptionKey(group.name);
@@ -87,135 +95,112 @@ function ToolGroupRow({
       : t('capabilities.unknownExtension');
 
   return (
-    <li className="px-4 py-3.5">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <h4 className="text-sm-plus font-semibold text-ink">{title}</h4>
-        <code className="rounded bg-surface-muted px-1.5 py-px font-mono text-3xs text-ink-tertiary">
-          {group.name}
-        </code>
-        <span className="rounded bg-surface-muted px-1.5 py-0.5 text-3xs font-medium text-ink-tertiary">
-          {t('capabilities.extensionAgents', { count: group.agents })}
+    <article className="capability-card rounded-2xl p-4">
+      <div className="flex items-start gap-3">
+        <span className="capability-icon grid size-10 shrink-0 place-items-center rounded-xl">
+          <Wrench className="size-[18px]" />
         </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h4 className="truncate text-sm-plus font-semibold text-ink">{title}</h4>
+              <code className="mt-1 block truncate font-mono text-3xs text-ink-quaternary">{group.name}</code>
+            </div>
+            <span className="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-3xs font-semibold text-accent-ink">
+              {group.tools.length}
+            </span>
+          </div>
+          <p className="mt-2 line-clamp-2 text-xs-plus leading-relaxed text-ink-tertiary">{description}</p>
+        </div>
       </div>
-      <p className="mt-1 text-xs-plus leading-relaxed text-ink-tertiary">{description}</p>
 
-      <ul className="mt-2 grid gap-1.5 xl:grid-cols-2">
-        {group.tools.map((tool) => (
-          <li
-            key={tool.name}
-            className="flex items-start gap-2 rounded-md border border-line/70 bg-surface-muted/50 px-2.5 py-1.5"
-          >
-            <code className="shrink-0 pt-px font-mono text-2xs font-medium text-ink">{tool.name}</code>
-            {tool.deferred ? (
-              <span className="shrink-0 rounded bg-surface px-1 py-px text-3xs text-ink-tertiary">
-                {t('capabilities.deferred')}
-              </span>
-            ) : null}
-            <span className="min-w-0 flex-1 text-xs-plus leading-relaxed text-ink-tertiary">
-              {tool.description || t(`capabilities.tools.${tool.name}`, { defaultValue: '' })}
-            </span>
-            <span className="shrink-0 text-3xs text-ink-quaternary">
-              {t('capabilities.toolsTab.agents', { count: counts.get(tool.name) ?? 0 })}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </li>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        {group.tools.map((tool) => {
+          const Icon = toolIcon(tool.name);
+          return (
+            <div key={tool.name} className="rounded-xl border border-line/70 bg-surface-muted/45 p-2.5">
+              <div className="flex items-center gap-2">
+                <Icon className="size-3.5 shrink-0 text-accent" />
+                <code className="min-w-0 truncate font-mono text-2xs font-medium text-ink" title={tool.name}>
+                  {tool.name}
+                </code>
+                <span className="ml-auto shrink-0 text-3xs text-ink-quaternary">
+                  {t('capabilities.toolsTab.agents', { count: counts.get(tool.name) ?? 0 })}
+                </span>
+              </div>
+              <p className="mt-1.5 line-clamp-2 text-3xs leading-relaxed text-ink-tertiary">
+                {tool.description || t(`capabilities.tools.${tool.name}`, { defaultValue: '' })}
+              </p>
+              {tool.deferred ? <span className="mt-1.5 inline-flex rounded-full bg-surface px-1.5 py-0.5 text-3xs text-ink-quaternary">{t('capabilities.deferred')}</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </article>
   );
 }
 
-function AgentRow({ agent }: { agent: AgentCapability }) {
+function AgentCard({ agent }: { agent: AgentCapability }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   return (
-    <li>
+    <article className="capability-card overflow-hidden rounded-2xl">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover"
+        className="flex w-full items-center gap-3 p-4 text-left"
       >
         <Avatar name={agent.name} size="sm" />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="truncate text-sm-plus font-medium text-ink">{agent.name}</span>
-            <span className="rounded bg-accent-soft px-1.5 py-0.5 text-3xs font-medium text-accent-ink">
-              {t(`capabilities.templates.${agent.template}`)}
-            </span>
-            <span className="text-3xs text-ink-quaternary">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm-plus font-semibold text-ink">{agent.name}</span>
+            <span className="rounded-full bg-accent-soft px-2 py-0.5 text-3xs font-medium text-accent-ink">
               {t(`capabilities.statuses.${agent.status}`)}
             </span>
           </div>
-          <div className="mt-0.5 truncate text-xs text-ink-tertiary">
-            <code className="font-mono text-3xs">{agent.model || '—'}</code>
+          <div className="mt-1 flex items-center gap-2 text-3xs text-ink-quaternary">
+            <span>{t(`capabilities.templates.${agent.template}`)}</span>
+            <span aria-hidden="true">·</span>
+            <span>{agent.tools.length} {t('capabilities.tabs.tools')}</span>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-3xs text-ink-tertiary">
-          <span>{t('capabilities.agentExtensions', { count: agent.extensions.length })}</span>
-          <span className="text-ink-quaternary">/</span>
-          <span>{t('capabilities.agentTools', { count: agent.tools.length })}</span>
-          <ChevronDown
-            className={cn('size-3.5 text-ink-quaternary transition-transform', open && 'rotate-180')}
-          />
-        </div>
+        <ChevronDown className={cn('size-4 shrink-0 text-ink-quaternary transition-transform', open && 'rotate-180')} />
       </button>
 
       {open ? (
-        <div className="grid gap-3 border-t border-line bg-surface-muted/30 px-4 py-3 sm:grid-cols-2">
-          <div className="min-w-0">
-            <div className="mb-1.5 text-2xs font-semibold text-ink-tertiary">
-              {t('capabilities.agentExtensionsLabel')}
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {agent.extensions.map((extension) => {
-                const key = extensionTitleKey(extension.name);
-                return (
-                  <span
-                    key={extension.name}
-                    title={extension.name}
-                    className="rounded border border-line bg-surface px-1.5 py-0.5 text-3xs text-ink-secondary"
-                  >
-                    {key ? t(key) : extensionFallbackTitle(extension.name)}
-                  </span>
-                );
-              })}
-            </div>
+        <div className="border-t border-line/70 bg-surface-muted/25 px-4 py-3">
+          <div className="flex flex-wrap gap-1.5">
+            {agent.tools.map((tool) => (
+              <code key={tool.name} title={tool.extension} className="rounded-lg border border-line bg-surface px-2 py-1 font-mono text-3xs text-ink-secondary">
+                {tool.name}
+              </code>
+            ))}
           </div>
-          <div className="min-w-0">
-            <div className="mb-1.5 text-2xs font-semibold text-ink-tertiary">
-              {t('capabilities.agentSkillsLabel')}
+          {agent.skills.length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {agent.skills.map((skill) => <span key={skill} className="rounded-lg bg-accent-soft px-2 py-1 text-3xs text-accent-ink">{skill}</span>)}
             </div>
-            {agent.skills.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {agent.skills.map((skill) => (
-                  <span key={skill} className="rounded bg-surface px-1.5 py-0.5 text-3xs text-ink-tertiary">
-                    {skill}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <span className="text-3xs text-ink-quaternary">{t('capabilities.noSkills')}</span>
-            )}
-          </div>
-          <div className="min-w-0 sm:col-span-2">
-            <div className="mb-1.5 text-2xs font-semibold text-ink-tertiary">
-              {t('capabilities.agentToolsLabel')}
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {agent.tools.map((tool) => (
-                <code
-                  key={tool.name}
-                  title={tool.extension}
-                  className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-3xs text-ink-secondary"
-                >
-                  {tool.name}
-                </code>
-              ))}
-            </div>
-          </div>
+          ) : null}
         </div>
       ) : null}
-    </li>
+    </article>
   );
+}
+
+function toolIcon(name: string): LucideIcon {
+  const normalized = name.toLowerCase();
+  if (normalized === 'read' || normalized === 'write') return File;
+  if (normalized === 'edit') return Pencil;
+  if (normalized === 'bash') return Terminal;
+  if (normalized.includes('image') || normalized.includes('generate')) return Image;
+  if (normalized.includes('transcribe')) return AudioLines;
+  if (normalized.includes('speech')) return Volume2;
+  if (normalized.includes('ocr')) return ScanText;
+  if (normalized.includes('remember')) return Brain;
+  if (normalized.includes('decompose')) return GitBranch;
+  if (normalized.includes('decide')) return Scale;
+  if (normalized.includes('message') || normalized.includes('colleague')) return MessageSquare;
+  return Wrench;
 }

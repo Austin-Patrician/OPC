@@ -39,6 +39,7 @@ import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
+import { shouldPromoteManualCompletion } from './work/reportPolicy';
 import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
 import { BillingSettingsService } from './work/billingSettings';
@@ -413,13 +414,8 @@ async function bootstrap(): Promise<void> {
     // silent and Router is never given a chance to summarize it. Manual lines are
     // the chat/goal path; folder/webhook and explicitly speculative lines keep
     // their background semantics.
-    if (
-      conversationId &&
-      report.level === 'silent' &&
-      report.kind === 'report' &&
-      reportThread?.source === 'manual' &&
-      reportThread.speculative !== true
-    ) {
+    const reportTask = report.taskId ? work?.getTask(report.taskId) : undefined;
+    if (conversationId && shouldPromoteManualCompletion(report, reportThread, reportTask)) {
       const promoted = threads.promoteReport(report.id);
       if (promoted) report = promoted;
     }

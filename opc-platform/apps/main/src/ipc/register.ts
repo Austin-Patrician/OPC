@@ -1033,7 +1033,19 @@ export function registerIpc({
   if (browser) {
     const browserBroadcast = () => broadcast(IPC.browser.changedEvent, browser.status());
     ipcMain.handle(IPC.browser.status, () => browser.status());
-    ipcMain.handle(IPC.browser.install, async () => { const result = await browser.installBrowser(); browserBroadcast(); await work.invalidateAllHarnesses(); return result; });
+    ipcMain.handle(IPC.browser.install, async () => {
+      try {
+        const result = await browser.installBrowser((progress) => {
+          browserBroadcast();
+          broadcast(IPC.browser.installProgressEvent, progress);
+        });
+        await work.invalidateAllHarnesses();
+        return result;
+      } finally {
+        broadcast(IPC.browser.installProgressEvent, null);
+        browserBroadcast();
+      }
+    });
     ipcMain.handle(IPC.browser.uninstall, async (_event, request: unknown) => {
       const options = request && typeof request === 'object'
         ? request as { deleteProfile?: unknown; deleteBrowserCache?: unknown }
@@ -1063,7 +1075,19 @@ export function registerIpc({
   if (desktop) {
     const desktopBroadcast = () => broadcast(IPC.desktop.changedEvent, desktop.status());
     ipcMain.handle(IPC.desktop.status, () => desktop.status());
-    ipcMain.handle(IPC.desktop.install, async () => { const result = await desktop.installRuntime(); desktopBroadcast(); await work.invalidateAllHarnesses(); return result; });
+    ipcMain.handle(IPC.desktop.install, async () => {
+      try {
+        const result = await desktop.installRuntime((progress) => {
+          desktopBroadcast();
+          broadcast(IPC.desktop.installProgressEvent, progress);
+        });
+        await work.invalidateAllHarnesses();
+        return result;
+      } finally {
+        broadcast(IPC.desktop.installProgressEvent, null);
+        desktopBroadcast();
+      }
+    });
     ipcMain.handle(IPC.desktop.uninstall, async (_event, deleteRuntime: unknown) => { const result = await desktop.uninstallRuntime(deleteRuntime !== false); desktopBroadcast(); await work.invalidateAllHarnesses(); return result; });
     ipcMain.handle(IPC.desktop.doctor, () => { const result = desktop.doctor(); desktopBroadcast(); return result; });
     ipcMain.handle(IPC.desktop.permissions, async () => { const result = await desktop.permissions(); desktopBroadcast(); return result; });

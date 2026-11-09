@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Maximize2, Minus, Search, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { AssistantActivity, AssistantActivityPhase } from '@opc/shared/ipc';
+import { BuddyMark } from '@/shared/ui/BuddyMark';
 
 interface TitleBarProps {
   searchEnabled: boolean;
@@ -9,6 +11,8 @@ interface TitleBarProps {
   onToggleSearch: () => void;
   onSearchQueryChange: (value: string) => void;
   onCloseSearch: () => void;
+  showChatStatus?: boolean;
+  chatActivity?: AssistantActivity;
   overlay?: boolean;
 }
 
@@ -20,10 +24,14 @@ export function TitleBar({
   onToggleSearch,
   onSearchQueryChange,
   onCloseSearch,
+  showChatStatus = false,
+  chatActivity,
   overlay = false,
 }: TitleBarProps) {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
+  const phase: AssistantActivityPhase = chatActivity?.phase ?? 'idle';
+  const statusText = t(`chat.activity.${phase}`);
 
   const toggleMaximize = async () => {
     const next = await window.opc?.window.toggleMaximize();
@@ -35,6 +43,23 @@ export function TitleBar({
       className={`buddy-titlebar relative z-30 flex h-[42px] shrink-0 items-center px-4 ${overlay ? 'buddy-titlebar-overlay' : ''}`}
     >
       <div className="buddy-titlebar-drag app-drag absolute inset-0" aria-hidden />
+      {showChatStatus ? (
+        <div
+          className="buddy-assistant-status no-drag absolute left-1/2 z-10 flex min-w-0 max-w-[min(48vw,320px)] -translate-x-1/2 items-center gap-2"
+          aria-live="polite"
+          aria-label={statusText}
+        >
+          <BuddyMark size="xs" phase={phase} />
+          <span className="buddy-assistant-status-label truncate text-xs font-medium">{statusText}</span>
+          {phase !== 'idle' && phase !== 'completed' && phase !== 'error' ? (
+            <span className="buddy-assistant-status-dots inline-flex shrink-0 gap-0.5" aria-hidden>
+              <i />
+              <i />
+              <i />
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-2.5">
         {searchEnabled ? (
           <div className="no-drag flex items-center gap-2.5">

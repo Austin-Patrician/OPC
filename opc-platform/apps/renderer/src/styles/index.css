@@ -263,6 +263,7 @@
 :root {
   --buddy-window-radius: 18px;
 }
+/* Opaque viewport: backdrop-filter here cannot affect the wallpaper child. */
 .buddy-viewport {
   border: 1px solid rgb(255 255 255 / 88%);
   border-radius: var(--buddy-window-radius);
@@ -271,7 +272,6 @@
   box-shadow:
     0 24px 70px rgb(25 50 75 / 9%),
     0 2px 10px rgb(0 0 0 / 3%);
-  backdrop-filter: blur(22px);
 }
 
 /* Electron's native window shape is the outer boundary; avoid a second CSS
@@ -357,6 +357,61 @@
 .buddy-chat {
   /* Keep wallpapers from showing through the conversation surface. */
   background: var(--panel-bg-base);
+}
+.capabilities-page {
+  background: transparent;
+}
+.capabilities-tabs {
+  border: 1px solid rgb(255 255 255 / 70%);
+  background: rgb(255 255 255 / 54%);
+  box-shadow: 0 8px 24px rgb(31 54 40 / 5%);
+  backdrop-filter: blur(16px);
+}
+.capabilities-section {
+  border-color: rgb(255 255 255 / 72%) !important;
+  background: rgb(255 255 255 / 62%) !important;
+  box-shadow: 0 12px 30px rgb(31 54 40 / 5%);
+  backdrop-filter: blur(16px);
+}
+.capability-card {
+  border: 1px solid rgb(227 235 230 / 82%);
+  background: rgb(255 255 255 / 62%);
+  box-shadow: 0 5px 16px rgb(31 54 40 / 4%);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.capability-card:hover {
+  border-color: rgb(53 184 106 / 36%);
+  background: rgb(255 255 255 / 82%);
+  box-shadow: 0 10px 24px rgb(31 54 40 / 8%);
+  transform: translateY(-1px);
+}
+.capability-icon {
+  border: 1px solid rgb(53 184 106 / 18%);
+  background: linear-gradient(145deg, rgb(240 251 244 / 95%), rgb(220 242 227 / 75%));
+  color: var(--accent-text);
+}
+[data-theme='dark'] .capabilities-page {
+  background: transparent;
+}
+[data-theme='dark'] .capabilities-tabs,
+[data-theme='dark'] .capabilities-section {
+  border-color: rgb(255 255 255 / 9%) !important;
+  background: rgb(28 31 35 / 72%) !important;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 18%);
+}
+[data-theme='dark'] .capability-card {
+  border-color: rgb(255 255 255 / 9%);
+  background: rgb(28 31 35 / 58%);
+  box-shadow: 0 5px 16px rgb(0 0 0 / 16%);
+}
+[data-theme='dark'] .capability-card:hover {
+  border-color: rgb(64 189 120 / 38%);
+  background: rgb(37 43 40 / 78%);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 25%);
+}
+[data-theme='dark'] .capability-icon {
+  border-color: rgb(64 189 120 / 24%);
+  background: linear-gradient(145deg, rgb(40 74 52 / 72%), rgb(31 53 42 / 62%));
 }
 .buddy-chat-header {
   color: #4a5550;
@@ -549,9 +604,9 @@
   color: #b85d53;
 }
 .buddy-agent-bubble {
-  border: 1px solid #eff3f1;
-  background: #fff;
-  box-shadow: 0 8px 28px rgb(18 38 28 / 4.5%);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 .buddy-composer-bar {
   position: relative;
@@ -822,9 +877,6 @@
   border-color: #dfece5;
   background: #cde4ee;
 }
-.buddy-more-menu {
-  animation: buddy-menu-in 140ms ease-out both;
-}
 .buddy-traffic span {
   border: 1px solid rgb(0 0 0 / 6%);
 }
@@ -839,16 +891,6 @@
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-@keyframes buddy-menu-in {
-  from {
-    opacity: 0;
-    transform: translateX(-4px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) scale(1);
   }
 }
 @media (max-width: 640px) {
@@ -866,8 +908,7 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .buddy-welcome,
-  .buddy-more-menu {
+  .buddy-welcome {
     animation: none;
   }
 }
@@ -878,7 +919,7 @@
   box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
 }
 [data-theme='dark'] .buddy-rail {
-  border-color: #2e3832;
+  border-right-color: transparent;
   background: var(--rail-bg-base);
 }
 [data-theme='dark'] .buddy-window-control {
@@ -912,10 +953,6 @@
 }
 [data-theme='dark'] .buddy-chat {
   background: var(--panel-bg-base);
-}
-[data-theme='dark'] .buddy-agent-bubble {
-  border-color: #303a34;
-  background: #252d28;
 }
 [data-theme='dark'] .buddy-agent-bubble,
 [data-theme='dark'] .buddy-welcome > p:first-of-type {
@@ -999,10 +1036,6 @@
 [data-theme='dark'] .buddy-search {
   border-color: #3b473f;
   background: #222a25;
-}
-[data-theme='dark'] .buddy-more-menu {
-  border-color: #3b473f;
-  background: rgb(34 42 37 / 97%);
 }
 [data-theme='dark'] .buddy-welcome-action {
   color: #a6dfb8;

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { ChatPanel } from '@/features/chat/ui/ChatPanel';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
+import type { AssistantActivity } from '@opc/shared/ipc';
 
 /**
  * 对话页。
@@ -10,13 +11,22 @@ import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
  * 一个助手说话（Super-agent 的连续感），任务结果和需要用户处理的动作都回到这条会话里。
  */
 export function ChatPage() {
-  const { searchQuery } = useOutletContext<{ searchQuery: string }>();
+  const { searchQuery, setChatActivity } = useOutletContext<{
+    searchQuery: string;
+    setChatActivity: (activity: AssistantActivity | undefined) => void;
+  }>();
   const { conversationId } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
   const { conversations, agents, typingByConversation, activityByConversation, sendMessage, markRead } = useChatRuntime();
 
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
+  const activity = active ? activityByConversation[active.id] : undefined;
   const [resolving, setResolving] = useState(false);
+
+  useEffect(() => {
+    setChatActivity(activity);
+    return () => setChatActivity(undefined);
+  }, [activity, setChatActivity]);
 
   // 没有会话就建一条：你不该先"选一个对象"才能说话。
   useEffect(() => {
@@ -55,7 +65,6 @@ export function ChatPage() {
       conversation={active}
       agents={agents}
       typingNames={typingByConversation[active.id] ?? []}
-      activity={activityByConversation[active.id]}
       searchQuery={searchQuery}
       onSend={(text, mentionIds, attachments) => sendMessage({ conversationId: active.id, text, mentionIds, attachments })}
     />

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
-import type { DesktopAppView, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
+import type { DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
 import type { DesktopInstallService } from './install';
 
 const execFileAsync = promisify(execFile);
@@ -80,7 +80,7 @@ export class DesktopBroker {
   status = () => this.install.status();
   settings = (userId = 'user') => this.install.settings(userId);
   setSettings = (patch: Partial<DesktopSettings>, userId = 'user') => this.install.setSettings(patch, userId);
-  installRuntime = () => this.install.install();
+  installRuntime = (onProgress?: (progress: DesktopInstallProgress) => void) => this.install.install(onProgress);
   initialize = () => this.install.initialize();
   uninstallRuntime = async (deleteRuntime = true) => { await this.disposeSessions(); return this.install.uninstall(deleteRuntime); };
   doctor = () => this.install.refresh();

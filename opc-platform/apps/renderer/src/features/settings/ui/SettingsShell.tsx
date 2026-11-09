@@ -138,17 +138,17 @@ export function SettingsShell() {
     },
     {
       id: 'browser',
-      label: '浏览器',
+      label: t('settings.group.browser'),
       icon: Globe,
       color: '#1D7AFC',
-      pages: [{ id: 'browser', label: 'Personal Agent 浏览器' }],
+      pages: [{ id: 'browser', label: t('settings.page.browser') }],
     },
     {
       id: 'desktop',
-      label: '桌面能力',
+      label: t('settings.group.desktop'),
       icon: AppWindow,
       color: '#5856D6',
-      pages: [{ id: 'desktop', label: 'Computer Use' }],
+      pages: [{ id: 'desktop', label: t('settings.page.desktop') }],
     },
     {
       id: 'selfcheck',

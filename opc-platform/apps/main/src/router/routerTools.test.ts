@@ -125,6 +125,7 @@ describe('Router 的工具带', () => {
     const text = await extension.sections![0]!.render({} as never, {} as never);
     expect(text).toContain('不要向用户解释你如何派活');
     expect(text).toContain('执行体汇报是供你判断的内部材料');
+    expect(text).toContain('不要发送开始确认');
     expect(text).toContain('通常一到三句');
   });
 
@@ -142,6 +143,7 @@ describe('Router 的工具带', () => {
     expect(calls).toEqual(['open:整理 Q3 财报']);
     const text = result.output.map((block) => block.text).join('');
     expect(text).toContain('后台任务已启动');
+    expect(text).toContain('不要发送开始确认');
     expect(text).not.toContain('th-1');
     expect(text).not.toContain('w-1');
     expect(text).not.toContain('task-1');

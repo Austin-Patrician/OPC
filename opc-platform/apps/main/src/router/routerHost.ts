@@ -93,6 +93,10 @@ export interface RouterHost {
   settle: () => Promise<void>;
 }
 
+export function shouldRepairMissingReply(hasResponse: boolean, openedLine: boolean): boolean {
+  return !hasResponse && !openedLine;
+}
+
 export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const threads = deps.threads ?? new ThreadRepository(deps.db);
   const tasks = new TaskRepository(deps.db);
@@ -122,6 +126,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   // only select one of these exact addresses; arbitrary model-supplied destinations
   // are never trusted.
   let activeReplyTargets: readonly TriggerReplyTarget[] = [];
+  let openedLineThisTurn = false;
   /** Attachments belonging to the current Router input. They are copied into
    * every newly opened line unless the model already supplied the same refs. */
   let activeInputAttachments: readonly ChatAttachmentRef[] = [];
@@ -350,13 +355,15 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     for (const attachment of [...activeInputAttachments, ...explicit]) {
       if (!byPath.has(attachment.path)) byPath.set(attachment.path, attachment);
     }
-    return dispatchLine({
+    const result = dispatchLine({
       ...input,
       contract: {
         ...input.contract,
         ...(byPath.size > 0 ? { attachments: [...byPath.values()] } : {}),
       },
     });
+    if (result.ok) openedLineThisTurn = true;
+    return result;
   };
 
   /**
@@ -564,10 +571,15 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       activeReplyTargets = targets;
       activeInputAttachments = context.attachments;
       pendingResponse = null;
+      openedLineThisTurn = false;
       try {
         await session.deliver(text);
-        if (!pendingResponse) {
+        if (shouldRepairMissingReply(Boolean(pendingResponse), openedLineThisTurn)) {
           await session.deliver('协议修复：请立即调用 reply_to_user 提交至少一个 markdown block。不要输出普通文本。');
+        }
+        if (!pendingResponse && openedLineThisTurn) {
+          deps.streamReply?.({ type: 'finish' });
+          return;
         }
         const response = pendingResponse as RouterResponse | null;
         if (!response) {
@@ -593,6 +605,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         activeReplyTargets = [];
         activeInputAttachments = [];
         pendingResponse = null;
+        openedLineThisTurn = false;
       }
     },
     /**

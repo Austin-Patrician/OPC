@@ -158,6 +158,7 @@ export const IPC = {
     hide: "browser:hide",
     resetProfile: "browser:resetProfile",
     changedEvent: "browser:changed",
+    installProgressEvent: "browser:installProgress",
   },
   desktop: {
     status: "desktop:status",
@@ -174,6 +175,7 @@ export const IPC = {
     show: "desktop:show",
     hide: "desktop:hide",
     changedEvent: "desktop:changed",
+    installProgressEvent: "desktop:installProgress",
   },
   watchdog: {
     incidents: "watchdog:incidents",
@@ -1200,6 +1202,12 @@ export interface BrowserStatus {
   error?: string;
   profilePath: string;
 }
+export type BrowserInstallPhase = 'dependencies' | 'browser' | 'finalizing';
+export interface BrowserInstallProgress {
+  phase: BrowserInstallPhase;
+  percent: number;
+  estimated: true;
+}
 export interface BrowserSettings {
   enabled: boolean;
   allowedDomains: string[];
@@ -1219,6 +1227,7 @@ export interface BrowserBridge {
   hide(taskId?: string): Promise<void>;
   resetProfile(userId?: string): Promise<void>;
   onChanged(listener: (status: BrowserStatus) => void): () => void;
+  onInstallProgress(listener: (progress: BrowserInstallProgress | null) => void): () => void;
 }
 
 export type DesktopInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'permission-required' | 'error';
@@ -1252,6 +1261,14 @@ export interface DesktopStatus {
   supportedSurfaces: string[];
   error?: string;
 }
+export type DesktopInstallPhase = 'download' | 'verify' | 'extract' | 'activate' | 'permissions';
+export interface DesktopInstallProgress {
+  phase: DesktopInstallPhase;
+  /** Overall installation progress; later phases are time-based estimates. */
+  percent: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+}
 export interface DesktopAppView { name: string; process?: string; bundleId?: string; windows?: number; }
 export interface DesktopWindowView { id: string; title?: string; app?: string; process?: string; }
 export interface DesktopBridge {
@@ -1269,6 +1286,7 @@ export interface DesktopBridge {
   show(taskId: string): Promise<void>;
   hide(taskId?: string): Promise<void>;
   onChanged(listener: (status: DesktopStatus) => void): () => void;
+  onInstallProgress(listener: (progress: DesktopInstallProgress | null) => void): () => void;
 }
 
 export interface ThreadsBridge {

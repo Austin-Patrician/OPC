@@ -3,18 +3,15 @@ import { ArrowRight, Check, Lightbulb, ListChecks } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
 import type { Conversation } from '@/entities/conversation/model/types';
-import type { AssistantActivity } from '@opc/shared/ipc';
 import { Composer } from './Composer';
 import { MessageStream } from './MessageStream';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
-import { ChatHeader } from './ChatHeader';
 import type { ChatAttachmentRef } from '@opc/shared/domain';
 
 interface ChatPanelProps {
   conversation: Conversation;
   agents: readonly Agent[];
   typingNames: readonly string[];
-  activity?: AssistantActivity;
   searchQuery: string;
   onSend: (text: string, mentionIds: string[], attachments?: ChatAttachmentRef[]) => void;
 }
@@ -24,7 +21,6 @@ export function ChatPanel({
   conversation,
   agents,
   typingNames,
-  activity,
   searchQuery,
   onSend,
 }: ChatPanelProps) {
@@ -37,22 +33,27 @@ export function ChatPanel({
         : conversation.messages,
     [conversation.messages, searchQuery],
   );
+  // Newest first; the composer walks it backwards on ArrowUp / ArrowDown.
+  const sentHistory = useMemo(
+    () =>
+      conversation.messages
+        .flatMap((message) =>
+          message.senderId === 'user' && message.kind === 'text' && message.text?.trim() ? [message.text] : [],
+        )
+        .reverse(),
+    [conversation.messages],
+  );
 
   return (
     <main className="buddy-chat relative flex min-w-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader
-          title={conversation.title}
-          memberCount={conversation.memberIds.length}
-          activity={activity}
-        />
         {conversation.messages.length === 0 ? (
           <WelcomeCanvas onSend={(text) => onSend(text, [])} />
         ) : (
           <MessageStream messages={visibleMessages} agents={agents} typingNames={typingNames} />
         )}
 
-        <Composer onSend={onSend} />
+        <Composer key={conversation.id} onSend={onSend} history={sentHistory} />
       </div>
     </main>
   );

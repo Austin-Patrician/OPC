@@ -4,6 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { BrowserInstallProgress, BrowserInstallPhase } from '@opc/shared/ipc';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
 const execFileAsync = promisify(execFile);
@@ -34,6 +35,35 @@ export interface BrowserStatus {
 }
 
 const DOWNLOAD_ESTIMATE_BYTES = 180 * 1024 * 1024;
+
+function npmCommand(): { executable: string; prefixArgs: string[] } {
+  if (process.platform !== 'win32') return { executable: 'npm', prefixArgs: [] };
+
+  const directories = new Set((process.env.PATH ?? '').split(path.delimiter).map((entry) => entry.trim().replace(/^"|"$/g, '')).filter(Boolean));
+  const programFiles = process.env.ProgramW6432 ?? process.env.ProgramFiles ?? 'C:\\Program Files';
+  directories.add(path.join(programFiles, 'nodejs'));
+  if (process.env['ProgramFiles(x86)']) directories.add(path.join(process.env['ProgramFiles(x86)']!, 'nodejs'));
+  if (process.env.NVM_SYMLINK) directories.add(process.env.NVM_SYMLINK);
+  if (process.env.NODE_HOME) directories.add(process.env.NODE_HOME);
+  if (process.env.LOCALAPPDATA) directories.add(path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs'));
+
+  for (const directory of directories) {
+    const executable = path.join(directory, 'node.exe');
+    const cli = path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (fs.existsSync(executable) && fs.existsSync(cli)) return { executable, prefixArgs: [cli] };
+  }
+  throw new Error('未找到 Node.js 和 npm。请安装包含 npm 的 Node.js，并重启 OPC 后重试。');
+}
+
+function installBrowserRuntime(binary: string) {
+  const args = ['install'];
+  const options = { timeout: 300_000, maxBuffer: 2_000_000 };
+  if (process.platform === 'win32' && binary.toLowerCase().endsWith('.cmd')) {
+    const commandShell = process.env.ComSpec ?? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe');
+    return execFileAsync(commandShell, ['/d', '/c', binary, ...args], options);
+  }
+  return execFileAsync(binary, args, options);
+}
 
 function directoryBytes(root: string): number {
   if (!fs.existsSync(root)) return 0;
@@ -156,9 +186,33 @@ export class BrowserInstallService {
     return this.status();
   };
 
-  install = async (): Promise<BrowserStatus> => {
+  install = async (onProgress?: (progress: BrowserInstallProgress) => void): Promise<BrowserStatus> => {
     this.state = 'installing';
     this.error = undefined;
+    let phase: BrowserInstallPhase = 'dependencies';
+    let phaseStartedAt = Date.now();
+    let phaseStartPercent = 2;
+    let phaseEndPercent = 32;
+    let phaseDurationMs = 45_000;
+    let browserPhaseStarted = false;
+    // The installer commands expose completion, not byte-level progress; keep this estimate below each phase ceiling until it resolves.
+    const reportProgress = () => {
+      const elapsed = Date.now() - phaseStartedAt;
+      const fraction = 1 - Math.exp(-elapsed / phaseDurationMs);
+      const percent = Math.min(phaseEndPercent, Math.floor(phaseStartPercent + (phaseEndPercent - phaseStartPercent) * fraction));
+      onProgress?.({ phase, percent, estimated: true });
+    };
+    const startPhase = (next: BrowserInstallPhase, start: number, end: number, durationMs: number) => {
+      phase = next;
+      phaseStartedAt = Date.now();
+      phaseStartPercent = start;
+      phaseEndPercent = end;
+      phaseDurationMs = durationMs;
+      if (next === 'browser') browserPhaseStarted = true;
+      reportProgress();
+    };
+    reportProgress();
+    const progressTimer = setInterval(reportProgress, 800);
     try {
       const existing = this.findBinary();
       if (!existing) {
@@ -167,10 +221,12 @@ export class BrowserInstallService {
         fs.rmSync(stagingDir, { recursive: true, force: true });
         fs.mkdirSync(stagingDir, { recursive: true });
         try {
-          await execFileAsync('npm', ['install', '--prefix', stagingDir, '--no-save', `agent-browser@${AGENT_BROWSER_VERSION}`], { timeout: 180_000, maxBuffer: 2_000_000 });
+          const npm = npmCommand();
+          await execFileAsync(npm.executable, [...npm.prefixArgs, 'install', '--prefix', stagingDir, '--no-save', `agent-browser@${AGENT_BROWSER_VERSION}`], { timeout: 180_000, maxBuffer: 2_000_000 });
           const stagedBinary = this.findBinary(stagingDir);
           if (!stagedBinary) throw new Error('agent-browser 安装完成但未找到可执行文件');
-          await execFileAsync(stagedBinary, ['install'], { timeout: 300_000, maxBuffer: 2_000_000 });
+          startPhase('browser', 35, 90, 180_000);
+          await installBrowserRuntime(stagedBinary);
           fs.rmSync(backupDir, { recursive: true, force: true });
           if (fs.existsSync(this.runtimeDir)) fs.renameSync(this.runtimeDir, backupDir);
           try {
@@ -183,17 +239,24 @@ export class BrowserInstallService {
         } finally {
           fs.rmSync(stagingDir, { recursive: true, force: true });
         }
+      } else {
+        startPhase('browser', 35, 90, 180_000);
       }
       const binary = this.findBinary();
       if (!binary) throw new Error('agent-browser 安装完成但未找到可执行文件');
-      await execFileAsync(binary, ['install'], { timeout: 300_000, maxBuffer: 2_000_000 });
+      if (!browserPhaseStarted) startPhase('browser', 35, 90, 180_000);
+      await installBrowserRuntime(binary);
+      startPhase('finalizing', 95, 99, 30_000);
       this.binary = binary;
       this.setSettings({ enabled: true });
       this.diskUsageCache.checkedAt = 0;
       this.state = 'ready';
+      onProgress?.({ phase: 'finalizing', percent: 100, estimated: true });
     } catch (caught) {
       this.state = 'error';
       this.error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      clearInterval(progressTimer);
     }
     return this.status();
   };

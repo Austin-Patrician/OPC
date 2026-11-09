@@ -172,14 +172,14 @@ export function createRouterTools(deps: RouterToolDeps) {
           '你是一个自然、可靠、简洁的助手。用户只关心结果、当前状态和下一步，不关心你的工具、模型、工作线、执行体或内部协议。',
           '不要向用户解释你如何派活、如何调工具、如何验收，也不要暴露 thread、worker、task、工具名或内部能力边界；除非用户明确询问系统实现。',
           '执行体汇报是供你判断的内部材料，不是可直接转发的对话稿；不要照抄它的第一人称、自我介绍、借口、情绪、工具过程或失败预案，只提炼有证据的结果。',
-          '刚启动后台任务但还没有结果时，只用一句自然的话确认已开始，例如「我先处理一下，完成后把结果发给你。」不要预先猜测成功率、描述失败预案，或把“派出去一条线”当成回复。',
+          '刚启动后台任务但还没有结果时，不要发送开始确认；顶部状态会显示处理中。若用户同时提出了可立即回答的问题，只回答该问题。',
           '有结果时直接交付结果和产物；失败时只说明已经确认的具体原因和一个可执行的下一步。',
           '回答先给结论，通常一到三句；不复述用户原话，不使用“主人”“莉莉丝”等角色化称呼，除非用户明确要求。',
           '用户问「怎么样了」时，只说对用户有用的状态；不要把内部工作线清单或运行日志抄给他。',
           '',
           '## 打扰的纪律',
-          '大部分事情不需要他知道。干完了就安静地记在线上，只有两种情形值得开口：',
-          '需要他拍板（ask_user 问题卡片），或者他要的那件事完成了。任何面向用户的最终回复都必须调用 reply_to_user；' +
+          '大部分事情不需要他知道。后台任务刚成功派发时保持安静；只有任务完成、需要用户拍板，或需要用户补充信息时才开口。' +
+            '任何面向用户的最终回复都必须调用 reply_to_user；' +
             '普通文字放进 markdown block，媒体和文件按顺序放进对应 block。工具调用、思考和中间文字不会展示给用户。',
           '每一次打扰都要有理由；没有理由的汇报是噪音。',
         ].join('\n'),
@@ -190,8 +190,8 @@ export function createRouterTools(deps: RouterToolDeps) {
         name: 'open_line_of_work',
         description:
           '把一件事派出去：提供明确的 objective、deliverable、outputs 和可选验收条件，' +
-          '起一个执行体让它自由选择工具完成。立即返回 id，不会等它跑完。' +
-          '需要知道结果时用 recall 查，或者等它自己汇报回来。返回的 id 是内部引用，不能原样放进用户回复。',
+          '启动后台任务后立即返回，不会等它跑完；成功启动本身不需要聊天确认。' +
+          '任务结束或需要用户输入时再反馈。返回的 id 是内部引用，不能原样放进用户回复。',
         parameters: Type.Object({
           contract: Type.Object({
             objective: Type.String({ description: '要解决的问题或要达成的目标。' }),
@@ -267,7 +267,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           });
           if (!result.ok) return fail(`没派出去：${result.reason}`);
           return ok(
-            '后台任务已启动；完成或需要用户输入时会产生新事件。',
+            '后台任务已启动；不要发送开始确认，完成或需要用户输入时再反馈。',
             // IDs remain in structured details for the Router to use with recall;
             // keeping them out of prose reduces the chance they leak into chat.
             { threadId: result.threadId, workerId: result.workerId, taskId: result.taskId },

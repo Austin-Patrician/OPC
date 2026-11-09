@@ -7,6 +7,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
 import type {
   DesktopAppAllowlistEntry,
   DesktopInstallState,
+  DesktopInstallProgress,
   DesktopPermissionStatus,
   DesktopSettings,
   DesktopStatus,
@@ -108,13 +109,50 @@ function packageBytesForCurrentPlatform(): number {
   try { return PACKAGE_BYTES_BY_ASSET[releaseAsset()] ?? PACKAGE_BYTES; } catch { return PACKAGE_BYTES; }
 }
 
-async function downloadBytes(url: string): Promise<Buffer> {
+async function downloadBytes(
+  url: string,
+  expectedBytes?: number,
+  onProgress?: (downloadedBytes: number, totalBytes?: number) => void,
+): Promise<Buffer> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
   try {
     const response = await fetch(url, { signal: controller.signal, redirect: 'follow' });
     if (!response.ok) throw new Error(`下载 agent-desktop 失败：HTTP ${response.status}`);
-    return Buffer.from(await response.arrayBuffer());
+    const contentLength = Number(response.headers.get('content-length'));
+    const totalBytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : expectedBytes;
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      onProgress?.(bytes.length, totalBytes ?? bytes.length);
+      return bytes;
+    }
+
+    const chunks: Buffer[] = [];
+    let downloadedBytes = 0;
+    let lastReportedPercent = -1;
+    let lastReportedAt = 0;
+    onProgress?.(0, totalBytes);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        chunks.push(chunk);
+        downloadedBytes += chunk.length;
+        const percent = totalBytes ? Math.floor(downloadedBytes / totalBytes * 100) : -1;
+        const now = Date.now();
+        if (percent !== lastReportedPercent || now - lastReportedAt >= 200) {
+          onProgress?.(downloadedBytes, totalBytes);
+          lastReportedPercent = percent;
+          lastReportedAt = now;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    onProgress?.(downloadedBytes, totalBytes ?? downloadedBytes);
+    return Buffer.concat(chunks, downloadedBytes);
   } finally { clearTimeout(timeout); }
 }
 
@@ -191,8 +229,32 @@ export class DesktopInstallService {
     return this.status();
   };
 
-  install = async (): Promise<DesktopStatus> => {
+  install = async (onProgress?: (progress: DesktopInstallProgress) => void): Promise<DesktopStatus> => {
     this.state = 'installing'; this.error = undefined;
+    let activePhase: DesktopInstallProgress['phase'] = 'download';
+    let progressStart = 0;
+    let progressEnd = 70;
+    let phaseStartedAt = Date.now();
+    let phaseDurationMs = 120_000;
+    let lastPercent = 0;
+    let downloadProgress: Pick<DesktopInstallProgress, 'downloadedBytes' | 'totalBytes'> = {};
+    const report = (percent: number) => {
+      lastPercent = Math.max(lastPercent, Math.min(100, Math.floor(percent)));
+      onProgress?.({ phase: activePhase, percent: lastPercent, ...downloadProgress });
+    };
+    const startEstimatedPhase = (phase: DesktopInstallProgress['phase'], start: number, end: number, durationMs: number) => {
+      activePhase = phase;
+      progressStart = start;
+      progressEnd = end;
+      phaseStartedAt = Date.now();
+      phaseDurationMs = durationMs;
+      report(start);
+    };
+    const progressTimer = setInterval(() => {
+      if (activePhase === 'download') return;
+      const fraction = 1 - Math.exp(-(Date.now() - phaseStartedAt) / phaseDurationMs);
+      report(progressStart + (progressEnd - progressStart) * fraction);
+    }, 800);
     try {
       const staging = `${this.runtimeDir}.staging-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const backup = `${this.runtimeDir}.previous`;
@@ -202,20 +264,26 @@ export class DesktopInstallService {
         const asset = releaseAsset();
         this.packageBytes = PACKAGE_BYTES_BY_ASSET[asset] ?? PACKAGE_BYTES;
         const [archive, checksums] = await Promise.all([
-          downloadBytes(`${RELEASE_BASE}/${asset}`),
+          downloadBytes(`${RELEASE_BASE}/${asset}`, this.packageBytes, (downloadedBytes, totalBytes) => {
+            downloadProgress = { downloadedBytes, ...(totalBytes ? { totalBytes } : {}) };
+            report(totalBytes ? Math.min(70, downloadedBytes / totalBytes * 70) : 0);
+          }),
           downloadBytes(`${RELEASE_BASE}/checksums.txt`),
         ]);
+        startEstimatedPhase('verify', 70, 76, 12_000);
         const expected = desktopChecksumFor(checksums.toString('utf8'), asset);
         if (!expected) throw new Error(`checksums.txt 中没有 agent-desktop 资产：${asset}`);
         const actual = crypto.createHash('sha256').update(archive).digest('hex');
         if (actual !== expected) throw new Error('agent-desktop 下载校验失败，未安装不可信运行时');
         const archivePath = path.join(staging, asset);
         fs.writeFileSync(archivePath, archive, { mode: 0o600 });
+        startEstimatedPhase('extract', 76, 88, 45_000);
         await execFileAsync('tar', ['-xzf', archivePath, '-C', staging], { timeout: 60_000, maxBuffer: 2_000_000 });
         fs.rmSync(archivePath, { force: true });
         const staged = this.findBinary(staging);
         if (!staged) throw new Error('agent-desktop 安装完成但未找到可执行文件');
         if (process.platform !== 'win32') fs.chmodSync(staged, 0o755);
+        startEstimatedPhase('activate', 88, 96, 12_000);
         fs.rmSync(backup, { recursive: true, force: true });
         if (fs.existsSync(this.runtimeDir)) fs.renameSync(this.runtimeDir, backup);
         try { fs.renameSync(staging, this.runtimeDir); }
@@ -226,11 +294,17 @@ export class DesktopInstallService {
       if (!this.binary) throw new Error('agent-desktop 安装完成但未找到可执行文件');
       this.packageBytes = packageBytesForCurrentPlatform();
       this.setSettings({ enabled: true });
+      this.state = 'installing';
       this.diskCache.at = 0;
+      startEstimatedPhase('permissions', 96, 99, 10_000);
       await this.probePermissions();
       this.state = this.permissionsState.accessibility === 'denied' ? 'permission-required' : 'ready';
+      activePhase = 'permissions';
+      report(100);
     } catch (caught) {
       this.state = 'error'; this.error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      clearInterval(progressTimer);
     }
     return this.status();
   };

@@ -3,8 +3,6 @@ import type { AssistantActivity, AssistantActivityPhase } from '@opc/shared/ipc'
 import { BuddyMark } from '@/shared/ui/BuddyMark';
 
 interface ChatHeaderProps {
-  title: string;
-  memberCount: number;
   activity?: AssistantActivity;
 }
 
@@ -17,7 +15,7 @@ interface ChatHeaderProps {
  *
  * 留着它们的成本不是几行 JSX，是让用户以为这些事做得到。
  */
-export function ChatHeader({ title, memberCount, activity }: ChatHeaderProps) {
+export function ChatHeader({ activity }: ChatHeaderProps) {
   const { t } = useTranslation();
   const phase: AssistantActivityPhase = activity?.phase ?? 'idle';
   const statusText = t(`chat.activity.${phase}`);
@@ -27,14 +25,6 @@ export function ChatHeader({ title, memberCount, activity }: ChatHeaderProps) {
       className="buddy-chat-header relative flex shrink-0 items-center border-b border-line px-4 select-none"
       style={{ height: 36, minHeight: 36, maxHeight: 36, flexBasis: 36 }}
     >
-      <div className="flex min-w-0 items-center gap-2">
-        <h1 className="truncate text-xl font-semibold text-ink">{title}</h1>
-        {memberCount > 1 ? (
-          <span className="text-sm font-normal text-ink-tertiary">
-            ({t('chat.members', { count: memberCount })})
-          </span>
-        ) : null}
-      </div>
       <div
         className="buddy-assistant-status absolute left-1/2 top-1/2 flex min-w-0 max-w-[min(48vw,320px)] -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-2"
         aria-live="polite"

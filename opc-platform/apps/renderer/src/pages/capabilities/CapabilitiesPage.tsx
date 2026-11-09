@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Boxes, Plug, PlugZap, RefreshCw, Wrench } from 'lucide-react';
+import {
+  Boxes,
+  Plug,
+  PlugZap,
+  RefreshCw,
+  Wrench,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -10,7 +16,7 @@ import type {
   PiSkillCatalog,
   PiSkillView,
 } from '@opc/shared/ipc';
-import { PageHeader, Section } from '@/features/settings/ui/kit';
+import { Section } from '@/features/settings/ui/kit';
 import {
   extensionDescriptionKey,
   extensionFallbackTitle,
@@ -26,7 +32,6 @@ import { distinctToolNames, groupExtensions, toToolGroups } from './model/groupi
 import type { ExtensionGroup } from './model/grouping';
 
 type Tab = 'extensions' | 'tools' | 'skills' | 'mcp';
-
 const TABS: readonly Tab[] = ['extensions', 'tools', 'skills', 'mcp'];
 const isTab = (value: string | null): value is Tab => TABS.includes(value as Tab);
 
@@ -56,35 +61,28 @@ function ExtensionRow({ group }: { group: ExtensionGroup }) {
   ].filter(Boolean);
 
   return (
-    <li className="px-4 py-3">
+    <article className="capability-card rounded-2xl p-4">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border border-line bg-surface-muted text-ink-tertiary">
-          <Boxes className="size-4" />
+        <span className="capability-icon grid size-10 shrink-0 place-items-center rounded-xl">
+          <Boxes className="size-[18px]" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h4 className="text-sm-plus font-semibold text-ink">{title}</h4>
-            <code className="rounded bg-surface-muted px-1.5 py-px font-mono text-3xs text-ink-tertiary">
-              {group.name}
-            </code>
-            <span className="rounded bg-surface-muted px-1.5 py-0.5 text-3xs font-medium text-ink-tertiary">
-              {t('capabilities.extensionAgents', { count: group.agents })}
+          <div className="flex items-start justify-between gap-2">
+            <h4 className="min-w-0 truncate text-sm-plus font-semibold text-ink">{title}</h4>
+            <span className="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-3xs font-semibold text-accent-ink">
+              {group.tools.length}
             </span>
-            {group.tools.length > 0 ? (
-              <span className="rounded bg-accent-soft px-1.5 py-0.5 text-3xs font-medium text-accent-ink">
-                {t('capabilities.extensionToolCount', { count: group.tools.length })}
-              </span>
-            ) : (
-              <span className="rounded bg-warning/12 px-1.5 py-0.5 text-3xs font-medium text-warning">
-                {t('capabilities.extensionNoTools')}
-                {runtimeParts.length > 0 ? ` · ${runtimeParts.join(' · ')}` : ''}
-              </span>
-            )}
           </div>
-          <p className="mt-1 text-xs-plus leading-relaxed text-ink-tertiary">{description}</p>
+          <p className="mt-1 line-clamp-2 text-xs-plus leading-relaxed text-ink-tertiary">{description}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-1.5 text-3xs text-ink-quaternary">
+            <span>{t('capabilities.extensionAgents', { count: group.agents })}</span>
+            <span aria-hidden="true">·</span>
+            <span>{group.tools.length > 0 ? t('capabilities.extensionToolCount', { count: group.tools.length }) : t('capabilities.extensionNoTools')}</span>
+            {runtimeParts.length > 0 ? <span className="truncate">· {runtimeParts.join(' · ')}</span> : null}
+          </div>
         </div>
       </div>
-    </li>
+    </article>
   );
 }
 
@@ -109,7 +107,7 @@ function TabBar({
     <div
       role="tablist"
       aria-label={t('capabilities.title')}
-      className="flex shrink-0 items-center gap-1 rounded-lg bg-surface-muted p-0.5"
+      className="capabilities-tabs flex shrink-0 items-center gap-1 rounded-xl p-1"
     >
       {tabs.map(({ id, icon: Icon, label }) => {
         const active = tab === id;
@@ -122,8 +120,8 @@ function TabBar({
             aria-selected={active}
             onClick={() => onTab(id)}
             className={cn(
-              'flex h-8 items-center gap-1.5 rounded-md px-3 text-sm-plus font-medium transition-colors',
-              active ? 'bg-surface text-ink shadow-card' : 'text-ink-tertiary hover:text-ink',
+              'flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm-plus font-medium transition-colors',
+              active ? 'bg-surface/90 text-ink shadow-card' : 'text-ink-tertiary hover:bg-surface/45 hover:text-ink',
             )}
           >
             <Icon className={cn('size-3.5', active && 'text-accent')} />
@@ -237,32 +235,23 @@ export function CapabilitiesPage() {
   };
 
   return (
-    <div className="page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-panel">
-      <div className="mx-auto w-full max-w-[64rem] px-6 py-6">
-        <PageHeader
-          crumbs={[t('nav.skills')]}
-          title={t('capabilities.title')}
-          description={t('capabilities.subtitle')}
-          actions={
-            <>
-              {catalog ? (
-                <span className="hidden text-3xs text-ink-quaternary sm:inline">
-                  {t('capabilities.readAt', {
-                    time: new Date(catalog.generatedAt).toLocaleTimeString(),
-                  })}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void load()}
-                className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-1.5 text-sm font-medium text-ink-secondary transition-colors hover:text-ink"
-              >
-                <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
-                {t('capabilities.refresh')}
-              </button>
-            </>
-          }
-        />
+    <div className="capabilities-page page-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="mx-auto w-full max-w-[72rem] px-5 py-5 sm:px-7 sm:py-7">
+        <div className="flex items-center justify-between gap-4 pb-1">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight text-ink">{t('capabilities.title')}</h1>
+            <p className="mt-1 text-xs-plus text-ink-tertiary">{t('capabilities.subtitle')}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface/75 px-3 text-xs-plus font-semibold text-ink-secondary shadow-card transition hover:bg-surface hover:text-ink disabled:opacity-60"
+            disabled={loading}
+          >
+            <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+            <span className="hidden sm:inline">{t('capabilities.refresh')}</span>
+          </button>
+        </div>
 
         {error ? (
           <p className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
@@ -283,16 +272,17 @@ export function CapabilitiesPage() {
               />
 
               <Section
+                className="capabilities-section"
                 title={t('capabilities.extensionsTitle')}
                 description={t('capabilities.extensionsHint')}
                 action={<Boxes className="size-4 text-ink-quaternary" />}
               >
                 {groups.length > 0 ? (
-                  <ul className="divide-y divide-line">
+                  <div className="grid gap-3 p-4 md:grid-cols-2">
                     {groups.map((group) => (
                       <ExtensionRow key={group.name} group={group} />
                     ))}
-                  </ul>
+                  </div>
                 ) : (
                   <p className="px-4 py-6 text-sm text-ink-tertiary">{t('capabilities.empty')}</p>
                 )}

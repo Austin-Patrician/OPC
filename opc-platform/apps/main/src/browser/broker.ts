@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { BrowserInstallProgress } from '@opc/shared/ipc';
 import type { BrowserInstallService, BrowserSettings, BrowserStatus } from './install';
 
 const execFileAsync = promisify(execFile);
@@ -59,7 +60,7 @@ export class BrowserBroker {
   setSettings = (patch: Partial<BrowserSettings>): BrowserSettings => this.install.setSettings(patch);
   setTaskWorkspaceResolver = (resolver: (taskId: string) => string | undefined): void => { this.taskWorkspace = resolver; };
   setArtifactRegistrar = (registrar: BrowserArtifactRegistration): void => { this.registerArtifact = registrar; };
-  installBrowser = (): Promise<BrowserStatus> => this.install.install();
+  installBrowser = (onProgress?: (progress: BrowserInstallProgress) => void): Promise<BrowserStatus> => this.install.install(onProgress);
   uninstallBrowser = async (deleteProfile = false, deleteBrowserCache = false): Promise<BrowserStatus> => {
     for (const session of [...this.sessions.values()]) {
       await this.run(session, ['close']).catch(() => undefined);

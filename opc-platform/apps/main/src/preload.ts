@@ -8,7 +8,9 @@ import {
   type RuntimeEventView,
   type SendMessageInput,
   type BrowserStatus,
+  type BrowserInstallProgress,
   type DesktopStatus,
+  type DesktopInstallProgress,
 } from "@opc/shared/ipc";
 import type { OcrSettings } from "@opc/shared/ocr";
 import type {
@@ -189,6 +191,11 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.browser.changedEvent, handler);
       return () => ipcRenderer.off(IPC.browser.changedEvent, handler);
     },
+    onInstallProgress: (listener: (progress: BrowserInstallProgress | null) => void) => {
+      const handler = (_event: IpcRendererEvent, progress: BrowserInstallProgress | null) => listener(progress);
+      ipcRenderer.on(IPC.browser.installProgressEvent, handler);
+      return () => ipcRenderer.off(IPC.browser.installProgressEvent, handler);
+    },
   },
   desktop: {
     status: () => ipcRenderer.invoke(IPC.desktop.status) as Promise<DesktopStatus>,
@@ -208,6 +215,11 @@ const bridge: OpcBridge = {
       const handler = (_event: IpcRendererEvent, status: DesktopStatus) => listener(status);
       ipcRenderer.on(IPC.desktop.changedEvent, handler);
       return () => ipcRenderer.off(IPC.desktop.changedEvent, handler);
+    },
+    onInstallProgress: (listener: (progress: DesktopInstallProgress | null) => void) => {
+      const handler = (_event: IpcRendererEvent, progress: DesktopInstallProgress | null) => listener(progress);
+      ipcRenderer.on(IPC.desktop.installProgressEvent, handler);
+      return () => ipcRenderer.off(IPC.desktop.installProgressEvent, handler);
     },
   },
   threads: {
