@@ -45,6 +45,13 @@
   --success: #27c93f;
   --warning: #f5a623;
 
+  /* ── Relation graph nodes ─────────────────────────────────── */
+  --graph-node-top: #ffffff;
+  --graph-node-bottom: #f1f2f5;
+  --graph-node-stroke: #e0e1e5;
+  --graph-centre-top: #ffffff;
+  --graph-centre-bottom: #e9f7ef;
+
   /* ── Message bubbles ──────────────────────────────────────── */
   --bubble-user: #e3f3e9;
   --bubble-user-text: #1e2e26;
@@ -91,6 +98,13 @@
   --danger: #ff6369;
   --success: #3ecf5a;
   --warning: #f7b955;
+
+  /* ── Relation graph nodes ─────────────────────────────────── */
+  --graph-node-top: #282c32;
+  --graph-node-bottom: #1e2126;
+  --graph-node-stroke: #3a4048;
+  --graph-centre-top: #2b3831;
+  --graph-centre-bottom: #1e2a24;
 
   --bubble-user: #1c392a;
   --bubble-user-text: #e9fff1;

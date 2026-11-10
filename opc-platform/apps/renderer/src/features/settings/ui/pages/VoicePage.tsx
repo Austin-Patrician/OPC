@@ -323,7 +323,6 @@ export function VoicePage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm text-ink">
             {role === 'asr' ? t('settings.voice.defaultTitle') : t('settings.voice.defaultTtsTitle')}
-            <KeyTag>{role === 'asr' ? 'default.asr' : 'default.tts'}</KeyTag>
           </div>
           <div className="mt-0.5 text-xs-plus text-ink-tertiary">
             {defaultRef ? (

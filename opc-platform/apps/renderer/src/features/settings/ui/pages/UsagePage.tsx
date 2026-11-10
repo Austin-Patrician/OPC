@@ -5,7 +5,7 @@ import {
   use as registerModules,
   type EChartsCoreOption,
 } from 'echarts/core';
-import { LineChart, PieChart } from 'echarts/charts';
+import { BarChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { Download, RefreshCw, SlidersHorizontal } from 'lucide-react';
@@ -13,13 +13,13 @@ import { useTranslation } from 'react-i18next';
 import type { UsageCallView, UsageFilter, UsageReport } from '@opc/shared/ipc';
 import { useMoney } from '@/entities/billing/model/useBilling';
 import { appTimeZone, formatAppDate, formatAppTime } from '@/shared/lib/appTime';
-import { Select } from '@/shared/ui/Select';
 import { PageHeader, Section, buttonClass } from '../kit';
 
 type Preset = 'today' | 'last7' | 'last30' | 'month' | 'all' | 'custom';
 const DAY = 86_400_000;
 registerModules([
   LineChart,
+  BarChart,
   PieChart,
   GridComponent,
   LegendComponent,
@@ -86,7 +86,9 @@ export function UsagePage() {
   const [startDate, setStartDate] = useState(() => localDateInput(Date.now() - 6 * DAY, zone));
   const [endDate, setEndDate] = useState(() => localDateInput(Date.now(), zone));
   const [advanced, setAdvanced] = useState(false);
-  const [metric, setMetric] = useState<'cost' | 'tokens' | 'requests'>('cost');
+  const [consumptionMetric, setConsumptionMetric] = useState<'cost' | 'tokens'>('cost');
+  const [consumptionStyle, setConsumptionStyle] = useState<'bar' | 'area'>('bar');
+  const [modelView, setModelView] = useState<'trend' | 'distribution' | 'ranking'>('trend');
   const [filter, setFilter] = useState<UsageFilter>(() => ({
     startAt: Date.now() - 30 * DAY,
     endAt: Date.now() + 1,
@@ -99,14 +101,6 @@ export function UsagePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [range, setRange] = useState({
-    minTokens: '',
-    maxTokens: '',
-    minCostUsd: '',
-    maxCostUsd: '',
-    minDurationMs: '',
-    maxDurationMs: '',
-  });
   const locale = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
 
   const load = useCallback(
@@ -140,12 +134,7 @@ export function UsagePage() {
     };
   }, [filter, load]);
 
-  const setMulti = (
-    key:
-      'capabilities' | 'providers' | 'models' | 'origins' | 'workers' | 'statuses' | 'costSources',
-    value: string,
-    checked: boolean,
-  ) => {
+  const setMulti = (key: 'providers' | 'models' | 'statuses', value: string, checked: boolean) => {
     setFilter((current) => {
       const entries = new Set(current[key] ?? []);
       if (checked) entries.add(value);
@@ -153,31 +142,15 @@ export function UsagePage() {
       return { ...current, [key]: entries.size ? ([...entries] as never) : undefined, page: 1 };
     });
   };
-  const selectOptions = useMemo(
-    () => ({
-      capability: [
-        ['chat', 'Chat'],
-        ['classifier', 'Decision'],
-        ['image', 'Image'],
-        ['asr', 'ASR'],
-        ['tts', 'TTS'],
-        ['embedding', 'Embedding'],
-      ],
-      status: [
+  const statusOptions = useMemo(
+    () =>
+      [
         ['ok', t('settings.usage.ok')],
         ['error', t('settings.usage.error')],
         ['aborted', t('settings.usage.aborted')],
         ['interrupted', t('settings.usage.interrupted')],
         ['unknown', t('settings.usage.unknown')],
-      ],
-      cost: [
-        ['provider', 'Provider'],
-        ['configured', 'Configured'],
-        ['builtin', 'Built-in'],
-        ['unpriced', t('settings.usage.noPrice')],
-        ['legacy', 'Legacy'],
-      ],
-    }),
+      ] as [string, string][],
     [t],
   );
 
@@ -201,11 +174,7 @@ export function UsagePage() {
     setFilter((current) => ({ ...current, startAt: from, endAt: to, timezone: zone, page: 1 }));
   };
   const applyAdvanced = () => {
-    const numeric = (value: string) => (value.trim() ? Number(value) : undefined);
-    const nums = Object.fromEntries(
-      Object.entries(range).map(([key, value]) => [key, numeric(value)]),
-    );
-    setFilter((current) => ({ ...current, query: query.trim() || undefined, ...nums, page: 1 }));
+    setFilter((current) => ({ ...current, query: query.trim() || undefined, page: 1 }));
   };
   const exportCsv = async () => {
     try {
@@ -215,7 +184,7 @@ export function UsagePage() {
     }
   };
 
-  const trendOption = useMemo<EChartsCoreOption>(
+  const consumptionOption = useMemo<EChartsCoreOption>(
     () => ({
       animationDuration: 280,
       grid: { left: 54, right: 18, top: 20, bottom: 32 },
@@ -229,7 +198,7 @@ export function UsagePage() {
           const item = (items as { dataIndex: number }[])[0];
           const point = report?.series[item?.dataIndex ?? -1];
           return point
-            ? `${point.label}<br/>${metric === 'cost' ? money(point.costUsd, { digits: 4 }) : metric === 'tokens' ? point.tokens.toLocaleString() : point.requests}`
+            ? `${point.label}<br/>${consumptionMetric === 'cost' ? money(point.costUsd, { digits: 4 }) : point.tokens.toLocaleString()}<br/>${t('settings.usage.unpriced')}: ${point.unpricedCalls}`
             : '';
         },
       },
@@ -246,54 +215,193 @@ export function UsagePage() {
         axisLabel: {
           color: '#778078',
           formatter: (value: number) =>
-            metric === 'cost' ? `$${value}` : Number(value).toLocaleString(),
+            consumptionMetric === 'cost' ? `$${value}` : Number(value).toLocaleString(),
         },
       },
       series: [
         {
-          type: 'line',
-          smooth: 0.25,
-          showSymbol: false,
+          type: consumptionStyle === 'bar' ? 'bar' : 'line',
+          smooth: false,
+          showSymbol: consumptionStyle === 'area',
+          symbolSize: 5,
           data:
             report?.series.map((point) =>
-              metric === 'cost'
-                ? point.costUsd
-                : metric === 'tokens'
-                  ? point.tokens
-                  : point.requests,
+              consumptionMetric === 'cost' ? point.costUsd : point.tokens,
             ) ?? [],
+          itemStyle: { color: '#22b560' },
           lineStyle: { color: '#16845b', width: 2 },
-          areaStyle: { color: 'rgba(22,132,91,.10)' },
+          ...(consumptionStyle === 'area' ? { areaStyle: { color: 'rgba(22,132,91,.16)' } } : {}),
         },
       ],
     }),
-    [metric, money, report],
+    [consumptionMetric, consumptionStyle, money, report, t],
   );
-  const breakdownOption = useMemo<EChartsCoreOption>(
-    () => ({
-      tooltip: { trigger: 'item' },
-      legend: { type: 'scroll', bottom: 0, textStyle: { color: '#68736a' } },
+  const modelAnalysisOption = useMemo<EChartsCoreOption>(() => {
+    if (modelView === 'distribution')
+      return {
+        tooltip: { trigger: 'item' },
+        legend: {
+          type: 'scroll',
+          orient: 'vertical',
+          right: 8,
+          top: 'middle',
+          textStyle: { color: '#68736a' },
+        },
+        series: [
+          {
+            type: 'pie',
+            radius: ['38%', '70%'],
+            center: ['37%', '50%'],
+            itemStyle: { borderColor: '#fff', borderWidth: 2 },
+            label: { show: false },
+            data: (report?.actors.models ?? []).map((item) => ({
+              name: item.label,
+              value: item.requests,
+            })),
+          },
+        ],
+      };
+    if (modelView === 'trend') {
+      const topModels = (report?.actors.models ?? []).slice(0, 5);
+      const modelBuckets = new Map(
+        (report?.actors.modelSeries ?? []).map((point) => [point.at, point]),
+      );
+      return {
+        tooltip: { trigger: 'axis' },
+        grid: { left: 54, right: 20, top: 20, bottom: 34 },
+        xAxis: {
+          type: 'category',
+          data: report?.series.map((point) => point.label) ?? [],
+          axisLabel: { hideOverlap: true },
+        },
+        yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#edf0eb' } } },
+        legend: { type: 'scroll', top: 0 },
+        series: topModels.map((model) => ({
+          name: model.label,
+          type: 'line',
+          symbolSize: 4,
+          emphasis: { focus: 'series' },
+          data: (report?.series ?? []).map(
+            (point) =>
+              modelBuckets.get(point.at)?.models.find((item) => item.key === model.key)?.requests ??
+              0,
+          ),
+        })),
+      };
+    }
+    const models = [...(report?.actors.models ?? [])].sort((a, b) => a.requests - b.requests);
+    return {
+      animationDuration: 240,
+      grid: { left: 150, right: 28, top: 18, bottom: 30 },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#edf0eb' } } },
+      yAxis: {
+        type: 'category',
+        data: models.map((item) => item.label),
+        axisLabel: { width: 135, overflow: 'truncate' },
+      },
+      series: [
+        { type: 'bar', data: models.map((item) => item.requests), itemStyle: { color: '#22b560' } },
+      ],
+    };
+  }, [modelView, report]);
+  const sourceCostOption = useMemo<EChartsCoreOption>(() => {
+    const points = report?.series ?? [];
+    const router = new Map(report?.actors.router.map((point) => [point.at, point]) ?? []);
+    const workerData = report?.actors.workerSeries ?? [];
+    const workerPoints = new Map(workerData.map((point) => [point.at, point]));
+    const topWorkers = [...(report?.actors.workers ?? [])].slice(0, 5);
+    const workerIds = new Set(topWorkers.map((worker) => worker.id));
+    const makeData = (id: string, metric: 'cost' | 'tokens') =>
+      points.map((point) => {
+        const row = workerPoints.get(point.at)?.workers.find((worker) => worker.id === id);
+        return metric === 'cost' ? (row?.costUsd ?? 0) : (row?.tokens ?? 0);
+      });
+    return {
+      animationDuration: 240,
+      grid: { left: 54, right: 20, top: 38, bottom: 34 },
+      tooltip: { trigger: 'axis' },
+      legend: { type: 'scroll', top: 0 },
+      xAxis: {
+        type: 'category',
+        data: points.map((point) => point.label),
+        axisLabel: { hideOverlap: true },
+      },
+      yAxis: { type: 'value', splitLine: { lineStyle: { color: '#edf0eb' } } },
       series: [
         {
-          type: 'pie',
-          radius: ['48%', '72%'],
-          center: ['50%', '43%'],
-          itemStyle: { borderColor: '#fff', borderWidth: 2 },
-          label: { show: false },
-          data:
-            report?.breakdown.map((item) => ({
-              name: item.label,
-              value:
-                metric === 'cost'
-                  ? item.costUsd
-                  : metric === 'tokens'
-                    ? item.tokens
-                    : item.requests,
-            })) ?? [],
+          name: t('settings.usage.router'),
+          type: 'line',
+          stack: 'total',
+          areaStyle: {},
+          emphasis: { focus: 'series' },
+          data: points.map((point) => {
+            const row = router.get(point.at);
+            return consumptionMetric === 'cost' ? (row?.costUsd ?? 0) : (row?.tokens ?? 0);
+          }),
+        },
+        ...topWorkers.map((worker) => ({
+          name: worker.name,
+          type: 'line',
+          stack: 'total',
+          areaStyle: {},
+          emphasis: { focus: 'series' },
+          data: makeData(worker.id, consumptionMetric),
+        })),
+        {
+          name: t('settings.usage.otherWorkers'),
+          type: 'line',
+          stack: 'total',
+          areaStyle: {},
+          emphasis: { focus: 'series' },
+          data: points.map((point) =>
+            (workerPoints.get(point.at)?.workers ?? [])
+              .filter((worker) => !workerIds.has(worker.id))
+              .reduce(
+                (sum, worker) =>
+                  sum + (consumptionMetric === 'cost' ? worker.costUsd : worker.tokens),
+                0,
+              ),
+          ),
+        },
+      ],
+    };
+  }, [consumptionMetric, report, t]);
+  const workerLifecycleOption = useMemo<EChartsCoreOption>(
+    () => ({
+      animationDuration: 240,
+      grid: { left: 48, right: 20, top: 24, bottom: 34 },
+      tooltip: { trigger: 'axis' },
+      legend: { top: 0 },
+      xAxis: {
+        type: 'category',
+        data: report?.workerLifecycle.map((point) => point.label) ?? [],
+        axisLabel: { hideOverlap: true },
+      },
+      yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#edf0eb' } } },
+      series: [
+        {
+          name: t('settings.usage.activeWorkers'),
+          type: 'line',
+          data: report?.workerLifecycle.map((point) => point.active) ?? [],
+          symbolSize: 5,
+          lineStyle: { width: 2, color: '#16845b' },
+        },
+        {
+          name: t('settings.usage.createdWorkers'),
+          type: 'bar',
+          data: report?.workerLifecycle.map((point) => point.created) ?? [],
+          itemStyle: { color: '#22b560' },
+        },
+        {
+          name: t('settings.usage.retiredWorkers'),
+          type: 'bar',
+          data: report?.workerLifecycle.map((point) => point.retired) ?? [],
+          itemStyle: { color: '#e27963' },
         },
       ],
     }),
-    [metric, report],
+    [report, t],
   );
 
   const card = (label: string, value: string, detail?: string) => (
@@ -305,8 +413,7 @@ export function UsagePage() {
   );
   const pick = (
     label: string,
-    key:
-      'capabilities' | 'providers' | 'models' | 'origins' | 'workers' | 'statuses' | 'costSources',
+    key: 'providers' | 'models' | 'statuses',
     options: [string, string][],
   ) => (
     <fieldset className="min-w-0">
@@ -417,11 +524,6 @@ export function UsagePage() {
           <Section title={t('settings.usage.filters')}>
             <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-4">
               {pick(
-                t('settings.usage.capabilities'),
-                'capabilities',
-                selectOptions.capability as [string, string][],
-              )}
-              {pick(
                 t('settings.usage.providers'),
                 'providers',
                 (report?.options.providers ?? []).map((x) => [x, x]),
@@ -431,27 +533,8 @@ export function UsagePage() {
                 'models',
                 (report?.options.models ?? []).map((x) => [x, x]),
               )}
-              {pick(
-                t('settings.usage.origins'),
-                'origins',
-                (report?.options.origins ?? []).map((x) => [x, x]),
-              )}
-              {pick(
-                t('settings.usage.workers'),
-                'workers',
-                (report?.options.workers ?? []).map((x) => [x.id, x.name]),
-              )}
-              {pick(
-                t('settings.usage.statuses'),
-                'statuses',
-                selectOptions.status as [string, string][],
-              )}
-              {pick(
-                t('settings.usage.costSources'),
-                'costSources',
-                selectOptions.cost as [string, string][],
-              )}
-              <label className="col-span-2 text-xs-plus text-ink-tertiary md:col-span-1">
+              {pick(t('settings.usage.statuses'), 'statuses', statusOptions)}
+              <label className="col-span-2 min-w-0 text-xs-plus text-ink-tertiary md:col-span-1">
                 {t('settings.usage.query')}
                 <input
                   value={query}
@@ -460,63 +543,17 @@ export function UsagePage() {
                   className="mt-1 h-8 w-full rounded-md border border-line bg-surface px-2 text-ink"
                 />
               </label>
-              {(
-                [
-                  'minTokens',
-                  'maxTokens',
-                  'minCostUsd',
-                  'maxCostUsd',
-                  'minDurationMs',
-                  'maxDurationMs',
-                ] as const
-              ).map((key, index) => (
-                <label key={key} className="text-xs-plus text-ink-tertiary">
-                  {t(
-                    index < 2
-                      ? 'settings.usage.tokens'
-                      : index < 4
-                        ? 'settings.usage.cost'
-                        : 'settings.usage.duration',
-                  )}
-                  <input
-                    type="number"
-                    min="0"
-                    value={range[key]}
-                    onChange={(e) => setRange((r) => ({ ...r, [key]: e.target.value }))}
-                    placeholder={t(index % 2 ? 'settings.usage.max' : 'settings.usage.min')}
-                    className="mt-1 h-8 w-full rounded-md border border-line bg-surface px-2 text-ink"
-                  />
-                </label>
-              ))}
               <div className="col-span-full flex justify-end gap-2">
                 <button
                   className={buttonClass.secondary}
                   onClick={() => {
                     setQuery('');
-                    setRange({
-                      minTokens: '',
-                      maxTokens: '',
-                      minCostUsd: '',
-                      maxCostUsd: '',
-                      minDurationMs: '',
-                      maxDurationMs: '',
-                    });
                     setFilter((f) => ({
                       ...f,
-                      capabilities: undefined,
                       providers: undefined,
                       models: undefined,
-                      origins: undefined,
-                      workers: undefined,
                       statuses: undefined,
-                      costSources: undefined,
                       query: undefined,
-                      minTokens: undefined,
-                      maxTokens: undefined,
-                      minCostUsd: undefined,
-                      maxCostUsd: undefined,
-                      minDurationMs: undefined,
-                      maxDurationMs: undefined,
                       page: 1,
                     }));
                   }}
@@ -561,32 +598,92 @@ export function UsagePage() {
           {card(t('settings.usage.asr'), `${(report?.summary.asrSeconds ?? 0).toFixed(1)} s`)}
           {card(t('settings.usage.tts'), (report?.summary.ttsCharacters ?? 0).toLocaleString())}
         </div>
-        <div className="grid gap-4 lg:grid-cols-[1.55fr_1fr]">
-          <Section
-            title={t('settings.usage.trend')}
-            action={
-              <Select
-                ariaLabel={t('settings.usage.trendMetric')}
-                value={metric}
-                onValueChange={(v) => {
-                  setMetric(v as typeof metric);
-                  setFilter((f) => ({ ...f, metric: v as typeof metric }));
-                }}
-                options={[
-                  { value: 'cost', label: t('settings.usage.trendCost') },
-                  { value: 'tokens', label: t('settings.usage.trendTokens') },
-                  { value: 'requests', label: t('settings.usage.trendRequests') },
-                ]}
-                size="compact"
-              />
-            }
-          >
-            <Chart option={trendOption} />
-          </Section>
-          <Section title={t('settings.usage.distribution')}>
-            <Chart option={breakdownOption} />
-          </Section>
-        </div>
+        <Section
+          title={t('settings.usage.consumptionDistribution')}
+          action={
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-md border border-line p-0.5">
+                {(['cost', 'tokens'] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={`rounded px-2 py-1 text-xs-plus ${consumptionMetric === value ? 'bg-surface-muted text-ink' : 'text-ink-tertiary'}`}
+                    onClick={() => setConsumptionMetric(value)}
+                  >
+                    {t(
+                      value === 'cost' ? 'settings.usage.trendCost' : 'settings.usage.trendTokens',
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div className="inline-flex rounded-md border border-line p-0.5">
+                {(['bar', 'area'] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={`rounded px-2 py-1 text-xs-plus ${consumptionStyle === value ? 'bg-surface-muted text-ink' : 'text-ink-tertiary'}`}
+                    onClick={() => setConsumptionStyle(value)}
+                  >
+                    {t(value === 'bar' ? 'settings.usage.barChart' : 'settings.usage.areaChart')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          }
+        >
+          <div className="px-4 py-3">
+            <Chart option={consumptionOption} />
+          </div>
+        </Section>
+        <Section
+          title={t('settings.usage.modelAnalysis')}
+          action={
+            <div
+              role="tablist"
+              aria-label={t('settings.usage.modelAnalysis')}
+              className="flex items-center gap-1"
+            >
+              {(['trend', 'distribution', 'ranking'] as const).map((value) => (
+                <button
+                  key={value}
+                  role="tab"
+                  aria-selected={modelView === value}
+                  className={`rounded-md px-2.5 py-1.5 text-xs-plus ${modelView === value ? 'bg-accent-soft font-medium text-accent-ink' : 'text-ink-tertiary hover:bg-ink/5'}`}
+                  onClick={() => setModelView(value)}
+                >
+                  {t(`settings.usage.model${value[0]!.toUpperCase()}${value.slice(1)}`)}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <div className="px-4 py-3">
+            <Chart option={modelAnalysisOption} />
+          </div>
+        </Section>
+        <Section
+          title={t('settings.usage.actorConsumption')}
+          action={
+            <div className="inline-flex rounded-md border border-line p-0.5">
+              {(['cost', 'tokens'] as const).map((value) => (
+                <button
+                  key={value}
+                  className={`rounded px-2 py-1 text-xs-plus ${consumptionMetric === value ? 'bg-surface-muted text-ink' : 'text-ink-tertiary'}`}
+                  onClick={() => setConsumptionMetric(value)}
+                >
+                  {t(value === 'cost' ? 'settings.usage.trendCost' : 'settings.usage.trendTokens')}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <div className="px-4 py-3">
+            <Chart option={sourceCostOption} />
+          </div>
+        </Section>
+        <Section title={t('settings.usage.workerLifecycle')}>
+          <div className="px-4 py-3">
+            <Chart option={workerLifecycleOption} />
+          </div>
+        </Section>
         <Section
           title={t('settings.usage.details')}
           description={loading ? t('settings.usage.loading') : (error ?? undefined)}

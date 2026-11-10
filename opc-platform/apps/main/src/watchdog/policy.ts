@@ -7,11 +7,7 @@ import type { CompanyDatabase } from '../data/companyDatabase';
  * 冷却长 = 少打扰但慢半拍；阈值严 = 少误报但漏得早。哪个合适取决于这台机器
  * 跑的是什么活，所以它属于设置，不属于代码。
  *
- * 两条纪律：
- *
- * 1. **保存即确认。** 这是设置页，不是聊天——按"保存"就是人点过头了。
- * 2. **留上一版。** 回退不是"恢复默认"，是"回到我改之前"。默认值只在你从没
- *    改过的时候才是对的。
+ * **保存即确认。** 这是设置页，不是聊天——按"保存"就是人点过头了。
  */
 
 export interface WatchdogPolicy {
@@ -36,8 +32,6 @@ export interface WatchdogPolicy {
 export interface WatchdogPolicyView extends WatchdogPolicy {
   /** 这一版是什么时候存的；`null` = 从没改过，正在用默认值。 */
   updatedAt: number | null;
-  /** 是否存在可回退的上一版。 */
-  hasPrevious: boolean;
 }
 
 export const DEFAULT_WATCHDOG_POLICY: WatchdogPolicy = {
@@ -52,10 +46,6 @@ export const DEFAULT_WATCHDOG_POLICY: WatchdogPolicy = {
 };
 
 const KEY = 'watchdog.policy';
-const PREVIOUS_KEY = 'watchdog.policy.previous';
-/** 最近若干版，只用于审计；回退仍然只回上一版。 */
-const HISTORY_KEY = 'watchdog.policy.history';
-const HISTORY_LIMIT = 10;
 
 const MINUTE = 60_000;
 
@@ -112,68 +102,20 @@ export function readWatchdogPolicy(db: CompanyDatabase): WatchdogPolicy {
 }
 
 export class WatchdogPolicyStore {
-  constructor(
-    private readonly db: CompanyDatabase,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+  constructor(private readonly db: CompanyDatabase) {}
 
   view = (): WatchdogPolicyView => ({
     ...readWatchdogPolicy(this.db),
     updatedAt: this.updatedAt(KEY),
-    hasPrevious: this.read(PREVIOUS_KEY) !== null,
   });
 
-  /** 保存 = 确认。当前这一版先存成"上一版"，再写新值；两步在同一个事务里。 */
+  /** 保存 = 确认。 */
   save = (patch: unknown): WatchdogPolicyView => {
     const current = readWatchdogPolicy(this.db);
     const next = normalizeWatchdogPolicy({ ...current, ...(patch as Partial<WatchdogPolicy>) });
-    this.db.transaction(() => {
-      this.pushHistory(current);
-      this.write(PREVIOUS_KEY, JSON.stringify(current));
-      this.write(KEY, JSON.stringify(next));
-    })();
+    this.write(KEY, JSON.stringify(next));
     return this.view();
   };
-
-  /** 回到上一版。没有上一版就什么都不做——不拿默认值冒充"你的上一版"。 */
-  rollback = (): WatchdogPolicyView => {
-    const previous = this.read(PREVIOUS_KEY);
-    if (!previous) return this.view();
-    const current = readWatchdogPolicy(this.db);
-    this.db.transaction(() => {
-      this.pushHistory(current);
-      this.write(PREVIOUS_KEY, JSON.stringify(current));
-      this.write(KEY, previous);
-    })();
-    return this.view();
-  };
-
-  /** 审计用：最近改过的几版（新的在前）。 */
-  history = (): { at: number; policy: WatchdogPolicy }[] => {
-    const raw = this.read(HISTORY_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw) as { at?: unknown; policy?: unknown }[];
-      return parsed.map((entry) => ({
-        at: typeof entry.at === 'number' ? entry.at : 0,
-        policy: normalizeWatchdogPolicy(entry.policy),
-      }));
-    } catch {
-      return [];
-    }
-  };
-
-  private pushHistory(policy: WatchdogPolicy): void {
-    const list = [{ at: this.now(), policy }, ...this.history()].slice(0, HISTORY_LIMIT);
-    this.write(HISTORY_KEY, JSON.stringify(list));
-  }
-
-  private read(key: string): string | null {
-    const row = this.db.prepare('SELECT value FROM app_setting WHERE key = ?').get(key) as
-      | { value: string }
-      | undefined;
-    return row?.value ?? null;
-  }
 
   private write(key: string, value: string): void {
     this.db

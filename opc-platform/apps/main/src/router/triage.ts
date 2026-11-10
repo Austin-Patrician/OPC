@@ -87,7 +87,7 @@ export function createFastPath(deps: FastPathDeps): (event: TriggerEvent) => Fas
  * `path`、注入看的是 `text`"这种对不上的情况。
  */
 export function bodyOf(payload: Record<string, unknown>): string {
-  for (const field of ['text', 'goal', 'path', 'summary', 'brief'] as const) {
+  for (const field of ['text', 'goal', 'instruction', 'title', 'path', 'summary', 'brief'] as const) {
     const value = payload[field];
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
   }

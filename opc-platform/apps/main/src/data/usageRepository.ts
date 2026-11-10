@@ -143,8 +143,100 @@ export class UsageRepository {
     try {
       this.record(call);
     } catch (error) {
-      console.warn('[usage] 用量记录未能写入', error);
+      console.warn("[usage] 用量记录未能写入", error);
     }
+  };
+
+  /** Import trustworthy task-level totals written before the call ledger existed. */
+  backfillLegacyTasks = (): number => {
+    const current = this.db
+      .prepare(
+        "SELECT value FROM app_setting WHERE key = 'usage.backfill' LIMIT 1",
+      )
+      .get() as { value: string } | undefined;
+    try {
+      if (
+        current &&
+        (JSON.parse(current.value) as { backfillComplete?: boolean })
+          .backfillComplete
+      )
+        return 0;
+    } catch {
+      // Repair malformed progress metadata by repeating the idempotent import.
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT t.id, t.worker_id, t.status, t.tokens_used, t.cost_usd, t.started_at, t.finished_at, t.created_at, t.updated_at
+         FROM task t
+         WHERE (t.tokens_used > 0 OR t.cost_usd > 0)
+           AND NOT EXISTS (SELECT 1 FROM ai_call c WHERE c.task_id = t.id)
+         ORDER BY t.created_at, t.id`,
+      )
+      .all() as Array<{
+      id: string;
+      worker_id: string | null;
+      status: string;
+      tokens_used: number;
+      cost_usd: number;
+      started_at: number | null;
+      finished_at: number | null;
+      created_at: number;
+      updated_at: number;
+    }>;
+    const insert = this.db.transaction(() => {
+      let imported = 0;
+      for (const row of rows) {
+        const before = this.db
+          .prepare("SELECT 1 AS found FROM ai_call WHERE idempotency_key = ?")
+          .get(`legacy-task:${row.id}`);
+        this.record({
+          idempotencyKey: `legacy-task:${row.id}`,
+          startedAt: row.started_at ?? row.created_at,
+          finishedAt: row.finished_at ?? row.updated_at,
+          durationMs: Math.max(
+            0,
+            (row.finished_at ?? row.updated_at) -
+              (row.started_at ?? row.created_at),
+          ),
+          workerId: row.worker_id ?? undefined,
+          taskId: row.id,
+          capability: "chat",
+          operation: "historical task usage total",
+          origin: "worker",
+          providerId: "legacy-history",
+          modelId: "task aggregate",
+          status: legacyTaskStatus(row.status),
+          totalTokens: row.tokens_used,
+          tokenSource: "legacy-task-total",
+          billingUnit: "token",
+          billedQuantity: row.tokens_used,
+          ...(row.cost_usd > 0
+            ? { chargedCostUsd: row.cost_usd, configuredCostUsd: row.cost_usd }
+            : {}),
+          costSource: "legacy",
+        });
+        if (!before) imported += 1;
+      }
+      const backfillFrom =
+        rows.length > 0
+          ? (rows[0]?.started_at ?? rows[0]?.created_at ?? null)
+          : null;
+      this.db
+        .prepare(
+          "INSERT INTO app_setting (key, value, updated_at) VALUES ('usage.backfill', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .run(
+          JSON.stringify({
+            backfillComplete: true,
+            backfillFrom,
+            updatedAt: Date.now(),
+          }),
+          Date.now(),
+        );
+      return imported;
+    });
+    return insert();
   };
 
   report = (filter: UsageFilter): UsageReport => {
@@ -177,6 +269,28 @@ export class UsageRepository {
     };
     const seriesMap = new Map<string, UsageReport["series"][number]>();
     const breakdownMap = new Map<string, UsageReport["breakdown"][number]>();
+    const modelSeries = new Map<
+      string,
+      Map<
+        string,
+        UsageReport["actors"]["modelSeries"][number]["models"][number]
+      >
+    >();
+    const routerSeries = new Map<
+      string,
+      UsageReport["actors"]["router"][number]
+    >();
+    const workerSeries = new Map<
+      string,
+      Map<
+        string,
+        UsageReport["actors"]["workerSeries"][number]["workers"][number]
+      >
+    >();
+    const workerTotals = new Map<
+      string,
+      UsageReport["actors"]["workers"][number]
+    >();
     const providers = new Set<string>();
     const models = new Set<string>();
     const origins = new Set<string>();
@@ -213,11 +327,50 @@ export class UsageRepository {
         costUsd: 0,
         tokens: 0,
         requests: 0,
+        unpricedCalls: 0,
       };
       point.costUsd += row.charged_cost_usd ?? 0;
       point.tokens += row.total_tokens;
       point.requests += 1;
+      if (row.cost_source === "unpriced") point.unpricedCalls += 1;
       seriesMap.set(bucket.key, point);
+      if (row.origin === "router") {
+        const actorPoint = routerSeries.get(bucket.key) ?? {
+          at: bucket.at,
+          label: bucket.label,
+          costUsd: 0,
+          tokens: 0,
+        };
+        actorPoint.costUsd += row.charged_cost_usd ?? 0;
+        actorPoint.tokens += row.total_tokens;
+        routerSeries.set(bucket.key, actorPoint);
+      }
+      if (row.origin === "worker" && row.worker_id) {
+        const workerId = row.worker_id;
+        const workerName = row.worker_name || workerId;
+        const periodWorkers = workerSeries.get(bucket.key) ?? new Map();
+        const periodWorker = periodWorkers.get(workerId) ?? {
+          id: workerId,
+          name: workerName,
+          costUsd: 0,
+          tokens: 0,
+        };
+        periodWorker.costUsd += row.charged_cost_usd ?? 0;
+        periodWorker.tokens += row.total_tokens;
+        periodWorkers.set(workerId, periodWorker);
+        workerSeries.set(bucket.key, periodWorkers);
+        const totalWorker = workerTotals.get(workerId) ?? {
+          id: workerId,
+          name: workerName,
+          costUsd: 0,
+          tokens: 0,
+          requests: 0,
+        };
+        totalWorker.costUsd += row.charged_cost_usd ?? 0;
+        totalWorker.tokens += row.total_tokens;
+        totalWorker.requests += 1;
+        workerTotals.set(workerId, totalWorker);
+      }
       const groupKey = `${row.provider_id}\u0000${row.model_id}`;
       const group = breakdownMap.get(groupKey) ?? {
         key: groupKey,
@@ -232,9 +385,19 @@ export class UsageRepository {
       group.requests += 1;
       if (row.cost_source === "unpriced") group.unpricedCalls += 1;
       breakdownMap.set(groupKey, group);
+      const periodModels = modelSeries.get(bucket.key) ?? new Map();
+      const periodModel = periodModels.get(groupKey) ?? {
+        key: groupKey,
+        label: group.label,
+        requests: 0,
+      };
+      periodModel.requests += 1;
+      periodModels.set(groupKey, periodModel);
+      modelSeries.set(bucket.key, periodModels);
     }
     const page = normalized.page;
     const pageSize = normalized.pageSize;
+    const workerLifecycle = this.workerLifecycle(normalized);
     summary.successRate = terminalCalls
       ? successfulCalls / terminalCalls
       : null;
@@ -263,6 +426,30 @@ export class UsageRepository {
       breakdown: [...breakdownMap.values()]
         .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests)
         .slice(0, 12),
+      actors: {
+        models: [...breakdownMap.values()].sort(
+          (a, b) => b.requests - a.requests || b.costUsd - a.costUsd,
+        ),
+        modelSeries: [...modelSeries.entries()]
+          .map(([key, models]) => ({
+            at: seriesMap.get(key)?.at ?? 0,
+            label: seriesMap.get(key)?.label ?? key,
+            models: [...models.values()],
+          }))
+          .sort((a, b) => a.at - b.at),
+        router: [...routerSeries.values()].sort((a, b) => a.at - b.at),
+        workers: [...workerTotals.values()].sort(
+          (a, b) => b.costUsd - a.costUsd || b.requests - a.requests,
+        ),
+        workerSeries: [...workerSeries.entries()]
+          .map(([key, workers]) => ({
+            at: seriesMap.get(key)?.at ?? 0,
+            label: seriesMap.get(key)?.label ?? key,
+            workers: [...workers.values()],
+          }))
+          .sort((a, b) => a.at - b.at),
+      },
+      workerLifecycle,
       calls,
       totalCalls,
       page,
@@ -335,6 +522,68 @@ export class UsageRepository {
     range("c.duration_ms", filter.minDurationMs, filter.maxDurationMs);
     return { where: terms.join(" AND "), values };
   }
+
+  private workerLifecycle(
+    filter: ReturnType<typeof normalizeFilter>,
+  ): UsageReport["workerLifecycle"] {
+    const rows = this.db
+      .prepare(
+        `SELECT created_at, retired_at FROM worker
+       WHERE created_at <= ? AND (retired_at IS NULL OR retired_at >= ?)
+       ORDER BY created_at`,
+      )
+      .all(filter.endAt, filter.startAt) as Array<{
+      created_at: number;
+      retired_at: number | null;
+    }>;
+    const events = new Map<
+      string,
+      {
+        bucket: ReturnType<typeof timeBucket>;
+        created: number;
+        retired: number;
+      }
+    >();
+    let active = rows.filter(
+      (row) =>
+        row.created_at < filter.startAt &&
+        (row.retired_at === null || row.retired_at >= filter.startAt),
+    ).length;
+    const add = (at: number, kind: "created" | "retired") => {
+      if (at < filter.startAt || at >= filter.endAt) return;
+      const bucket = timeBucket(at, filter);
+      const event = events.get(bucket.key) ?? {
+        bucket,
+        created: 0,
+        retired: 0,
+      };
+      event[kind] += 1;
+      events.set(bucket.key, event);
+    };
+    for (const row of rows) {
+      add(row.created_at, "created");
+      if (row.retired_at !== null) add(row.retired_at, "retired");
+    }
+    return [...events.values()]
+      .sort((a, b) => a.bucket.at - b.bucket.at)
+      .map((event) => {
+        active += event.created - event.retired;
+        return {
+          at: event.bucket.at,
+          label: event.bucket.label,
+          active,
+          created: event.created,
+          retired: event.retired,
+        };
+      });
+  }
+}
+
+function legacyTaskStatus(status: string): UsageCallView["status"] {
+  if (status === "accepted" || status === "delivered") return "ok";
+  if (status === "failed" || status === "rejected") return "error";
+  if (status === "cancelled") return "aborted";
+  return "unknown";
 }
 
 export function normalizeFilter(

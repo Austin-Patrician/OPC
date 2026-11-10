@@ -44,11 +44,13 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
   const [hasMore, setHasMore] = useState(hasOlderMessages);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [followingOutput, setFollowingOutput] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const loadingRef = useRef(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrolledTargetRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
   useEffect(() => setHasMore(hasOlderMessages), [hasOlderMessages]);
@@ -80,7 +82,28 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
 
   useEffect(() => () => {
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    if (followTimerRef.current) clearTimeout(followTimerRef.current);
   }, []);
+
+  const followOutput = (isAtBottom: boolean) => {
+    if (!isAtBottom) return false;
+    setFollowingOutput(true);
+    if (followTimerRef.current) clearTimeout(followTimerRef.current);
+    followTimerRef.current = setTimeout(() => {
+      setFollowingOutput(false);
+      followTimerRef.current = null;
+    }, 600);
+    return 'smooth' as const;
+  };
+
+  const handleAtBottomChange = (next: boolean) => {
+    setAtBottom(next);
+    if (next) {
+      setFollowingOutput(false);
+      if (followTimerRef.current) clearTimeout(followTimerRef.current);
+      followTimerRef.current = null;
+    }
+  };
 
   const loadOlder = async () => {
     if (!hasMore || loadingRef.current) return;
@@ -110,8 +133,8 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
         data={visibleMessages as Message[]}
         firstItemIndex={firstItemIndex}
         className="h-full min-w-0 max-w-full overflow-x-hidden"
-        followOutput={(isAtBottom) => (isAtBottom ? 'smooth' : false)}
-        atBottomStateChange={setAtBottom}
+        followOutput={followOutput}
+        atBottomStateChange={handleAtBottomChange}
         startReached={() => void loadOlder()}
         initialTopMostItemIndex={{ index: Math.max(0, visibleMessages.length - 1), align: 'end' }}
         computeItemKey={(_, message) => message.id}
@@ -144,7 +167,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
           </div>
         )}
       />
-      {!atBottom && visibleMessages.length > 0 ? (
+      {!atBottom && !followingOutput && visibleMessages.length > 0 ? (
         <button
           type="button"
           onClick={() => virtuosoRef.current?.scrollToIndex({ index: visibleMessages.length - 1, align: 'end', behavior: 'smooth' })}

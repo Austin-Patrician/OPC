@@ -78,6 +78,20 @@ describe('调度循环', () => {
     expect(threads.listThreads()).toHaveLength(0);
   });
 
+  it('定时计划事件绕过噪声与语义预筛，直接送入 Router 判断', async () => {
+    threads.enqueueEvent({ source: 'manual', kind: 'schedule.due', payload: {
+      title: '检查邮件', instruction: '查看最近的新邮件', scheduledFor: now, timezone: 'Asia/Shanghai',
+    } });
+    const { router, delivered } = make({
+      prefilter: () => 'drop',
+      semantic: async () => { throw new Error('定时计划不应经过语义预筛'); },
+    });
+    const report = await router.tick();
+    expect(report.routed).toBe(1);
+    expect(delivered.join('\n')).toContain('查看最近的新邮件');
+    expect(delivered.join('\n')).toContain('用户提前创建的定时请求');
+  });
+
   it('一批事件合成一条输入，不是一条一个调用', async () => {
     for (const text of ['第一件', '第二件', '第三件']) {
       threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text } });

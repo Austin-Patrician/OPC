@@ -179,9 +179,14 @@ export class Router {
 
     const pending = this.deps.threads.listPendingEvents(this.batchSize);
     let slow: TriggerEvent[] = [];
+    const scheduled: TriggerEvent[] = [];
 
     for (const event of pending) {
       try {
+        if (event.kind === 'schedule.due') {
+          scheduled.push(event);
+          continue;
+        }
         if ((this.deps.prefilter?.(event) ?? 'keep') === 'drop') {
           this.deps.threads.triageEvent(event.id, 'dropped');
           report.dropped += 1;
@@ -222,6 +227,7 @@ export class Router {
         console.warn('[router] 语义门异常，这批全部放行', error);
       }
     }
+    slow = [...scheduled, ...slow];
 
     // 只剩"要开口说的"汇报：`silent` 是记录，不是话，不该占 Router 的一轮推理。
     const reports = this.deps.threads.listUnannouncedReports(20);
@@ -333,6 +339,9 @@ export function composeInput(
       const replyTarget = replyTargetOf(event.payload);
       if (replyTarget) lines.push(`  原始信道回复地址（只能原样使用）：${replyTarget}`);
       const body = bodyOf(event.payload);
+      if (event.kind === 'schedule.due') {
+        lines.push(indent(`这是用户提前创建的定时请求，到期时间 ${new Date(Number(event.payload.scheduledFor)).toISOString()}（时区 ${String(event.payload.timezone ?? '')}）。请按当时上下文判断是否派发；若信息不足再询问用户。`));
+      }
       if (body) lines.push(indent(spillText(body, `recall ${event.id}`, perItem)));
       const attachments = attachmentsOfPayload(event.payload);
       if (attachments.length > 0) {

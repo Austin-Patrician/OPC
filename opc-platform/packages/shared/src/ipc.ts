@@ -19,6 +19,10 @@ import type {
   ToolPolicy,
   TriagePolicy,
   TriagePolicyPatch,
+  RouterSchedule,
+  RouterScheduleDraft,
+  RouterScheduleOccurrence,
+  RouterSchedulePatch,
   ModelDefaults,
   ModelOption,
   ModelRef,
@@ -124,6 +128,12 @@ export const IPC = {
   router: {
     getTriage: "router:getTriage",
     setTriage: "router:setTriage",
+    listSchedules: "router:listSchedules",
+    createSchedule: "router:createSchedule",
+    updateSchedule: "router:updateSchedule",
+    cancelSchedule: "router:cancelSchedule",
+    listScheduleOccurrences: "router:listScheduleOccurrences",
+    scheduleChangedEvent: "router:scheduleChanged",
   },
   trigger: {
     status: "trigger:status",
@@ -186,7 +196,6 @@ export const IPC = {
     ask: "watchdog:ask",
     getPolicy: "watchdog:getPolicy",
     savePolicy: "watchdog:savePolicy",
-    rollbackPolicy: "watchdog:rollbackPolicy",
     getModel: "watchdog:getModel",
     setModel: "watchdog:setModel",
   },
@@ -376,12 +385,19 @@ export interface DiagnosticsReport {
 
 export interface ChatBridge {
   getSnapshot(): Promise<ChatSnapshot>;
-  loadOlderMessages(conversationId: string, beforeMessageId: string): Promise<ChatMessagePage>;
+  loadOlderMessages(
+    conversationId: string,
+    beforeMessageId: string,
+  ): Promise<ChatMessagePage>;
   searchMessages(input: ChatSearchInput): Promise<ChatSearchPage>;
   onSnapshot(listener: (snapshot: ChatSnapshot) => void): () => void;
   sendMessage(input: SendMessageInput): Promise<void>;
   chooseAttachments(): Promise<ChatAttachmentRef[]>;
-  materializeClipboardAttachment(input: { name: string; mimeType?: string; bytes: ArrayBuffer }): Promise<ChatAttachmentRef>;
+  materializeClipboardAttachment(input: {
+    name: string;
+    mimeType?: string;
+    bytes: ArrayBuffer;
+  }): Promise<ChatAttachmentRef>;
   markRead(conversationId: string): Promise<void>;
   /** 1v1 with an employee; creates the conversation on first use. */
   /** 唯一的那条会话：没有就建一条。没有执行体时返回 null。 */
@@ -756,6 +772,12 @@ export interface MemoryBridge {
 export interface RouterBridge {
   getTriage(): Promise<TriagePolicy>;
   setTriage(patch: TriagePolicyPatch): Promise<TriagePolicy>;
+  listSchedules(): Promise<RouterSchedule[]>;
+  createSchedule(draft: RouterScheduleDraft): Promise<RouterSchedule>;
+  updateSchedule(id: string, patch: RouterSchedulePatch): Promise<RouterSchedule>;
+  cancelSchedule(id: string): Promise<RouterSchedule>;
+  onScheduleChanged(listener: () => void): () => void;
+  listScheduleOccurrences(id: string): Promise<RouterScheduleOccurrence[]>;
 }
 
 /**
@@ -865,7 +887,12 @@ export interface ArtifactsBridge {
 }
 
 export interface ChatMediaBridge {
-  register(input: { kind: "image" | "video" | "audio"; url?: string; taskId?: string; relPath?: string }): Promise<{ ok: boolean; url?: string; error?: string }>;
+  register(input: {
+    kind: "image" | "video" | "audio";
+    url?: string;
+    taskId?: string;
+    relPath?: string;
+  }): Promise<{ ok: boolean; url?: string; error?: string }>;
 }
 
 /**
@@ -909,7 +936,7 @@ export interface NetworkBridge {
   onChanged(listener: (config: ProxyConfig) => void): () => void;
 }
 
-export type AssistantSearchProvider = 'exa' | 'tavily' | 'firecrawl';
+export type AssistantSearchProvider = "exa" | "tavily" | "firecrawl";
 export interface AssistantToolsSettings {
   timezone: string | null;
   weatherCity: string;
@@ -939,7 +966,9 @@ export interface RuntimeBridge {
   /** Stored profiles plus the last known availability, without spawning. */
   snapshot(): Promise<RuntimeSnapshot>;
   /** Live operational data for the Runtime observatory. */
-  observatory(request?: RuntimeObservatoryRequest): Promise<RuntimeObservatorySnapshot>;
+  observatory(
+    request?: RuntimeObservatoryRequest,
+  ): Promise<RuntimeObservatorySnapshot>;
   onChanged(listener: (event: RuntimeEventView) => void): () => void;
   /** Re-detects every profile (spawns `--version` with a timeout). */
   probe(): Promise<RuntimeSnapshot>;
@@ -1072,7 +1101,6 @@ export interface WatchdogPolicyView {
   judgeCooldownMs: number;
   actionCooldownMs: number;
   updatedAt: number | null;
-  hasPrevious: boolean;
 }
 
 export interface WatchdogBridge {
@@ -1082,7 +1110,6 @@ export interface WatchdogBridge {
   ask(question: string): Promise<WatchdogAskResult>;
   getPolicy(): Promise<WatchdogPolicyView>;
   savePolicy(patch: Partial<WatchdogPolicyView>): Promise<WatchdogPolicyView>;
-  rollbackPolicy(): Promise<WatchdogPolicyView>;
   /** 它自己的模型；`null` = 跟随默认 LLM。 */
   getModel(): Promise<{ providerId: string; modelId: string } | null>;
   setModel(
@@ -1134,10 +1161,14 @@ export interface OpcBridge {
   };
 }
 
-export type UsageCapability = 'chat' | 'classifier' | 'image' | 'asr' | 'tts' | 'embedding';
-export type UsageStatus = 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
-export type UsageCostSource = 'provider' | 'configured' | 'builtin' | 'unpriced' | 'legacy';
-export type UsageBillingUnit = 'token' | 'character' | 'second' | 'image' | 'megapixel';
+export type UsageCapability =
+  "chat" | "classifier" | "image" | "asr" | "tts" | "embedding";
+export type UsageStatus =
+  "ok" | "error" | "aborted" | "interrupted" | "unknown";
+export type UsageCostSource =
+  "provider" | "configured" | "builtin" | "unpriced" | "legacy";
+export type UsageBillingUnit =
+  "token" | "character" | "second" | "image" | "megapixel";
 export interface UsageFilter {
   startAt: number;
   endAt: number;
@@ -1156,28 +1187,118 @@ export interface UsageFilter {
   maxCostUsd?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
-  metric?: 'cost' | 'tokens' | 'requests';
+  metric?: "cost" | "tokens" | "requests";
   page?: number;
   pageSize?: number;
 }
 export interface UsageCallView {
-  id: string; startedAt: number; finishedAt: number | null; durationMs: number | null;
-  employeeId: string | null; workerId: string | null; workerName: string | null;
-  taskId: string | null; conversationId: string | null; capability: UsageCapability;
-  operation: string; origin: string; providerId: string; modelId: string; status: UsageStatus;
-  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
-  reasoningTokens: number | null; totalTokens: number; tokenSource: string;
-  billingUnit: UsageBillingUnit; billedQuantity: number; providerCostUsd: number | null;
-  configuredCostUsd: number | null; chargedCostUsd: number | null; costSource: UsageCostSource;
+  id: string;
+  startedAt: number;
+  finishedAt: number | null;
+  durationMs: number | null;
+  employeeId: string | null;
+  workerId: string | null;
+  workerName: string | null;
+  taskId: string | null;
+  conversationId: string | null;
+  capability: UsageCapability;
+  operation: string;
+  origin: string;
+  providerId: string;
+  modelId: string;
+  status: UsageStatus;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number | null;
+  totalTokens: number;
+  tokenSource: string;
+  billingUnit: UsageBillingUnit;
+  billedQuantity: number;
+  providerCostUsd: number | null;
+  configuredCostUsd: number | null;
+  chargedCostUsd: number | null;
+  costSource: UsageCostSource;
   error: string | null;
 }
 export interface UsageReport {
-  summary: { chargedCostUsd: number; unpricedCalls: number; totalTokens: number; requests: number; successRate: number | null; images: number; asrSeconds: number; ttsCharacters: number };
-  series: { at: number; label: string; costUsd: number; tokens: number; requests: number }[];
-  breakdown: { key: string; label: string; costUsd: number; tokens: number; requests: number; unpricedCalls: number }[];
-  calls: UsageCallView[]; totalCalls: number; page: number; pageSize: number;
-  options: { providers: string[]; models: string[]; origins: string[]; workers: { id: string; name: string }[] };
-  coverage: { backfillComplete: boolean; backfillFrom: number | null; updatedAt: number };
+  summary: {
+    chargedCostUsd: number;
+    unpricedCalls: number;
+    totalTokens: number;
+    requests: number;
+    successRate: number | null;
+    images: number;
+    asrSeconds: number;
+    ttsCharacters: number;
+  };
+  series: {
+    at: number;
+    label: string;
+    costUsd: number;
+    tokens: number;
+    requests: number;
+    unpricedCalls: number;
+  }[];
+  breakdown: {
+    key: string;
+    label: string;
+    costUsd: number;
+    tokens: number;
+    requests: number;
+    unpricedCalls: number;
+  }[];
+  actors: {
+    models: {
+      key: string;
+      label: string;
+      costUsd: number;
+      tokens: number;
+      requests: number;
+      unpricedCalls: number;
+    }[];
+    modelSeries: {
+      at: number;
+      label: string;
+      models: { key: string; label: string; requests: number }[];
+    }[];
+    router: { at: number; label: string; costUsd: number; tokens: number }[];
+    workers: {
+      id: string;
+      name: string;
+      costUsd: number;
+      tokens: number;
+      requests: number;
+    }[];
+    workerSeries: {
+      at: number;
+      label: string;
+      workers: { id: string; name: string; costUsd: number; tokens: number }[];
+    }[];
+  };
+  workerLifecycle: {
+    at: number;
+    label: string;
+    active: number;
+    created: number;
+    retired: number;
+  }[];
+  calls: UsageCallView[];
+  totalCalls: number;
+  page: number;
+  pageSize: number;
+  options: {
+    providers: string[];
+    models: string[];
+    origins: string[];
+    workers: { id: string; name: string }[];
+  };
+  coverage: {
+    backfillComplete: boolean;
+    backfillFrom: number | null;
+    updatedAt: number;
+  };
 }
 export interface UsageBridge {
   report(filter: UsageFilter): Promise<UsageReport>;
@@ -1212,11 +1333,33 @@ export interface OntologyCommandView {
 }
 
 export interface OntologyBridge {
-  context(input?: { subjectEntityId?: string; query?: string; maxHops?: number; maxAssertions?: number }): Promise<OntologyContextView>;
-  history(input: { subjectEntityId: string; predicate?: string }): Promise<unknown[]>;
-  command(input: { actor: "user" | "router" | "worker"; objectType: string; objectId: string; action: string; args?: unknown; expectedVersion?: number; idempotencyKey: string; approvalId?: string }): Promise<OntologyCommandView>;
+  context(input?: {
+    subjectEntityId?: string;
+    query?: string;
+    maxHops?: number;
+    maxAssertions?: number;
+  }): Promise<OntologyContextView>;
+  history(input: {
+    subjectEntityId: string;
+    predicate?: string;
+  }): Promise<unknown[]>;
+  command(input: {
+    actor: "user" | "router" | "worker";
+    objectType: string;
+    objectId: string;
+    action: string;
+    args?: unknown;
+    expectedVersion?: number;
+    idempotencyKey: string;
+    approvalId?: string;
+  }): Promise<OntologyCommandView>;
   /** Only the chat approval surface may transition a command from the renderer. */
-  commandStatus(commandId: string, status: "approved" | "rejected", result?: unknown, error?: string): Promise<OntologyCommandView | null>;
+  commandStatus(
+    commandId: string,
+    status: "approved" | "rejected",
+    result?: unknown,
+    error?: string,
+  ): Promise<OntologyCommandView | null>;
   outbox(limit?: number): Promise<unknown[]>;
 }
 
@@ -1288,7 +1431,10 @@ export interface McpBridge {
     tool: string,
     enabled: boolean | null,
   ): Promise<McpApprovalPolicyView>;
-  resetToolApprovals(server: string, enabled: boolean): Promise<McpApprovalPolicyView>;
+  resetToolApprovals(
+    server: string,
+    enabled: boolean,
+  ): Promise<McpApprovalPolicyView>;
   remove(
     name: string,
   ): Promise<{ servers: McpServerView[]; sources: string[] }>;
@@ -1306,7 +1452,8 @@ export interface McpBridge {
   ): Promise<{ servers: McpServerView[]; sources: string[] }>;
 }
 
-export type BrowserInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'error';
+export type BrowserInstallState =
+  "uninstalled" | "installing" | "ready" | "disabled" | "error";
 export interface BrowserStatus {
   installState: BrowserInstallState;
   enabled: boolean;
@@ -1318,7 +1465,7 @@ export interface BrowserStatus {
   error?: string;
   profilePath: string;
 }
-export type BrowserInstallPhase = 'dependencies' | 'browser' | 'finalizing';
+export type BrowserInstallPhase = "dependencies" | "browser" | "finalizing";
 export interface BrowserInstallProgress {
   phase: BrowserInstallPhase;
   percent: number;
@@ -1335,7 +1482,10 @@ export interface BrowserSettings {
 export interface BrowserBridge {
   status(): Promise<BrowserStatus>;
   install(): Promise<BrowserStatus>;
-  uninstall(deleteProfile?: boolean, deleteBrowserCache?: boolean): Promise<BrowserStatus>;
+  uninstall(
+    deleteProfile?: boolean,
+    deleteBrowserCache?: boolean,
+  ): Promise<BrowserStatus>;
   doctor(): Promise<BrowserStatus>;
   getSettings(): Promise<BrowserSettings>;
   setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
@@ -1343,33 +1493,41 @@ export interface BrowserBridge {
   hide(taskId?: string): Promise<void>;
   resetProfile(userId?: string): Promise<void>;
   onChanged(listener: (status: BrowserStatus) => void): () => void;
-  onInstallProgress(listener: (progress: BrowserInstallProgress | null) => void): () => void;
+  onInstallProgress(
+    listener: (progress: BrowserInstallProgress | null) => void,
+  ): () => void;
 }
 
-export type DesktopInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'permission-required' | 'error';
+export type DesktopInstallState =
+  | "uninstalled"
+  | "installing"
+  | "ready"
+  | "disabled"
+  | "permission-required"
+  | "error";
 export interface DesktopPermissionStatus {
-  accessibility: 'granted' | 'denied' | 'unknown' | 'not_required';
-  screenRecording: 'granted' | 'denied' | 'unknown' | 'not_required';
-  automation: 'granted' | 'denied' | 'unknown' | 'not_required';
+  accessibility: "granted" | "denied" | "unknown" | "not_required";
+  screenRecording: "granted" | "denied" | "unknown" | "not_required";
+  automation: "granted" | "denied" | "unknown" | "not_required";
 }
 export interface DesktopAppAllowlistEntry {
   id: string;
   label: string;
   platform: string;
   enabled: boolean;
-  source: 'system' | 'user';
+  source: "system" | "user";
 }
 export type DesktopApprovalCategory =
-  | 'desktop-access'
-  | 'screenshot'
-  | 'desktop-launch'
-  | 'window-focus'
-  | 'desktop-action'
-  | 'physical-input'
-  | 'clipboard-read'
-  | 'clipboard-write'
-  | 'external-submit'
-  | 'destructive';
+  | "desktop-access"
+  | "screenshot"
+  | "desktop-launch"
+  | "window-focus"
+  | "desktop-action"
+  | "physical-input"
+  | "clipboard-read"
+  | "clipboard-write"
+  | "external-submit"
+  | "destructive";
 export interface DesktopSettings {
   enabled: boolean;
   allowedApps: DesktopAppAllowlistEntry[];
@@ -1389,7 +1547,8 @@ export interface DesktopStatus {
   supportedSurfaces: string[];
   error?: string;
 }
-export type DesktopInstallPhase = 'download' | 'verify' | 'extract' | 'activate' | 'permissions';
+export type DesktopInstallPhase =
+  "download" | "verify" | "extract" | "activate" | "permissions";
 export interface DesktopInstallProgress {
   phase: DesktopInstallPhase;
   /** Overall installation progress; later phases are time-based estimates. */
@@ -1397,8 +1556,19 @@ export interface DesktopInstallProgress {
   downloadedBytes?: number;
   totalBytes?: number;
 }
-export interface DesktopAppView { name: string; process?: string; bundleId?: string; windows?: number; icon?: string; }
-export interface DesktopWindowView { id: string; title?: string; app?: string; process?: string; }
+export interface DesktopAppView {
+  name: string;
+  process?: string;
+  bundleId?: string;
+  windows?: number;
+  icon?: string;
+}
+export interface DesktopWindowView {
+  id: string;
+  title?: string;
+  app?: string;
+  process?: string;
+}
 export interface DesktopBridge {
   status(): Promise<DesktopStatus>;
   install(): Promise<DesktopStatus>;
@@ -1414,7 +1584,9 @@ export interface DesktopBridge {
   show(taskId: string): Promise<void>;
   hide(taskId?: string): Promise<void>;
   onChanged(listener: (status: DesktopStatus) => void): () => void;
-  onInstallProgress(listener: (progress: DesktopInstallProgress | null) => void): () => void;
+  onInstallProgress(
+    listener: (progress: DesktopInstallProgress | null) => void,
+  ): () => void;
 }
 
 export interface ThreadsBridge {

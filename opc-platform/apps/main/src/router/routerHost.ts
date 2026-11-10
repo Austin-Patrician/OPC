@@ -12,6 +12,7 @@ import type {
 } from "@opc/shared/domain";
 import { recallOwners, USER_MEMORY_OWNER } from "../memory/owners";
 import type { CompanyDatabase } from "../data/companyDatabase";
+import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
 import type { UsageRepository } from "../data/usageRepository";
 import type { PricingMode } from "@opc/shared/domain";
 import type { FaultSink } from "../data/systemEventRepository";
@@ -132,6 +133,7 @@ export interface RouterHostDeps {
   assistantTools?: AssistantToolsService;
   usageRepository?: UsageRepository;
   pricingMode?: () => PricingMode;
+  schedules?: RouterScheduleRepository;
 }
 
 export interface RouterHost {
@@ -698,6 +700,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         recallMemory,
         ontologyCommand: deps.ontologyCommand,
         workerCapabilities: deps.workerCapabilities,
+        schedules: deps.schedules ? {
+          create: (draft) => deps.schedules!.create(draft),
+          list: () => deps.schedules!.list(),
+          update: (id, patch) => deps.schedules!.update(id, patch),
+          cancel: (id) => deps.schedules!.cancel(id),
+        } : undefined,
         assistantTools: deps.assistantTools,
       }),
     );

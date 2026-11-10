@@ -390,7 +390,6 @@ export function ImagePage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm text-ink">
             {t('settings.image.defaultTitle')}
-            <KeyTag>default.image</KeyTag>
           </div>
           <div className="mt-0.5 text-xs-plus text-ink-tertiary">
             {models.defaults.image ? (

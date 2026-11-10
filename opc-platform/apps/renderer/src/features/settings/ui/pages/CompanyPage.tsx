@@ -71,8 +71,8 @@ export function CompanyPage() {
           <Row label={t('settings.company.replyDetail')}>
             <div className="flex gap-1.5">{detailOptions.map((value) => <button key={value} type="button" aria-pressed={profile.replyDetail === value} onClick={() => { void save({ replyDetail: value }); setSaved(false); }} className={`rounded-full border px-3 py-1 text-xs transition ${profile.replyDetail === value ? 'border-accent bg-accent-soft text-accent-ink' : 'border-line text-ink-secondary hover:border-line-strong'}`}>{t(`settings.company.detail.${value}`)}</button>)}</div>
           </Row>
-          <Row label={t('settings.company.replyInstructions')} hint={t('settings.company.replyInstructionsHint')}>
-            <textarea aria-label={t('settings.company.replyInstructions')} value={instructions} maxLength={500} onChange={(event) => { setInstructions(event.target.value); setSaved(false); }} placeholder={t('settings.company.replyInstructionsPlaceholder')} className="min-h-20 w-80 resize-y rounded-md border border-line bg-surface p-2.5 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent" />
+          <Row stacked label={t('settings.company.replyInstructions')} hint={t('settings.company.replyInstructionsHint')}>
+            <textarea aria-label={t('settings.company.replyInstructions')} value={instructions} maxLength={500} onChange={(event) => { setInstructions(event.target.value); setSaved(false); }} placeholder={t('settings.company.replyInstructionsPlaceholder')} className="min-h-40 w-full resize-y rounded-md border border-line bg-surface p-2.5 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent" />
           </Row>
         </Section>
       </div>

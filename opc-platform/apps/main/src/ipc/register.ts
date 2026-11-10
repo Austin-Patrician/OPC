@@ -26,6 +26,8 @@ import type {
   BillingSettingsPatch,
   TriagePolicyPatch,
   WorkThread,
+  RouterScheduleDraft,
+  RouterSchedulePatch,
 } from "@opc/shared/domain";
 import { MODEL_ROLES, type ModelRole } from "@opc/shared/domain";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
@@ -77,6 +79,7 @@ import type { BrowserBroker } from "../browser/broker";
 import type { DesktopBroker } from "../desktop/broker";
 import type { AssistantToolsService } from "../assistant/assistantTools";
 import type { UsageRepository } from "../data/usageRepository";
+import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -89,7 +92,6 @@ interface RegisterOptions {
     policy: {
       view(): unknown;
       save(patch: unknown): unknown;
-      rollback(): unknown;
     };
     /** 它自己的模型；`null` = 跟随默认 LLM。 */
     model: { get(): unknown; set(ref: unknown): unknown };
@@ -131,6 +133,7 @@ interface RegisterOptions {
   consolidationRuns: ConsolidationRunStore;
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
+  schedules: RouterScheduleRepository;
   /** 记忆：读写都在服务里，这里只转发。 */
   memories: {
     list: () => MemoryView[];
@@ -180,6 +183,7 @@ export function registerIpc({
   piExtensions,
   piSkills,
   triage,
+  schedules,
   triggers,
   memories,
   watchdog,
@@ -199,6 +203,8 @@ export function registerIpc({
   const unsubscribeUsage = usage.subscribe(() =>
     broadcast(IPC.usage.changedEvent, undefined),
   );
+  const broadcastSchedules = () => broadcast(IPC.router.scheduleChangedEvent, undefined);
+  const unsubscribeSchedules = schedules.subscribe(broadcastSchedules);
 
   /** IPC may deliver a Uint8Array, an ArrayBuffer or another view. */
   const toBytes = (value: unknown): Uint8Array | undefined => {
@@ -828,6 +834,29 @@ export function registerIpc({
     }
     return triage.set(patch as TriagePolicyPatch);
   });
+  ipcMain.handle(IPC.router.listSchedules, () => schedules.list());
+  ipcMain.handle(IPC.router.listScheduleOccurrences, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('router:listScheduleOccurrences 参数非法');
+    return schedules.occurrences(id);
+  });
+  ipcMain.handle(IPC.router.createSchedule, (_event, draft: unknown) => {
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft)) throw new Error('router:createSchedule 参数非法');
+    const created = schedules.create(draft as RouterScheduleDraft);
+    broadcastSchedules();
+    return created;
+  });
+  ipcMain.handle(IPC.router.updateSchedule, (_event, id: unknown, patch: unknown) => {
+    if (typeof id !== 'string' || !patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('router:updateSchedule 参数非法');
+    const updated = schedules.update(id, patch as RouterSchedulePatch);
+    broadcastSchedules();
+    return updated;
+  });
+  ipcMain.handle(IPC.router.cancelSchedule, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('router:cancelSchedule 参数非法');
+    const cancelled = schedules.cancel(id);
+    broadcastSchedules();
+    return cancelled;
+  });
 
   // Watchdog（W7）：看 + 问 + 调规则。没有"修"——修复由它自己按白名单发起。
   ipcMain.handle(IPC.watchdog.incidents, () =>
@@ -846,7 +875,6 @@ export function registerIpc({
     }
     return watchdog.policy.save(patch);
   });
-  ipcMain.handle(IPC.watchdog.rollbackPolicy, () => watchdog.policy.rollback());
   ipcMain.handle(IPC.watchdog.getModel, () => watchdog.model.get());
   ipcMain.handle(IPC.watchdog.setModel, (_event, ref: unknown) => {
     if (ref === null) {
@@ -1409,8 +1437,11 @@ export function registerIpc({
       ipcMain.removeHandler(channel);
     unsubscribeWork();
     unsubscribeUsage();
+    unsubscribeSchedules();
     clearInterval(runtimePulse);
     ipcMain.removeHandler(IPC.billing.get);
+    for (const channel of [IPC.router.listSchedules, IPC.router.createSchedule, IPC.router.updateSchedule,
+      IPC.router.cancelSchedule, IPC.router.listScheduleOccurrences]) ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.billing.update);
     ipcMain.removeHandler(IPC.usage.report);
     ipcMain.removeHandler(IPC.usage.exportCsv);

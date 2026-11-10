@@ -56,7 +56,7 @@ export function AppShell() {
                 chatActivity={isChat ? chatActivity : undefined}
               />
             )}
-            <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div className="relative flex min-h-0 flex-1 overflow-hidden">
               <div
                 aria-hidden={!isChat}
                 inert={!isChat}

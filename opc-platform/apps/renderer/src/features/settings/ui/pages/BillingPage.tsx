@@ -63,8 +63,6 @@ export function BillingPage() {
         >
           <Row
             label={t('settings.billing.policy')}
-            hint={t(`settings.billing.mode.${settings.pricingMode}`)}
-            settingKey="billing.pricingMode"
           >
             <div className="w-[15rem]">
               <SelectField
@@ -89,7 +87,6 @@ export function BillingPage() {
           <Row
             label={t('settings.billing.currency')}
             hint={t('settings.billing.currencyHint')}
-            settingKey="billing.displayCurrency"
           >
             <Segmented<DisplayCurrency>
               value={settings.displayCurrency}
@@ -105,7 +102,6 @@ export function BillingPage() {
           <Row
             label={t('settings.billing.rate')}
             hint={t('settings.billing.rateHint')}
-            settingKey="billing.fxRateUsdCny"
           >
             <div className="flex items-center gap-2">
               <span className="whitespace-nowrap text-xs-plus text-ink-tertiary">1 USD =</span>

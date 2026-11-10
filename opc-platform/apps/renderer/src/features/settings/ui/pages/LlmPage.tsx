@@ -445,7 +445,6 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-base text-ink">
                 {t('settings.llm.default')}
-                <KeyTag>defaultProvider · defaultModel</KeyTag>
               </div>
               <div className="mt-0.5 text-xs-plus text-ink-tertiary">
                 {models.defaults.llm ? (
@@ -486,7 +485,6 @@ export function LlmPage({ initialProviderId }: { initialProviderId?: string } = 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2 text-base text-ink">
                   {t('settings.llm.thinking')}
-                  <KeyTag>defaultThinkingLevel</KeyTag>
                 </div>
                 <div className="mt-0.5 text-xs-plus text-ink-tertiary">{t('settings.llm.thinkingHint')}</div>
               </div>

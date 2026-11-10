@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { formatAppDate } from '@/shared/lib/appTime';
 import type { MemoryView, OrphanMemoryGroup } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section } from '../kit';
+import { MemoryGraph } from './MemoryGraph';
+import { entityTypeLabel, predicateLabel } from './ontologyLabels';
 
 type OntologyEntityView = {
   id: string;
@@ -70,6 +72,8 @@ export function MemoryPage() {
   const [ontologyHistory, setOntologyHistory] = useState<OntologyAssertionView[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [ontologyError, setOntologyError] = useState<string | null>(null);
+  /** 图里选中的实体；`null` = 不筛选，下方列出全部关系。 */
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>('ontology-user');
 
   const load = () =>
     Promise.all([
@@ -128,6 +132,16 @@ export function MemoryPage() {
       return assertion.objectValue;
     }
   };
+
+  const selectedEntity = (ontology?.entities ?? []).find((entity) => entity.id === selectedEntityId) ?? null;
+  // 选中的实体可能已经随新一轮数据消失：这时退回「全部关系」，而不是顶着一个空名字。
+  const hasSelection = selectedEntity !== null;
+  const relations = (ontology?.assertions ?? []).filter(
+    (assertion) =>
+      !selectedEntity ||
+      assertion.subjectEntityId === selectedEntity.id ||
+      assertion.objectEntityId === selectedEntity.id,
+  );
 
   const settleOrphan = (ownerId: string, action: 'claim' | 'discard') => {
     setBusy(ownerId);
@@ -332,38 +346,85 @@ export function MemoryPage() {
             </div>
           ) : (
             <>
-              <div className="flex flex-wrap gap-2 border-b border-line px-4 py-3">
-                {Object.entries(ontology.profile).slice(0, 8).map(([key, value]) => (
-                  <span key={key} className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-2xs text-ink-secondary">
-                    <span className="font-mono text-ink-quaternary">{key}</span><span>·</span><span>{typeof value === 'string' ? value : JSON.stringify(value)}</span>
-                  </span>
-                ))}
+              {Object.keys(ontology.profile).length > 0 ? (
+                <div className="flex flex-wrap gap-2 border-b border-line px-4 py-3">
+                  {Object.entries(ontology.profile).slice(0, 8).map(([key, value]) => (
+                    <span key={key} className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-2xs text-ink-secondary">
+                      <span className="text-ink-quaternary">{predicateLabel(t, key)}</span><span>·</span><span>{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="border-b border-line px-2 pt-2 pb-1">
+                <MemoryGraph
+                  entities={ontology.entities}
+                  assertions={ontology.assertions}
+                  selectedId={selectedEntityId}
+                  onSelect={setSelectedEntityId}
+                  ariaLabel={t('settings.memory.ontologyGraphAria', {
+                    entities: ontology.entities.length,
+                    relations: ontology.assertions.length,
+                  })}
+                />
+                <p className="px-4 pb-2 text-center text-2xs text-ink-quaternary">
+                  {t('settings.memory.ontologyGraphHint')}
+                </p>
               </div>
-              <ul className="divide-y divide-line/60">
-                {ontology.assertions.map((assertion) => (
-                  <li key={assertion.id} className="flex items-start gap-3 px-4 py-3">
-                    <ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm leading-relaxed text-ink">
-                        <span className="text-ink-tertiary">{entityNames.get(assertion.subjectEntityId) ?? assertion.subjectEntityId}</span>{' '}
-                        <span className="font-mono text-xs text-accent-ink">{assertion.predicate}</span>{' '}
-                        <span>{objectLabel(assertion)}</span>
-                      </p>
-                      <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 font-mono text-2xs text-ink-quaternary">
-                        <span>{Math.round(assertion.confidence * 100)}%</span><span>· {assertion.sourceEpisodeId}</span>
-                        {assertion.evidenceSpan ? <span>· {assertion.evidenceSpan}</span> : null}
-                      </p>
-                    </div>
-                    <button type="button" className={buttonClass.danger} disabled={busy === `ontology:${assertion.id}`} onClick={() => void retract(assertion.id)}>
-                      {t('settings.memory.ontologyRetract')}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+
+              <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-ink">
+                    {hasSelection ? selectedEntity.canonicalName : t('settings.memory.ontologyAll')}
+                  </p>
+                  <p className="mt-0.5 text-2xs text-ink-quaternary">
+                    {hasSelection ? `${entityTypeLabel(t, selectedEntity.entityType)} · ` : ''}
+                    {t('settings.memory.ontologyRelationsCount', { count: relations.length })}
+                  </p>
+                </div>
+                {hasSelection ? (
+                  <button
+                    type="button"
+                    className={buttonClass.secondary}
+                    onClick={() => setSelectedEntityId(null)}
+                  >
+                    {t('settings.memory.ontologyViewAll')}
+                  </button>
+                ) : null}
+              </div>
+
+              {relations.length === 0 ? (
+                <p className="border-t border-line px-4 py-3 text-sm text-ink-tertiary">
+                  {t('settings.memory.ontologyNoRelations')}
+                </p>
+              ) : (
+                <ul className="divide-y divide-line/60 border-t border-line">
+                  {relations.map((assertion) => (
+                    <li key={assertion.id} className="flex items-start gap-3 px-4 py-3">
+                      <ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm leading-relaxed text-ink">
+                          <span className="text-ink-tertiary">{entityNames.get(assertion.subjectEntityId) ?? assertion.subjectEntityId}</span>{' '}
+                          <span className="font-medium text-accent-ink" title={assertion.predicate}>{predicateLabel(t, assertion.predicate)}</span>{' '}
+                          <span>{objectLabel(assertion)}</span>
+                        </p>
+                        <p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 font-mono text-2xs text-ink-quaternary">
+                          <span>{Math.round(assertion.confidence * 100)}%</span><span>· {assertion.sourceEpisodeId}</span>
+                          {assertion.evidenceSpan ? <span>· {assertion.evidenceSpan}</span> : null}
+                        </p>
+                      </div>
+                      <button type="button" className={buttonClass.danger} disabled={busy === `ontology:${assertion.id}`} onClick={() => void retract(assertion.id)}>
+                        {t('settings.memory.ontologyRetract')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
               <button type="button" className="flex w-full items-center gap-2 border-t border-line px-4 py-2.5 text-xs text-ink-tertiary hover:text-ink" onClick={() => setShowHistory((value) => !value)}>
                 <History className="size-3.5" />{t('settings.memory.ontologyHistory')}<ChevronDown className={`ml-auto size-3.5 transition-transform ${showHistory ? 'rotate-180' : ''}`} />
               </button>
-              {showHistory ? <ul className="border-t border-line bg-surface-muted/30 px-4 py-2">{ontologyHistory.filter((item) => item.status !== 'current').slice(0, 20).map((item) => <li key={item.id} className="flex items-center gap-2 py-1.5 text-2xs text-ink-quaternary"><span className="font-mono">{item.status}</span><span>{item.predicate}</span><span>{objectLabel(item)}</span></li>)}</ul> : null}
+              {showHistory ? <ul className="border-t border-line bg-surface-muted/30 px-4 py-2">{ontologyHistory.filter((item) => item.status !== 'current').slice(0, 20).map((item) => <li key={item.id} className="flex items-center gap-2 py-1.5 text-2xs text-ink-quaternary"><span className="font-mono">{item.status}</span><span title={item.predicate}>{predicateLabel(t, item.predicate)}</span><span>{objectLabel(item)}</span></li>)}</ul> : null}
             </>
           )}
         </Section>

@@ -1,9 +1,11 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
 import type { ChatContentBlock, RouterResponse, TaskContract } from '@opc/shared/domain';
+import type { RouterSchedule, RouterScheduleDraft, RouterSchedulePatch } from '@opc/shared/domain';
 import { recallView } from './inline';
 import { renderRouterWorkerCapabilities, type RouterWorkerCapability } from './routerCapabilities';
-import { AssistantToolsService, createAssistantToolsExtension } from '../assistant/assistantTools';
+import { createAssistantToolsExtension } from '../assistant/assistantTools';
+import type { AssistantToolsService } from '../assistant/assistantTools';
 
 /**
  * Router 的工具带。
@@ -12,7 +14,7 @@ import { AssistantToolsService, createAssistantToolsExtension } from '../assista
  * 自己**不执行**具体任务。所以这里没有 bash、读写文件、代码执行——那套工具属于
  * Worker（§2.1「甚至可以不配备 Bash 工具」）。
  *
- * 留下的九个工具正好是 Super-agent 里 Router 的全部动作：
+ * Router 工具带覆盖协调、记忆与定时计划：
  *
  *   open_line_of_work  派活（开线 + 建 worker + 订阅 + 跑第一个任务）
  *   reply_to_user      唯一的外观信道（§2.2：Worker 不直接与人交互，由 Router 统一回复）
@@ -125,6 +127,12 @@ export interface RouterToolDeps {
   /** Dynamic metadata-only view of tools available to Workers. */
   workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
   assistantTools?: AssistantToolsService;
+  schedules?: {
+    create(draft: RouterScheduleDraft): RouterSchedule;
+    list(): RouterSchedule[];
+    update(id: string, patch: RouterSchedulePatch): RouterSchedule;
+    cancel(id: string): RouterSchedule;
+  };
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -162,6 +170,8 @@ export function createRouterTools(deps: RouterToolDeps) {
           '哪件事卡住了要不要说。你不介入单件事内部怎么拆。',
           '用户在活还没干完时改主意，用 steer_line 把那句话带到那条线上——那仍然是同一件事，',
           '不要为此开第二条线。',
+          '用户明确要求未来某个时间提醒或重复检查时，用 create_schedule 建立计划；用户没有给出必要日期、时间或时区时先询问。',
+          '定时请求到期后视作用户预先安排的输入，结合届时上下文决定是否 open_line_of_work；不要只因为计划到期就盲目执行过时或失去意义的请求。',
           '',
           '## 你要记得',
           '你是一个跨天、跨工作线连续的存在：他说过什么、否决过什么，不该每次重新问。',
@@ -208,6 +218,7 @@ export function createRouterTools(deps: RouterToolDeps) {
     ],
     tools: [
       ...(deps.assistantTools ? createAssistantToolsExtension(deps.assistantTools).tools ?? [] : []),
+      ...(deps.schedules ? scheduleTools(deps.schedules) : []),
       defineTool({
         name: 'open_line_of_work',
         description:
@@ -568,6 +579,92 @@ export function createRouterTools(deps: RouterToolDeps) {
       }),
     ],
   });
+}
+
+function scheduleTools(service: NonNullable<RouterToolDeps['schedules']>) {
+  const rule = Type.Union([
+    Type.Object({ kind: Type.Literal('once'), at: Type.String({ description: 'ISO 8601 日期时间，必须包含 UTC 偏移，如 2026-06-20T09:00:00+08:00。' }) }),
+    Type.Object({ kind: Type.Literal('daily'), time: Type.String({ description: '24 小时制 HH:mm。' }) }),
+    Type.Object({ kind: Type.Literal('weekdays'), time: Type.String({ description: '24 小时制 HH:mm。' }) }),
+    Type.Object({ kind: Type.Literal('weekly'), time: Type.String(), daysOfWeek: Type.Array(Type.Number(), { minItems: 1 }) }),
+    Type.Object({ kind: Type.Literal('monthly'), time: Type.String(), dayOfMonth: Type.Number() }),
+  ]);
+  const normalizeRule = (value: unknown): RouterScheduleDraft['rule'] => {
+    const candidate = value as Record<string, unknown>;
+    if (candidate?.kind !== 'once') return value as RouterScheduleDraft['rule'];
+    if (typeof candidate.at !== 'string' || !/(?:Z|[+-]\d{2}:\d{2})$/.test(candidate.at)) {
+      throw new Error('单次计划时间必须是包含时区偏移的 ISO 日期时间');
+    }
+    const at = Date.parse(candidate.at);
+    if (!Number.isFinite(at)) throw new Error('单次计划日期时间无效');
+    return { kind: 'once', at };
+  };
+  return [
+    defineTool({
+      name: 'create_schedule',
+      description: '创建用户授权的定时请求。使用用户时区，时间不明确时先询问；不得凭空猜测时间。到期后 Router 会再次判断并决定是否派发。',
+      parameters: Type.Object({
+        title: Type.String({ description: '计划列表中显示的简短名称。' }),
+        instruction: Type.String({ description: '到期时需要 Router 评估并处理的请求。' }),
+        rule,
+        timezone: Type.Optional(Type.String({ description: 'IANA 时区，如 Asia/Shanghai；省略则使用系统时区。' })),
+      }),
+      execute: async (args) => {
+        try {
+          const raw = args as unknown as { title: string; instruction: string; timezone?: string; rule: unknown };
+          const normalized: RouterScheduleDraft = { ...raw, rule: normalizeRule(raw.rule) };
+          const created = service.create(normalized);
+          return ok(`已创建定时计划「${created.title}」，下次执行：${new Date(created.nextRunAt!).toLocaleString('zh-CN', { timeZone: created.timezone })}（${created.timezone}）。`, { scheduleId: created.id });
+        } catch (error) {
+          return fail(`创建计划失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    }),
+    defineTool({
+      name: 'list_schedules',
+      description: '查看定时计划及其下次执行时间。',
+      parameters: Type.Object({ include_finished: Type.Optional(Type.Boolean()) }),
+      execute: async (args) => {
+        const rows = service.list().filter((row) => args.include_finished || ['active', 'paused'].includes(row.status));
+        return ok(rows.length ? rows.map((row) => `${row.id} · ${row.title} · ${row.status} · ${row.nextRunAt ? new Date(row.nextRunAt).toLocaleString('zh-CN', { timeZone: row.timezone }) : '无下次执行'} (${row.timezone})\n  ${row.instruction}`).join('\n') : '没有定时计划。');
+      },
+    }),
+    defineTool({
+      name: 'update_schedule',
+      description: '修改定时计划的内容或规则，也可以暂停或恢复。',
+      parameters: Type.Object({
+        schedule_id: Type.String(),
+        title: Type.Optional(Type.String()),
+        instruction: Type.Optional(Type.String()),
+        rule: Type.Optional(rule),
+        timezone: Type.Optional(Type.String()),
+        status: Type.Optional(Type.Union([Type.Literal('active'), Type.Literal('paused')])),
+      }),
+      execute: async (args) => {
+        try {
+          const { schedule_id: id, ...patch } = args;
+          const normalizedPatch = { ...patch, ...(patch.rule ? { rule: normalizeRule(patch.rule) } : {}) };
+          const updated = service.update(id, normalizedPatch as RouterSchedulePatch);
+          return ok(`已更新「${updated.title}」，状态：${updated.status}。`);
+        } catch (error) {
+          return fail(`更新计划失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    }),
+    defineTool({
+      name: 'cancel_schedule',
+      description: '取消一个尚未完成的定时计划。',
+      parameters: Type.Object({ schedule_id: Type.String() }),
+      execute: async (args) => {
+        try {
+          const cancelled = service.cancel(args.schedule_id);
+          return ok(`已取消「${cancelled.title}」。`);
+        } catch (error) {
+          return fail(`取消计划失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    }),
+  ];
 }
 
 /** Normalize the current protocol and the two pre-structured-response shapes. */

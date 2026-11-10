@@ -224,7 +224,7 @@ export function SettingsShell() {
   })();
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 bg-panel select-none">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-panel select-none">
       <aside className="flex w-[13.75rem] shrink-0 flex-col border-r border-line bg-sidebar">
         <div className="shrink-0 px-4 pt-4 pb-3">
           <h1 className="text-xl font-bold tracking-tight text-ink">{t('settings.title')}</h1>
@@ -307,7 +307,7 @@ export function SettingsShell() {
         </div> */}
       </aside>
 
-      <main className="page-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <main className="page-scroll h-full min-h-0 min-w-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
         <div className="mx-auto max-w-[55rem] px-8 pt-6 pb-10">{content}</div>
       </main>
     </div>

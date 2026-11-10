@@ -44,7 +44,7 @@ export function CompactionPage() {
         </Section>
 
         <Section title={t('settings.compaction.title')} description={t('settings.compaction.sectionDesc')}>
-          <Row label={t('settings.compaction.enabled')} settingKey="compaction.enabled">
+          <Row label={t('settings.compaction.enabled')}>
             <Toggle
               label={t('settings.compaction.enabled')}
               checked={compaction.enabled}
@@ -53,7 +53,6 @@ export function CompactionPage() {
           </Row>
           <Row
             label={t('settings.compaction.reserve')}
-            settingKey="compaction.reserveTokens"
             hint={t('settings.compaction.reserveHint', { recommended: recommendedReserve.toLocaleString() })}
             disabled={!compaction.enabled}
           >
@@ -77,7 +76,6 @@ export function CompactionPage() {
           </Row>
           <Row
             label={t('settings.compaction.keep')}
-            settingKey="compaction.keepRecentTokens"
             hint={t('settings.compaction.keepHint')}
             disabled={!compaction.enabled}
           >
@@ -92,7 +90,6 @@ export function CompactionPage() {
           </Row>
           <Row
             label={t('settings.compaction.background')}
-            settingKey="compaction.backgroundTokens"
             hint={t('settings.compaction.backgroundHint')}
             disabled={!compaction.enabled}
           >

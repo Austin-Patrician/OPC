@@ -8,6 +8,7 @@ import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
+import { SchedulesPage } from '@/pages/schedules/SchedulesPage';
 
 const SystemRuntimeView = lazy(() =>
   import('@/pages/runtime/SystemRuntimeView').then(({ SystemRuntimeView: view }) => ({
@@ -34,6 +35,7 @@ export function App() {
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           <Route path="skills" element={<CapabilitiesPage />} />
+          <Route path="schedules" element={<SchedulesPage />} />
           <Route path="runtime" element={<RuntimeRoute />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

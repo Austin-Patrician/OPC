@@ -295,6 +295,16 @@ const bridge: OpcBridge = {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
     setTriage: (patch: unknown) =>
       ipcRenderer.invoke(IPC.router.setTriage, patch),
+    listSchedules: () => ipcRenderer.invoke(IPC.router.listSchedules),
+    createSchedule: (draft: unknown) => ipcRenderer.invoke(IPC.router.createSchedule, draft),
+    updateSchedule: (id: string, patch: unknown) => ipcRenderer.invoke(IPC.router.updateSchedule, id, patch),
+    cancelSchedule: (id: string) => ipcRenderer.invoke(IPC.router.cancelSchedule, id),
+    listScheduleOccurrences: (id: string) => ipcRenderer.invoke(IPC.router.listScheduleOccurrences, id),
+    onScheduleChanged: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on(IPC.router.scheduleChangedEvent, handler);
+      return () => ipcRenderer.removeListener(IPC.router.scheduleChangedEvent, handler);
+    },
   },
   watchdog: {
     incidents: () => ipcRenderer.invoke(IPC.watchdog.incidents),
@@ -303,7 +313,6 @@ const bridge: OpcBridge = {
     getPolicy: () => ipcRenderer.invoke(IPC.watchdog.getPolicy),
     savePolicy: (patch: unknown) =>
       ipcRenderer.invoke(IPC.watchdog.savePolicy, patch),
-    rollbackPolicy: () => ipcRenderer.invoke(IPC.watchdog.rollbackPolicy),
     getModel: () => ipcRenderer.invoke(IPC.watchdog.getModel),
     setModel: (ref: unknown) => ipcRenderer.invoke(IPC.watchdog.setModel, ref),
   },

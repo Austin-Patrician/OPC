@@ -74,31 +74,34 @@ export function Section({
 export function Row({
   label,
   hint,
-  settingKey,
   disabled = false,
+  stacked = false,
   children,
 }: {
   label: ReactNodeType;
   hint?: ReactNodeType;
-  settingKey?: string;
   disabled?: boolean;
+  /** Put the control on its own full-width line below the label (long text, textareas). */
+  stacked?: boolean;
   children?: ReactNodeType;
 }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-6 border-t border-line px-4 py-3 first:border-t-0 transition-opacity',
+        'border-t border-line px-4 py-3 first:border-t-0 transition-opacity',
+        stacked ? 'flex flex-col gap-2' : 'flex items-center gap-6',
         disabled && 'pointer-events-none opacity-45',
       )}
     >
-      <div className="min-w-0 flex-1">
+      <div className={cn('min-w-0', stacked ? 'w-full' : 'flex-1')}>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-base text-ink">
           {label}
-          {settingKey ? <KeyTag>{settingKey}</KeyTag> : null}
         </div>
         {hint ? <div className="mt-0.5 text-xs-plus leading-relaxed text-ink-tertiary">{hint}</div> : null}
       </div>
-      {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
+      {children ? (
+        <div className={cn('flex items-center gap-2', stacked ? 'w-full' : 'shrink-0')}>{children}</div>
+      ) : null}
     </div>
   );
 }

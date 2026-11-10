@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 57;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -2196,7 +2196,35 @@ CREATE INDEX IF NOT EXISTS idx_ai_call_model ON ai_call(provider_id, model_id, s
 CREATE INDEX IF NOT EXISTS idx_ai_call_scope ON ai_call(capability, origin, worker_id, started_at DESC);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56];
+/** V57: persistent Router schedules and their idempotent execution history. */
+const V57 = `
+CREATE TABLE IF NOT EXISTS router_schedule (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  rule_json TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','paused','cancelled','completed')),
+  next_run_at INTEGER,
+  last_run_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_router_schedule_due ON router_schedule(status, next_run_at);
+CREATE TABLE IF NOT EXISTS router_schedule_occurrence (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES router_schedule(id),
+  scheduled_for INTEGER NOT NULL,
+  enqueued_at INTEGER NOT NULL,
+  event_id TEXT NOT NULL UNIQUE REFERENCES event(id),
+  missed_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(schedule_id, scheduled_for)
+);
+CREATE INDEX IF NOT EXISTS idx_router_schedule_occurrence_recent
+  ON router_schedule_occurrence(schedule_id, scheduled_for DESC);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

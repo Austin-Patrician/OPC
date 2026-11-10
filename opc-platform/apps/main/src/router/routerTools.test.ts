@@ -1,6 +1,7 @@
 import { createRegistry } from '@earendil-works/pi-durable';
 import { describe, expect, it } from 'vitest';
 import type { ChatContentBlock, RouterResponse } from '@opc/shared/domain';
+import type { RouterToolDeps } from './routerTools';
 import { createRouterTools } from './routerTools';
 import type { RouterWorkerCapability } from './routerCapabilities';
 
@@ -18,6 +19,7 @@ function host(
     steerLine?: () => Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
     reply?: (text: string, target?: string, content?: ChatContentBlock[]) => void;
     workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
+    schedules?: RouterToolDeps['schedules'];
   } = {},
 ) {
   const calls: string[] = [];
@@ -83,6 +85,13 @@ function host(
             },
       ),
     workerCapabilities: overrides.workerCapabilities,
+    schedules: overrides.schedules ?? {
+      create: (draft) => ({ id: 'schedule-1', title: draft.title, instruction: draft.instruction,
+        rule: draft.rule, timezone: draft.timezone ?? 'UTC', status: 'active', nextRunAt: 1,
+        lastRunAt: null, createdAt: 1, updatedAt: 1 }),
+      list: () => [], update: () => { throw new Error('not implemented'); },
+      cancel: () => { throw new Error('not implemented'); },
+    },
   });
   const registry = createRegistry();
   registry.install(extension);
@@ -101,7 +110,7 @@ async function run(registry: ReturnType<typeof createRegistry>, name: string, ar
 }
 
 describe('Router 的工具带', () => {
-  it('十一个动作，一个执行类工具都没有', () => {
+  it('协调、记忆与计划工具不包含执行类工具', () => {
     const { registry } = host();
     const names = registry
       .snapshot()
@@ -111,9 +120,12 @@ describe('Router 的工具带', () => {
 
     expect(names).toEqual([
       'ask_user',
+      'cancel_schedule',
       'close_line',
+      'create_schedule',
       'forget_memory',
       'list_lines',
+      'list_schedules',
       'ontology_command',
       'open_line_of_work',
       'recall',
@@ -121,6 +133,7 @@ describe('Router 的工具带', () => {
       'remember',
       'reply_to_user',
       'steer_line',
+      'update_schedule',
     ]);
 
     // §2.1：Router 可以不配备 Bash 工具。这里它是真的没有——不是没调用，是不存在。
@@ -164,6 +177,25 @@ describe('Router 的工具带', () => {
 
     expect(await capabilitySection.render({} as never, {} as never)).toContain('执行体-1');
     expect(await capabilitySection.render({} as never, {} as never)).toContain('执行体-2');
+  });
+
+  it('向 Router 暴露定时计划管理工具，但计划内容本身不启动 Worker', async () => {
+    const created: string[] = [];
+    const { registry } = host({
+      schedules: {
+        create: (draft) => {
+          created.push(draft.instruction);
+          return { id: 'schedule-x', title: draft.title, instruction: draft.instruction, rule: draft.rule,
+            timezone: draft.timezone ?? 'Asia/Shanghai', status: 'active', nextRunAt: 1_800_000_000_000,
+            lastRunAt: null, createdAt: 1, updatedAt: 1 };
+        },
+        list: () => [], update: () => { throw new Error('unused'); }, cancel: () => { throw new Error('unused'); },
+      },
+    });
+    await run(registry, 'create_schedule', {
+      title: '看邮件', instruction: '检查 Gmail 新邮件', rule: { kind: 'daily', time: '09:00' }, timezone: 'Asia/Shanghai',
+    });
+    expect(created).toEqual(['检查 Gmail 新邮件']);
   });
 
   it('派活立刻返回 id，不返回任何执行结果', async () => {

@@ -26,6 +26,7 @@ import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
 import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
+import { IPC } from '@opc/shared/ipc';
 import type { RouterToolDeps } from './router/routerTools';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
@@ -80,6 +81,7 @@ import { DesktopInstallService } from './desktop/install';
 import { DesktopBroker } from './desktop/broker';
 import { AssistantToolsService } from './assistant/assistantTools';
 import { UsageRepository } from './data/usageRepository';
+import { RouterScheduleRepository } from './data/routerScheduleRepository';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
 const IDLE_COOLING_MS = 60 * 60 * 1000;
@@ -571,6 +573,12 @@ async function bootstrap(): Promise<void> {
   const billingSettings = new BillingSettingsService(db);
   billingSettings.ensureDefaults();
   const usage = new UsageRepository(db);
+  try {
+    const imported = usage.backfillLegacyTasks();
+    if (imported > 0) console.warn(`[usage] 已导入 ${imported} 条历史任务汇总用量`);
+  } catch (error) {
+    console.warn('[usage] 历史任务汇总回填失败', error);
+  }
   const imageService = new ImageService(modelConfig, networkClient, usage);
   const speechService = new SpeechService(modelConfig, networkClient, usage);
   const decisionService = new DecisionService(modelConfig, usage, () => billingSettings.get().pricingMode);
@@ -763,6 +771,7 @@ async function bootstrap(): Promise<void> {
    * 两层过滤的配置（§3.1）。存在 `app_setting` 里，设置页写、调度循环每一轮读。
    */
   const triage = new TriagePolicyStore(db);
+  const schedules = new RouterScheduleRepository(db);
 
   /**
    * 触发源（§3 事件驱动）：GitHub、飞书、钉钉。
@@ -837,6 +846,7 @@ async function bootstrap(): Promise<void> {
     },
     contextGraph,
     workerCapabilities: () => work?.routerCapabilities() ?? [],
+    schedules,
     ontologyCommand: (input: Parameters<NonNullable<RouterToolDeps['ontologyCommand']>>[0]) => ontologyCommands
       ? ontologyCommands.execute({ actor: 'router', ...input })
       : Promise.resolve({ ok: false, command: { commandId: '', status: 'failed', approvalId: null, error: '本体命令服务尚未就绪' }, error: '本体命令服务尚未就绪' }),
@@ -1052,6 +1062,7 @@ async function bootstrap(): Promise<void> {
     consolidationRuns,
     events: systemEvents,
     triage,
+    schedules,
     watchdog: {
       incidents: watchdogIncidents,
       actions: watchdogActions,
@@ -1384,7 +1395,25 @@ async function bootstrap(): Promise<void> {
     });
     watcher.start();
 
-    const tick = setInterval(() => pushTick(), 20_000);
+    const runSchedules = (): void => {
+      try {
+        const result = schedules.enqueueDue();
+        if (result.due.length > 0) {
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) window.webContents.send(IPC.router.scheduleChangedEvent);
+          }
+          console.warn(`[router] 已触发 ${result.due.length} 个定时计划，合并 ${result.skipped} 次过期执行`);
+          pushTick();
+        }
+      } catch (error) {
+        console.error('[router] 定时计划检查失败', error);
+      }
+    };
+    runSchedules();
+    const tick = setInterval(() => {
+      runSchedules();
+      pushTick();
+    }, 20_000);
     tick.unref?.();
 
     app.on('before-quit', () => {

@@ -1247,6 +1247,45 @@ export interface WorkThread {
 /** What kind of work a worker is instantiated for. Not a job title. */
 export type WorkerTemplate = 'research' | 'code' | 'ops';
 
+export type RouterScheduleRule =
+  | { kind: 'once'; at: number }
+  | { kind: 'daily' | 'weekdays'; time: string }
+  | { kind: 'weekly'; time: string; daysOfWeek: number[] }
+  | { kind: 'monthly'; time: string; dayOfMonth: number };
+
+export type RouterScheduleStatus = 'active' | 'paused' | 'cancelled' | 'completed';
+
+export interface RouterSchedule {
+  id: string;
+  title: string;
+  instruction: string;
+  rule: RouterScheduleRule;
+  timezone: string;
+  status: RouterScheduleStatus;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type RouterScheduleDraft = Pick<RouterSchedule, 'title' | 'instruction' | 'rule'> & {
+  timezone?: string;
+};
+
+export type RouterSchedulePatch = Partial<RouterScheduleDraft> & {
+  status?: RouterScheduleStatus;
+};
+
+export interface RouterScheduleOccurrence {
+  id: string;
+  scheduleId: string;
+  scheduledFor: number;
+  enqueuedAt: number;
+  eventId: string;
+  missedCount: number;
+  triage: TriageState;
+}
+
 export type WorkerStatus = 'idle' | 'running' | 'retired';
 
 export interface Worker {

@@ -103,11 +103,9 @@ export function TriagePage() {
       />
 
       <div className="space-y-4">
-        <Section title={t('settings.triage.modelTitle')} description={t('settings.triage.modelDesc')}>
+        <Section title={t('settings.triage.modelTitle')}>
           <Row
             label={t('settings.triage.routerModel')}
-            hint={t('settings.triage.routerModelHint')}
-            settingKey="default.router"
           >
             <div className="w-[22rem] max-w-full">
               <ModelPicker
@@ -148,7 +146,7 @@ export function TriagePage() {
         </Section>
 
         <Section title={t('settings.triage.fastTitle')} description={t('settings.triage.fastDesc')}>
-          <Row label={t('settings.triage.mode')} settingKey="router.triage.fastPath">
+          <Row label={t('settings.triage.mode')}>
             <Segmented
               label={t('settings.triage.mode')}
               value={policy.fastPath}
@@ -192,7 +190,7 @@ export function TriagePage() {
           title={t('settings.triage.semanticTitle')}
           description={t('settings.triage.semanticDesc')}
         >
-          <Row label={t('settings.triage.semantic')} settingKey="router.triage.semantic">
+          <Row label={t('settings.triage.semantic')}>
             <Segmented
               label={t('settings.triage.semantic')}
               value={policy.semantic}
@@ -225,8 +223,6 @@ export function TriagePage() {
           {policy.semantic === 'decision' ? (
             <Row
               label={t('settings.triage.classifier')}
-              hint={t('settings.triage.classifierHint')}
-              settingKey="default.decision"
               disabled={models.loading}
             >
               <div className="w-[22rem] max-w-full">
@@ -261,6 +257,7 @@ export function TriagePage() {
               label={t('settings.triage.prompt')}
               hint={t('settings.triage.promptHint')}
               disabled={!loaded}
+              stacked
             >
               <textarea
                 aria-label={t('settings.triage.prompt')}
@@ -272,10 +269,6 @@ export function TriagePage() {
               />
             </Row>
           ) : null}
-
-          <p className="px-4 py-3 text-xs leading-relaxed text-ink-tertiary">
-            {t('settings.triage.decisionHint')}
-          </p>
         </Section>
 
         <p className="px-1 text-2xs leading-relaxed text-ink-quaternary">

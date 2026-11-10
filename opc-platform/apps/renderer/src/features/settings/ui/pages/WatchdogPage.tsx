@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Select } from '@/shared/ui/Select';
 import type {
   WatchdogActionView,
   WatchdogAskResult,
@@ -10,7 +9,9 @@ import type {
 import { cn } from '@/shared/lib/cn';
 import { isChatModelEnabled } from '@opc/shared/domain';
 import { useModels } from '@/features/models/model/useModels';
-import { PageHeader, Row, Section } from '../kit';
+import { useCatalog } from '@/features/models/model/useCatalog';
+import { ModelPicker, pickerGroups, type ModelPickerValue } from '@/shared/ui/ModelPicker';
+import { PageHeader, Row, Section, Toggle, buttonClass } from '../kit';
 
 /**
  * 设置 → 进展监督（`docs/v2/11-watchdog-spec.md` W7）。
@@ -18,9 +19,6 @@ import { PageHeader, Row, Section } from '../kit';
  * 这一页只有两件事：**看**（它在看什么、它做过什么、问它一句）与**调规则**。
  * 没有"修"——修复由它按白名单自己发起，而且永远不含杀任务。界面能代劳的只有
  * "把阈值改成你会满意的样子"，那必须是一次明确的保存。
- *
- * 保留上一版是刻意的：回退不是"恢复默认"，是"回到我改之前"。默认值只在从没
- * 改过的时候才是对的。
  */
 
 /** 界面上用分钟/秒，库里是毫秒。转换只在这里发生。 */
@@ -73,54 +71,55 @@ const STATE_STYLE: Record<WatchdogIncidentView['state'], string> = {
 export function WatchdogPage() {
   const { t } = useTranslation();
   const models = useModels();
+  const { catalog } = useCatalog();
   const [incidents, setIncidents] = useState<WatchdogIncidentView[]>([]);
   const [actions, setActions] = useState<WatchdogActionView[]>([]);
-  const [policy, setPolicy] = useState<WatchdogPolicyView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-  /** 它自己的模型；空字符串 = 跟随默认 LLM。 */
-  const [modelRef, setModelRef] = useState('');
+  /** 上次从库里读到的样子，用来判断"有没有改动"。 */
+  const [baseline, setBaseline] = useState<Draft | null>(null);
+  /** 它自己的模型；null = 跟随默认 LLM。 */
+  const [modelRef, setModelRef] = useState<ModelPickerValue | null>(null);
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<WatchdogAskResult | null>(null);
   const [asking, setAsking] = useState(false);
   const [note, setNote] = useState('');
 
-  const refresh = useCallback(async () => {
+  /** 只刷新观察区；规则是草稿，不能被定时刷新覆盖。 */
+  const refreshActivity = useCallback(async () => {
     const bridge = window.opc?.watchdog;
     if (!bridge) return;
-    const [nextIncidents, nextActions, nextPolicy] = await Promise.all([
+    const [nextIncidents, nextActions] = await Promise.all([
       bridge.incidents(),
       bridge.actions(),
-      bridge.getPolicy(),
     ]);
-    const nextModel = (await bridge.getModel()) ?? null;
     setIncidents(nextIncidents);
     setActions(nextActions);
-    setPolicy(nextPolicy);
-    setDraft(toDraft(nextPolicy));
-    setModelRef(nextModel ? `${nextModel.providerId}\u0000${nextModel.modelId}` : '');
+  }, []);
+
+  const loadPolicy = useCallback(async () => {
+    const bridge = window.opc?.watchdog;
+    if (!bridge) return;
+    const [nextPolicy, nextModel] = await Promise.all([bridge.getPolicy(), bridge.getModel()]);
+    const next = toDraft(nextPolicy);
+    setDraft(next);
+    setBaseline(next);
+    setModelRef(nextModel ?? null);
   }, []);
 
   // 可选项来自 LLM 页：这里只挑已经启用的 chat 模型，不在这里启用新模型。
-  const options = useMemo(() => {
-    const list: { value: string; label: string }[] = [];
-    for (const provider of models.providers) {
-      for (const model of provider.models) {
-        if (model.capability !== 'chat' || !isChatModelEnabled(model)) continue;
-        list.push({
-          value: `${provider.id}\u0000${model.id}`,
-          label: `${provider.name ?? provider.id} · ${model.name ?? model.id}`,
-        });
-      }
-    }
-    return list;
-  }, [models.providers]);
+  const modelGroups = pickerGroups(
+    models.providers,
+    (model) => model.capability === 'chat' && isChatModelEnabled(model),
+    catalog,
+  );
 
   useEffect(() => {
-    void refresh();
-    // 它自己会变（状态机按时间推进），所以这一页也按分钟刷新一次。
-    const timer = setInterval(() => void refresh(), 60_000);
+    void loadPolicy();
+    void refreshActivity();
+    // 它自己会变（状态机按时间推进），所以观察区按分钟刷新一次。
+    const timer = setInterval(() => void refreshActivity(), 60_000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [loadPolicy, refreshActivity]);
 
   const ask = async () => {
     const bridge = window.opc?.watchdog;
@@ -138,19 +137,19 @@ export function WatchdogPage() {
     const bridge = window.opc?.watchdog;
     if (!bridge || !draft) return;
     const next = await bridge.savePolicy(toPatch(draft));
-    setPolicy(next);
-    setDraft(toDraft(next));
+    const savedDraft = toDraft(next);
+    setDraft(savedDraft);
+    setBaseline(savedDraft);
     setNote(t('settings.watchdog.saved'));
   };
 
-  const rollback = async () => {
-    const bridge = window.opc?.watchdog;
-    if (!bridge) return;
-    const next = await bridge.rollbackPolicy();
-    setPolicy(next);
-    setDraft(toDraft(next));
-    setNote(t('settings.watchdog.rolledBack'));
+  /** 改任何一项都先清掉"已保存"，避免提示和当前内容对不上。 */
+  const update = (patch: Partial<Draft>) => {
+    setDraft((previous) => (previous ? { ...previous, ...patch } : previous));
+    setNote('');
   };
+
+  const dirty = draft !== null && baseline !== null && JSON.stringify(draft) !== JSON.stringify(baseline);
 
   return (
     <div className="space-y-4">
@@ -251,110 +250,120 @@ export function WatchdogPage() {
         <Section
           title={t('settings.watchdog.policy')}
           action={
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void rollback()}
-                disabled={!policy?.hasPrevious}
-                className="h-8 rounded-lg border border-line px-2.5 text-xs-plus text-ink-secondary disabled:opacity-40"
-              >
-                {t('settings.watchdog.rollback')}
-              </button>
+            <>
+              <span aria-live="polite" className={cn('text-2xs', dirty ? 'text-warning' : 'text-success')}>
+                {dirty ? t('settings.watchdog.unsaved') : note}
+              </span>
               <button
                 type="button"
                 onClick={() => void save()}
-                className="h-8 rounded-lg bg-ink px-3 text-xs-plus font-medium text-surface"
+                disabled={!dirty}
+                className={buttonClass.primary}
               >
                 {t('settings.watchdog.save')}
               </button>
-            </div>
+            </>
           }
         >
-          <div className="divide-y divide-line">
-            <Row label={t('settings.watchdog.model')} hint={t('settings.watchdog.modelHint')}>
-              <Select
+          <Row label={t('settings.watchdog.model')} hint={t('settings.watchdog.modelHint')}>
+            <div className="w-[22rem] max-w-full">
+              <ModelPicker
                 ariaLabel={t('settings.watchdog.model')}
+                title={t('settings.watchdog.model')}
+                testId="watchdog-model"
+                groups={modelGroups}
                 value={modelRef}
-                onValueChange={(value) => {
-                  setModelRef(value);
-                  const [providerId, modelId] = value.split('\u0000');
-                  void window.opc?.watchdog.setModel(
-                    value ? { providerId: providerId!, modelId: modelId! } : null,
-                  );
+                allowThinking={false}
+                clearLabel={t('settings.watchdog.modelDefault')}
+                emptyLabel={t('settings.watchdog.modelDefault')}
+                onClear={() => {
+                  setModelRef(null);
+                  void window.opc?.watchdog.setModel(null);
                 }}
-                className="w-56 max-w-full"
-                options={[
-                  { value: '', label: t('settings.watchdog.modelDefault') },
-                  ...options,
-                ]}
+                onSelect={(selection) => {
+                  const next = { providerId: selection.providerId, modelId: selection.modelId };
+                  setModelRef(next);
+                  void window.opc?.watchdog.setModel(next);
+                }}
               />
-            </Row>
-            <Row label={t('settings.watchdog.enabled')}>
-              <input
-                type="checkbox"
-                checked={draft.enabled}
-                onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-                className="size-4 accent-ink"
-              />
-            </Row>
-            <Row label={t('settings.watchdog.idle')}>
-              <NumberInput
-                value={draft.idleMinutes}
-                min={5}
-                max={1440}
-                onChange={(idleMinutes) => setDraft({ ...draft, idleMinutes })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.repeat')}>
-              <NumberInput
-                value={draft.repeatFailure}
-                min={2}
-                max={20}
-                onChange={(repeatFailure) => setDraft({ ...draft, repeatFailure })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.stale')}>
-              <NumberInput
-                value={draft.staleSeconds}
-                min={30}
-                max={1800}
-                onChange={(staleSeconds) => setDraft({ ...draft, staleSeconds })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.recheck')}>
-              <NumberInput
-                value={draft.recheckMinutes}
-                min={1}
-                max={360}
-                onChange={(recheckMinutes) => setDraft({ ...draft, recheckMinutes })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.escalate')}>
-              <NumberInput
-                value={draft.escalateMinutes}
-                min={2}
-                max={1440}
-                onChange={(escalateMinutes) => setDraft({ ...draft, escalateMinutes })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.judge')}>
-              <NumberInput
-                value={draft.judgeMinutes}
-                min={1}
-                max={1440}
-                onChange={(judgeMinutes) => setDraft({ ...draft, judgeMinutes })}
-              />
-            </Row>
-            <Row label={t('settings.watchdog.actionCooldown')}>
-              <NumberInput
-                value={draft.actionMinutes}
-                min={1}
-                max={1440}
-                onChange={(actionMinutes) => setDraft({ ...draft, actionMinutes })}
-              />
-            </Row>
-          </div>
-          {note ? <div className="px-4 py-2 text-xs-plus text-ink-tertiary">{note}</div> : null}
+            </div>
+          </Row>
+
+          <Row label={t('settings.watchdog.enabled')} hint={t('settings.watchdog.enabledHint')}>
+            <Toggle
+              checked={draft.enabled}
+              label={t('settings.watchdog.enabled')}
+              onChange={(enabled) => update({ enabled })}
+            />
+          </Row>
+
+          <Row label={t('settings.watchdog.idle')} hint={t('settings.watchdog.idleHint')}>
+            <NumberInput
+              value={draft.idleMinutes}
+              min={5}
+              max={1440}
+              unit={t('settings.watchdog.unitMinutes')}
+              onChange={(idleMinutes) => update({ idleMinutes })}
+            />
+          </Row>
+          <Row label={t('settings.watchdog.repeat')} hint={t('settings.watchdog.repeatHint')}>
+            <NumberInput
+              value={draft.repeatFailure}
+              min={2}
+              max={20}
+              onChange={(repeatFailure) => update({ repeatFailure })}
+            />
+          </Row>
+          <Row label={t('settings.watchdog.stale')} hint={t('settings.watchdog.staleHint')}>
+            <NumberInput
+              value={draft.staleSeconds}
+              min={30}
+              max={1800}
+              unit={t('settings.watchdog.unitSeconds')}
+              onChange={(staleSeconds) => update({ staleSeconds })}
+            />
+          </Row>
+
+          <Row label={t('settings.watchdog.recheck')} hint={t('settings.watchdog.recheckHint')}>
+            <NumberInput
+              value={draft.recheckMinutes}
+              min={1}
+              max={360}
+              unit={t('settings.watchdog.unitMinutes')}
+              onChange={(recheckMinutes) => update({ recheckMinutes })}
+            />
+          </Row>
+          <Row label={t('settings.watchdog.escalate')} hint={t('settings.watchdog.escalateHint')}>
+            <NumberInput
+              value={draft.escalateMinutes}
+              min={2}
+              max={1440}
+              unit={t('settings.watchdog.unitMinutes')}
+              onChange={(escalateMinutes) => update({ escalateMinutes })}
+            />
+          </Row>
+
+          <Row label={t('settings.watchdog.judge')} hint={t('settings.watchdog.judgeHint')}>
+            <NumberInput
+              value={draft.judgeMinutes}
+              min={1}
+              max={1440}
+              unit={t('settings.watchdog.unitMinutes')}
+              onChange={(judgeMinutes) => update({ judgeMinutes })}
+            />
+          </Row>
+          <Row
+            label={t('settings.watchdog.actionCooldown')}
+            hint={t('settings.watchdog.actionCooldownHint')}
+          >
+            <NumberInput
+              value={draft.actionMinutes}
+              min={1}
+              max={1440}
+              unit={t('settings.watchdog.unitMinutes')}
+              onChange={(actionMinutes) => update({ actionMinutes })}
+            />
+          </Row>
         </Section>
       ) : null}
     </div>
@@ -365,24 +374,29 @@ function NumberInput({
   value,
   min,
   max,
+  unit,
   onChange,
 }: {
   value: number;
   min: number;
   max: number;
+  unit?: string;
   onChange: (value: number) => void;
 }) {
   return (
-    <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      onChange={(event) => {
-        const parsed = Number(event.target.value);
-        if (Number.isFinite(parsed)) onChange(parsed);
-      }}
-      className="h-8 w-20 rounded-lg border border-line bg-surface px-2 text-right text-sm-plus text-ink outline-none focus:border-ink-tertiary"
-    />
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(event) => {
+          const parsed = Number(event.target.value);
+          if (Number.isFinite(parsed)) onChange(parsed);
+        }}
+        className="h-[26px] w-16 rounded-md border border-line bg-surface px-2 text-right font-mono text-sm text-ink outline-none focus:border-accent"
+      />
+      {unit ? <span className="text-2xs text-ink-quaternary">{unit}</span> : null}
+    </div>
   );
 }

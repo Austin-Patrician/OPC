@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
+  CalendarClock,
   Grid3X3,
   MessageCircle,
   Settings,
@@ -26,6 +27,7 @@ export function NavRail() {
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
   const runtimeActive = location.pathname.startsWith('/runtime');
   const skillsActive = location.pathname.startsWith('/skills');
+  const schedulesActive = location.pathname.startsWith('/schedules');
 
   useEffect(() => {
     if (!identityOpen) return;
@@ -93,6 +95,16 @@ export function NavRail() {
             className={cn('buddy-rail-button relative', skillsActive && 'buddy-rail-button-active')}
           >
             <Grid3X3 size={19} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/schedules')}
+            aria-label={t('nav.schedules')}
+            aria-current={schedulesActive ? 'page' : undefined}
+            title={t('nav.schedules')}
+            className={cn('buddy-rail-button relative', schedulesActive && 'buddy-rail-button-active')}
+          >
+            <CalendarClock size={19} strokeWidth={1.8} />
           </button>
         </div>
       </div>
