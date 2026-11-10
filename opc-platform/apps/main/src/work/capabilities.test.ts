@@ -115,6 +115,21 @@ describe('WorkService.capabilities', () => {
     expect(agent.status).toBe('idle');
   });
 
+  it('exposes a small Router directory from the same effective Worker registry', async () => {
+    const workerId = executor({ name: '目录执行体', template: 'code' });
+
+    const capabilities = await workWith().routerCapabilities();
+    expect(capabilities).toEqual([
+      {
+        name: '目录执行体',
+        template: 'code',
+        tools: ['read', 'write', 'edit', 'bash'],
+      },
+    ]);
+    expect(capabilities[0]?.tools).not.toContain('recall');
+    expect(capabilities[0]).not.toHaveProperty('workerId', workerId);
+  });
+
   /**
    * 外部能力也是**一个槽**，哪怕一台服务器都没有。
    *

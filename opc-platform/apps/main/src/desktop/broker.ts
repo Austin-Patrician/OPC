@@ -1,10 +1,122 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { nativeImage } from 'electron';
 import type { DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
 import type { DesktopInstallService } from './install';
 
 const execFileAsync = promisify(execFile);
+
+let applicationCatalogPromise: Promise<Map<string, string>> | undefined;
+const iconCache = new Map<string, Promise<string | undefined>>();
+
+function applicationRoots(): string[] {
+  return ['/Applications', '/System/Applications', '/System/Library/CoreServices', path.join(process.env.HOME ?? '', 'Applications')]
+    .filter((root, index, roots) => root && roots.indexOf(root) === index && fs.existsSync(root));
+}
+
+async function applicationCatalog(): Promise<Map<string, string>> {
+  if (process.platform !== 'darwin') return new Map();
+  if (applicationCatalogPromise) return applicationCatalogPromise;
+  applicationCatalogPromise = (async () => {
+    const catalog = new Map<string, string>();
+    const roots = applicationRoots();
+    const apps: string[] = [];
+    const visit = (directory: string, depth: number): void => {
+      if (depth > 4) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        const appPath = path.join(directory, entry.name);
+        if (entry.name.endsWith('.app')) apps.push(appPath);
+        else visit(appPath, depth + 1);
+      }
+    };
+    roots.forEach((root) => visit(root, 0));
+    await Promise.all(apps.map(async (appPath) => {
+      const plist = path.join(appPath, 'Contents', 'Info.plist');
+      const idResult = await execFileAsync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist], { timeout: 1_000, maxBuffer: 4_000 }).catch(() => ({ stdout: '' }));
+      const bundleId = idResult.stdout.trim();
+      if (bundleId) catalog.set(`bundle:${bundleId.toLowerCase()}`, appPath);
+      catalog.set(`name:${path.basename(appPath, '.app').toLowerCase()}`, appPath);
+    }));
+    return catalog;
+  })();
+  return applicationCatalogPromise;
+}
+
+async function applicationPath(bundleId: string, name: string): Promise<string | undefined> {
+  if (process.platform !== 'darwin') return undefined;
+  if (bundleId) {
+    const query = `kMDItemCFBundleIdentifier == '${bundleId.replaceAll("'", "\\'")}'c`;
+    const result = await execFileAsync('/usr/bin/mdfind', [query], { timeout: 3_000, maxBuffer: 32_000 }).catch(() => ({ stdout: '' }));
+    const match = result.stdout.split(/\r?\n/).map((item) => item.trim()).find((item) => item.endsWith('.app') && fs.existsSync(item));
+    if (match) return match;
+  }
+  for (const root of ['/Applications', path.join(process.env.HOME ?? '', 'Applications')]) {
+    const candidate = path.join(root, `${name}.app`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  const catalog = await applicationCatalog();
+  const exact = catalog.get(`bundle:${bundleId.toLowerCase()}`) ?? catalog.get(`name:${name.toLowerCase()}`);
+  if (exact) return exact;
+  const normalized = name.toLowerCase().replace(/\s+(helper|renderer|gpu|crashpad)(?:\s*\([^)]*\))?$/i, '').trim();
+  if (normalized !== name.toLowerCase()) return catalog.get(`name:${normalized}`);
+  return undefined;
+}
+
+async function applicationIcon(bundleId: string, name: string, executablePath?: string): Promise<string | undefined> {
+  const cacheKey = `${bundleId}\n${name}\n${executablePath ?? ''}`;
+  const cached = iconCache.get(cacheKey);
+  if (cached) return cached;
+  const pending = loadApplicationIcon(bundleId, name, executablePath);
+  iconCache.set(cacheKey, pending);
+  return pending;
+}
+
+async function loadApplicationIcon(bundleId: string, name: string, executablePath?: string): Promise<string | undefined> {
+  const directPath = executablePath
+    ? (executablePath.endsWith('.app') ? executablePath : executablePath.split('/Contents/')[0])
+    : undefined;
+  const directBundle = directPath && path.extname(directPath) === '.app' && fs.existsSync(path.join(directPath, 'Contents', 'Info.plist')) ? directPath : undefined;
+  const appPath = directBundle ?? await applicationPath(bundleId, name);
+  if (!appPath) return undefined;
+  const plist = path.join(appPath, 'Contents', 'Info.plist');
+  const plistResult = await execFileAsync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { timeout: 2_000, maxBuffer: 64_000 }).catch(() => ({ stdout: '' }));
+  let metadata: Record<string, unknown> = {};
+  try { metadata = JSON.parse(plistResult.stdout) as Record<string, unknown>; } catch { /* invalid or unreadable plist */ }
+  const resourceDir = path.join(appPath, 'Contents', 'Resources');
+  const iconNames = [metadata.CFBundleIconFile, metadata.CFBundleIconName, metadata.CFBundleIconFiles]
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .map((value) => value.trim());
+  const candidates = [...iconNames, 'AppIcon', 'app']
+    .flatMap((iconName) => [iconName, iconName.endsWith('.icns') ? iconName : `${iconName}.icns`])
+    .map((iconName) => path.join(resourceDir, iconName))
+    .filter((candidate, index, all) => all.indexOf(candidate) === index);
+  try {
+    const resourceEntries = fs.readdirSync(resourceDir, { withFileTypes: true });
+    for (const entry of resourceEntries) {
+      if (entry.isFile() && /(?:app|application|icon)/i.test(entry.name) && entry.name.toLowerCase().endsWith('.icns')) candidates.push(path.join(resourceDir, entry.name));
+    }
+  } catch { /* the app may have no readable resources directory */ }
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opc-desktop-icon-'));
+    const pngPath = path.join(tempDir, 'icon.png');
+    try {
+      await execFileAsync('/usr/bin/sips', ['-s', 'format', 'png', candidate, '--out', pngPath], { timeout: 5_000, maxBuffer: 8_000 });
+      const icon = nativeImage.createFromBuffer(fs.readFileSync(pngPath));
+      if (!icon.isEmpty()) return icon.toDataURL();
+    } catch { /* try the next icon resource */ }
+    finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  }
+  return undefined;
+}
 
 export interface DesktopSessionInput { taskId: string; workerId: string; userId?: string; appId?: string; windowId?: string; }
 export interface DesktopResult { ok: boolean; text: string; data?: unknown; details?: Record<string, unknown>; }
@@ -91,10 +203,17 @@ export class DesktopBroker {
     const result = await this.raw(['list-apps'], undefined, undefined, true);
     if (!result.ok) throw new Error(result.text || '无法读取当前运行应用');
     const data = result.data as Record<string, unknown> | undefined;
-    return Array.isArray(data?.apps) ? data.apps.map((item) => {
+    const apps = Array.isArray(data?.apps) ? (await Promise.all(data.apps.map(async (item) => {
       const value = item as Record<string, unknown>;
-      return { name: String(value.name ?? value.app ?? ''), ...(typeof value.process === 'string' ? { process: value.process } : typeof value.pid === 'number' ? { process: String(value.pid) } : {}), ...(typeof value.bundle_id === 'string' ? { bundleId: value.bundle_id } : {}) };
-    }).filter((item) => item.name) : [];
+      const name = String(value.name ?? value.app ?? value.application_name ?? value.display_name ?? value.process_name ?? '');
+      const bundleId = [value.bundle_id, value.bundle_identifier, value.bundleIdentifier]
+        .find((item): item is string => typeof item === 'string' && Boolean(item.trim()))?.trim() ?? '';
+      const executablePath = [value.path, value.app_path, value.application_path, value.executable_path]
+        .find((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+      return { name, ...(typeof value.process === 'string' ? { process: value.process } : typeof value.process_name === 'string' ? { process: value.process_name } : typeof value.pid === 'number' ? { process: String(value.pid) } : typeof value.process_id === 'number' ? { process: String(value.process_id) } : {}), ...(bundleId ? { bundleId } : {}), ...(name ? { icon: await applicationIcon(bundleId, name, executablePath) } : {}) };
+    }))).filter((item) => item.name).map(({ icon, ...item }) => ({ ...item, ...(icon ? { icon } : {}) })) : [];
+    console.warn(`[desktop] app scan: ${apps.length} apps, ${apps.filter((item) => Boolean(item.icon)).length} real icons, ${apps.filter((item) => !item.icon).length} initial fallbacks`);
+    return apps;
   }
 
   async listWindows(): Promise<DesktopWindowView[]> {

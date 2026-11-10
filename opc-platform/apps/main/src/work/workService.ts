@@ -101,6 +101,7 @@ import type { BrowserBroker } from '../browser/broker';
 import { createBrowserToolExtension } from './browserTool';
 import { createDesktopToolExtension } from './desktopTool';
 import type { DesktopBroker } from '../desktop/broker';
+import { summarizeWorkerTools, type RouterWorkerCapability } from '../router/routerCapabilities';
 
 /** How many manager rework rounds a task may take before it is parked for you. */
 
@@ -1284,6 +1285,21 @@ export class WorkService {
 
     agents.sort((left, right) => left.name.localeCompare(right.name));
     return { generatedAt: Date.now(), agents };
+  };
+
+  /**
+   * Small, read-only capability metadata for Router decisions. The complete
+   * Worker registry remains private and is never installed in Router.
+   */
+  routerCapabilities = async (): Promise<RouterWorkerCapability[]> => {
+    const catalog = await this.capabilities();
+    return catalog.agents
+      .filter((agent) => agent.status !== 'retired')
+      .map((agent) => ({
+        name: agent.name,
+        template: agent.template,
+        ...summarizeWorkerTools(agent.tools.map((tool) => tool.name)),
+      }));
   };
 
   // ── internals ──────────────────────────────────────────────────────────

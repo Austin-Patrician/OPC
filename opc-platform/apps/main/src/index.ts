@@ -841,6 +841,7 @@ async function bootstrap(): Promise<void> {
       return { tone: profile.replyTone, detail: profile.replyDetail, instructions: profile.replyInstructions };
     },
     contextGraph,
+    workerCapabilities: () => work?.routerCapabilities() ?? [],
     ontologyCommand: (input: Parameters<NonNullable<RouterToolDeps['ontologyCommand']>>[0]) => ontologyCommands
       ? ontologyCommands.execute({ actor: 'router', ...input })
       : Promise.resolve({ ok: false, command: { commandId: '', status: 'failed', approvalId: null, error: '本体命令服务尚未就绪' }, error: '本体命令服务尚未就绪' }),

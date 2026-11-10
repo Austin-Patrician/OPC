@@ -24,6 +24,7 @@ import type { OpenLineInput, OpenLineResult } from './workDispatch';
 import type { TriggerReplyTarget } from '../trigger/types';
 import { renderTrace } from '../work/trace';
 import type { ContextGraphStore } from '../ontology/types';
+import type { RouterWorkerCapability } from './routerCapabilities';
 
 /**
  * 把 Router 装起来。
@@ -83,6 +84,8 @@ export interface RouterHostDeps {
   personalPreferences?: () => { tone: string; detail: string; instructions: string };
   contextGraph?: ContextGraphStore;
   ontologyCommand?: RouterToolDeps['ontologyCommand'];
+  /** Dynamic metadata-only Worker tool directory; Router never receives the tools. */
+  workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
 }
 
 export interface RouterHost {
@@ -504,6 +507,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         forget,
         recallMemory,
         ontologyCommand: deps.ontologyCommand,
+        workerCapabilities: deps.workerCapabilities,
       }),
     );
     return built;

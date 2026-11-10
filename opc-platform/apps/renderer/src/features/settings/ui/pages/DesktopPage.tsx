@@ -4,6 +4,15 @@ import { useTranslation } from 'react-i18next';
 import type { DesktopAppView, DesktopInstallPhase, DesktopInstallProgress, DesktopSettings, DesktopStatus } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Row, Section, StatusBadge, Toggle } from '../kit';
 
+function DesktopAppIcon({ app }: { app: DesktopAppView }) {
+  const [failed, setFailed] = useState(false);
+  const initial = [...app.name.trim()][0]?.toLocaleUpperCase() ?? '?';
+  if (app.icon && !failed) {
+    return <img src={app.icon} alt="" className="size-7 shrink-0 rounded-md" onError={() => setFailed(true)} />;
+  }
+  return <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent/10 text-xs font-semibold text-accent">{initial}</span>;
+}
+
 const DEFAULT: DesktopSettings = {
   enabled: false,
   allowedApps: [],
@@ -289,7 +298,7 @@ export function DesktopPage() {
               return (
                 <button key={id} type="button" onClick={() => toggleApp(app)} className="flex w-full items-center justify-between gap-3 border-b border-line px-4 py-3 text-left last:border-b-0 hover:bg-surface-muted/50">
                   <span className="flex min-w-0 items-center gap-3">
-                    <AppWindow className="size-4 shrink-0 text-ink-tertiary" />
+                    <DesktopAppIcon app={app} />
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-ink">{app.name}</span>
                       <span className="block truncate font-mono text-2xs text-ink-quaternary">{app.bundleId ?? app.process ?? id}</span>

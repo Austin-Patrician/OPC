@@ -1,7 +1,8 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
-import type { ChatContentBlock, TaskContract } from '@opc/shared/domain';
+import type { ChatContentBlock, RouterResponse, TaskContract } from '@opc/shared/domain';
 import { recallView } from './inline';
+import { renderRouterWorkerCapabilities, type RouterWorkerCapability } from './routerCapabilities';
 
 /**
  * Router 的工具带。
@@ -72,7 +73,7 @@ export interface RouterToolDeps {
 
   /** 对你说话。这是 Router 唯一能让人看见它的方式。 */
   /** `replyTarget` 是输入里提供的原始信道地址；不传则回桌面助手。 */
-  reply(response: any, replyTarget?: string, content?: ChatContentBlock[]): unknown | Promise<unknown>;
+  reply(response: RouterResponse | string, replyTarget?: string, content?: ChatContentBlock[]): unknown | Promise<unknown>;
 
   /** 链式召回：返回一个对象的压缩视图 + 相邻对象的 id（Inline & Spill）。 */
   recall(id: string): string;
@@ -119,6 +120,9 @@ export interface RouterToolDeps {
     expectedVersion?: number;
     idempotencyKey: string;
   }): Promise<{ ok: boolean; command: { commandId: string; status: string; approvalId: string | null; error: string | null }; error?: string }>;
+
+  /** Dynamic metadata-only view of tools available to Workers. */
+  workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -184,6 +188,21 @@ export function createRouterTools(deps: RouterToolDeps) {
           '每一次打扰都要有理由；没有理由的汇报是噪音。',
         ].join('\n'),
       ),
+      ...(deps.workerCapabilities
+        ? [
+            section('worker-capabilities', async () => {
+              try {
+                return renderRouterWorkerCapabilities(await deps.workerCapabilities!());
+              } catch (error) {
+                console.warn('[router] Worker 能力目录读取失败', error);
+                return [
+                  '暂时无法读取 Worker 工具目录。',
+                  '不要把 Router 自己的工具列表当成整个系统的能力；需要执行时先尝试派发，并依据实际汇报说明失败原因。',
+                ].join('\n');
+              }
+            }),
+          ]
+        : []),
     ],
     tools: [
       defineTool({

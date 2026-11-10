@@ -1269,7 +1269,7 @@ export interface DesktopInstallProgress {
   downloadedBytes?: number;
   totalBytes?: number;
 }
-export interface DesktopAppView { name: string; process?: string; bundleId?: string; windows?: number; }
+export interface DesktopAppView { name: string; process?: string; bundleId?: string; windows?: number; icon?: string; }
 export interface DesktopWindowView { id: string; title?: string; app?: string; process?: string; }
 export interface DesktopBridge {
   status(): Promise<DesktopStatus>;

@@ -1,6 +1,8 @@
 import { createRegistry } from '@earendil-works/pi-durable';
 import { describe, expect, it } from 'vitest';
+import type { ChatContentBlock, RouterResponse } from '@opc/shared/domain';
 import { createRouterTools } from './routerTools';
+import type { RouterWorkerCapability } from './routerCapabilities';
 
 /**
  * Router 的工具带。
@@ -14,7 +16,8 @@ import { createRouterTools } from './routerTools';
 function host(
   overrides: {
     steerLine?: () => Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
-    reply?: (text: string, target?: string, content?: import('@opc/shared/domain').ChatContentBlock[]) => void;
+    reply?: (text: string, target?: string, content?: ChatContentBlock[]) => void;
+    workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -27,7 +30,10 @@ function host(
       calls.push(`open:${input.contract.objective}`);
       return { ok: true, threadId: 'th-1', workerId: 'w-1', taskId: 'task-1' };
     },
-    reply: (text, target, content) => {
+    reply: (response: string | RouterResponse, target, content) => {
+      const text = typeof response === 'string'
+        ? response
+        : response.blocks.filter((block): block is Extract<ChatContentBlock, { type: 'markdown' }> => block.type === 'markdown').map((block) => block.text).join('\n\n');
       replies.push(text);
       overrides.reply?.(text, target, content);
     },
@@ -76,6 +82,7 @@ function host(
               ],
             },
       ),
+    workerCapabilities: overrides.workerCapabilities,
   });
   const registry = createRegistry();
   registry.install(extension);
@@ -129,6 +136,36 @@ describe('Router 的工具带', () => {
     expect(text).toContain('通常一到三句');
   });
 
+  it('把 Worker 的有效工具作为动态元数据提供给 Router，而不把工具装进 Router', async () => {
+    const { extension, registry } = host({
+      workerCapabilities: async () => [
+        { name: '桌面执行体', template: 'ops', tools: ['desktop_list_apps', 'desktop_snapshot'] },
+      ],
+    });
+    const capabilitySection = extension.sections?.find((section) => section.key === 'worker-capabilities');
+    expect(capabilitySection).toBeDefined();
+    const text = await capabilitySection!.render({} as never, {} as never);
+
+    expect(text).toContain('桌面执行体 · ops：desktop_list_apps、desktop_snapshot');
+    expect(registry.snapshot().tools().map((entry) => entry.tool.name)).not.toContain('desktop_snapshot');
+  });
+
+  it('在每次 prompt render 时重新读取 Worker 目录', async () => {
+    let revision = 0;
+    const { extension } = host({
+      workerCapabilities: () => {
+        revision += 1;
+        return [{ name: `执行体-${revision}`, template: 'ops', tools: ['desktop_snapshot'] }];
+      },
+    });
+    const capabilitySection = extension.sections?.find((section) => section.key === 'worker-capabilities');
+    expect(capabilitySection).toBeDefined();
+    if (!capabilitySection) throw new Error('缺少 Worker 能力目录 section');
+
+    expect(await capabilitySection.render({} as never, {} as never)).toContain('执行体-1');
+    expect(await capabilitySection.render({} as never, {} as never)).toContain('执行体-2');
+  });
+
   it('派活立刻返回 id，不返回任何执行结果', async () => {
     const { registry, calls } = host();
     const result = await run(registry, 'open_line_of_work', {
@@ -156,7 +193,7 @@ describe('Router 的工具带', () => {
   });
 
   it('按顺序把富媒体内容块交给桌面回复出口，不拼进用户输入文本', async () => {
-    const received: import('@opc/shared/domain').ChatContentBlock[][] = [];
+    const received: ChatContentBlock[][] = [];
     const { registry } = host({ reply: (text, _target, content) => {
       expect(text).toBe('图表在下面');
       if (content) received.push(content);
