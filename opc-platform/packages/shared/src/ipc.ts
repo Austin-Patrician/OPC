@@ -3,6 +3,7 @@ import type {
   BillingSettings,
   BillingSettingsPatch,
   Conversation,
+  Message,
   CreateTaskInput,
   CreateTaskResult,
   CatalogProvider,
@@ -54,6 +55,8 @@ import type { OcrSettings } from "./ocr";
 export const IPC = {
   chat: {
     getSnapshot: "chat:getSnapshot",
+    loadOlderMessages: "chat:loadOlderMessages",
+    searchMessages: "chat:searchMessages",
     sendMessage: "chat:sendMessage",
     markRead: "chat:markRead",
     ensureAssistant: "chat:ensureAssistant",
@@ -219,6 +222,11 @@ export const IPC = {
     update: "billing:update",
     changedEvent: "billing:changed",
   },
+  usage: {
+    report: "usage:report",
+    exportCsv: "usage:exportCsv",
+    changedEvent: "usage:changed",
+  },
   app: {
     getInfo: "app:getInfo",
   },
@@ -232,6 +240,10 @@ export const IPC = {
     update: "network:update",
     test: "network:test",
     changedEvent: "network:changed",
+  },
+  assistantTools: {
+    getSettings: "assistantTools:getSettings",
+    updateSettings: "assistantTools:updateSettings",
   },
   runtime: {
     snapshot: "runtime:snapshot",
@@ -268,6 +280,8 @@ export const IPC = {
 export interface ChatSnapshot {
   agents: Agent[];
   conversations: Conversation[];
+  /** conversationId → whether older visible messages remain in storage. */
+  hasOlderMessagesByConversation: Readonly<Record<string, boolean>>;
   /** conversationId → display names currently working. */
   typingByConversation: Readonly<Record<string, readonly string[]>>;
   /** The user-facing phase of the assistant for each conversation. */
@@ -289,6 +303,33 @@ export type AssistantActivityPhase =
 export interface AssistantActivity {
   phase: AssistantActivityPhase;
   updatedAt: number;
+}
+
+export interface ChatMessagePage {
+  messages: Message[];
+  hasMore: boolean;
+}
+
+export interface ChatSearchInput {
+  query?: string;
+  senderId?: string;
+  kind?: string;
+  from?: string;
+  to?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface ChatSearchResult {
+  conversationId: string;
+  conversationTitle: string;
+  createdAt: number;
+  message: Message;
+}
+
+export interface ChatSearchPage {
+  results: ChatSearchResult[];
+  hasMore: boolean;
 }
 
 export interface SendMessageInput {
@@ -335,6 +376,8 @@ export interface DiagnosticsReport {
 
 export interface ChatBridge {
   getSnapshot(): Promise<ChatSnapshot>;
+  loadOlderMessages(conversationId: string, beforeMessageId: string): Promise<ChatMessagePage>;
+  searchMessages(input: ChatSearchInput): Promise<ChatSearchPage>;
   onSnapshot(listener: (snapshot: ChatSnapshot) => void): () => void;
   sendMessage(input: SendMessageInput): Promise<void>;
   chooseAttachments(): Promise<ChatAttachmentRef[]>;
@@ -538,7 +581,7 @@ export interface CapabilityTool {
 
 /**
  * One installed extension. Hooks / tasks / sections are counted because some
- * extensions (`opc.sandbox`, `opc.limits`, `opc.work`) add no tools at all.
+ * extensions (`opc.sandbox`, `opc.work`) add no tools at all.
  */
 export interface CapabilityExtension {
   name: string;
@@ -866,6 +909,26 @@ export interface NetworkBridge {
   onChanged(listener: (config: ProxyConfig) => void): () => void;
 }
 
+export type AssistantSearchProvider = 'exa' | 'tavily' | 'firecrawl';
+export interface AssistantToolsSettings {
+  timezone: string | null;
+  weatherCity: string;
+  defaultSearch: AssistantSearchProvider;
+  enabled: Record<AssistantSearchProvider, boolean>;
+  configured: Record<AssistantSearchProvider, boolean>;
+  keys: Partial<Record<AssistantSearchProvider, string>>;
+}
+export interface AssistantToolsBridge {
+  getSettings(): Promise<AssistantToolsSettings>;
+  updateSettings(patch: {
+    timezone?: string | null;
+    weatherCity?: string;
+    defaultSearch?: AssistantSearchProvider;
+    enabled?: Partial<Record<AssistantSearchProvider, boolean>>;
+    keys?: Partial<Record<AssistantSearchProvider, string | null>>;
+  }): Promise<AssistantToolsSettings>;
+}
+
 /**
  * The company-wide base environment (Settings → 运行时).
  *
@@ -1039,6 +1102,7 @@ export interface OpcBridge {
     close(): Promise<void>;
   };
   network: NetworkBridge;
+  assistantTools: AssistantToolsBridge;
   runtime: RuntimeBridge;
   company: CompanyBridge;
   chat: ChatBridge;
@@ -1059,6 +1123,7 @@ export interface OpcBridge {
   router: RouterBridge;
   trigger: TriggerBridge;
   billing: BillingBridge;
+  usage: UsageBridge;
   threads: ThreadsBridge;
   mcp: McpBridge;
   browser: BrowserBridge;
@@ -1067,6 +1132,57 @@ export interface OpcBridge {
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
+}
+
+export type UsageCapability = 'chat' | 'classifier' | 'image' | 'asr' | 'tts' | 'embedding';
+export type UsageStatus = 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
+export type UsageCostSource = 'provider' | 'configured' | 'builtin' | 'unpriced' | 'legacy';
+export type UsageBillingUnit = 'token' | 'character' | 'second' | 'image' | 'megapixel';
+export interface UsageFilter {
+  startAt: number;
+  endAt: number;
+  timezone: string;
+  capabilities?: UsageCapability[];
+  providers?: string[];
+  models?: string[];
+  origins?: string[];
+  workers?: string[];
+  statuses?: UsageStatus[];
+  costSources?: UsageCostSource[];
+  query?: string;
+  minTokens?: number;
+  maxTokens?: number;
+  minCostUsd?: number;
+  maxCostUsd?: number;
+  minDurationMs?: number;
+  maxDurationMs?: number;
+  metric?: 'cost' | 'tokens' | 'requests';
+  page?: number;
+  pageSize?: number;
+}
+export interface UsageCallView {
+  id: string; startedAt: number; finishedAt: number | null; durationMs: number | null;
+  employeeId: string | null; workerId: string | null; workerName: string | null;
+  taskId: string | null; conversationId: string | null; capability: UsageCapability;
+  operation: string; origin: string; providerId: string; modelId: string; status: UsageStatus;
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+  reasoningTokens: number | null; totalTokens: number; tokenSource: string;
+  billingUnit: UsageBillingUnit; billedQuantity: number; providerCostUsd: number | null;
+  configuredCostUsd: number | null; chargedCostUsd: number | null; costSource: UsageCostSource;
+  error: string | null;
+}
+export interface UsageReport {
+  summary: { chargedCostUsd: number; unpricedCalls: number; totalTokens: number; requests: number; successRate: number | null; images: number; asrSeconds: number; ttsCharacters: number };
+  series: { at: number; label: string; costUsd: number; tokens: number; requests: number }[];
+  breakdown: { key: string; label: string; costUsd: number; tokens: number; requests: number; unpricedCalls: number }[];
+  calls: UsageCallView[]; totalCalls: number; page: number; pageSize: number;
+  options: { providers: string[]; models: string[]; origins: string[]; workers: { id: string; name: string }[] };
+  coverage: { backfillComplete: boolean; backfillFrom: number | null; updatedAt: number };
+}
+export interface UsageBridge {
+  report(filter: UsageFilter): Promise<UsageReport>;
+  exportCsv(filter: UsageFilter): Promise<boolean>;
+  onChanged(listener: () => void): () => void;
 }
 
 export interface OntologyContextView {
@@ -1243,10 +1359,22 @@ export interface DesktopAppAllowlistEntry {
   enabled: boolean;
   source: 'system' | 'user';
 }
+export type DesktopApprovalCategory =
+  | 'desktop-access'
+  | 'screenshot'
+  | 'desktop-launch'
+  | 'window-focus'
+  | 'desktop-action'
+  | 'physical-input'
+  | 'clipboard-read'
+  | 'clipboard-write'
+  | 'external-submit'
+  | 'destructive';
 export interface DesktopSettings {
   enabled: boolean;
   allowedApps: DesktopAppAllowlistEntry[];
-  requireApprovalFor: string[];
+  requireApprovalFor: DesktopApprovalCategory[];
+  approvalPolicyVersion?: number;
   maxOutputBytes: number;
 }
 export interface DesktopStatus {
@@ -1278,8 +1406,8 @@ export interface DesktopBridge {
   doctor(): Promise<DesktopStatus>;
   permissions(): Promise<DesktopStatus>;
   permissionsGuide(): Promise<DesktopStatus>;
-  getSettings(userId?: string): Promise<DesktopSettings>;
-  setSettings(patch: Partial<DesktopSettings>, userId?: string): Promise<DesktopSettings>;
+  getSettings(): Promise<DesktopSettings>;
+  setSettings(patch: Partial<DesktopSettings>): Promise<DesktopSettings>;
   listApps(): Promise<DesktopAppView[]>;
   listWindows(): Promise<DesktopWindowView[]>;
   inspect(taskId: string): Promise<unknown>;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Select } from '@/shared/ui/Select';
 import type {
   WatchdogActionView,
   WatchdogAskResult,
@@ -271,25 +272,22 @@ export function WatchdogPage() {
         >
           <div className="divide-y divide-line">
             <Row label={t('settings.watchdog.model')} hint={t('settings.watchdog.modelHint')}>
-              <select
+              <Select
+                ariaLabel={t('settings.watchdog.model')}
                 value={modelRef}
-                onChange={(event) => {
-                  const value = event.target.value;
+                onValueChange={(value) => {
                   setModelRef(value);
                   const [providerId, modelId] = value.split('\u0000');
                   void window.opc?.watchdog.setModel(
                     value ? { providerId: providerId!, modelId: modelId! } : null,
                   );
                 }}
-                className="h-8 max-w-56 rounded-lg border border-line bg-surface px-2 text-sm-plus text-ink outline-none focus:border-ink-tertiary"
-              >
-                <option value="">{t('settings.watchdog.modelDefault')}</option>
-                {options.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                className="w-56 max-w-full"
+                options={[
+                  { value: '', label: t('settings.watchdog.modelDefault') },
+                  ...options,
+                ]}
+              />
             </Row>
             <Row label={t('settings.watchdog.enabled')}>
               <input

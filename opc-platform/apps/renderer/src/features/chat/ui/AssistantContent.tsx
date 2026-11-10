@@ -421,14 +421,14 @@ function CodeBlock({ children }: { children: ReactNode }) {
 
   return (
     <div className="group relative my-3">
-      <pre className="max-w-full overflow-x-auto rounded-lg bg-[#f3f5f4] p-3 text-[0.86em]">{children}</pre>
+      <pre tabIndex={0} className="chat-scrollbar-reveal max-w-full overflow-x-auto rounded-lg bg-[#f3f5f4] p-3 text-[0.86em]">{children}</pre>
       {source ? (
         <button
           type="button"
           onClick={() => void copy()}
           aria-label={t(copied ? 'chat.codeCopied' : 'chat.copyCode')}
           title={t(copied ? 'chat.codeCopied' : 'chat.copyCode')}
-          className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-md border border-black/10 bg-white/85 text-ink-tertiary shadow-sm backdrop-blur transition hover:bg-white hover:text-ink focus-visible:opacity-100"
+          className="pointer-events-none absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-md border border-black/10 bg-white/85 text-ink-tertiary opacity-0 shadow-sm backdrop-blur transition hover:bg-white hover:text-ink group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus-visible:opacity-100"
         >
           {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
         </button>

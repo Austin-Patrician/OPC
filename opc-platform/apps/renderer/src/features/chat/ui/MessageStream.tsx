@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { Check, ChevronDown, ChevronUp, Copy } from 'lucide-react';
+import { ArrowDown, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, RotateCw } from 'lucide-react';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { userName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
@@ -8,6 +8,7 @@ import { BuddyMark } from '@/shared/ui/BuddyMark';
 import type { Agent } from '@/entities/agent/model/types';
 import type { Message } from '@/entities/message/model/types';
 import type { ChatAttachmentRef } from '@opc/shared/domain';
+import type { ChatMessagePage } from '@opc/shared/ipc';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { RichText } from '@/entities/message/ui/RichText';
 import { AssistantContent } from './AssistantContent';
@@ -19,6 +20,9 @@ interface MessageStreamProps {
   messages: readonly Message[];
   agents: readonly Agent[];
   typingNames: readonly string[];
+  hasOlderMessages: boolean;
+  onLoadOlder: (beforeMessageId: string) => Promise<ChatMessagePage>;
+  targetMessageId?: string;
 }
 
 const COLLAPSED_USER_MESSAGE_HEIGHT = 192;
@@ -27,7 +31,7 @@ const COLLAPSED_USER_MESSAGE_HEIGHT = 192;
  * Virtualized message list. Only the visible window is mounted, so a
  * conversation with thousands of turns keeps a flat memory profile.
  */
-export function MessageStream({ messages, agents, typingNames }: MessageStreamProps) {
+export function MessageStream({ messages, agents, typingNames, hasOlderMessages, onLoadOlder, targetMessageId }: MessageStreamProps) {
   const { t } = useTranslation();
   const profile = useCompanyProfile();
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
@@ -36,44 +40,93 @@ export function MessageStream({ messages, agents, typingNames }: MessageStreamPr
     () => messages.filter((message) => message.kind !== 'task' && message.kind !== 'deliverable'),
     [messages],
   );
-  const latestAssistantId = useMemo(
-    () => [...visibleMessages].reverse().find((message) => message.senderId !== 'user' && message.kind !== 'system')?.id,
-    [visibleMessages],
-  );
+  const [firstItemIndex, setFirstItemIndex] = useState(1_000_000);
+  const [hasMore, setHasMore] = useState(hasOlderMessages);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const loadingRef = useRef(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const latestUserMessageId = useMemo(
-    () => [...visibleMessages].reverse().find((message) => message.senderId === 'user')?.id,
-    [visibleMessages],
-  );
-  const previousUserMessageId = useRef(latestUserMessageId);
-  const hasObservedInitialMessages = useRef(false);
+  const scrolledTargetRef = useRef<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+
+  useEffect(() => setHasMore(hasOlderMessages), [hasOlderMessages]);
 
   useEffect(() => {
-    if (
-      hasObservedInitialMessages.current &&
-      latestUserMessageId &&
-      latestUserMessageId !== previousUserMessageId.current
-    ) {
-      const index = visibleMessages.findIndex((message) => message.id === latestUserMessageId);
-      if (index >= 0) {
-        virtuosoRef.current?.scrollToIndex({ index, align: 'end', behavior: 'smooth' });
-      }
+    if (!targetMessageId) {
+      scrolledTargetRef.current = null;
+      setHighlightedMessageId(null);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+      return;
     }
-    hasObservedInitialMessages.current = true;
-    previousUserMessageId.current = latestUserMessageId;
-  }, [latestUserMessageId, visibleMessages]);
+    if (scrolledTargetRef.current === targetMessageId) return;
+    setHighlightedMessageId(null);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = null;
+    const index = visibleMessages.findIndex((message) => message.id === targetMessageId);
+    if (index < 0) return;
+
+    virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'smooth' });
+    scrolledTargetRef.current = targetMessageId;
+    setHighlightedMessageId(targetMessageId);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightedMessageId((current) => current === targetMessageId ? null : current);
+      highlightTimerRef.current = null;
+    }, 5_000);
+  }, [targetMessageId, visibleMessages]);
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  const loadOlder = async () => {
+    if (!hasMore || loadingRef.current) return;
+    const beforeMessageId = visibleMessages[0]?.id;
+    if (!beforeMessageId) return;
+    loadingRef.current = true;
+    setLoadingOlder(true);
+    setLoadError(false);
+    try {
+      const page = await onLoadOlder(beforeMessageId);
+      setHasMore(page.hasMore);
+      if (page.messages.length > 0) {
+        setFirstItemIndex((current) => current - page.messages.length);
+      }
+    } catch {
+      setLoadError(true);
+    } finally {
+      loadingRef.current = false;
+      setLoadingOlder(false);
+    }
+  };
 
   return (
-    <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
+    <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
       <Virtuoso
         ref={virtuosoRef}
         data={visibleMessages as Message[]}
+        firstItemIndex={firstItemIndex}
         className="h-full min-w-0 max-w-full overflow-x-hidden"
-        followOutput="smooth"
-        initialTopMostItemIndex={Math.max(0, visibleMessages.length - 1)}
+        followOutput={(isAtBottom) => (isAtBottom ? 'smooth' : false)}
+        atBottomStateChange={setAtBottom}
+        startReached={() => void loadOlder()}
+        initialTopMostItemIndex={{ index: Math.max(0, visibleMessages.length - 1), align: 'end' }}
         computeItemKey={(_, message) => message.id}
         increaseViewportBy={{ top: 400, bottom: 600 }}
         components={{
+          Header: () => (
+            <div className="flex h-9 items-center justify-center" role="status" aria-live="polite">
+              {loadingOlder ? <LoaderCircle size={15} className="animate-spin text-ink-tertiary" aria-label={t('chat.historyLoading')} /> : null}
+              {loadError ? (
+                <button type="button" onClick={() => void loadOlder()} className="rounded p-1 text-ink-tertiary hover:bg-ink/5 hover:text-ink" title={t('chat.historyLoadFailed')} aria-label={t('chat.historyLoadFailed')}>
+                  <RotateCw size={15} />
+                </button>
+              ) : null}
+            </div>
+          ),
           Footer: () => (
             <div className="buddy-message-gutter min-w-0 max-w-full px-6 pt-4 pb-3">
               <TypingIndicator names={typingNames} />
@@ -81,17 +134,26 @@ export function MessageStream({ messages, agents, typingNames }: MessageStreamPr
           ),
         }}
         itemContent={(_, message) => (
-          <div className="buddy-message-gutter min-w-0 max-w-full px-6 py-2">
+          <div className={`buddy-message-gutter min-w-0 max-w-full rounded-lg px-6 py-2 transition-colors duration-300 ${message.id === highlightedMessageId ? 'bg-amber-300/20 ring-1 ring-amber-400/25' : ''}`}>
             <MessageRow
               message={message}
               agent={agentById.get(message.senderId)}
               userName={currentUserName}
               userAvatar={profile.userAvatar}
-              isLatestAssistant={message.id === latestAssistantId}
             />
           </div>
         )}
       />
+      {!atBottom && visibleMessages.length > 0 ? (
+        <button
+          type="button"
+          onClick={() => virtuosoRef.current?.scrollToIndex({ index: visibleMessages.length - 1, align: 'end', behavior: 'smooth' })}
+          className="buddy-jump-to-bottom absolute bottom-3 left-1/2 z-20 inline-flex h-9 -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-surface px-4 text-xs-plus font-medium text-ink-secondary shadow-popover transition hover:border-accent/30 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <ArrowDown size={15} strokeWidth={2} />
+          {t('chat.jumpToLatest')}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -101,13 +163,11 @@ function MessageRow({
   agent,
   userName,
   userAvatar,
-  isLatestAssistant,
 }: {
   message: Message;
   agent?: Agent;
   userName: string;
   userAvatar?: string;
-  isLatestAssistant: boolean;
 }) {
   const { t } = useTranslation();
   if (message.kind === 'system') {
@@ -196,7 +256,7 @@ function MessageRow({
               ) : null}
             </div>
             {!containsActionCard && message.text?.trim() && !message.streaming ? (
-              <AssistantMessageFooter text={message.text} isLatest={isLatestAssistant} />
+              <AssistantMessageFooter text={message.text} />
             ) : null}
           </div>
         </div>
@@ -273,7 +333,7 @@ function formatMessageAttachmentSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-function AssistantMessageFooter({ text, isLatest }: { text: string; isLatest: boolean }) {
+function AssistantMessageFooter({ text }: { text: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
@@ -301,7 +361,7 @@ function AssistantMessageFooter({ text, isLatest }: { text: string; isLatest: bo
   };
 
   return (
-    <div className={`mt-1 flex w-full items-center justify-start gap-0.5 transition-opacity duration-150 ${isLatest ? 'opacity-100' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100'}`}>
+    <div className="pointer-events-none mt-1 flex w-full items-center justify-start gap-0.5 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
       <button
         type="button"
         onClick={() => void copy()}

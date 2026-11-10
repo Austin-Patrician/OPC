@@ -14,7 +14,7 @@ import type { ScannedSkill } from './scanner';
  *     the model asks, so the token cost is paid per use, not per request.
  *
  * The body is returned as text, not executed: a skill that says "run
- * scripts/x.py" still goes through `bash`, with the sandbox and call limit in
+ * scripts/x.py" still goes through `bash`, with the sandbox policy in
  * the way.
  */
 

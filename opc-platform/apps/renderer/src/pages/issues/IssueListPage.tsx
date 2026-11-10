@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, CircleDashed, Loader2, ShieldAlert, Stamp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { formatAppTime } from '@/shared/lib/appTime';
 import type { TaskStatus, TaskTrace, WorkTask } from '@opc/shared/domain';
 import { renderTrace } from '@opc/shared/trace';
 import { cn } from '@/shared/lib/cn';
@@ -18,6 +19,7 @@ import { isOverdue, sortIssues, type IssueSort } from './issueSort';
 import { buildTimeline, spendByDay } from './issueTimeline';
 import { buildBurndown, summariseByPerson } from './issueBurndown';
 import { Columns, StackedBar, Trend } from '@/shared/ui/charts';
+import { Select } from '@/shared/ui/Select';
 
 type Group = BoardGroup;
 
@@ -194,45 +196,43 @@ export function IssueListPage() {
               ))}
             </div>
 
-            <select
-              aria-label={t('issues.assignee')}
+            <Select
+              ariaLabel={t('issues.assignee')}
               value={assignee}
-              onChange={(event) => setAssignee(event.target.value)}
-              className="h-6 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink-secondary outline-none"
-            >
-              <option value="">{t('issues.allAssignees')}</option>
-              {assignees.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
+              onValueChange={setAssignee}
+              size="compact"
+              className="w-auto max-w-40 text-ink-secondary"
+              options={[
+                { value: '', label: t('issues.allAssignees') },
+                ...assignees.map((name) => ({ value: name, label: name })),
+              ]}
+            />
 
-            <select
-              aria-label={t('issues.priority')}
+            <Select
+              ariaLabel={t('issues.priority')}
               value={priority}
-              onChange={(event) => setPriority(event.target.value as typeof priority)}
-              className="h-6 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink-secondary outline-none"
-            >
-              <option value="all">{t('issues.allPriorities')}</option>
-              {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => setPriority(value as typeof priority)}
+              size="compact"
+              className="w-auto max-w-36 text-ink-secondary"
+              options={[
+                { value: 'all', label: t('issues.allPriorities') },
+                ...(['P0', 'P1', 'P2', 'P3'] as const).map((level) => ({ value: level, label: level })),
+              ]}
+            />
 
-            <select
-              aria-label={t('issues.sort')}
+            <Select
+              ariaLabel={t('issues.sort')}
               value={sort}
-              onChange={(event) => setSort(event.target.value as IssueSort)}
-              className="h-6 rounded-md border border-line bg-surface px-1.5 text-2xs text-ink-secondary outline-none"
-            >
-              <option value="created">{t('issues.sortCreated')}</option>
-              <option value="priority">{t('issues.sortPriority')}</option>
-              <option value="due">{t('issues.sortDue')}</option>
-              <option value="cost">{t('issues.sortCost')}</option>
-            </select>
+              onValueChange={(value) => setSort(value as IssueSort)}
+              size="compact"
+              className="w-auto max-w-36 text-ink-secondary"
+              options={[
+                { value: 'created', label: t('issues.sortCreated') },
+                { value: 'priority', label: t('issues.sortPriority') },
+                { value: 'due', label: t('issues.sortDue') },
+                { value: 'cost', label: t('issues.sortCost') },
+              ]}
+            />
 
             <input
               value={query}
@@ -268,28 +268,26 @@ export function IssueListPage() {
             >
               {t('issues.bulkRun')}
             </button>
-            <select
-              aria-label={t('issues.bulkPriority')}
+            <Select
+              ariaLabel={t('issues.bulkPriority')}
               defaultValue=""
-              onChange={async (event) => {
-                if (!event.target.value) return;
+              onValueChange={async (value) => {
+                if (!value) return;
                 for (const taskId of picked) {
                   await window.opc!.work.setIssueMeta(taskId, {
-                    priority: event.target.value as 'P0',
+                    priority: value as 'P0',
                   });
                 }
                 setPicked(new Set());
                 setTasks(await window.opc!.work.listTasks(500));
               }}
-              className="rounded border border-line bg-surface px-1 py-0.5 text-2xs"
-            >
-              <option value="">{t('issues.bulkPriority')}</option>
-              {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
+              size="compact"
+              className="w-auto max-w-40"
+              options={[
+                { value: '', label: t('issues.bulkPriority') },
+                ...(['P0', 'P1', 'P2', 'P3'] as const).map((level) => ({ value: level, label: level })),
+              ]}
+            />
             <button type="button" onClick={() => setPicked(new Set())} className="text-ink-quaternary hover:text-ink">
               ✕
             </button>
@@ -741,20 +739,17 @@ function IssueDetail({
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
               {t('issues.priority')}
-              <select
-                data-testid="issue-priority-select"
+              <Select
+                ariaLabel={t('issues.priority')}
+                testId="issue-priority-select"
                 defaultValue={task.priority}
-                onChange={(event) =>
-                  void window.opc!.work.setIssueMeta(task.id, { priority: event.target.value as 'P0' })
+                onValueChange={(value) =>
+                  void window.opc!.work.setIssueMeta(task.id, { priority: value as 'P0' })
                 }
-                className="h-7 rounded-md border border-line bg-surface px-1.5 text-xs text-ink outline-none"
-              >
-                {(['P0', 'P1', 'P2', 'P3'] as const).map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
+                size="compact"
+                className="h-7 w-full text-xs"
+                options={(['P0', 'P1', 'P2', 'P3'] as const).map((level) => ({ value: level, label: level }))}
+              />
             </label>
             <label className="flex flex-col gap-1 text-2xs text-ink-tertiary">
               {t('issues.due')}
@@ -888,7 +883,7 @@ function IssueDetail({
             {task.steps.slice(-12).map((step, index) => (
               <li key={`${step.at}-${index}`} className="flex gap-2 text-2xs">
                 <span className="shrink-0 font-mono text-ink-quaternary">
-                  {new Date(step.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {formatAppTime(step.at)}
                 </span>
                 <span className="min-w-0 flex-1 text-ink-secondary">{step.text}</span>
               </li>

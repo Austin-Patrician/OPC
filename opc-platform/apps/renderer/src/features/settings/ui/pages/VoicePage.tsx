@@ -6,6 +6,7 @@ import { useCatalog } from '@/features/models/model/useCatalog';
 import { providerMeta } from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { ModelPicker } from '@/shared/ui/ModelPicker';
+import { Select } from '@/shared/ui/Select';
 import { cn } from '@/shared/lib/cn';
 import {
   buttonClass,
@@ -724,23 +725,16 @@ export function VoicePage() {
                                   </div>
                                 </td>
                                 <td className="px-3 py-1.5">
-                                  <select
-                                    aria-label={t('settings.voice.protocol')}
+                                  <Select
+                                    ariaLabel={t('settings.voice.protocol')}
                                     value={customModel.api}
-                                    onChange={(event) =>
-                                      setCustomModel((current) => ({
-                                        ...current,
-                                        api: event.target.value,
-                                      }))
+                                    onValueChange={(api) =>
+                                      setCustomModel((current) => ({ ...current, api }))
                                     }
-                                    className="h-6 w-full rounded border border-line bg-surface px-1 font-mono text-2xs text-ink-tertiary outline-none focus:border-accent"
-                                  >
-                                    {VOICE_PROTOCOLS.map((protocol) => (
-                                      <option key={protocol} value={protocol}>
-                                        {protocol}
-                                      </option>
-                                    ))}
-                                  </select>
+                                    size="compact"
+                                    className="font-mono text-2xs text-ink-tertiary"
+                                    options={VOICE_PROTOCOLS.map((protocol) => ({ value: protocol, label: protocol }))}
+                                  />
                                 </td>
                                 <td className="px-1 py-1.5" />
                               </tr>

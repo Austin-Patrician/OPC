@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, Lightbulb, ListChecks } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
@@ -6,13 +6,16 @@ import type { Conversation } from '@/entities/conversation/model/types';
 import { Composer } from './Composer';
 import { MessageStream } from './MessageStream';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
-import type { ChatAttachmentRef } from '@opc/shared/domain';
+import type { ChatAttachmentRef, Message } from '@opc/shared/domain';
+import type { ChatMessagePage } from '@opc/shared/ipc';
 
 interface ChatPanelProps {
   conversation: Conversation;
   agents: readonly Agent[];
   typingNames: readonly string[];
-  searchQuery: string;
+  hasOlderMessages: boolean;
+  loadOlderMessages: (beforeMessageId: string) => Promise<ChatMessagePage>;
+  targetMessageId?: string;
   onSend: (text: string, mentionIds: string[], attachments?: ChatAttachmentRef[]) => void;
 }
 
@@ -21,42 +24,106 @@ export function ChatPanel({
   conversation,
   agents,
   typingNames,
-  searchQuery,
+  hasOlderMessages,
+  loadOlderMessages,
+  targetMessageId,
   onSend,
 }: ChatPanelProps) {
-  const visibleMessages = useMemo(
-    () =>
-      searchQuery.trim()
-        ? conversation.messages.filter((message) =>
-            message.text?.toLocaleLowerCase().includes(searchQuery.trim().toLocaleLowerCase()),
-          )
-        : conversation.messages,
-    [conversation.messages, searchQuery],
-  );
+  const [loadedMessages, setLoadedMessages] = useState<Message[]>(conversation.messages);
+  const loadedMessagesRef = useRef(loadedMessages);
+
+  useEffect(() => {
+    setLoadedMessages((current) => {
+      const merged = mergeSnapshotMessages(current, conversation.messages);
+      loadedMessagesRef.current = merged;
+      return merged;
+    });
+  }, [conversation.messages]);
+
+  const handleLoadOlder = useCallback(async (beforeMessageId: string) => {
+    const page = await loadOlderMessages(beforeMessageId);
+    if (page.messages.length > 0) {
+      setLoadedMessages((current) => {
+        const merged = mergeOlderMessages(current, page.messages);
+        loadedMessagesRef.current = merged;
+        return merged;
+      });
+    }
+    return page;
+  }, [loadOlderMessages]);
+
+  useEffect(() => {
+    if (!targetMessageId || loadedMessagesRef.current.some((message) => message.id === targetMessageId)) return;
+    let cancelled = false;
+    void (async () => {
+      let messages = loadedMessagesRef.current;
+      let cursor = messages[0]?.id;
+      while (cursor && !messages.some((message) => message.id === targetMessageId)) {
+        const page = await loadOlderMessages(cursor);
+        if (cancelled || page.messages.length === 0) break;
+        messages = mergeOlderMessages(messages, page.messages);
+        loadedMessagesRef.current = messages;
+        cursor = page.messages[0]?.id;
+        setLoadedMessages(messages);
+        if (!page.hasMore) break;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [targetMessageId, loadOlderMessages]);
+
   // Newest first; the composer walks it backwards on ArrowUp / ArrowDown.
   const sentHistory = useMemo(
     () =>
-      conversation.messages
+      loadedMessages
         .flatMap((message) =>
           message.senderId === 'user' && message.kind === 'text' && message.text?.trim() ? [message.text] : [],
         )
         .reverse(),
-    [conversation.messages],
+    [loadedMessages],
   );
 
   return (
     <main className="buddy-chat relative flex min-w-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col">
-        {conversation.messages.length === 0 ? (
+        {loadedMessages.length === 0 ? (
           <WelcomeCanvas onSend={(text) => onSend(text, [])} />
         ) : (
-          <MessageStream messages={visibleMessages} agents={agents} typingNames={typingNames} />
+          <MessageStream
+            messages={loadedMessages}
+            agents={agents}
+            typingNames={typingNames}
+            hasOlderMessages={hasOlderMessages}
+            onLoadOlder={handleLoadOlder}
+            targetMessageId={targetMessageId}
+          />
         )}
 
         <Composer key={conversation.id} onSend={onSend} history={sentHistory} />
       </div>
     </main>
   );
+}
+
+function mergeSnapshotMessages(current: Message[], incoming: readonly Message[]): Message[] {
+  const merged = current.slice();
+  const indexById = new Map(merged.map((message, index) => [message.id, index]));
+  for (const message of incoming) {
+    const index = indexById.get(message.id);
+    if (index === undefined) {
+      indexById.set(message.id, merged.length);
+      merged.push(message);
+    } else {
+      merged[index] = message;
+    }
+  }
+  return merged;
+}
+
+function mergeOlderMessages(current: Message[], older: readonly Message[]): Message[] {
+  const existing = new Map(current.map((message) => [message.id, message]));
+  const merged = older.map((message) => existing.get(message.id) ?? message);
+  const mergedIds = new Set(merged.map((message) => message.id));
+  return [...merged, ...current.filter((message) => !mergedIds.has(message.id))];
 }
 
 function WelcomeCanvas({ onSend }: { onSend: (text: string) => void }) {

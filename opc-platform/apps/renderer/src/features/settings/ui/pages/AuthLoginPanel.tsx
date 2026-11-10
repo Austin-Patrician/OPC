@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { KeyRound, LogOut, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AuthPromptRequest } from '@opc/shared/ipc';
+import { Select } from '@/shared/ui/Select';
 import { buttonClass } from '../kit';
 
 /**
@@ -119,18 +120,15 @@ export function AuthLoginPanel({ providerId }: { providerId: string }) {
           >
             <p className="text-sm text-ink">{promptRequest.message}</p>
             {promptRequest.kind === 'select' && promptRequest.options ? (
-              <select
+              <Select
+                ariaLabel={promptRequest.message}
                 value={answer}
-                onChange={(event) => setAnswer(event.target.value)}
-                className="h-[30px] w-full rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-              >
-                <option value="">…</option>
-                {promptRequest.options.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onValueChange={setAnswer}
+                options={[
+                  { value: '', label: '…' },
+                  ...promptRequest.options.map((option) => ({ value: option.id, label: option.label })),
+                ]}
+              />
             ) : (
               <input
                 autoFocus

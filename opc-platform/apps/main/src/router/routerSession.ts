@@ -1,5 +1,6 @@
-import type { Conversation, Harness } from '@earendil-works/pi-durable';
-import type { ModelRef } from '@opc/shared/domain';
+import type { Conversation, Harness } from "@earendil-works/pi-durable";
+import type { ModelRef } from "@opc/shared/domain";
+import { diffCost, diffUsage } from "../work/usage";
 
 /**
  * Router 的常驻会话。
@@ -33,6 +34,17 @@ export interface RouterSessionDeps {
   cwd: () => string;
   /** 观测用：一轮跑完时回报用量。 */
   onTurn?: (info: { ok: boolean; error?: string }) => void;
+  onUsage?: (usage: {
+    providerId: string;
+    modelId: string;
+    conversationId: string;
+    startedAt: number;
+    finishedAt: number;
+    input: number;
+    output: number;
+    configuredCostUsd?: number;
+    status: "ok" | "interrupted";
+  }) => void;
   /** Visible assistant text from pi.live while the Router is generating. */
   onText?: (text: string) => void;
   /** The live document entered a tool round; any plain-text preamble is transient. */
@@ -102,7 +114,7 @@ export class RouterSession {
       .configure(
         {
           model: { provider: model.providerId, modelId: model.modelId },
-          thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
+          thinkingLevel: (this.deps.thinking() ?? "medium") as never,
           cwd: this.deps.cwd(),
         } as never,
         context as never,
@@ -126,16 +138,27 @@ export class RouterSession {
     try {
       const conversation = await this.ensure();
       const context = await this.deps.context();
+      const selectedModel = this.deps.model();
+      const harness = await this.deps.harness();
+      const usageReader =
+        typeof harness.usage === "function"
+          ? harness.usage.bind(harness)
+          : null;
+      const usageBefore = usageReader
+        ? await usageReader(context as never)
+        : null;
+      const callStartedAt = Date.now();
       // pi-durable already publishes throttled generation partials in pi.live.
       // Watch that document instead of opening a second model request or writing
       // one chat row per token.
-      const watch = this.deps.onText || this.deps.onToolRound
-        ? await conversation.watch(context as never)
-        : null;
+      const watch =
+        this.deps.onText || this.deps.onToolRound
+          ? await conversation.watch(context as never)
+          : null;
       // A completed turn can remain in the live document until the next
       // generation begins. Treat that snapshot as the baseline so a new turn
       // never replays the previous answer into the chat.
-      let latestText = textFromLive(watch?.value.docs['pi.live']);
+      let latestText = textFromLive(watch?.value.docs["pi.live"]);
       let toolRoundActive = false;
       // Watch callbacks are asynchronous and `stop()` intentionally does not
       // wait for a callback that is already running. Track the tail explicitly:
@@ -144,15 +167,15 @@ export class RouterSession {
       let watchCallbackTail = Promise.resolve();
       watch?.start((call) => {
         const process = watchCallbackTail.then(() => {
-          if (call.kind !== 'value') return;
-          const live = call.value.docs['pi.live'];
+          if (call.kind !== "value") return;
+          const live = call.value.docs["pi.live"];
           if (hasLiveToolRound(live)) {
             if (!toolRoundActive) {
               toolRoundActive = true;
               try {
                 this.deps.onToolRound?.();
               } catch (error) {
-                console.warn('[router] 工具阶段清理流式回复失败', error);
+                console.warn("[router] 工具阶段清理流式回复失败", error);
               }
             }
           } else {
@@ -166,23 +189,43 @@ export class RouterSession {
           } catch (error) {
             // Rendering is a best-effort side channel; it must never fail the
             // durable Router submission.
-            console.warn('[router] 流式回复推送失败', error);
+            console.warn("[router] 流式回复推送失败", error);
           }
         });
         // Keep the chain resolved even if a future observer implementation
         // throws outside the guarded rendering callbacks.
         watchCallbackTail = process.catch((error) => {
-          console.warn('[router] 处理流式观察更新失败', error);
+          console.warn("[router] 处理流式观察更新失败", error);
         });
         return watchCallbackTail;
       });
       const submission = await conversation.submit(
-        { type: 'input', content: text },
+        { type: "input", content: text },
         context as never,
       );
       try {
         const settled = await submission.wait(context as never);
-        const ok = settled.status === 'done';
+        const ok = settled.status === "done";
+        if (usageReader && usageBefore) {
+          const usageAfter = await usageReader(context as never);
+          const usageDelta = diffUsage(usageBefore, usageAfter);
+          this.deps.onUsage?.({
+            ...(selectedModel
+              ? {
+                  providerId: selectedModel.providerId,
+                  modelId: selectedModel.modelId,
+                }
+              : { providerId: "unknown", modelId: "unknown" }),
+            conversationId: String(conversation.id),
+            startedAt: callStartedAt,
+            finishedAt: Date.now(),
+            ...usageDelta,
+            ...(diffCost(usageBefore, usageAfter) > 0
+              ? { configuredCostUsd: diffCost(usageBefore, usageAfter) }
+              : {}),
+            status: ok ? "ok" : "interrupted",
+          });
+        }
         if (!ok) {
           // A submission that settles as failed was not delivered. Throw it back to
           // Router.tick so its routed/announced markers can be rolled back.
@@ -192,7 +235,7 @@ export class RouterSession {
         // still queued. Read the watch's current view before stopping it so the
         // host can always commit the complete answer even when no last delta was
         // dispatched.
-        const finalText = textFromLive(watch?.value.docs['pi.live']);
+        const finalText = textFromLive(watch?.value.docs["pi.live"]);
         if (finalText) latestText = finalText;
         this.lastError = null;
         this.deps.onTurn?.({ ok: true });
@@ -207,7 +250,7 @@ export class RouterSession {
       this.lastError = error instanceof Error ? error.message : String(error);
       // 抛回 Router.tick：tick 会撤销 routed/announced 标记，下一轮才能重试。
       // 调度循环本身仍由 index.ts 的 pushTick 捕获，不会拖垮应用。
-      console.error('[router] 一轮失败', error);
+      console.error("[router] 一轮失败", error);
       this.deps.onTurn?.({ ok: false, error: this.lastError });
       throw error;
     } finally {
@@ -217,40 +260,53 @@ export class RouterSession {
 
   /** 等当前所有轮次落定。探针和退出流程用。 */
   settle = async (): Promise<void> => {
-    while (this.pending > 0) await new Promise((resolve) => setTimeout(resolve, 20));
+    while (this.pending > 0)
+      await new Promise((resolve) => setTimeout(resolve, 20));
   };
 }
 
 /** Extract only user-facing text; thinking and tool-call arguments stay hidden. */
 export function textFromLive(value: unknown): string {
-  if (!value || typeof value !== 'object') return '';
+  if (!value || typeof value !== "object") return "";
   const generation = (value as { generation?: unknown }).generation;
-  if (!generation || typeof generation !== 'object') return '';
+  if (!generation || typeof generation !== "object") return "";
   const message = (generation as { message?: unknown }).message;
-  if (!message || typeof message !== 'object') return '';
+  if (!message || typeof message !== "object") return "";
   const content = (message as { content?: unknown }).content;
-  if (!Array.isArray(content)) return '';
+  if (!Array.isArray(content)) return "";
   return content
-    .filter((block): block is { type: 'text'; text?: unknown } =>
-      Boolean(block && typeof block === 'object' && (block as { type?: unknown }).type === 'text'),
+    .filter((block): block is { type: "text"; text?: unknown } =>
+      Boolean(
+        block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text",
+      ),
     )
-    .map((block) => (typeof block.text === 'string' ? block.text : ''))
-    .join('');
+    .map((block) => (typeof block.text === "string" ? block.text : ""))
+    .join("");
 }
 
 /** pi.live represents a tool round either with `tools` slots or a tool-call
  * block in the in-flight assistant message. Support both shapes because the
  * slot is committed a little later than the streamed assistant preamble. */
 export function hasLiveToolRound(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
+  if (!value || typeof value !== "object") return false;
   const live = value as { tools?: unknown; generation?: unknown };
   if (Array.isArray(live.tools) && live.tools.length > 0) return true;
-  if (!live.generation || typeof live.generation !== 'object') return false;
+  if (!live.generation || typeof live.generation !== "object") return false;
   const message = (live.generation as { message?: unknown }).message;
-  if (!message || typeof message !== 'object') return false;
+  if (!message || typeof message !== "object") return false;
   const content = (message as { content?: unknown }).content;
-  return Array.isArray(content) && content.some((block) =>
-    Boolean(block && typeof block === 'object' &&
-      ['toolCall', 'tool_use', 'tool_use_call'].includes(String((block as { type?: unknown }).type))),
+  return (
+    Array.isArray(content) &&
+    content.some((block) =>
+      Boolean(
+        block &&
+        typeof block === "object" &&
+        ["toolCall", "tool_use", "tool_use_call"].includes(
+          String((block as { type?: unknown }).type),
+        ),
+      ),
+    )
   );
 }

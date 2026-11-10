@@ -20,6 +20,7 @@ import type {
   WorkerStatus,
 } from '../../data/runtimeData';
 import { RuntimeWorld } from './world/RuntimeWorld';
+import { Select } from '@/shared/ui/Select';
 import type { WorldSelection } from './world/RuntimeWorld';
 import { RuntimeSim } from './world/runtimeSim';
 import type { SimStats, WorkerActivity } from './world/runtimeSim';
@@ -1350,35 +1351,21 @@ export const SystemRuntimeView: React.FC = () => {
           ))}
         </div>
         {/* Compact scenario picker for narrow windows */}
-        <label className="relative hidden h-9 items-center rounded-[8px] border border-black/[0.07] bg-white pl-3 pr-8 shadow-[0_6px_20px_rgba(40,30,15,0.06)] @max-[1140px]:flex">
+        <label className="relative hidden h-9 items-center rounded-[8px] border border-black/[0.07] bg-white pl-3 pr-2 shadow-[0_6px_20px_rgba(40,30,15,0.06)] @max-[1140px]:flex">
           <span className="mr-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#9A9389]">
             {t('runtime.controls.scene')}
           </span>
-          <select
+          <Select
+            ariaLabel={t('runtime.controls.switchScenario')}
             value={variant}
-            onChange={(e) => selectVariant(e.target.value as RuntimePrototypeVariant)}
-            aria-label={t('runtime.controls.switchScenario')}
-            className="cursor-pointer appearance-none bg-transparent text-[12.5px] font-medium text-[#17181A] outline-none"
-          >
-            {PROTOTYPE_VARIANTS.map((v) => (
-              <option key={v.id} value={v.id}>
-                {t(`runtime.scenario.${v.id}.short`)}
-              </option>
-            ))}
-          </select>
-          <svg
-            className="pointer-events-none absolute right-2.5 h-3 w-3 text-[#9A9389]"
-            viewBox="0 0 12 12"
-            fill="none"
-          >
-            <path
-              d="M3 4.5L6 7.5L9 4.5"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+            onValueChange={(value) => selectVariant(value as RuntimePrototypeVariant)}
+            size="large"
+            className="min-w-0 border-0 bg-transparent px-0 text-[12.5px] font-medium text-[#17181A] shadow-none focus-visible:border-transparent focus-visible:ring-0"
+            options={PROTOTYPE_VARIANTS.map((v) => ({
+              value: v.id,
+              label: t(`runtime.scenario.${v.id}.short`),
+            }))}
+          />
         </label>
         {!observatory && <button
           type="button"

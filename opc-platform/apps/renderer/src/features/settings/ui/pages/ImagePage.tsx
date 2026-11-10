@@ -6,6 +6,7 @@ import { useCatalog } from '@/features/models/model/useCatalog';
 import { providerMeta } from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { ModelPicker } from '@/shared/ui/ModelPicker';
+import { Select } from '@/shared/ui/Select';
 import { vendorProviderId } from '@/shared/providers/visuals';
 import { cn } from '@/shared/lib/cn';
 import {
@@ -819,23 +820,14 @@ export function ImagePage() {
                                       />
                                       {/* The protocol column is gone; a hand-added id still has to
                                           say which image API it speaks, so it lives with the draft. */}
-                                      <select
-                                        aria-label={t('settings.image.protocol')}
+                                      <Select
+                                        ariaLabel={t('settings.image.protocol')}
                                         value={customModel.api}
-                                        onChange={(event) =>
-                                          setCustomModel((current) => ({
-                                            ...current,
-                                            api: event.target.value,
-                                          }))
-                                        }
-                                        className="h-6 w-full rounded border border-line bg-surface px-1 font-mono text-2xs text-ink-tertiary outline-none focus:border-accent"
-                                      >
-                                        {IMAGE_PROTOCOLS.map((protocol) => (
-                                          <option key={protocol} value={protocol}>
-                                            {protocol}
-                                          </option>
-                                        ))}
-                                      </select>
+                                        onValueChange={(api) => setCustomModel((current) => ({ ...current, api }))}
+                                        size="compact"
+                                        className="font-mono text-2xs text-ink-tertiary"
+                                        options={IMAGE_PROTOCOLS.map((protocol) => ({ value: protocol, label: protocol }))}
+                                      />
                                     </div>
                                     <button
                                       type="button"

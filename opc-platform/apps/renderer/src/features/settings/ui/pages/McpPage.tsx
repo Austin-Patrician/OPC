@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, KeyRound, Loader2, LogOut, Plug, RefreshCw, RotateCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Select } from '@/shared/ui/Select';
 import type { McpServerView, McpToolView } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section, StatusBadge } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
@@ -410,16 +411,16 @@ export function McpPage() {
           </label>
           <label className="block text-2xs text-ink-tertiary">
             {t('settings.mcp.transport')}
-            <select
+            <Select
+              ariaLabel={t('settings.mcp.transport')}
               value={draft.transport}
-              onChange={(event) =>
-                setDraft({ ...draft, transport: event.target.value === 'http' ? 'http' : 'stdio' })
-              }
-              className="mt-1 w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm text-ink outline-none"
-            >
-              <option value="stdio">stdio</option>
-              <option value="http">HTTP</option>
-            </select>
+              onValueChange={(value) => setDraft({ ...draft, transport: value === 'http' ? 'http' : 'stdio' })}
+              className="mt-1"
+              options={[
+                { value: 'stdio', label: 'stdio' },
+                { value: 'http', label: 'HTTP' },
+              ]}
+            />
           </label>
           <label className="block text-2xs text-ink-tertiary">
             {draft.transport === 'stdio' ? t('settings.mcp.command') : t('settings.mcp.url')}
@@ -443,23 +444,22 @@ export function McpPage() {
           </label>
           <label className="block text-2xs text-ink-tertiary">
             {t('settings.mcp.exposureField')}
-            <select
+            <Select
+              ariaLabel={t('settings.mcp.exposureField')}
               value={draft.exposure}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setDraft({
                   ...draft,
-                  exposure:
-                    event.target.value === 'direct' || event.target.value === 'hidden'
-                      ? event.target.value
-                      : 'deferred',
+                  exposure: value === 'direct' || value === 'hidden' ? value : 'deferred',
                 })
               }
-              className="mt-1 w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm text-ink outline-none"
-            >
-              <option value="deferred">{t('settings.mcp.exposure.deferred')}</option>
-              <option value="direct">{t('settings.mcp.exposure.direct')}</option>
-              <option value="hidden">{t('settings.mcp.exposure.hidden')}</option>
-            </select>
+              className="mt-1"
+              options={[
+                { value: 'deferred', label: t('settings.mcp.exposure.deferred') },
+                { value: 'direct', label: t('settings.mcp.exposure.direct') },
+                { value: 'hidden', label: t('settings.mcp.exposure.hidden') },
+              ]}
+            />
           </label>
           <div className="flex items-start gap-2.5 text-2xs text-ink-tertiary sm:col-span-2">
             <button

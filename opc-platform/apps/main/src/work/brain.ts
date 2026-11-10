@@ -22,6 +22,16 @@ export interface BrainContext {
     output: number;
     total: number;
     costUsd?: number;
+    providerCostUsd?: number;
+    configuredCostUsd?: number;
+    costSource?: 'provider' | 'configured' | 'unpriced';
+    providerId?: string;
+    modelId?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    durationMs?: number;
+    conversationId?: string;
+    status?: 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
   }) => void;
 }
 

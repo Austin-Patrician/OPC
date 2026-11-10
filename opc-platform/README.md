@@ -310,10 +310,9 @@ OK | sandbox | sandbox-exec · backend=seatbelt · 越界写入 exit=1（已阻�
 
 真模型跑完整链路（打包态）：`accepted`，`模型用量：20000 tokens`。
 
-**顺带发现并修掉的成本 bug**：接上沙箱后一次 hello-world 从 1.5k tokens 飙到 **99k**——模型在
-"write → read → edit → `node --check`"里反复打转，每轮都重发整段上下文。加了一个
-`opc.limits` 扩展，把单会话工具调用限制在 12 次（超限时返回一条工具结果让模型收尾），
-token 降到 **18–20k**。
+**工具调用不设固定次数上限**：此前曾按会话限制 12 次，避免模型反复读写导致成本上升；
+实际使用中，这会让任务在排查和恢复后无法继续调用工具，因此已移除。工具仍受沙箱路径、
+命令和网络策略约束，模型用量会照常记录。
 
 ### 本机 Pi 扩展：自动发现 + 显式信任（技能与工具页）
 
@@ -337,8 +336,8 @@ token 降到 **18–20k**。
 - **不引入 `@earendil-works/pi-coding-agent`**（23.4 MB / 1279 文件的 CLI）。扩展只从里面拿几个
   类型和 `isToolCallEventType` 这类判断，用 jiti 的 `virtualModules` 顶掉即可；`typebox` /
   `pi-ai` / `pi-durable` 用 `alias` 指向 OPC 自己那份（共用两份 typebox 会认不出 schema 身份）。
-- **外部扩展最后安装**，排在 `opc.sandbox` 和 `opc.limits` 之后——它们自己的工具调用同样要过沙箱
-  和调用上限，先装就能绕过去。开关变化后清掉缓存的 harness，不用重启。
+- **外部扩展最后安装**，排在 `opc.sandbox` 之后——它们自己的工具调用同样要经过沙箱，先装就能绕过去。
+  开关变化后清掉缓存的 harness，不用重启。
 
 未做：进程隔离（`utilityProcess`）、`ctx.ui.*` 交互式 UI（当前 fail closed，`confirm` 一律返回
 `false`）、`pi install` 的 npm 目录解析。
@@ -355,7 +354,7 @@ token 降到 **18–20k**。
 | `section('skills')` | 每个技能一行「name — 描述」 | 每请求约 1.4k tokens（15 个全开） |
 | `read_skill` 工具 | 模型判断相关时读全文 + 自带文件清单 | 只在用到时付 |
 
-正文超 24k 字符截断并指回文件路径；技能自带的脚本仍然走 `bash`，照样过沙箱和调用上限。
+正文超 24k 字符截断并指回文件路径；技能自带的脚本仍然走 `bash`，照样受沙箱策略约束。
 开关存的是**关掉**的技能（`pi-skills.json`），所以新装的技能默认可用；卸载后记录自动清掉，
 重装回来不会还是关着的。
 

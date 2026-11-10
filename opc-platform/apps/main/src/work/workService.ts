@@ -14,6 +14,7 @@ import type {
   WorkTask,
   WorkThread,
 } from '@opc/shared/domain';
+import type { PricingMode } from '@opc/shared/domain';
 import type {
   AgentCapability,
   CapabilityCatalog,
@@ -28,8 +29,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
-import { createToolLimitExtension } from '../sandbox/toolLimit';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import type { UsageRepository } from '../data/usageRepository';
 import type { FaultSink } from '../data/systemEventRepository';
 import { messageOf } from '../data/systemEventRepository';
 import { USER_ID } from '../data/schema';
@@ -102,6 +103,8 @@ import { createBrowserToolExtension } from './browserTool';
 import { createDesktopToolExtension } from './desktopTool';
 import type { DesktopBroker } from '../desktop/broker';
 import { summarizeWorkerTools, type RouterWorkerCapability } from '../router/routerCapabilities';
+import { createAssistantToolsExtension } from '../assistant/assistantTools';
+import type { AssistantToolsService } from '../assistant/assistantTools';
 
 /** How many manager rework rounds a task may take before it is parked for you. */
 
@@ -202,6 +205,11 @@ export interface WorkServiceDeps {
   browser?: BrowserBroker;
   /** Optional native desktop computer-use capability. */
   desktop?: DesktopBroker;
+  /** Shared time, weather, search, page-reading and calculation tools. */
+  assistantTools?: AssistantToolsService;
+  /** Call-level AI usage ledger shared with Settings → Usage. */
+  usageRepository?: UsageRepository;
+  pricingMode?: () => PricingMode;
 }
 
 /**
@@ -308,6 +316,45 @@ export class WorkService {
             };
           },
           onTokens: (taskId, tokens) => this.repository.addTokens(taskId, tokens),
+          recordUsage: (usage) => {
+            const mode = deps.pricingMode?.() ?? 'provider_first';
+            const providerCost = usage.providerCostUsd;
+            const configuredCost = usage.configuredCostUsd;
+            const chargedCost = mode === 'provider_only'
+              ? providerCost
+              : mode === 'configured_only'
+                ? configuredCost
+                : providerCost ?? configuredCost;
+            const costSource = chargedCost === undefined
+              ? 'unpriced'
+              : chargedCost === providerCost
+                ? 'provider'
+                : 'configured';
+            deps.usageRepository?.recordSafely({
+            idempotencyKey: `pi:${usage.conversationId}:${usage.startedAt}`,
+            startedAt: usage.startedAt,
+            finishedAt: usage.finishedAt,
+            durationMs: usage.durationMs,
+            workerId: usage.workerId,
+            taskId: usage.taskId,
+            conversationId: usage.conversationId,
+            capability: 'chat',
+            operation: 'pi conversation usage delta',
+            origin: 'worker',
+            providerId: usage.providerId,
+            modelId: usage.modelId,
+            status: usage.status,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            totalTokens: usage.total,
+            tokenSource: 'pi.session-delta',
+            billingUnit: 'token',
+            ...(providerCost !== undefined ? { providerCostUsd: providerCost } : {}),
+            ...(configuredCost !== undefined ? { configuredCostUsd: configuredCost } : {}),
+            ...(chargedCost !== undefined ? { chargedCostUsd: chargedCost } : {}),
+            costSource,
+            });
+          },
           // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它。
           trace: (taskId) => createTraceRecorder({ repository: this.repository, taskId }),
           // 动作级审批（M3）：MCP 的 hook 按扩展装，桥按任务挂。
@@ -1364,6 +1411,15 @@ export class WorkService {
       },
     ];
 
+    slots.push({
+      name: 'opc.assistant-tools',
+      essential: false,
+      available: Boolean(this.deps.assistantTools),
+      ...(this.deps.assistantTools
+        ? { extension: createAssistantToolsExtension(this.deps.assistantTools) }
+        : { reason: 'assistant-tools-unavailable' }),
+    });
+
     // The agent can draw, but only when a usable image provider exists.
     const images = this.deps.images;
     slots.push(
@@ -1617,7 +1673,7 @@ export class WorkService {
     );
 
     const desktop = this.deps.desktop;
-    const desktopAvailable = desktop?.status().healthy === true && desktop.settings(personId).enabled === true;
+    const desktopAvailable = desktop?.status().healthy === true && desktop.settings().enabled === true;
     slots.push(
       desktopAvailable && desktop
         ? {
@@ -1628,7 +1684,6 @@ export class WorkService {
               broker: desktop,
               taskId: () => currentTaskIdFor(personId),
               workerId: subject.id,
-              userId: personId,
               authorize: (tool, title, metadata) => {
                 const taskId = currentTaskIdFor(personId);
                 if (!taskId) return false;
@@ -1687,7 +1742,6 @@ export class WorkService {
     registry.install(
       createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
     );
-    registry.install(createToolLimitExtension());
     for (const slot of slots) if (!slot.essential) install(slot);
 
     // Deferred tools are deliberately kept out of the model's initial tool list,

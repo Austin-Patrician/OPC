@@ -134,10 +134,10 @@ W6 是这份规格相对 `08-worker.md` 新增的一条。它的两个失败模�
 | 层 | 内容 | 规则 |
 |---|---|---|
 | essential | `coding-tools`（read / write / edit / bash） | 永远装 |
-| 系统 | `opc.work`（durable task 定义）、`opc.sandbox`、`opc.limits` | 永远装；`opc.work` 少了，恢复会 `blocked: missing_task` |
+| 系统 | `opc.work`（durable task 定义）、`opc.sandbox` | 永远装；`opc.work` 少了，恢复会 `blocked: missing_task` |
 | 条件 | `opc.image` / `opc.speech` / `opc.decision` / `opc.ocr` / `opc.memory` / `opc.skills` / `opc.investigate` / `opc.decompose` | **能跑才装** |
 | 常驻 | `opc.recall` / `opc.escalate` / `opc.handback` | 查库或写库，不会失败 |
-| 外部 | 用户开启的 pi extensions | 最后装，沙箱与限额仍看得见 |
+| 外部 | 用户开启的 pi extensions | 最后装，沙箱策略仍生效 |
 
 **一条装配规则**：**装一个只能失败的工具，比不装更糟。** 每个条件槽带 `available` + `reason` 码，
 `capabilities()` / `stack()` 和 `buildRegistry()` 读同一份槽——所以页面不可能描述一个模型拿不到的工具。
@@ -147,11 +147,9 @@ W6 是这份规格相对 `08-worker.md` 新增的一条。它的两个失败模�
 | 层 | 管什么 | 位置 |
 |---|---|---|
 | `tool_policy` deny-list | 裁菜单（哪些工具对它可见） | `toolPolicy.ts` |
-| `opc.sandbox` | 管路径可写根与出网 | `sandbox/workspaces`、`beforeTool` 单一收窄点 |
-| `opc.limits` | 管次数（默认 12 次/会话，可 `OPC_MAX_TOOL_CALLS` 覆盖） | `sandbox/toolLimit.ts` |
+| `opc.sandbox` | 管工作区路径、命令与出网权限 | `sandbox/extension.ts` |
 
-限额的失败方式是**返回一句「已达上限，请基于已有文件结束」**，不是抛错——因为抛错会拖垮任务，
-而"被拦住"能让模型自己收尾。
+工具调用不设固定次数上限。路径、命令和出网限制仍由沙箱执行。
 
 ### 3.4 轨迹：`trace`（规格新增）
 

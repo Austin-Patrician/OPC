@@ -25,6 +25,12 @@ export class IpcChatTransport implements ChatTransport {
 
   getSnapshot = (): ChatSnapshot => this.snapshot;
 
+  loadOlderMessages = (conversationId: string, beforeMessageId: string) =>
+    this.bridge.chat.loadOlderMessages(conversationId, beforeMessageId);
+
+  searchMessages = (input: Parameters<OpcBridge['chat']['searchMessages']>[0]) =>
+    this.bridge.chat.searchMessages(input);
+
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

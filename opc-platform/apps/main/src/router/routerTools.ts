@@ -3,6 +3,7 @@ import { Type } from 'typebox';
 import type { ChatContentBlock, RouterResponse, TaskContract } from '@opc/shared/domain';
 import { recallView } from './inline';
 import { renderRouterWorkerCapabilities, type RouterWorkerCapability } from './routerCapabilities';
+import { AssistantToolsService, createAssistantToolsExtension } from '../assistant/assistantTools';
 
 /**
  * Router 的工具带。
@@ -123,6 +124,7 @@ export interface RouterToolDeps {
 
   /** Dynamic metadata-only view of tools available to Workers. */
   workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
+  assistantTools?: AssistantToolsService;
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -168,7 +170,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           '输入里如果带着"工作台的规矩"，那是长期有效的约定，优先于你这一次的临时判断。',
           '',
           '## 你不做什么',
-          '具体任务由后台执行体完成，你不直接读写文件、跑命令、改代码或查资料。',
+          '较大的任务由后台执行体完成，你不直接读写文件、跑命令或改代码；时间、天气、网页检索与计算可使用本机提供的常用工具直接处理。',
           '所以：**绝不声称自己做过尚未完成的事，也绝不编造执行结果**。',
           '这是内部边界，不是给用户的解释。手上没有证据时，去开一条线查，或简短说明确实缺什么。',
           '',
@@ -205,6 +207,7 @@ export function createRouterTools(deps: RouterToolDeps) {
         : []),
     ],
     tools: [
+      ...(deps.assistantTools ? createAssistantToolsExtension(deps.assistantTools).tools ?? [] : []),
       defineTool({
         name: 'open_line_of_work',
         description:

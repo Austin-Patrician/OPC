@@ -11,6 +11,10 @@ import {
   type BrowserInstallProgress,
   type DesktopStatus,
   type DesktopInstallProgress,
+  type AssistantToolsSettings,
+  type AssistantSearchProvider,
+  type UsageFilter,
+  type UsageReport,
 } from "@opc/shared/ipc";
 import type { OcrSettings } from "@opc/shared/ocr";
 import type {
@@ -78,6 +82,11 @@ const bridge: OpcBridge = {
       };
     },
   },
+  assistantTools: {
+    getSettings: () => ipcRenderer.invoke(IPC.assistantTools.getSettings) as Promise<AssistantToolsSettings>,
+    updateSettings: (patch: { timezone?: string | null; weatherCity?: string; defaultSearch?: AssistantSearchProvider; enabled?: Partial<Record<AssistantSearchProvider, boolean>>; keys?: Partial<Record<AssistantSearchProvider, string | null>> }) =>
+      ipcRenderer.invoke(IPC.assistantTools.updateSettings, patch) as Promise<AssistantToolsSettings>,
+  },
   runtime: {
     snapshot: () =>
       ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
@@ -136,6 +145,9 @@ const bridge: OpcBridge = {
   chat: {
     getSnapshot: () =>
       ipcRenderer.invoke(IPC.chat.getSnapshot) as Promise<ChatSnapshot>,
+    loadOlderMessages: (conversationId: string, beforeMessageId: string) =>
+      ipcRenderer.invoke(IPC.chat.loadOlderMessages, conversationId, beforeMessageId),
+    searchMessages: (input) => ipcRenderer.invoke(IPC.chat.searchMessages, input),
     sendMessage: (input: SendMessageInput) =>
       ipcRenderer.invoke(IPC.chat.sendMessage, input),
     chooseAttachments: () => ipcRenderer.invoke(IPC.chat.chooseAttachments),
@@ -204,8 +216,8 @@ const bridge: OpcBridge = {
     doctor: () => ipcRenderer.invoke(IPC.desktop.doctor) as Promise<DesktopStatus>,
     permissions: () => ipcRenderer.invoke(IPC.desktop.permissions) as Promise<DesktopStatus>,
     permissionsGuide: () => ipcRenderer.invoke(IPC.desktop.permissionsGuide) as Promise<DesktopStatus>,
-    getSettings: (userId?: string) => ipcRenderer.invoke(IPC.desktop.getSettings, userId),
-    setSettings: (patch: unknown, userId?: string) => ipcRenderer.invoke(IPC.desktop.setSettings, patch, userId),
+    getSettings: () => ipcRenderer.invoke(IPC.desktop.getSettings),
+    setSettings: (patch: unknown) => ipcRenderer.invoke(IPC.desktop.setSettings, patch),
     listApps: () => ipcRenderer.invoke(IPC.desktop.listApps),
     listWindows: () => ipcRenderer.invoke(IPC.desktop.listWindows),
     inspect: (taskId: string) => ipcRenderer.invoke(IPC.desktop.inspect, taskId),
@@ -243,6 +255,15 @@ const bridge: OpcBridge = {
       return () => {
         ipcRenderer.off(IPC.billing.changedEvent, handler);
       };
+    },
+  },
+  usage: {
+    report: (filter: UsageFilter) => ipcRenderer.invoke(IPC.usage.report, filter) as Promise<UsageReport>,
+    exportCsv: (filter: UsageFilter) => ipcRenderer.invoke(IPC.usage.exportCsv, filter) as Promise<boolean>,
+    onChanged: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on(IPC.usage.changedEvent, handler);
+      return () => ipcRenderer.off(IPC.usage.changedEvent, handler);
     },
   },
   memory: {

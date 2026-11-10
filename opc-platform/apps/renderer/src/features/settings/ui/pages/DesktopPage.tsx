@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppWindow, CheckCircle2, Download, Eye, HardDrive, RefreshCw, Search, Shield, Trash2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DesktopAppView, DesktopInstallPhase, DesktopInstallProgress, DesktopSettings, DesktopStatus } from '@opc/shared/ipc';
+import type { DesktopAppView, DesktopApprovalCategory, DesktopInstallPhase, DesktopInstallProgress, DesktopSettings, DesktopStatus } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Row, Section, StatusBadge, Toggle } from '../kit';
 
 function DesktopAppIcon({ app }: { app: DesktopAppView }) {
@@ -16,9 +16,14 @@ function DesktopAppIcon({ app }: { app: DesktopAppView }) {
 const DEFAULT: DesktopSettings = {
   enabled: false,
   allowedApps: [],
-  requireApprovalFor: ['external-submit', 'destructive', 'clipboard-write', 'physical-input'],
+  requireApprovalFor: ['external-submit', 'destructive', 'clipboard-read', 'clipboard-write'],
   maxOutputBytes: 64_000,
 };
+
+const APPROVAL_CATEGORIES: DesktopApprovalCategory[] = [
+  'desktop-access', 'screenshot', 'desktop-launch', 'window-focus', 'desktop-action',
+  'physical-input', 'clipboard-read', 'clipboard-write', 'external-submit', 'destructive',
+];
 
 export function DesktopPage() {
   const { t } = useTranslation();
@@ -27,6 +32,7 @@ export function DesktopPage() {
   const [settings, setSettings] = useState<DesktopSettings>(DEFAULT);
   const [apps, setApps] = useState<DesktopAppView[]>([]);
   const [busy, setBusy] = useState(false);
+  const [savingApproval, setSavingApproval] = useState<Set<DesktopApprovalCategory>>(() => new Set());
   const [installProgress, setInstallProgress] = useState<DesktopInstallProgress | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +74,31 @@ export function DesktopPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const setApprovalCategory = (category: DesktopApprovalCategory, requiresApproval: boolean) => {
+    if (!bridge || savingApproval.has(category)) return;
+    const categories = new Set(settings.requireApprovalFor);
+    if (requiresApproval) categories.add(category);
+    else categories.delete(category);
+    const requireApprovalFor = [...categories];
+    setSettings((current) => ({ ...current, requireApprovalFor }));
+    setSavingApproval((current) => new Set(current).add(category));
+    void bridge.setSettings({ requireApprovalFor })
+      .then(() => setNotice(t('settings.desktop.savedNotice')))
+      .catch(async (caught: unknown) => {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        try {
+          setSettings(await bridge.getSettings());
+        } catch {
+          // Keep the optimistic value visible if the settings read also fails.
+        }
+      })
+      .finally(() => setSavingApproval((current) => {
+        const next = new Set(current);
+        next.delete(category);
+        return next;
+      }));
   };
 
   const install = async () => {
@@ -154,12 +185,13 @@ export function DesktopPage() {
   };
 
   const installed = Boolean(status?.healthy) && status?.installState !== 'permission-required';
-  const selected = new Set(settings.allowedApps.map((entry) => entry.id));
+  const currentPlatform = window.opc?.platform ?? 'unknown';
+  const selected = new Set(settings.allowedApps.filter((entry) => entry.enabled && entry.platform === currentPlatform).map((entry) => entry.id));
   const toggleApp = (app: DesktopAppView) => {
     const id = app.bundleId ?? app.process ?? app.name;
     const next = selected.has(id)
       ? settings.allowedApps.filter((entry) => entry.id !== id)
-      : [...settings.allowedApps, { id, label: app.name, platform: window.opc?.platform ?? 'unknown', enabled: true, source: 'user' as const }];
+      : [...settings.allowedApps, { id, label: app.name, platform: currentPlatform, enabled: true, source: 'user' as const }];
     void save({ allowedApps: next });
   };
 
@@ -315,9 +347,20 @@ export function DesktopPage() {
       </div>
       <div className="mt-4">
         <Section title={t('settings.desktop.actionPolicyTitle')} description={t('settings.desktop.actionPolicyDesc')}>
-          <Row label={t('settings.desktop.sensitiveApproval')} hint={t('settings.desktop.sensitiveHint')}>
-            <Toggle checked disabled label={t('settings.desktop.sensitiveApproval')} onChange={() => undefined} />
-          </Row>
+          {APPROVAL_CATEGORIES.map((category) => {
+            const key = `settings.desktop.approvalCategories.${category}` as const;
+            const label = t(`${key}.label`);
+            return (
+              <Row key={category} label={label} hint={t(`${key}.hint`)}>
+                <Toggle
+                  checked={settings.requireApprovalFor.includes(category)}
+                  disabled={busy || savingApproval.has(category)}
+                  label={t('settings.desktop.requireApprovalToggle', { action: label })}
+                  onChange={(requiresApproval) => setApprovalCategory(category, requiresApproval)}
+                />
+              </Row>
+            );
+          })}
         </Section>
       </div>
       <div className="mt-4">

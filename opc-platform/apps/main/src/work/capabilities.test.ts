@@ -93,7 +93,6 @@ describe('WorkService.capabilities', () => {
       'opc.trace',
       'coding-tools',
       'opc.sandbox',
-      'opc.limits',
       'opc.recall',
       'opc.escalate',
       'opc.handback',

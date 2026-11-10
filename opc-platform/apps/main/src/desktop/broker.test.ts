@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopAppAllowed, desktopCommandOptions, desktopCommandRequiresApproval, desktopSessionId, desktopSessionName } from './broker';
+import { desktopAppAllowed, desktopClickApprovalCategory, desktopCommandOptions, desktopRequiresApproval, desktopSessionId, desktopSessionName } from './broker';
 import type { DesktopSettings } from '@opc/shared/ipc';
 
 const settings: DesktopSettings = {
@@ -22,10 +22,15 @@ describe('desktop policy', () => {
     expect(desktopAppAllowed({ ...current, allowedApps: [...current.allowedApps, { id: 'Terminal', label: 'Terminal', platform: process.platform, enabled: true, source: 'user' }] }, 'Terminal')).toBe(false);
   });
 
-  it('marks external input and state changing commands as approval candidates', () => {
-    expect(desktopCommandRequiresApproval('click')).toBe(true);
-    expect(desktopCommandRequiresApproval('set-value')).toBe(true);
-    expect(desktopCommandRequiresApproval('snapshot')).toBe(false);
+  it('checks approval requirements against the configured categories', () => {
+    expect(desktopRequiresApproval(settings, 'external-submit')).toBe(true);
+    expect(desktopRequiresApproval(settings, 'physical-input')).toBe(false);
+  });
+
+  it('separates destructive clicks from other consequential clicks', () => {
+    expect(desktopClickApprovalCategory('Send message')).toBe('external-submit');
+    expect(desktopClickApprovalCategory('Delete item')).toBe('destructive');
+    expect(desktopClickApprovalCategory('Open menu')).toBeUndefined();
   });
 
   it('places application and window selectors only on commands that support them', () => {

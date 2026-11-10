@@ -6,10 +6,12 @@ import {
   type WatchdogActionView,
   type WatchdogIncidentView,
   type SendMessageInput,
+  type ChatSearchInput,
   type MemoryView,
   type OrphanMemoryGroup,
   type TriggerPatch,
   type TriggerStatus,
+  type UsageFilter,
 } from "@opc/shared/ipc";
 import type {
   BundledRuntime,
@@ -73,6 +75,8 @@ import type { ContextGraphStore } from "../ontology/types";
 import type { OntologyCommandService } from "../ontology/commandService";
 import type { BrowserBroker } from "../browser/broker";
 import type { DesktopBroker } from "../desktop/broker";
+import type { AssistantToolsService } from "../assistant/assistantTools";
+import type { UsageRepository } from "../data/usageRepository";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -102,6 +106,7 @@ interface RegisterOptions {
   company: CompanyService;
   /** 网络代理：保存即生效，失败会作为 IPC 错误抛回设置页。 */
   network: NetworkProxyService;
+  assistantTools: AssistantToolsService;
   /** 全局基础运行环境（Node / Python），所有执行体共用。 */
   runtime: RuntimeService;
   /** 随应用分发的引擎（OCR）：读的是磁盘，不是偏好。 */
@@ -113,6 +118,7 @@ interface RegisterOptions {
   };
   /** 计费口径：定价策略、展示币种、手工汇率（设置 → 通用 → 计费）。 */
   billingSettings: BillingSettingsService;
+  usage: UsageRepository;
   /** Resolves artifact paths to the workspace root (injected by bootstrap). */
   workspaceRoot: string;
   /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
@@ -165,10 +171,12 @@ export function registerIpc({
   consolidationRuns,
   company,
   network,
+  assistantTools,
   runtime,
   bundled,
   ocrSettings,
   billingSettings,
+  usage,
   piExtensions,
   piSkills,
   triage,
@@ -188,6 +196,9 @@ export function registerIpc({
       if (!window.isDestroyed()) window.webContents.send(channel, payload);
     }
   };
+  const unsubscribeUsage = usage.subscribe(() =>
+    broadcast(IPC.usage.changedEvent, undefined),
+  );
 
   /** IPC may deliver a Uint8Array, an ArrayBuffer or another view. */
   const toBytes = (value: unknown): Uint8Array | undefined => {
@@ -257,6 +268,34 @@ export function registerIpc({
     return stored;
   });
 
+  ipcMain.handle(IPC.usage.report, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Usage 筛选参数无效');
+    return usage.report(input as UsageFilter);
+  });
+  ipcMain.handle(IPC.usage.exportCsv, async (event, input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Usage 筛选参数无效');
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showSaveDialog(window ?? undefined!, {
+      title: '导出 Usage 用量明细', defaultPath: 'opc-usage.csv', filters: [{ name: 'CSV', extensions: ['csv'] }],
+    });
+    if (result.canceled || !result.filePath) return false;
+    const calls = usage.rowsForExport(input as UsageFilter);
+    const headers = ['时间', '执行体', '任务 ID', '会话 ID', '能力', '调用来源', 'Provider', '模型', '结果', '输入 Token', '输出 Token', '缓存读取 Token', '缓存写入 Token', '总 Token', '计量单位', '计量数量', '服务商费用 USD', '估算费用 USD', '统计费用 USD', '计价来源', '耗时 ms', '错误'];
+    const cell = (value: unknown) => {
+      const text = value === null || value === undefined ? '' : String(value);
+      return `"${(/^[=+@\\-\\t\\r]/.test(text) ? `'${text}` : text).replace(/"/g, '""')}"`;
+    };
+    const rows = [headers, ...calls.map((call) => [
+      new Date(call.startedAt).toISOString(), call.workerName, call.taskId, call.conversationId,
+      call.capability, call.operation, call.providerId, call.modelId, call.status, call.inputTokens,
+      call.outputTokens, call.cacheReadTokens, call.cacheWriteTokens, call.totalTokens, call.billingUnit,
+      call.billedQuantity, call.providerCostUsd, call.configuredCostUsd, call.chargedCostUsd,
+      call.costSource, call.durationMs, call.error,
+    ])].map((row) => row.map(cell).join(',')).join('\r\n');
+    fs.writeFileSync(result.filePath, `\uFEFF${rows}`, 'utf8');
+    return true;
+  });
+
   ipcMain.handle(IPC.app.getInfo, () => getAppInfo());
 
   ipcMain.handle(IPC.window.minimize, (event) => {
@@ -285,6 +324,12 @@ export function registerIpc({
   ipcMain.handle(IPC.network.test, (_event, input: unknown) =>
     probeProxy(network.candidate(input)),
   );
+
+  ipcMain.handle(IPC.assistantTools.getSettings, () => assistantTools.getSettings());
+  ipcMain.handle(IPC.assistantTools.updateSettings, (_event, patch: unknown) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('助手工具设置参数非法');
+    return assistantTools.updateSettings(patch as Parameters<AssistantToolsService['updateSettings']>[0]);
+  });
 
   ipcMain.handle(IPC.runtime.snapshot, () => runtime.snapshot());
 
@@ -412,6 +457,15 @@ export function registerIpc({
   ipcMain.handle(IPC.diagnostics.report, () => runDiagnostics());
 
   ipcMain.handle(IPC.chat.getSnapshot, () => chat.getSnapshot());
+  ipcMain.handle(IPC.chat.loadOlderMessages, (_event, conversationId: unknown, beforeMessageId: unknown) => {
+    if (typeof conversationId !== 'string' || !conversationId.trim()) throw new Error('会话标识无效');
+    if (typeof beforeMessageId !== 'string' || !beforeMessageId.trim()) throw new Error('历史消息游标无效');
+    return chat.loadOlderMessages(conversationId, beforeMessageId);
+  });
+  ipcMain.handle(IPC.chat.searchMessages, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') throw new Error('聊天搜索参数无效');
+    return chat.searchMessages(input as ChatSearchInput);
+  });
 
   ipcMain.handle(IPC.chat.chooseAttachments, async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
@@ -1092,10 +1146,10 @@ export function registerIpc({
     ipcMain.handle(IPC.desktop.doctor, () => { const result = desktop.doctor(); desktopBroadcast(); return result; });
     ipcMain.handle(IPC.desktop.permissions, async () => { const result = await desktop.permissions(); desktopBroadcast(); return result; });
     ipcMain.handle(IPC.desktop.permissionsGuide, async () => { const result = await desktop.permissionsGuide(); desktopBroadcast(); return result; });
-    ipcMain.handle(IPC.desktop.getSettings, (_event, userId: unknown) => desktop.settings(typeof userId === 'string' && userId.trim() ? userId : 'user'));
-    ipcMain.handle(IPC.desktop.setSettings, async (_event, patch: unknown, userId: unknown) => {
+    ipcMain.handle(IPC.desktop.getSettings, () => desktop.settings());
+    ipcMain.handle(IPC.desktop.setSettings, async (_event, patch: unknown) => {
       if (!patch || typeof patch !== 'object') throw new Error('desktop:setSettings 参数非法');
-      const result = desktop.setSettings(patch as Record<string, unknown>, typeof userId === 'string' && userId.trim() ? userId : 'user');
+      const result = desktop.setSettings(patch as Record<string, unknown>);
       await work.invalidateAllHarnesses();
       desktopBroadcast();
       return result;
@@ -1104,7 +1158,7 @@ export function registerIpc({
     ipcMain.handle(IPC.desktop.listWindows, () => desktop.listWindows());
     ipcMain.handle(IPC.desktop.inspect, (_event, taskId: unknown) => {
       if (typeof taskId !== 'string' || !taskId.trim()) throw new Error('desktop:inspect 需要 taskId');
-      return desktop.inspect({ taskId, workerId: 'inspector', userId: 'user' });
+      return desktop.inspect({ taskId, workerId: 'inspector' });
     });
     ipcMain.handle(IPC.desktop.show, (_event, taskId: unknown) => desktop.show(typeof taskId === 'string' ? taskId : ''));
     ipcMain.handle(IPC.desktop.hide, (_event, taskId: unknown) => desktop.hide(typeof taskId === 'string' ? taskId : undefined));
@@ -1354,9 +1408,12 @@ export function registerIpc({
     for (const channel of Object.values(IPC.runtime))
       ipcMain.removeHandler(channel);
     unsubscribeWork();
+    unsubscribeUsage();
     clearInterval(runtimePulse);
     ipcMain.removeHandler(IPC.billing.get);
     ipcMain.removeHandler(IPC.billing.update);
+    ipcMain.removeHandler(IPC.usage.report);
+    ipcMain.removeHandler(IPC.usage.exportCsv);
     unsubscribe();
     ipcMain.removeHandler(IPC.work.listTasks);
     ipcMain.removeHandler(IPC.work.setIssueMeta);
@@ -1372,6 +1429,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.company.update);
     ipcMain.removeHandler(IPC.diagnostics.report);
     ipcMain.removeHandler(IPC.chat.getSnapshot);
+    ipcMain.removeHandler(IPC.chat.loadOlderMessages);
     ipcMain.removeHandler(IPC.chat.sendMessage);
     ipcMain.removeHandler(IPC.chat.markRead);
     ipcMain.removeHandler(IPC.chat.ensureAssistant);

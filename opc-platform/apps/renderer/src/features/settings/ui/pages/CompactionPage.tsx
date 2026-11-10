@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatAppDate } from '@/shared/lib/appTime';
 import type { FactView } from '@opc/shared/ipc';
 import { cn } from '@/shared/lib/cn';
 import { useModels } from '@/features/models/model/useModels';
@@ -248,7 +249,7 @@ function WorkspaceFacts() {
               </span>
               <span className="min-w-0 flex-1 text-sm leading-relaxed text-ink">{fact.object}</span>
               <span className="shrink-0 font-mono text-3xs text-ink-quaternary">
-                {new Date(fact.validFrom).toLocaleDateString()}
+                {formatAppDate(fact.validFrom)}
               </span>
             </li>
           ))}

@@ -208,6 +208,93 @@ describe('ChatService：Router 是聊天的对面', () => {
     }
   });
 
+  it('数据库会话只载入最近 100 条，旧消息按游标分批读取且 transcript 保持完整', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-pages-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const seed = new ChatService({ agents: [], conversations: [], db });
+      const id = seed.ensureAssistant();
+      const insert = db.prepare('INSERT INTO message (id, conversation_id, payload, created_at) VALUES (?, ?, ?, ?)');
+      for (let index = 0; index < 205; index += 1) {
+        const message = {
+          id: `history-${index}`,
+          kind: 'text',
+          senderId: index % 2 === 0 ? 'user' : ROUTER_ID,
+          senderName: index % 2 === 0 ? '用户' : '助手',
+          timestamp: '09:00',
+          text: `消息 ${index}`,
+        };
+        insert.run(message.id, id, JSON.stringify(message), 1_000 + index);
+      }
+
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      const recent = chat.getSnapshot().conversations[0]!.messages;
+      expect(recent).toHaveLength(100);
+      expect(recent[0]?.id).toBe('history-105');
+      expect(chat.getSnapshot().hasOlderMessagesByConversation[id]).toBe(true);
+      const searchPage = chat.searchMessages({ query: '消息 2', senderId: ROUTER_ID, limit: 2 });
+      expect(searchPage.results.map(({ message }) => message.id)).toEqual(['history-203', 'history-201']);
+      expect(searchPage.hasMore).toBe(true);
+
+      const firstPage = chat.loadOlderMessages(id, 'history-105');
+      expect(firstPage.messages.map((message) => message.id)).toEqual(
+        Array.from({ length: 100 }, (_, index) => `history-${index + 5}`),
+      );
+      expect(firstPage.hasMore).toBe(true);
+
+      chat.appendRouterMessage(id, '新消息');
+      const nextPage = chat.loadOlderMessages(id, 'history-5');
+      expect(nextPage.messages.map((message) => message.id)).toEqual(
+        Array.from({ length: 5 }, (_, index) => `history-${index}`),
+      );
+      expect(nextPage.hasMore).toBe(false);
+      expect(chat.getSnapshot().conversations[0]!.messages).toHaveLength(100);
+      expect(chat.readTranscript(id)).toHaveLength(206);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('最新窗口之外的审批卡仍能恢复并从持久化历史中移除', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-old-card-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const seed = new ChatService({ agents: [], conversations: [], db });
+      const id = seed.ensureAssistant();
+      const insert = db.prepare('INSERT INTO message (id, conversation_id, payload, created_at) VALUES (?, ?, ?, ?)');
+      const content = [{
+        type: 'approval' as const,
+        reportId: 'old-report',
+        threadId: 'thread-old',
+        tool: 'mcp__fs__write',
+        title: '需要允许写入文件',
+        body: '请确认',
+        state: 'pending' as const,
+      }];
+      insert.run('old-card-message', id, JSON.stringify({
+        id: 'old-card-message', kind: 'text', senderId: ROUTER_ID, senderName: '助手', timestamp: '08:00',
+        text: '请确认', content,
+      }), 1);
+      for (let index = 0; index < 105; index += 1) {
+        const message = {
+          id: `recent-${index}`, kind: 'text', senderId: 'user', senderName: '用户', timestamp: '09:00', text: `消息 ${index}`,
+        };
+        insert.run(message.id, id, JSON.stringify(message), 2 + index);
+      }
+
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      expect(chat.getSnapshot().conversations[0]!.messages).toHaveLength(100);
+      expect(chat.readActionCards().some(({ block }) => block.type === 'approval' && block.reportId === 'old-report')).toBe(true);
+      chat.updateApprovalCard('old-report', 'allowed');
+      expect(chat.readTranscript(id).some((message) => message.id === 'old-card-message')).toBe(false);
+      expect(chat.readActionCards().some(({ block }) => block.type === 'approval' && block.reportId === 'old-report')).toBe(false);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('审批消息删除后不会在数据库重载时复现', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-approval-'));
     const db = openCompanyDatabase(path.join(dir, 'company.db'));

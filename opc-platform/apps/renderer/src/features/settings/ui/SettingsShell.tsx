@@ -18,6 +18,8 @@ import { WatchdogPage } from './pages/WatchdogPage';
 import { McpPage } from './pages/McpPage';
 import { BrowserPage } from './pages/BrowserPage';
 import { DesktopPage } from './pages/DesktopPage';
+import { AssistantToolsPage } from './pages/AssistantToolsPage';
+import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
 import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Plug, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
@@ -26,6 +28,7 @@ const PAGE_IDS = [
   'appearance',
   'company',
   'billing',
+  'usage',
   'compaction',
   'triage',
   'watchdog',
@@ -39,6 +42,7 @@ const PAGE_IDS = [
   'browser',
   'desktop',
   'network',
+  'assistantTools',
   'selfcheck',
   'about',
 ] as const;
@@ -82,6 +86,7 @@ export function SettingsShell() {
         { id: 'appearance', label: t('settings.page.appearance') },
         { id: 'company', label: t('settings.page.company') },
         { id: 'billing', label: t('settings.page.billing') },
+        { id: 'usage', label: t('settings.page.usage') },
         { id: 'compaction', label: t('settings.page.compaction') },
       ],
     },
@@ -134,7 +139,10 @@ export function SettingsShell() {
       label: t('settings.group.network'),
       icon: Globe,
       color: '#FF9500',
-      pages: [{ id: 'network', label: t('settings.page.network') }],
+      pages: [
+        { id: 'network', label: t('settings.page.network') },
+        { id: 'assistantTools', label: t('settings.page.assistantTools') },
+      ],
     },
     {
       id: 'browser',
@@ -178,6 +186,8 @@ export function SettingsShell() {
         return <CompanyPage />;
       case 'billing':
         return <BillingPage />;
+      case 'usage':
+        return <UsagePage />;
       case 'compaction':
         return <CompactionPage />;
       case 'triage':
@@ -206,6 +216,8 @@ export function SettingsShell() {
         return <SelfCheckPage />;
       case 'network':
         return <NetworkPage />;
+      case 'assistantTools':
+        return <AssistantToolsPage />;
       case 'about':
         return <AboutPage />;
     }
@@ -290,12 +302,12 @@ export function SettingsShell() {
           })}
         </nav>
 
-        <div className="shrink-0 border-t border-line px-4 py-3 text-xs text-ink-tertiary">
+        {/* <div className="shrink-0 border-t border-line px-4 py-3 text-xs text-ink-tertiary">
           {t('settings.autoSave')}
-        </div>
+        </div> */}
       </aside>
 
-      <main className="page-scroll min-w-0 flex-1 overflow-y-auto">
+      <main className="page-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[55rem] px-8 pt-6 pb-10">{content}</div>
       </main>
     </div>

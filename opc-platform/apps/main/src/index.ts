@@ -25,7 +25,7 @@ import { ImageService } from './models/imageService';
 import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
-import type { ChatContentBlock, SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
+import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
 import type { RouterToolDeps } from './router/routerTools';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
@@ -78,6 +78,8 @@ import { BrowserInstallService } from './browser/install';
 import { BrowserBroker } from './browser/broker';
 import { DesktopInstallService } from './desktop/install';
 import { DesktopBroker } from './desktop/broker';
+import { AssistantToolsService } from './assistant/assistantTools';
+import { UsageRepository } from './data/usageRepository';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
 const IDLE_COOLING_MS = 60 * 60 * 1000;
@@ -383,6 +385,7 @@ async function bootstrap(): Promise<void> {
     cipher: { encrypt: encryptSecret, decrypt: decryptSecret },
     apply: applyProxy,
   });
+  const assistantTools = new AssistantToolsService(db, networkClient);
   // One instance for the process: the router writes threads here, IPC reads them.
   const threads = new ThreadRepository(db);
   // 全新安装要有一个人能干活：界面上已经没有招聘和组织架构了，
@@ -455,15 +458,10 @@ async function bootstrap(): Promise<void> {
   // those two writes). Remove those stale action cards before restoring any new
   // ones; otherwise the UI shows a pending card whose IPC action is already a
   // no-op.
-  const persistedActionCards = chat.getSnapshot().conversations.flatMap((conversation) =>
-    conversation.messages.flatMap((message) =>
-      (message.content ?? [])
-        .filter(
-          (block): block is Extract<ChatContentBlock, { type: 'approval' | 'workflow' }> =>
-            block.type === 'approval' || block.type === 'workflow',
-        )
-        .map((block) => ({ reportId: block.reportId, type: block.type })),
-    ),
+  const persistedActionCards = chat.readActionCards().flatMap(({ block }) =>
+    block.type === 'approval' || block.type === 'workflow'
+      ? [{ reportId: block.reportId, type: block.type }]
+      : [],
   );
   for (const card of persistedActionCards) {
     const report = threads.getReport(card.reportId);
@@ -475,13 +473,8 @@ async function bootstrap(): Promise<void> {
   // Backfill actionable reports created before the chat-first UI existed. This
   // is idempotent because persisted report ids are used as the card key.
   const existingWorkflowCards = new Set(
-    chat.getSnapshot().conversations.flatMap((conversation) =>
-      conversation.messages.flatMap((message) =>
-        (message.content ?? [])
-          .filter((block): block is Extract<ChatContentBlock, { type: 'workflow' }> => block.type === 'workflow')
-          .map((block) => block.reportId),
-      ),
-    ),
+    chat.readActionCards()
+      .flatMap(({ block }) => block.type === 'workflow' ? [block.reportId] : []),
   );
   const routerConversation = chat.ensureAssistant();
   for (const report of threads.listPendingConversationReports(200).filter((item) => item.kind === 'question')) {
@@ -575,9 +568,12 @@ async function bootstrap(): Promise<void> {
   });
   const facts = new FactService(db);
   const consolidationRuns = new ConsolidationRunStore(db);
-  const imageService = new ImageService(modelConfig, networkClient);
-  const speechService = new SpeechService(modelConfig, networkClient);
-  const decisionService = new DecisionService(modelConfig);
+  const billingSettings = new BillingSettingsService(db);
+  billingSettings.ensureDefaults();
+  const usage = new UsageRepository(db);
+  const imageService = new ImageService(modelConfig, networkClient, usage);
+  const speechService = new SpeechService(modelConfig, networkClient, usage);
+  const decisionService = new DecisionService(modelConfig, usage, () => billingSettings.get().pricingMode);
 
   /**
    * 偏好抽取：把「返工理由」和「改方向」变成记忆。
@@ -684,8 +680,6 @@ async function bootstrap(): Promise<void> {
   const ocrSettings = new OcrSettingsStore(db);
   const ocr = ensureOcr(ocrSettings);
   // 计费口径：定价策略 + 展示币种 + 手工汇率。汇率只影响渲染，不写进账本。
-  const billingSettings = new BillingSettingsService(db);
-  billingSettings.ensureDefaults();
   // Pi extensions on this machine (`~/.pi/agent/extensions`). Scanning is free;
   // only the ones you turned on are imported.
   const piExtensions = new PiExtensionHost({ userDataDir: appPaths.userData });
@@ -731,6 +725,9 @@ async function bootstrap(): Promise<void> {
     },
     mcp: readMcp,
     modelConfig,
+    assistantTools,
+    usageRepository: usage,
+    pricingMode: () => billingSettings.get().pricingMode,
     images: imageService,
     speech: speechService,
     decisions: decisionService,
@@ -749,13 +746,8 @@ async function bootstrap(): Promise<void> {
   // Development phase: discard approval prompts created before chat cards were
   // introduced, otherwise old queue state can leave threads permanently waiting.
   const persistedApprovalCards = new Set(
-    chat.getSnapshot().conversations.flatMap((conversation) =>
-      conversation.messages.flatMap((message) =>
-        (message.content ?? [])
-          .filter((block): block is Extract<ChatContentBlock, { type: 'approval' }> => block.type === 'approval')
-          .map((block) => block.reportId),
-      ),
-    ),
+    chat.readActionCards()
+      .flatMap(({ block }) => block.type === 'approval' ? [block.reportId] : []),
   );
   for (const threadId of threads.clearPendingApprovals(persistedApprovalCards)) {
     const thread = threads.getThread(threadId);
@@ -821,6 +813,9 @@ async function bootstrap(): Promise<void> {
     agentsDir: appPaths.agentsDir,
     workspaceDir: appPaths.workspaceDir,
     modelConfig,
+    assistantTools,
+    usageRepository: usage,
+    pricingMode: () => billingSettings.get().pricingMode,
     envFor: () => runtimeService.envFor() as Record<string, string>,
     context: () => getBackgroundContext(),
     /** 两层过滤怎么配：设置页写、每一轮读（改完立刻生效）。 */
@@ -1015,10 +1010,8 @@ async function bootstrap(): Promise<void> {
   });
 
   // Remove cards whose command was already completed while the app was closed.
-  for (const card of chat.getSnapshot().conversations.flatMap((conversation) =>
-    conversation.messages.flatMap((message) => (message.content ?? []).filter(
-      (block): block is Extract<ChatContentBlock, { type: 'ontologyApproval' }> => block.type === 'ontologyApproval',
-    )),
+  for (const card of chat.readActionCards().flatMap(({ block }) =>
+    block.type === 'ontologyApproval' ? [block] : [],
   )) {
     const command = contextGraph.getCommand(card.commandId);
     if (!command || ['succeeded', 'failed', 'rejected'].includes(command.status)) {
@@ -1028,10 +1021,8 @@ async function bootstrap(): Promise<void> {
   // Recover a pending command card if the process stopped between the durable
   // command write and the chat snapshot write. The command itself remains the
   // source of truth, so recovery never creates a second execution.
-  const existingOntologyCards = new Set(chat.getSnapshot().conversations.flatMap((conversation) =>
-    conversation.messages.flatMap((message) => (message.content ?? []).flatMap((block) =>
-      block.type === 'ontologyApproval' ? [block.commandId] : [],
-    )),
+  const existingOntologyCards = new Set(chat.readActionCards().flatMap(({ block }) =>
+    block.type === 'ontologyApproval' ? [block.commandId] : [],
   ));
   const recoveryConversation = chat.ensureAssistant();
   for (const command of contextGraph.listCommands('pending')) {
@@ -1114,12 +1105,14 @@ async function bootstrap(): Promise<void> {
     },
     company: new CompanyService(db),
     network,
+    assistantTools,
     runtime: runtimeService,
     // 设置 → 运行时: engines we ship are read-only, so the page reads the disk
     // rather than a stored preference.
     bundled: { inspect: async () => [await inspectOcrRuntime(ocrAssetsDir())] },
     ocrSettings,
     billingSettings,
+    usage,
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
     workspaceRoot: appPaths.workspaceDir,
     threads,
@@ -2065,15 +2058,14 @@ if (!hasLock) {
       const first = new ChatService({ db, conversations: [] });
       const conversationId = first.ensureAssistant();
       first.sendMessage({ conversationId, text: '最近有什么产品上线了么' });
-      const firstSnapshot = first.getSnapshot();
-      const firstCount = firstSnapshot.conversations.find((item) => item.id === conversationId)?.messages.length ?? 0;
+      const firstCount = first.readTranscript(conversationId).length;
       first.dispose();
 
       // "Restart": a brand-new service reading the same SQLite file.
       const second = new ChatService({ db, conversations: [] });
-      const restored = second.getSnapshot().conversations.find((item) => item.id === conversationId);
-      const restoredTexts = (restored?.messages ?? []).map((message) => message.text ?? message.kind);
-      const speakers = [...new Set((restored?.messages ?? []).map((message) => message.senderId))];
+      const restoredMessages = second.readTranscript(conversationId);
+      const restoredTexts = restoredMessages.map((message) => message.text ?? message.kind);
+      const speakers = [...new Set(restoredMessages.map((message) => message.senderId))];
 
       process.stdout.write(
         JSON.stringify({

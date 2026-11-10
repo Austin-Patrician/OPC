@@ -6,11 +6,7 @@ import { BuddyMark } from '@/shared/ui/BuddyMark';
 
 interface TitleBarProps {
   searchEnabled: boolean;
-  searchOpen: boolean;
-  searchQuery: string;
   onToggleSearch: () => void;
-  onSearchQueryChange: (value: string) => void;
-  onCloseSearch: () => void;
   showChatStatus?: boolean;
   chatActivity?: AssistantActivity;
   overlay?: boolean;
@@ -19,11 +15,7 @@ interface TitleBarProps {
 /** One chrome row for the search action and Electron's native window buttons. */
 export function TitleBar({
   searchEnabled,
-  searchOpen,
-  searchQuery,
   onToggleSearch,
-  onSearchQueryChange,
-  onCloseSearch,
   showChatStatus = false,
   chatActivity,
   overlay = false,
@@ -63,21 +55,6 @@ export function TitleBar({
       <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-2.5">
         {searchEnabled ? (
           <div className="no-drag flex items-center gap-2.5">
-            {searchOpen ? (
-              <div className="buddy-search flex h-8 items-center gap-2 rounded-[10px] border px-2.5">
-                <Search size={14} />
-                <input
-                  autoFocus
-                  value={searchQuery}
-                  onChange={(event) => onSearchQueryChange(event.target.value)}
-                  placeholder={t('nav.chatSearchPlaceholder')}
-                  className="w-44 bg-transparent text-[11px] outline-none placeholder:text-[#9aa69f]"
-                />
-                <button type="button" aria-label={t('common.close')} onClick={onCloseSearch}>
-                  <X size={13} />
-                </button>
-              </div>
-            ) : null}
             <button
               type="button"
               aria-label={t('common.search')}

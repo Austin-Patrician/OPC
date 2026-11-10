@@ -17,5 +17,6 @@ export function useChatRuntime() {
     ...snapshot,
     sendMessage: transport.sendMessage,
     markRead: transport.markRead,
+    loadOlderMessages: transport.loadOlderMessages,
   };
 }

@@ -245,7 +245,7 @@ export function Composer({ onSend, history }: ComposerProps) {
           autoFocus
           placeholder={t('chat.inputPlaceholder')}
           aria-label={t('chat.inputPlaceholder')}
-          className={`buddy-composer-input min-w-0 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-5 outline-none ${isMultiline ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'}`}
+          className={`buddy-composer-input chat-scrollbar-reveal min-w-0 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-5 outline-none ${isMultiline ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'}`}
         />
         <button
           ref={micRef}

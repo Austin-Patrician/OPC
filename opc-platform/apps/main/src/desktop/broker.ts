@@ -4,14 +4,129 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { nativeImage } from 'electron';
-import type { DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
+import { app as electronApp, nativeImage } from 'electron';
+import type { DesktopApprovalCategory, DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
 import type { DesktopInstallService } from './install';
+import { execFilePlatform } from '../process/execFilePlatform';
 
 const execFileAsync = promisify(execFile);
 
 let applicationCatalogPromise: Promise<Map<string, string>> | undefined;
+let linuxDesktopEntriesPromise: Promise<LinuxDesktopEntry[]> | undefined;
 const iconCache = new Map<string, Promise<string | undefined>>();
+
+interface LinuxDesktopEntry {
+  name: string;
+  executable: string;
+  icon: string;
+  fileName: string;
+}
+
+function linuxDesktopRoots(): string[] {
+  const dataDirs = (process.env.XDG_DATA_DIRS ?? '/usr/local/share:/usr/share').split(path.delimiter);
+  return [...new Set([
+    path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'applications'),
+    ...dataDirs.map((directory) => path.join(directory, 'applications')),
+  ])].filter((directory) => fs.existsSync(directory));
+}
+
+function readDesktopEntry(filePath: string): LinuxDesktopEntry | undefined {
+  let contents: string;
+  try { contents = fs.readFileSync(filePath, 'utf8'); } catch { return undefined; }
+  const section = contents.split(/^\s*\[Desktop Entry\]\s*$/m)[1]?.split(/^\s*\[/m)[0];
+  if (!section || /^\s*(?:Hidden|NoDisplay)=true\s*$/im.test(section)) return undefined;
+  const field = (key: string) => section.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1]?.replace(/\\([snrt\\])/g, (_match, code: string) => ({ s: ' ', n: '\n', r: '\r', t: '\t', '\\': '\\' })[code] ?? code).trim() ?? '';
+  const name = field('Name');
+  const icon = field('Icon');
+  const command = field('Exec').replace(/%[fFuUdDnNickvm]/g, '').trim().replace(/^env\s+/, '');
+  const executable = command.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/)?.slice(1).find(Boolean) ?? '';
+  return name && icon ? { name, executable: path.basename(executable).toLowerCase(), icon, fileName: path.basename(filePath, '.desktop').toLowerCase() } : undefined;
+}
+
+async function linuxDesktopEntries(): Promise<LinuxDesktopEntry[]> {
+  if (process.platform !== 'linux') return [];
+  if (linuxDesktopEntriesPromise) return linuxDesktopEntriesPromise;
+  linuxDesktopEntriesPromise = (async () => {
+    const files: string[] = [];
+    const visit = (directory: string, depth: number): void => {
+      if (depth > 3) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const target = path.join(directory, entry.name);
+        if (entry.isFile() && entry.name.endsWith('.desktop')) files.push(target);
+        else if (entry.isDirectory()) visit(target, depth + 1);
+      }
+    };
+    linuxDesktopRoots().forEach((root) => visit(root, 0));
+    return files.map(readDesktopEntry).filter((entry): entry is LinuxDesktopEntry => Boolean(entry));
+  })();
+  return linuxDesktopEntriesPromise;
+}
+
+function normalizedAppName(value: string): string {
+  return value.toLowerCase().replace(/\s+(?:helper|renderer|gpu|crashpad)(?:\s*\([^)]*\))?$/i, '').trim();
+}
+
+async function linuxDesktopIcon(name: string, executablePath?: string): Promise<string | undefined> {
+  const entries = await linuxDesktopEntries();
+  const normalizedName = normalizedAppName(name);
+  const executable = executablePath ? path.basename(executablePath).toLowerCase() : '';
+  const entry = entries.find((item) => item.name.toLowerCase() === normalizedName || item.fileName === normalizedName)
+    ?? (executable ? entries.find((item) => item.executable === executable) : undefined);
+  if (!entry) return undefined;
+  if (path.isAbsolute(entry.icon)) return imageFileDataUrl(entry.icon);
+
+  const dataRoots = (process.env.XDG_DATA_DIRS ?? '/usr/local/share:/usr/share').split(path.delimiter);
+  const iconRoots = [
+    path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'icons'),
+    ...dataRoots.map((directory) => path.join(directory, 'icons')),
+    ...dataRoots.map((directory) => path.join(directory, 'pixmaps')),
+    path.join(os.homedir(), '.icons'),
+  ];
+  const configPath = path.join(os.homedir(), '.config', 'gtk-3.0', 'settings.ini');
+  const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const theme = config.match(/^gtk-icon-theme-name\s*=\s*(.+)$/m)?.[1]?.trim() || 'hicolor';
+  const themes = [...new Set([theme, 'hicolor', 'Adwaita'])];
+  const iconNames = [...new Set([entry.icon, entry.icon.replace(/\.(?:png|svg|xpm)$/i, '')])];
+  const sizes = ['512x512', '256x256', 'scalable', '128x128', '96x96', '64x64', '48x48', '32x32', '24x24', '16x16'];
+  const extensions = ['png', 'svg', 'xpm'];
+  const candidates = [
+    ...iconRoots.flatMap((root) => iconNames.flatMap((iconName) => [
+      ...themes.flatMap((themeName) => sizes.flatMap((size) => extensions.map((extension) => path.join(root, themeName, size, 'apps', `${iconName}.${extension}`)))),
+      ...extensions.map((extension) => path.join(root, `${iconName}.${extension}`)),
+    ])),
+  ];
+  for (const candidate of candidates) {
+    const icon = imageFileDataUrl(candidate);
+    if (icon) return icon;
+  }
+  return undefined;
+}
+
+function imageFileDataUrl(filePath: string): string | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  if (path.extname(filePath).toLowerCase() === '.svg') {
+    return `data:image/svg+xml;base64,${fs.readFileSync(filePath).toString('base64')}`;
+  }
+  const image = nativeImage.createFromPath(filePath);
+  return image.isEmpty() ? undefined : image.toDataURL();
+}
+
+async function processExecutablePath(pid: unknown): Promise<string | undefined> {
+  const id = typeof pid === 'number' ? pid : typeof pid === 'string' && /^\d+$/.test(pid) ? Number(pid) : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+  if (process.platform === 'linux') {
+    try { return await fs.promises.realpath(`/proc/${id}/exe`); } catch { return undefined; }
+  }
+  if (process.platform === 'win32') {
+    const script = `$p = Get-Process -Id ${id} -ErrorAction SilentlyContinue; if ($p) { $p.Path }`;
+    const result = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4_000, maxBuffer: 8_000 }).catch(() => ({ stdout: '' }));
+    const executable = result.stdout.trim();
+    return executable && fs.existsSync(executable) ? executable : undefined;
+  }
+  return undefined;
+}
 
 function applicationRoots(): string[] {
   return ['/Applications', '/System/Applications', '/System/Library/CoreServices', path.join(process.env.HOME ?? '', 'Applications')]
@@ -69,16 +184,29 @@ async function applicationPath(bundleId: string, name: string): Promise<string |
   return undefined;
 }
 
-async function applicationIcon(bundleId: string, name: string, executablePath?: string): Promise<string | undefined> {
-  const cacheKey = `${bundleId}\n${name}\n${executablePath ?? ''}`;
+async function applicationIcon(bundleId: string, name: string, executablePath?: string, pid?: unknown): Promise<string | undefined> {
+  const cacheKey = `${bundleId}\n${name}\n${executablePath ?? ''}\n${String(pid ?? '')}`;
   const cached = iconCache.get(cacheKey);
   if (cached) return cached;
-  const pending = loadApplicationIcon(bundleId, name, executablePath);
+  const pending = loadApplicationIcon(bundleId, name, executablePath, pid);
   iconCache.set(cacheKey, pending);
   return pending;
 }
 
-async function loadApplicationIcon(bundleId: string, name: string, executablePath?: string): Promise<string | undefined> {
+async function loadApplicationIcon(bundleId: string, name: string, executablePath?: string, pid?: unknown): Promise<string | undefined> {
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    const processPath = executablePath && fs.existsSync(executablePath) ? executablePath : await processExecutablePath(pid);
+    if (process.platform === 'linux') {
+      const desktopIcon = await linuxDesktopIcon(name, processPath);
+      if (desktopIcon) return desktopIcon;
+    }
+    if (processPath) {
+      const image = await electronApp.getFileIcon(processPath, { size: 'large' }).catch(() => nativeImage.createEmpty());
+      if (!image.isEmpty()) return image.toDataURL();
+    }
+    return undefined;
+  }
+
   const directPath = executablePath
     ? (executablePath.endsWith('.app') ? executablePath : executablePath.split('/Contents/')[0])
     : undefined;
@@ -118,7 +246,7 @@ async function loadApplicationIcon(bundleId: string, name: string, executablePat
   return undefined;
 }
 
-export interface DesktopSessionInput { taskId: string; workerId: string; userId?: string; appId?: string; windowId?: string; }
+export interface DesktopSessionInput { taskId: string; workerId: string; appId?: string; windowId?: string; }
 export interface DesktopResult { ok: boolean; text: string; data?: unknown; details?: Record<string, unknown>; }
 interface Session extends DesktopSessionInput { id: string; lastUsedAt: number; headed: boolean; }
 
@@ -135,9 +263,9 @@ export function desktopSessionName(taskId: string): string {
   return `opc-${readable}-${digest}`;
 }
 
-const SENSITIVE_COMMANDS = new Set(['clipboard-set', 'type', 'press', 'mouse-click', 'mouse-move', 'drag', 'close-app', 'launch', 'open-system-surface']);
 const DENIED_APP_PATTERN = /(?:terminal|iterm|powershell|cmd(?:\.exe)?|command prompt|system settings|system preferences|keychain|1password|keepass|credential manager|task manager|registry editor|security|antivirus|xcode|sudo)/i;
 const CONSEQUENTIAL_TEXT = /(?:submit|send|buy|purchase|checkout|delete|remove|publish|post|confirm|approve|pay|transfer|login|log\s*in|sign\s*out|save|提交|发送|购买|结算|删除|移除|发布|确认|批准|支付|转账|登录|退出|保存|确定)/i;
+const DESTRUCTIVE_TEXT = /(?:delete|remove|buy|purchase|checkout|pay|transfer|删除|移除|购买|结算|支付|转账)/i;
 const SENSITIVE_FIELD_TEXT = /(?:password|passcode|one.?time|verification|auth(?:entication)? code|security code|secret|token|api.?key|credit.?card|card number|cvv|cvc|密码|口令|验证码|校验码|安全码|密钥|令牌|银行卡|卡号)/i;
 
 function parseEnvelope(text: string): { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } } | undefined {
@@ -149,8 +277,13 @@ export function desktopAppAllowed(settings: DesktopSettings, appId: string): boo
   return Boolean(normalized) && !DENIED_APP_PATTERN.test(normalized) && settings.allowedApps.some((entry) => entry.enabled && entry.platform === process.platform && !DENIED_APP_PATTERN.test(`${entry.id} ${entry.label}`) && (entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized));
 }
 
-export function desktopCommandRequiresApproval(command: string): boolean {
-  return SENSITIVE_COMMANDS.has(command) || command === 'click' || command === 'set-value' || command === 'select' || command === 'toggle' || command === 'check' || command === 'uncheck';
+export function desktopRequiresApproval(settings: DesktopSettings, category: DesktopApprovalCategory): boolean {
+  return settings.requireApprovalFor.includes(category);
+}
+
+export function desktopClickApprovalCategory(preview: string): 'external-submit' | 'destructive' | undefined {
+  if (!CONSEQUENTIAL_TEXT.test(preview)) return undefined;
+  return DESTRUCTIVE_TEXT.test(preview) ? 'destructive' : 'external-submit';
 }
 
 export function desktopCommandOptions(command: string, appId?: string, windowId?: string): string[] {
@@ -190,8 +323,8 @@ export class DesktopBroker {
   }
 
   status = () => this.install.status();
-  settings = (userId = 'user') => this.install.settings(userId);
-  setSettings = (patch: Partial<DesktopSettings>, userId = 'user') => this.install.setSettings(patch, userId);
+  settings = () => this.install.settings();
+  setSettings = (patch: Partial<DesktopSettings>) => this.install.setSettings(patch);
   installRuntime = (onProgress?: (progress: DesktopInstallProgress) => void) => this.install.install(onProgress);
   initialize = () => this.install.initialize();
   uninstallRuntime = async (deleteRuntime = true) => { await this.disposeSessions(); return this.install.uninstall(deleteRuntime); };
@@ -210,7 +343,8 @@ export class DesktopBroker {
         .find((item): item is string => typeof item === 'string' && Boolean(item.trim()))?.trim() ?? '';
       const executablePath = [value.path, value.app_path, value.application_path, value.executable_path]
         .find((item): item is string => typeof item === 'string' && Boolean(item.trim()));
-      return { name, ...(typeof value.process === 'string' ? { process: value.process } : typeof value.process_name === 'string' ? { process: value.process_name } : typeof value.pid === 'number' ? { process: String(value.pid) } : typeof value.process_id === 'number' ? { process: String(value.process_id) } : {}), ...(bundleId ? { bundleId } : {}), ...(name ? { icon: await applicationIcon(bundleId, name, executablePath) } : {}) };
+      const pid = value.pid ?? value.process_id;
+      return { name, ...(typeof value.process === 'string' ? { process: value.process } : typeof value.process_name === 'string' ? { process: value.process_name } : typeof pid === 'number' || typeof pid === 'string' ? { process: String(pid) } : {}), ...(bundleId ? { bundleId } : {}), ...(name ? { icon: await applicationIcon(bundleId, name, executablePath, pid) } : {}) };
     }))).filter((item) => item.name).map(({ icon, ...item }) => ({ ...item, ...(icon ? { icon } : {}) })) : [];
     console.warn(`[desktop] app scan: ${apps.length} apps, ${apps.filter((item) => Boolean(item.icon)).length} real icons, ${apps.filter((item) => !item.icon).length} initial fallbacks`);
     return apps;
@@ -226,9 +360,9 @@ export class DesktopBroker {
     }).filter((item) => item.id) : [];
   }
 
-  async execute(input: DesktopSessionInput, command: string, args: readonly string[] = [], options: { appId?: string; windowId?: string; userId?: string; stdin?: string } = {}): Promise<DesktopResult> {
+  async execute(input: DesktopSessionInput, command: string, args: readonly string[] = [], options: { appId?: string; windowId?: string; stdin?: string } = {}): Promise<DesktopResult> {
     const appId = options.appId ?? input.appId;
-    if (appId && !desktopAppAllowed(this.settings(options.userId ?? input.userId ?? 'user'), appId)) return { ok: false, text: `应用不在白名单中：${appId}` };
+    if (appId && !desktopAppAllowed(this.settings(), appId)) return { ok: false, text: `应用不在白名单中：${appId}` };
     return this.withLock(input.taskId, async () => {
       const session = await this.session(input);
       const commandFlags = desktopCommandOptions(command, appId, options.windowId ?? input.windowId);
@@ -255,15 +389,16 @@ export class DesktopBroker {
     return result;
   }
 
-  async clickRisk(input: DesktopSessionInput, ref: string, options: { appId?: string; windowId?: string } = {}): Promise<{ verified: boolean; consequential: boolean; preview?: string }> {
+  async clickRisk(input: DesktopSessionInput, ref: string, options: { appId?: string; windowId?: string } = {}): Promise<{ verified: boolean; consequential: boolean; approvalCategory?: 'external-submit' | 'destructive'; preview?: string }> {
     const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
     const snapshot = this.snapshots.get(input.taskId);
     const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(input.userId ?? session.userId ?? 'user'), appId ?? '')) return { verified: false, consequential: false };
+    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return { verified: false, consequential: false };
     const target = findRef(snapshot.data, ref);
     if (!target) return { verified: false, consequential: false };
     const preview = [target.name, target.value, ...(Array.isArray(target.available_actions) ? target.available_actions : [])].filter((item): item is string => typeof item === 'string').join(' ').trim().slice(0, 240);
-    return { verified: true, consequential: CONSEQUENTIAL_TEXT.test(preview), ...(preview ? { preview } : {}) };
+    const approvalCategory = desktopClickApprovalCategory(preview);
+    return { verified: true, consequential: Boolean(approvalCategory), ...(approvalCategory ? { approvalCategory } : {}), ...(preview ? { preview } : {}) };
   }
 
   /** Verify a ref-bearing command against the exact Snapshot that minted it. */
@@ -271,7 +406,7 @@ export class DesktopBroker {
     const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
     const snapshot = this.snapshots.get(input.taskId);
     const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(input.userId ?? session.userId ?? 'user'), appId ?? '')) return false;
+    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return false;
     return Boolean(findRef(snapshot.data, ref));
   }
 
@@ -279,7 +414,7 @@ export class DesktopBroker {
     const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
     const snapshot = this.snapshots.get(input.taskId);
     const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(input.userId ?? session.userId ?? 'user'), appId ?? '')) return undefined;
+    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return undefined;
     const target = findRef(snapshot.data, ref);
     if (!target) return undefined;
     const description = [target.name, target.value, target.role, target.placeholder, target.description, target.help].filter((item): item is string => typeof item === 'string').join(' ');
@@ -326,7 +461,7 @@ export class DesktopBroker {
     const id = desktopSessionName(input.taskId);
     const existing = this.sessions.get(id);
     if (existing) { existing.lastUsedAt = Date.now(); return existing; }
-    const started = await this.raw(['session', 'start', '--name', id, '--no-trace'], undefined, undefined, false, input.userId);
+    const started = await this.raw(['session', 'start', '--name', id, '--no-trace']);
     const sessionId = desktopSessionId(started);
     if (!sessionId) throw new Error(started.text || 'agent-desktop 未能创建桌面 session');
     const session: Session = { ...input, id: sessionId, lastUsedAt: Date.now(), headed: false };
@@ -334,10 +469,10 @@ export class DesktopBroker {
     return session;
   }
 
-  private async raw(args: readonly string[], sessionId?: string, stdin?: string, allowDisabled = false, userId?: string): Promise<DesktopResult> {
+  private async raw(args: readonly string[], sessionId?: string, stdin?: string, allowDisabled = false): Promise<DesktopResult> {
     const binary = this.install.binaryPath();
     const session = sessionId ? [...this.sessions.values()].find((entry) => entry.id === sessionId) : undefined;
-    const settings = this.install.settings(userId ?? session?.userId ?? 'user');
+    const settings = this.install.settings();
     if (!binary || !this.install.status().healthy || (!allowDisabled && !settings.enabled)) return { ok: false, text: '桌面运行时未安装、未启用或权限不足' };
     const commandArgs = [
       ...(sessionId ? ['--session', sessionId] : []),
@@ -345,7 +480,7 @@ export class DesktopBroker {
       ...args,
     ];
     const outputLimit = settings.maxOutputBytes;
-    const child = execFileAsync(binary, commandArgs, { timeout: 90_000, maxBuffer: Math.max(64_000, outputLimit * 4), windowsHide: true });
+    const child = execFilePlatform(binary, commandArgs, { timeout: 90_000, maxBuffer: Math.max(64_000, outputLimit * 4), windowsHide: true });
     if (stdin !== undefined) child.child.stdin?.end(stdin);
     const output = await child.catch((error: unknown) => ({ stdout: '', stderr: error instanceof Error ? error.message : String(error), error }));
     const text = `${output.stdout ?? ''}${output.stderr ? `\n${output.stderr}` : ''}`.trim();

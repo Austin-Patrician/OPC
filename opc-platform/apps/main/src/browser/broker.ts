@@ -1,12 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execFilePlatform } from '../process/execFilePlatform';
 import type { BrowserInstallProgress } from '@opc/shared/ipc';
 import type { BrowserInstallService, BrowserSettings, BrowserStatus } from './install';
-
-const execFileAsync = promisify(execFile);
 
 export interface BrowserSessionInput { taskId: string; workerId: string; userId?: string; }
 export interface BrowserResult { ok: boolean; text: string; details?: Record<string, unknown>; }
@@ -167,7 +164,7 @@ export class BrowserBroker {
     if (!binary || !this.install.status().healthy || !this.settings().enabled) return { ok: false, text: '浏览器未安装或未启用' };
     const session = this.session(input);
     const settings = this.settings();
-    const output = await execFileAsync(binary, ['--session', session.id, '--profile', session.profile, '--download-path', this.taskDirectory(input), ...launchArgs, ...command], {
+    const output = await execFilePlatform(binary, ['--session', session.id, '--profile', session.profile, '--download-path', this.taskDirectory(input), ...launchArgs, ...command], {
       timeout: 90_000,
       maxBuffer: Math.max(64_000, settings.maxOutputBytes * 4),
       windowsHide: true,

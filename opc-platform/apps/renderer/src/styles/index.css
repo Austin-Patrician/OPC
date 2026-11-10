@@ -131,6 +131,31 @@
 }
 
 @layer components {
+  .chat-scrollbar-reveal {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .chat-scrollbar-reveal:hover,
+  .chat-scrollbar-reveal:focus-within,
+  .chat-scrollbar-reveal:focus {
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  .chat-scrollbar-reveal::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  .chat-scrollbar-reveal:hover::-webkit-scrollbar-thumb,
+  .chat-scrollbar-reveal:focus-within::-webkit-scrollbar-thumb,
+  .chat-scrollbar-reveal:focus::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+  }
+
+  .chat-scrollbar-reveal:hover::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
   /*
    * When a wallpaper is enabled the shell becomes translucent so the wallpaper
    * is visible; with the default "none" it stays pixel-identical to Figma.
@@ -518,6 +543,72 @@
   background: #f2f5f3;
   color: #7a8781;
 }
+.buddy-search-enter {
+  animation: buddy-search-enter 150ms cubic-bezier(.2, .8, .2, 1) both;
+}
+.buddy-search-tabs {
+  scrollbar-width: none;
+}
+.buddy-search-tabs::-webkit-scrollbar {
+  display: none;
+}
+.buddy-search-tab {
+  position: relative;
+  display: inline-flex;
+  min-height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.buddy-search-tab:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+.buddy-search-tab-active {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.buddy-search-tab-active::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  content: '';
+}
+@keyframes buddy-search-enter {
+  from { opacity: 0; transform: translateY(5px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+[data-theme='dark'] .buddy-search-modal {
+  border-color: var(--border-strong);
+}
+[data-theme='dark'] .buddy-search-modal > div:first-child > div {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+[data-theme='dark'] .buddy-search-modal nav,
+[data-theme='dark'] .buddy-search-modal nav + div {
+  border-color: var(--border-strong);
+}
+[data-theme='dark'] .buddy-search-modal nav + div label {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+[data-theme='dark'] .buddy-search-modal button.group {
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+}
+[data-theme='dark'] .buddy-search-modal button.group:hover,
+[data-theme='dark'] .buddy-search-modal button.group:focus-visible {
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+}
 .buddy-message-gutter {
   max-width: 920px;
   margin-inline: auto;
@@ -535,6 +626,7 @@
   .buddy-composer-drop-hint,
   .buddy-mark-svg,
   .buddy-assistant-status-dots i { animation: none !important; }
+  .buddy-search-enter { animation: none !important; }
 }
 .buddy-user-bubble {
   color: #1e2e26;

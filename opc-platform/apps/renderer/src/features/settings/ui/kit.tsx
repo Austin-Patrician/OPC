@@ -1,8 +1,9 @@
-import { useState, type KeyboardEvent } from 'react';
+import { Children, isValidElement, useState, type KeyboardEvent } from 'react';
 import { Eye, EyeOff, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 import { cn } from '@/shared/lib/cn';
+import { Select } from '@/shared/ui/Select';
 import type { ReactNode as ReactNodeType } from 'react';
 
 /** Shared settings primitives, matching the design's metrics (see README). */
@@ -309,18 +310,21 @@ export function SelectField({
   children: ReactNodeType;
   className?: string;
 }) {
+  const options = Children.toArray(children).flatMap((child) => {
+    if (!isValidElement(child) || child.type !== 'option') return [];
+    const props = child.props as { value?: string; children?: ReactNodeType; disabled?: boolean };
+    const label = Children.toArray(props.children).map((part) => String(part ?? '')).join('');
+    return [{ value: props.value ?? label, label, ...(props.disabled ? { disabled: true } : {}) }];
+  });
+
   return (
-    <select
-      aria-label={ariaLabel}
+    <Select
+      ariaLabel={ariaLabel}
       value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className={cn(
-        'h-[30px] w-full rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent',
-        className,
-      )}
-    >
-      {children}
-    </select>
+      onValueChange={onChange}
+      options={options}
+      className={className}
+    />
   );
 }
 

@@ -9,10 +9,12 @@
     "save": "保存",
     "saving": "保存中…",
     "edit": "编辑",
+    "remove": "移除",
     "search": "搜索",
     "settings": "设置",
     "loading": "加载中…",
-    "empty": "暂无内容"
+    "empty": "暂无内容",
+    "noOptions": "没有匹配的选项"
   },
   "window": {
     "minimize": "最小化",
@@ -241,6 +243,33 @@
     "founderRole": "创始人"
   },
   "chat": {
+    "historyLoading": "正在加载更早消息",
+    "historyLoadFailed": "加载历史消息失败，点击重试",
+    "jumpToLatest": "回到底部",
+    "search": {
+      "title": "搜索聊天记录",
+      "placeholder": "搜索消息内容…",
+      "categories": "搜索分类",
+      "all": "全部",
+      "date": "日期",
+      "dateRange": "时间范围",
+      "page": "第 {{page}} 页",
+      "previousPage": "上一页",
+      "nextPage": "下一页",
+      "sender": "发送者",
+      "anySender": "所有发送者",
+      "user": "我发送的",
+      "assistant": "助手发送的",
+      "type": "消息类型",
+      "anyType": "所有类型",
+      "text": "文本消息",
+      "system": "系统消息",
+      "from": "开始日期",
+      "to": "结束日期",
+      "noResults": "没有找到匹配的消息",
+      "loadMore": "加载更多",
+      "kind": { "text": "文本消息", "system": "系统消息" }
+    },
     "lifecycle": {
       "cooling": "冷却中",
       "escalated": "已升级"
@@ -399,6 +428,7 @@
       "runtime": "运行时",
       "mcp": "MCP",
       "network": "网络",
+      "assistantTools": "助手工具",
       "browser": "浏览器",
       "desktop": "桌面控制",
       "selfcheck": "自检",
@@ -409,13 +439,42 @@
       "compaction": "工作区与压缩",
       "company": "个人偏好",
       "billing": "计费",
+      "usage": "Usage 用量",
       "network": "网络与代理",
+      "assistantTools": "联网与常用工具",
       "browser": "Personal Agent 浏览器",
       "desktop": "桌面控制",
       "runtime": "运行时",
       "triage": "事件调度",
       "watchdog": "进展监督",
       "memory": "它记得什么"
+    },
+    "assistantTools": {
+      "description": "为 Router 和 Worker 配置时间、天气、联网检索与计算能力。",
+      "localTitle": "时间与天气",
+      "localDescription": "时间和天气请求由主进程经当前网络代理发出。",
+      "timezone": "时区",
+      "timezoneHint": "留空时跟随系统；也可填写 IANA 时区，例如 Asia/Shanghai 或 America/Los_Angeles。",
+      "customTimezone": "自定义 IANA 时区",
+      "city": "常用城市",
+      "cityHint": "天气工具默认使用该城市；对话中仍可临时指定其他城市。不会读取设备定位。",
+      "cityPlaceholder": "例如：上海",
+      "noDefaultCity": "不设置默认城市",
+      "customCity": "自定义城市",
+      "custom": "自定义…",
+      "searchTitle": "网页搜索与读取",
+      "searchDescription": "配置需要使用的搜索服务，并通过开关控制哪些来源可被助手调用。",
+      "defaultProvider": "默认搜索源",
+      "failoverHint": "默认源失败时，只会按 Exa、Tavily、Firecrawl 顺序尝试已配置且启用的来源。",
+      "chooseProvider": "选择搜索源",
+      "noEnabledProvider": "请先配置并启用搜索源",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "enable": "启用",
+      "keyRequired": "先配置 API Key 才能启用",
+      "keyPlaceholder": "输入 API Key",
+      "saved": "设置已保存",
+      "toolsNote": "首批工具：当前时间、天气预报、网页搜索、网页正文读取、站点抓取与状态查询，以及安全算术和常见单位换算。天气服务 Open-Meteo 按非商业用途使用。"
     },
     "browser": {
       "title": "Personal Agent 浏览器",
@@ -498,7 +557,7 @@
     },
     "desktop": {
       "title": "桌面控制",
-      "description": "通过操作系统 Accessibility Tree 控制白名单应用。默认后台运行，敏感动作继续在当前对话中审批。",
+      "description": "通过操作系统 Accessibility Tree 控制白名单应用。默认后台运行；逐类审批策略可在本页配置。",
       "subtitle": "让 Personal Agent 通过原生可访问性树观察并操作桌面应用。",
       "refresh": "刷新",
       "nativeCapability": "原生能力",
@@ -555,15 +614,26 @@
       "progressAria": "桌面控制安装进度（估算）",
       "progressNote": "整体进度为估算；下载量按实时字节统计。",
       "whitelistTitle": "应用白名单",
-      "whitelistDesc": "按 Personal Agent 保存。未列入白名单的应用即使通过审批也不能被控制。",
+      "whitelistDesc": "桌面应用白名单是本机全局策略。未列入白名单的应用即使通过审批也不能被控制。",
       "runningApps": "当前运行应用",
       "selectHint": "选择后允许该 Agent 读取和操作应用的 Accessibility Tree。",
       "scan": "扫描",
       "emptyApps": "安装并授予权限后扫描当前运行应用。",
       "actionPolicyTitle": "动作策略",
-      "actionPolicyDesc": "外部提交、删除、剪贴板写入和物理输入始终在当前对话中单独审批。",
-      "sensitiveApproval": "敏感动作审批",
-      "sensitiveHint": "推荐保持开启，避免桌面应用产生未预期的外部副作用。",
+      "actionPolicyDesc": "开启某类别的开关表示执行前需要审批；关闭后自动执行。高风险类别也可以自行关闭审批。",
+      "requireApprovalToggle": "要求审批：{{action}}",
+      "approvalCategories": {
+        "desktop-access": { "label": "读取应用界面", "hint": "读取白名单应用的控件树、文本和属性。" },
+        "screenshot": { "label": "截取窗口", "hint": "捕获白名单应用的当前窗口画面。" },
+        "desktop-launch": { "label": "启动应用", "hint": "启动白名单中的桌面应用。" },
+        "window-focus": { "label": "聚焦窗口", "hint": "将白名单应用窗口设为当前目标。" },
+        "desktop-action": { "label": "常规控件操作", "hint": "点击、切换、选择和滚动；高风险点击仍按下方对应类别处理。" },
+        "physical-input": { "label": "键盘与表单输入", "hint": "输入文本和按键，包括 Ctrl/⌘+V 粘贴及 Enter。" },
+        "clipboard-read": { "label": "直接读取剪贴板", "hint": "把系统剪贴板内容读取到任务中。" },
+        "clipboard-write": { "label": "直接写入剪贴板", "hint": "修改系统剪贴板内容。" },
+        "external-submit": { "label": "外部提交", "hint": "发送、发布、登录、确认等可能向外部产生影响的操作。" },
+        "destructive": { "label": "破坏性或支付操作", "hint": "删除、购买、支付、转账等高影响操作。" }
+      },
       "inspectorTitle": "桌面控制 Inspector",
       "inspectorDesc": "读取当前任务的实时 Accessibility Snapshot。只读取 OPC 已创建的 session，不会启动新的桌面操作。",
       "taskPlaceholder": "输入正在执行的 taskId",
@@ -902,6 +972,19 @@
       "previewSample": "每 1 美元",
       "previewSampleHint": "报表里所有金额都会按这个比例折算",
       "footnote": "汇率只用于展示：账本以 USD 存储，历史账单按入账时的汇率冻结，不会被这次修改改写。"
+    },
+    "usage": {
+      "desc": "查看模型调用、用量与计价明细。未知费用不会按零计算。",
+      "refresh": "刷新", "export": "导出 CSV", "today": "今天", "last7": "近 7 天", "last30": "近 30 天", "month": "本月", "all": "全部", "custom": "自定义",
+      "start": "开始日期", "end": "结束日期", "apply": "应用筛选", "reset": "重置", "advanced": "高级筛选", "filters": "筛选项",
+      "capabilities": "能力类型", "providers": "Provider", "models": "模型", "origins": "调用来源", "workers": "执行体", "statuses": "调用结果", "costSources": "计价来源",
+      "query": "任务、会话或模型关键词", "queryPlaceholder": "输入关键词…", "tokens": "Token 区间", "cost": "费用 USD 区间", "duration": "耗时 ms 区间", "min": "最小值", "max": "最大值",
+      "requests": "模型请求", "successRate": "成功率", "unpriced": "未计价调用", "images": "生成图片", "asr": "语音识别时长", "tts": "语音合成字符", "charged": "统计费用",
+      "trend": "用量趋势", "trendMetric": "趋势指标", "trendCost": "费用", "trendTokens": "Token", "trendRequests": "请求数", "distribution": "按模型消耗", "sourceDistribution": "按来源请求", "details": "调用明细",
+      "time": "时间", "source": "来源", "capability": "能力", "model": "模型", "quantity": "用量", "amount": "费用", "durationMs": "耗时", "status": "结果",
+      "page": "第 {{page}} / {{pages}} 页", "empty": "当前筛选条件下没有调用记录。", "loading": "正在读取用量…", "loadFailed": "用量读取失败", "bridgeUnavailable": "用量服务不可用，请重启桌面应用后重试。", "viewAll": "查看全部时间", "emptyBackfillPending": "历史会话尚未回填；这里仅展示用量账本启用后采集到的调用。", "exported": "CSV 已导出", "cancelled": "已取消导出",
+      "coveragePending": "历史用量回填尚未完成", "coverageComplete": "可核实的历史会话已完成回填", "noPrice": "有用量，暂未计价", "rateHint": "金额按现有计费策略计算；币种与汇率沿用计费设置。", "timeZone": "时区：{{zone}}",
+      "ok": "成功", "error": "失败", "aborted": "已取消", "interrupted": "中断", "unknown": "未知"
     },
     "network": {
       "description": "配置一次，模型请求、图片生成与工作区里的子进程都会走这条线路；保存后立即生效，下次启动自动沿用。",
@@ -1402,7 +1485,7 @@
       "description": "按需为执行体加载工作方法与领域知识。",
       "summary": "{{enabled}} / {{total}} 个已启用，系统提示约多 {{tokens}} tokens / 次请求",
       "empty": "没有发现技能。",
-      "emptyHint": "把带 SKILL.md 的目录放进上面的任一位置即可，刷新后出现。技能自带的脚本仍然通过 bash 工具运行，照样过沙箱和调用上限。",
+      "emptyHint": "把带 SKILL.md 的目录放进上面的任一位置即可，刷新后出现。技能自带的脚本仍然通过 bash 工具运行，照样受沙箱策略约束。",
       "promptTokens": "≈{{tokens}} tokens",
       "files": "{{count}} 个文件"
     },
@@ -1462,10 +1545,6 @@
       "sandbox": {
         "title": "沙箱策略",
         "description": "所有工具调用的唯一闸门：限制读写路径，并把命令关进系统沙箱。"
-      },
-      "limits": {
-        "title": "调用上限",
-        "description": "每个任务的工具调用次数上限，防止小模型陷入循环、把预算烧穿。"
       },
       "image": {
         "title": "图像生成",

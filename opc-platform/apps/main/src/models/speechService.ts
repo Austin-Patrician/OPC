@@ -5,12 +5,17 @@ import type {
   SpeechSynthesizeResult,
   SpeechTranscribeInput,
   SpeechTranscribeResult,
-} from '@opc/shared/domain';
-import type { ModelConfigService } from './modelConfigService';
-import { synthesizeSpeech, transcribeAudio } from './speech';
-import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
+} from "@opc/shared/domain";
+import type { ModelConfigService } from "./modelConfigService";
+import { synthesizeSpeech, transcribeAudio } from "./speech";
+import {
+  defaultNetworkClient,
+  type NetworkClient,
+} from "../network/networkClient";
+import type { UsageRepository } from "../data/usageRepository";
+import crypto from "node:crypto";
 
-type SpeechRole = 'asr' | 'tts';
+type SpeechRole = "asr" | "tts";
 
 interface ResolvedTarget {
   providerId: string;
@@ -33,12 +38,16 @@ export class SpeechService {
   constructor(
     private readonly models: ModelConfigService,
     private readonly network: NetworkClient = defaultNetworkClient,
+    private readonly usage?: UsageRepository,
   ) {}
 
-  transcribe = async (input: SpeechTranscribeInput): Promise<SpeechTranscribeResult> => {
-    const resolved = this.resolveTarget('asr', input.modelId);
-    if ('error' in resolved) return { ok: false, error: resolved.error };
+  transcribe = async (
+    input: SpeechTranscribeInput,
+  ): Promise<SpeechTranscribeResult> => {
+    const resolved = this.resolveTarget("asr", input.modelId);
+    if ("error" in resolved) return { ok: false, error: resolved.error };
 
+    const startedAt = Date.now();
     try {
       const result = await transcribeAudio({
         baseUrl: resolved.baseUrl,
@@ -51,6 +60,24 @@ export class SpeechService {
         language: input.language,
         network: this.network,
       });
+      this.usage?.recordSafely({
+        idempotencyKey: `asr:${crypto.randomUUID()}`,
+        startedAt,
+        finishedAt: Date.now(),
+        capability: "asr",
+        operation: "speech transcription",
+        origin: "renderer",
+        providerId: resolved.providerId,
+        modelId: resolved.modelId,
+        status: "ok",
+        billingUnit: "second",
+        billedQuantity: result.seconds ?? 0,
+        tokenSource:
+          result.seconds === undefined
+            ? "provider-duration-missing"
+            : "provider",
+        costSource: "unpriced",
+      });
       return {
         ok: true,
         text: result.text,
@@ -58,6 +85,21 @@ export class SpeechService {
         seconds: result.seconds,
       };
     } catch (error) {
+      this.usage?.recordSafely({
+        idempotencyKey: `asr:${crypto.randomUUID()}`,
+        startedAt,
+        finishedAt: Date.now(),
+        capability: "asr",
+        operation: "speech transcription",
+        origin: "renderer",
+        providerId: resolved.providerId,
+        modelId: resolved.modelId,
+        status: "error",
+        billingUnit: "second",
+        tokenSource: "provider-duration-missing",
+        costSource: "unpriced",
+        error: error instanceof Error ? error.message : String(error),
+      });
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -65,11 +107,14 @@ export class SpeechService {
     }
   };
 
-  synthesize = async (input: SpeechSynthesizeInput): Promise<SpeechSynthesizeResult> => {
-    const resolved = this.resolveTarget('tts', input.modelId);
-    if ('error' in resolved) return { ok: false, error: resolved.error };
-    if (!input.text.trim()) return { ok: false, error: '要合成的文本不能为空' };
+  synthesize = async (
+    input: SpeechSynthesizeInput,
+  ): Promise<SpeechSynthesizeResult> => {
+    const resolved = this.resolveTarget("tts", input.modelId);
+    if ("error" in resolved) return { ok: false, error: resolved.error };
+    if (!input.text.trim()) return { ok: false, error: "要合成的文本不能为空" };
 
+    const startedAt = Date.now();
     try {
       const result = await synthesizeSpeech({
         baseUrl: resolved.baseUrl,
@@ -82,6 +127,21 @@ export class SpeechService {
         format: input.format,
         network: this.network,
       });
+      this.usage?.recordSafely({
+        idempotencyKey: `tts:${crypto.randomUUID()}`,
+        startedAt,
+        finishedAt: Date.now(),
+        capability: "tts",
+        operation: "speech synthesis",
+        origin: "renderer",
+        providerId: resolved.providerId,
+        modelId: resolved.modelId,
+        status: "ok",
+        billingUnit: "character",
+        billedQuantity: [...input.text].length,
+        tokenSource: "text-length",
+        costSource: "unpriced",
+      });
       return {
         ok: true,
         bytes: new Uint8Array(result.bytes),
@@ -89,6 +149,22 @@ export class SpeechService {
         model: resolved.modelId,
       };
     } catch (error) {
+      this.usage?.recordSafely({
+        idempotencyKey: `tts:${crypto.randomUUID()}`,
+        startedAt,
+        finishedAt: Date.now(),
+        capability: "tts",
+        operation: "speech synthesis",
+        origin: "renderer",
+        providerId: resolved.providerId,
+        modelId: resolved.modelId,
+        status: "error",
+        billingUnit: "character",
+        billedQuantity: [...input.text].length,
+        tokenSource: "text-length",
+        costSource: "unpriced",
+        error: error instanceof Error ? error.message : String(error),
+      });
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -97,46 +173,60 @@ export class SpeechService {
   };
 
   /** True when at least one provider owns an ASR model and has credentials. */
-  isAsrAvailable = (): boolean => this.isAvailable('asr');
+  isAsrAvailable = (): boolean => this.isAvailable("asr");
 
   /** True when at least one provider owns a TTS model and has credentials. */
-  isTtsAvailable = (): boolean => this.isAvailable('tts');
+  isTtsAvailable = (): boolean => this.isAvailable("tts");
 
   private isAvailable(role: SpeechRole): boolean {
     return this.models
       .listProviders()
-      .some((provider) => provider.hasKey && provider.models.some((model) => isEnabled(model, role)));
+      .some(
+        (provider) =>
+          provider.hasKey &&
+          provider.models.some((model) => isEnabled(model, role)),
+      );
   }
 
-  private resolveTarget(role: SpeechRole, requestedModelId?: string): ResolvedTarget | { error: string } {
+  private resolveTarget(
+    role: SpeechRole,
+    requestedModelId?: string,
+  ): ResolvedTarget | { error: string } {
     const providers = this.models.listProviders();
     const defaults = this.models.getDefaults()[role];
-    const owns = (provider: ProviderConfig) => provider.models.some((model) => isEnabled(model, role));
+    const owns = (provider: ProviderConfig) =>
+      provider.models.some((model) => isEnabled(model, role));
 
     const explicit = requestedModelId
       ? providers.find((provider) =>
-          provider.models.some((model) => model.id === requestedModelId && isEnabled(model, role)),
+          provider.models.some(
+            (model) => model.id === requestedModelId && isEnabled(model, role),
+          ),
         )
       : undefined;
     // Prefer a provider that can actually authenticate: the catalog may list a
     // voice provider before its key has been entered.
     const fallbackProvider =
-      providers.find((provider) => provider.hasKey && owns(provider)) ?? providers.find(owns);
+      providers.find((provider) => provider.hasKey && owns(provider)) ??
+      providers.find(owns);
 
-    const providerId = explicit?.id ?? defaults?.providerId ?? fallbackProvider?.id;
+    const providerId =
+      explicit?.id ?? defaults?.providerId ?? fallbackProvider?.id;
     const modelId =
       requestedModelId ??
       (providerId === defaults?.providerId ? defaults?.modelId : undefined) ??
-      providers.find((provider) => provider.id === providerId)?.models.find((model) => isEnabled(model, role))
-        ?.id;
+      providers
+        .find((provider) => provider.id === providerId)
+        ?.models.find((model) => isEnabled(model, role))?.id;
 
     if (!providerId || !modelId) {
-      const label = role === 'asr' ? '语音识别' : '语音合成';
+      const label = role === "asr" ? "语音识别" : "语音合成";
       return { error: `请先添加并选择一个${label}模型（设置 → 模型 → Voice）` };
     }
 
     const provider = providers.find((entry) => entry.id === providerId);
-    if (!provider?.hasKey) return { error: `请先在 Voice 页配置 ${providerId} 的凭证` };
+    if (!provider?.hasKey)
+      return { error: `请先在 Voice 页配置 ${providerId} 的凭证` };
 
     const model = provider.models.find((entry) => entry.id === modelId);
     if (!model || !isEnabled(model, role)) {
@@ -149,12 +239,15 @@ export class SpeechService {
         error: `${providerId} 没有可用的 API Key（OAuth 凭证不支持语音接口）`,
       };
 
-    const protocol = model.api ?? 'xiaomi-audio';
+    const protocol = model.api ?? "xiaomi-audio";
 
     return {
       providerId,
       modelId,
-      baseUrl: provider.baseUrl || DEFAULT_BASE_URLS[protocol] || DEFAULT_BASE_URLS['xiaomi-audio']!,
+      baseUrl:
+        provider.baseUrl ||
+        DEFAULT_BASE_URLS[protocol] ||
+        DEFAULT_BASE_URLS["xiaomi-audio"]!,
       apiKey,
       protocol,
     };
@@ -167,6 +260,6 @@ function isEnabled(model: ModelOption, role: SpeechRole): boolean {
 }
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  'xiaomi-audio': 'https://api.xiaomimimo.com/v1',
-  'openai-audio': 'https://api.openai.com/v1',
+  "xiaomi-audio": "https://api.xiaomimimo.com/v1",
+  "openai-audio": "https://api.openai.com/v1",
 };

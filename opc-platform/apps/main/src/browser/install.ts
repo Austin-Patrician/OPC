@@ -4,6 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFilePlatform } from '../process/execFilePlatform';
 import type { BrowserInstallProgress, BrowserInstallPhase } from '@opc/shared/ipc';
 import type { CompanyDatabase } from '../data/companyDatabase';
 
@@ -58,11 +59,7 @@ function npmCommand(): { executable: string; prefixArgs: string[] } {
 function installBrowserRuntime(binary: string) {
   const args = ['install'];
   const options = { timeout: 300_000, maxBuffer: 2_000_000 };
-  if (process.platform === 'win32' && binary.toLowerCase().endsWith('.cmd')) {
-    const commandShell = process.env.ComSpec ?? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe');
-    return execFileAsync(commandShell, ['/d', '/c', binary, ...args], options);
-  }
-  return execFileAsync(binary, args, options);
+  return execFilePlatform(binary, args, options);
 }
 
 function directoryBytes(root: string): number {
@@ -97,7 +94,7 @@ function readSetting(db: CompanyDatabase): string | undefined {
   return (db.prepare('SELECT value FROM app_setting WHERE key = ?').get(SETTINGS_KEY) as { value?: string } | undefined)?.value;
 }
 
-function normalize(value: unknown): BrowserSettings {
+export function normalizeBrowserSettings(value: unknown): BrowserSettings {
   if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
   const raw = value as Record<string, unknown>;
   const strings = (input: unknown) => Array.isArray(input) ? [...new Set(input.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim()))] : [];
@@ -109,7 +106,7 @@ function normalize(value: unknown): BrowserSettings {
     allowedDomains: strings(raw.allowedDomains),
     blockedDomains: strings(raw.blockedDomains),
     allowAllDomains: raw.allowAllDomains === true,
-    requireApprovalFor: strings(raw.requireApprovalFor).length ? strings(raw.requireApprovalFor) : [...DEFAULT_SETTINGS.requireApprovalFor],
+    requireApprovalFor: Array.isArray(raw.requireApprovalFor) ? strings(raw.requireApprovalFor) : [...DEFAULT_SETTINGS.requireApprovalFor],
     maxOutputBytes: max,
   };
 }
@@ -129,11 +126,11 @@ export class BrowserInstallService {
   settings = (): BrowserSettings => {
     const raw = readSetting(this.db);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    try { return normalize(JSON.parse(raw)); } catch { return { ...DEFAULT_SETTINGS }; }
+    try { return normalizeBrowserSettings(JSON.parse(raw)); } catch { return { ...DEFAULT_SETTINGS }; }
   };
 
   setSettings = (patch: Partial<BrowserSettings>): BrowserSettings => {
-    const next = normalize({ ...this.settings(), ...patch });
+    const next = normalizeBrowserSettings({ ...this.settings(), ...patch });
     this.db.prepare(`INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
       .run(SETTINGS_KEY, JSON.stringify(next), Date.now());

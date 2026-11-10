@@ -29,6 +29,7 @@ export function BrowserPage() {
   const [domains, setDomains] = useState('');
   const [blockedDomains, setBlockedDomains] = useState('');
   const [busy, setBusy] = useState(false);
+  const [savingApproval, setSavingApproval] = useState<Set<string>>(() => new Set());
   const [installProgress, setInstallProgress] = useState<BrowserInstallProgress | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,6 +89,32 @@ export function BrowserPage() {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveApprovalPolicy = async (category: string, enabled: boolean) => {
+    if (!bridge || savingApproval.has(category)) return;
+    const requireApprovalFor = enabled
+      ? [...new Set([...settings.requireApprovalFor, category])]
+      : settings.requireApprovalFor.filter((item) => item !== category);
+    setSettings((current) => ({ ...current, requireApprovalFor }));
+    setSavingApproval((current) => new Set(current).add(category));
+    try {
+      await bridge.setSettings({ requireApprovalFor });
+      setNotice(t('settings.browser.savedNotice'));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      try {
+        setSettings(await bridge.getSettings());
+      } catch {
+        // Keep the optimistic value visible if the settings read also fails.
+      }
+    } finally {
+      setSavingApproval((current) => {
+        const next = new Set(current);
+        next.delete(category);
+        return next;
+      });
     }
   };
 
@@ -305,15 +332,9 @@ export function BrowserPage() {
             <Row key={key} label={t(labelKey)} hint={key === 'navigation' ? t('settings.browser.approvalHintNavigation') : t('settings.browser.approvalHint')}>
               <Toggle
                 checked={settings.requireApprovalFor.includes(key)}
-                disabled={busy}
+                disabled={busy || savingApproval.has(key)}
                 label={t(labelKey)}
-                onChange={(enabled) =>
-                  void save({
-                    requireApprovalFor: enabled
-                      ? [...new Set([...settings.requireApprovalFor, key])]
-                      : settings.requireApprovalFor.filter((item) => item !== key),
-                  })
-                }
+                onChange={(enabled) => void saveApprovalPolicy(key, enabled)}
               />
             </Row>
           ))}

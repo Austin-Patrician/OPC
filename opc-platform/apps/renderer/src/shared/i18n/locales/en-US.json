@@ -9,10 +9,12 @@
     "save": "Save",
     "saving": "Saving…",
     "edit": "Edit",
+    "remove": "Remove",
     "search": "Search",
     "settings": "Settings",
     "loading": "Loading…",
-    "empty": "Nothing here yet"
+    "empty": "Nothing here yet",
+    "noOptions": "No matching options"
   },
   "window": {
     "minimize": "Minimize",
@@ -241,6 +243,33 @@
     "founderRole": "Founder"
   },
   "chat": {
+    "historyLoading": "Loading earlier messages",
+    "historyLoadFailed": "Could not load history. Click to retry",
+    "jumpToLatest": "Back to latest",
+    "search": {
+      "title": "Search chat history",
+      "placeholder": "Search message text…",
+      "categories": "Search categories",
+      "all": "All",
+      "date": "Date",
+      "dateRange": "Date range",
+      "page": "Page {{page}}",
+      "previousPage": "Previous page",
+      "nextPage": "Next page",
+      "sender": "Sender",
+      "anySender": "Anyone",
+      "user": "Me",
+      "assistant": "Assistant",
+      "type": "Message type",
+      "anyType": "Any type",
+      "text": "Text",
+      "system": "System",
+      "from": "From date",
+      "to": "To date",
+      "noResults": "No matching messages found",
+      "loadMore": "Load more",
+      "kind": { "text": "Text message", "system": "System message" }
+    },
     "lifecycle": {
       "cooling": "Cooling",
       "escalated": "Escalated"
@@ -399,6 +428,7 @@
       "runtime": "Runtimes",
       "mcp": "MCP",
       "network": "Network",
+      "assistantTools": "Assistant tools",
       "browser": "Browser",
       "desktop": "Desktop control",
       "selfcheck": "Self-check",
@@ -410,12 +440,40 @@
       "company": "Personal preferences",
       "billing": "Billing",
       "network": "Network & proxy",
+      "assistantTools": "Web & common tools",
       "browser": "Personal Agent browser",
       "desktop": "Desktop control",
       "runtime": "Runtimes",
       "triage": "Event routing",
       "watchdog": "Progress watchdog",
       "memory": "What it remembers"
+    },
+    "assistantTools": {
+      "description": "Configure time, weather, web research and calculation tools for Router and Workers.",
+      "localTitle": "Time and weather",
+      "localDescription": "Requests are sent by the main process through the active network proxy.",
+      "timezone": "Time zone",
+      "timezoneHint": "Leave blank to follow the system, or enter an IANA zone such as Asia/Shanghai or America/Los_Angeles.",
+      "customTimezone": "Custom IANA time zone",
+      "city": "Default city",
+      "cityHint": "Weather uses this city by default. A request can name another city; device location is never read.",
+      "cityPlaceholder": "For example: Shanghai",
+      "noDefaultCity": "No default city",
+      "customCity": "Custom city",
+      "custom": "Custom…",
+      "searchTitle": "Web search and reading",
+      "searchDescription": "Configure search providers and use the switches to control which sources the assistant can call.",
+      "defaultProvider": "Default search source",
+      "failoverHint": "On failure, only configured and enabled sources are tried in Exa, Tavily, Firecrawl order.",
+      "chooseProvider": "Choose a search source",
+      "noEnabledProvider": "Configure and enable a source first",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "enable": "Enable",
+      "keyRequired": "Configure an API key before enabling",
+      "keyPlaceholder": "Enter API key",
+      "saved": "Settings saved",
+      "toolsNote": "First tools: current time, weather, web search, page extraction, site crawl and status, arithmetic and common unit conversion. Open-Meteo is used for non-commercial purposes."
     },
     "browser": {
       "title": "Personal Agent browser",
@@ -498,7 +556,7 @@
     },
     "desktop": {
       "title": "Desktop control",
-      "description": "Control allow-listed apps through the OS accessibility tree. Runs in the background by default; sensitive actions are still approved in this conversation.",
+      "description": "Control allow-listed apps through the OS accessibility tree. Runs in the background; configure approval by action category here.",
       "subtitle": "Let your Personal Agent observe and operate desktop apps through the native accessibility tree.",
       "refresh": "Refresh",
       "nativeCapability": "Native capability",
@@ -556,15 +614,26 @@
       "progressAria": "Desktop control installation progress (estimated)",
       "progressNote": "Overall progress is estimated; download size is measured in real time.",
       "whitelistTitle": "App allow list",
-      "whitelistDesc": "Saved per Personal Agent. Apps not on the list cannot be controlled even after approval.",
+      "whitelistDesc": "The desktop application allowlist is a global policy for this device. Apps not on the list cannot be controlled even after approval.",
       "runningApps": "Running apps",
       "selectHint": "Selected apps allow this Agent to read and operate their accessibility trees.",
       "scan": "Scan",
       "emptyApps": "Install, grant permission, then scan for running apps.",
       "actionPolicyTitle": "Action policy",
-      "actionPolicyDesc": "External submits, deletion, clipboard writes and physical input are always approved separately in this conversation.",
-      "sensitiveApproval": "Sensitive action approval",
-      "sensitiveHint": "Keep this on to prevent unexpected external side effects from desktop apps.",
+      "actionPolicyDesc": "Turn a category on to require approval before each action. Turn it off to allow the action automatically, including high-risk categories.",
+      "requireApprovalToggle": "Require approval: {{action}}",
+      "approvalCategories": {
+        "desktop-access": { "label": "Read app interface", "hint": "Read the accessibility tree, text and properties of an allow-listed app." },
+        "screenshot": { "label": "Capture window", "hint": "Capture the current view of an allow-listed app." },
+        "desktop-launch": { "label": "Launch app", "hint": "Launch a desktop app on the allow list." },
+        "window-focus": { "label": "Focus window", "hint": "Set an allow-listed app window as the current target." },
+        "desktop-action": { "label": "Routine control actions", "hint": "Click, toggle, select and scroll; high-risk clicks use their category below." },
+        "physical-input": { "label": "Keyboard and form input", "hint": "Enter text and keys, including Ctrl/⌘+V paste and Enter." },
+        "clipboard-read": { "label": "Read clipboard directly", "hint": "Read system clipboard contents into the task." },
+        "clipboard-write": { "label": "Write clipboard directly", "hint": "Change the system clipboard contents." },
+        "external-submit": { "label": "External submission", "hint": "Send, publish, sign in or confirm actions that may affect external systems." },
+        "destructive": { "label": "Destructive or payment action", "hint": "Delete, purchase, pay, transfer or perform another high-impact action." }
+      },
       "inspectorTitle": "Desktop inspector",
       "inspectorDesc": "Read the live accessibility snapshot of a running task. Only sessions OPC already created are read; no new desktop actions are started.",
       "taskPlaceholder": "Enter a running taskId",
@@ -903,6 +972,19 @@
       "previewSample": "Per 1 USD",
       "previewSampleHint": "Every amount in the reports is converted at this rate",
       "footnote": "The rate is display-only: the ledger stores USD, and historical charges keep the rate frozen at settlement time."
+    },
+    "usage": {
+      "desc": "Inspect model calls, usage and pricing details. Unknown costs are never shown as zero.",
+      "refresh": "Refresh", "export": "Export CSV", "today": "Today", "last7": "Last 7 days", "last30": "Last 30 days", "month": "This month", "all": "All time", "custom": "Custom",
+      "start": "Start date", "end": "End date", "apply": "Apply filters", "reset": "Reset", "advanced": "Advanced filters", "filters": "Filters",
+      "capabilities": "Capabilities", "providers": "Providers", "models": "Models", "origins": "Call source", "workers": "Workers", "statuses": "Call result", "costSources": "Price source",
+      "query": "Task, conversation or model", "queryPlaceholder": "Search…", "tokens": "Token range", "cost": "Cost USD range", "duration": "Duration ms range", "min": "Min", "max": "Max",
+      "requests": "Model requests", "successRate": "Success rate", "unpriced": "Unpriced calls", "images": "Images", "asr": "Speech recognition time", "tts": "Speech synthesis characters", "charged": "Recorded cost",
+      "trend": "Usage over time", "trendMetric": "Trend metric", "trendCost": "Cost", "trendTokens": "Tokens", "trendRequests": "Requests", "distribution": "Cost by model", "sourceDistribution": "Requests by source", "details": "Call details",
+      "time": "Time", "source": "Source", "capability": "Capability", "model": "Model", "quantity": "Usage", "amount": "Cost", "durationMs": "Duration", "status": "Result",
+      "page": "Page {{page}} of {{pages}}", "empty": "No calls match these filters.", "loading": "Loading usage…", "loadFailed": "Could not load usage", "bridgeUnavailable": "Usage service is unavailable. Restart the desktop app and try again.", "viewAll": "View all time", "emptyBackfillPending": "Historical conversations have not been backfilled; this view only includes calls collected after usage tracking was enabled.", "exported": "CSV exported", "cancelled": "Export cancelled",
+      "coveragePending": "Historical usage backfill is incomplete", "coverageComplete": "Verifiable historical conversations have been imported", "noPrice": "Usage recorded, not priced", "rateHint": "Costs follow the existing pricing policy and currency settings.", "timeZone": "Time zone: {{zone}}",
+      "ok": "Success", "error": "Failed", "aborted": "Cancelled", "interrupted": "Interrupted", "unknown": "Unknown"
     },
     "network": {
       "description": "Configure it once and model calls, image generation and workspace child processes all take this route. Saving applies immediately and survives restarts.",
@@ -1403,7 +1485,7 @@
       "description": "Give executors reusable methods and domain knowledge on demand.",
       "summary": "{{enabled}} of {{total}} enabled — about {{tokens}} extra prompt tokens per request",
       "empty": "No skills found.",
-      "emptyHint": "Drop a folder with a SKILL.md into one of the locations above, then refresh. Scripts a skill ships with still run through the bash tool, so the sandbox and the call limit apply.",
+      "emptyHint": "Drop a folder with a SKILL.md into one of the locations above, then refresh. Scripts a skill ships with still run through the bash tool and remain subject to sandbox policy.",
       "promptTokens": "≈{{tokens}} tokens",
       "files": "{{count}} files"
     },
@@ -1463,10 +1545,6 @@
       "sandbox": {
         "title": "Sandbox policy",
         "description": "The single gate for every tool call: constrains paths and wraps commands in the OS sandbox."
-      },
-      "limits": {
-        "title": "Call limit",
-        "description": "Caps tool calls per task so a weak model cannot loop and burn the budget."
       },
       "image": {
         "title": "Image generation",

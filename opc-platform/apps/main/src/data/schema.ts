@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -2157,7 +2157,46 @@ const V55 = `
 ALTER TABLE report ADD COLUMN result_json TEXT;
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55];
+/** V56: durable, call-level usage records for the Settings → Usage report. */
+const V56 = `
+CREATE TABLE IF NOT EXISTS ai_call (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  duration_ms INTEGER,
+  employee_id TEXT,
+  worker_id TEXT,
+  task_id TEXT,
+  conversation_id TEXT,
+  capability TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  token_source TEXT NOT NULL DEFAULT 'missing',
+  billing_unit TEXT NOT NULL,
+  billed_quantity REAL NOT NULL DEFAULT 0,
+  provider_cost_usd REAL,
+  configured_cost_usd REAL,
+  charged_cost_usd REAL,
+  cost_source TEXT NOT NULL DEFAULT 'unpriced',
+  price_snapshot TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_call_time ON ai_call(started_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_call_model ON ai_call(provider_id, model_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_call_scope ON ai_call(capability, origin, worker_id, started_at DESC);
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

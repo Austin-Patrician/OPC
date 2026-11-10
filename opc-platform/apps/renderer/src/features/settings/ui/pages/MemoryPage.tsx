@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, History, RotateCcw, Route, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { formatAppDate } from '@/shared/lib/appTime';
 import type { MemoryView, OrphanMemoryGroup } from '@opc/shared/ipc';
 import { buttonClass, PageHeader, Section } from '../kit';
 
@@ -190,7 +191,7 @@ export function MemoryPage() {
             <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-2xs text-ink-quaternary">
               <span>{item.kind}</span>
               {item.subject ? <span>· {item.subject}</span> : null}
-              <span>· {new Date(item.createdAt).toISOString().slice(0, 10)}</span>
+              <span>· {formatAppDate(item.createdAt)}</span>
               <span>· {item.sourceType}</span>
               {item.observations > 1 ? (
                 <span className="text-ink-tertiary">

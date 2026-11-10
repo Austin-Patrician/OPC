@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { ChatPanel } from '@/features/chat/ui/ChatPanel';
 import { useChatRuntime } from '@/features/chat/model/useChatRuntime';
 import type { AssistantActivity } from '@opc/shared/ipc';
@@ -11,13 +11,14 @@ import type { AssistantActivity } from '@opc/shared/ipc';
  * 一个助手说话（Super-agent 的连续感），任务结果和需要用户处理的动作都回到这条会话里。
  */
 export function ChatPage() {
-  const { searchQuery, setChatActivity } = useOutletContext<{
-    searchQuery: string;
+  const { setChatActivity } = useOutletContext<{
     setChatActivity: (activity: AssistantActivity | undefined) => void;
   }>();
   const { conversationId } = useParams<{ conversationId: string }>();
+  const [searchParams] = useSearchParams();
+  const targetMessageId = searchParams.get('message') ?? undefined;
   const navigate = useNavigate();
-  const { conversations, agents, typingByConversation, activityByConversation, sendMessage, markRead } = useChatRuntime();
+  const { conversations, agents, typingByConversation, activityByConversation, hasOlderMessagesByConversation, sendMessage, markRead, loadOlderMessages } = useChatRuntime();
 
   const active = conversations.find((item) => item.id === conversationId) ?? conversations[0];
   const activity = active ? activityByConversation[active.id] : undefined;
@@ -62,10 +63,13 @@ export function ChatPage() {
 
   return (
     <ChatPanel
+      key={active.id}
       conversation={active}
       agents={agents}
       typingNames={typingByConversation[active.id] ?? []}
-      searchQuery={searchQuery}
+      targetMessageId={targetMessageId}
+      hasOlderMessages={hasOlderMessagesByConversation[active.id] ?? false}
+      loadOlderMessages={(beforeMessageId) => loadOlderMessages(active.id, beforeMessageId)}
       onSend={(text, mentionIds, attachments) => sendMessage({ conversationId: active.id, text, mentionIds, attachments })}
     />
   );

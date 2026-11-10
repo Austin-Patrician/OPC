@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 import { X, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CreateTaskResult } from '@opc/shared/domain';
+import { Select } from '@/shared/ui/Select';
 
 export interface DispatchDraft {
   title: string;
@@ -129,17 +130,13 @@ export function DispatchTaskDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <Field label={t('task.field.assignee')}>
-              <select
+              <Select
+                ariaLabel={t('task.field.assignee')}
                 value={assigneeId}
-                onChange={(event) => setAssigneeId(event.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-              >
-                {agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name} · {agent.role}
-                  </option>
-                ))}
-              </select>
+                onValueChange={setAssigneeId}
+                size="large"
+                options={agents.map((agent) => ({ value: agent.id, label: `${agent.name} · ${agent.role}` }))}
+              />
             </Field>
 
             <Field label={t('task.field.tokens')}>
@@ -157,15 +154,17 @@ export function DispatchTaskDialog({
           <div className="rounded-lg bg-surface-muted px-2.5 py-2">
             <div className="flex items-center justify-between">
               <span className="text-2xs font-medium text-ink-secondary">{t('task.acceptance')}</span>
-              <select
-                aria-label={t('task.acceptance')}
+              <Select
+                ariaLabel={t('task.acceptance')}
                 value={template}
-                onChange={(event) => setTemplate(event.target.value as 'http-ok' | 'image-200')}
-                className="h-6 rounded border border-line bg-surface px-1.5 text-2xs text-ink outline-none focus:border-accent"
-              >
-                <option value="http-ok">{t('task.template.httpOk')}</option>
-                <option value="image-200">{t('task.template.image200')}</option>
-              </select>
+                onValueChange={(next) => setTemplate(next as 'http-ok' | 'image-200')}
+                size="compact"
+                className="w-auto max-w-40"
+                options={[
+                  { value: 'http-ok', label: t('task.template.httpOk') },
+                  { value: 'image-200', label: t('task.template.image200') },
+                ]}
+              />
             </div>
             <p className="mt-1 text-3xs leading-relaxed text-ink-quaternary">
               {template === 'image-200' ? t('task.template.imageHint') : t('task.acceptanceHint')}

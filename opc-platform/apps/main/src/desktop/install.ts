@@ -3,9 +3,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFilePlatform } from '../process/execFilePlatform';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type {
   DesktopAppAllowlistEntry,
+  DesktopApprovalCategory,
   DesktopInstallState,
   DesktopInstallProgress,
   DesktopPermissionStatus,
@@ -16,6 +18,11 @@ import type {
 const execFileAsync = promisify(execFile);
 export const AGENT_DESKTOP_VERSION = '1.2.0';
 const SETTINGS_KEY = 'desktop.settings';
+const APPROVAL_POLICY_VERSION = 1;
+const APPROVAL_CATEGORIES: readonly DesktopApprovalCategory[] = [
+  'desktop-access', 'screenshot', 'desktop-launch', 'window-focus', 'desktop-action',
+  'physical-input', 'clipboard-read', 'clipboard-write', 'external-submit', 'destructive',
+];
 /** Compressed download sizes for the pinned v1.2.0 release assets. */
 const PACKAGE_BYTES = 31 * 1024 * 1024;
 const PACKAGE_BYTES_BY_ASSET: Record<string, number> = {
@@ -30,7 +37,8 @@ const RELEASE_BASE = `https://github.com/vercel-labs/agent-desktop/releases/down
 const DEFAULT_SETTINGS: DesktopSettings = {
   enabled: false,
   allowedApps: [],
-  requireApprovalFor: ['external-submit', 'destructive', 'clipboard-write', 'physical-input'],
+  requireApprovalFor: ['external-submit', 'destructive', 'clipboard-read', 'clipboard-write'],
+  approvalPolicyVersion: APPROVAL_POLICY_VERSION,
   maxOutputBytes: 64_000,
 };
 
@@ -53,8 +61,32 @@ function directoryBytes(root: string): number {
   return total;
 }
 
-function readSetting(db: CompanyDatabase, userId: string): string | undefined {
-  return (db.prepare('SELECT value FROM app_setting WHERE key = ?').get(`${SETTINGS_KEY}.${userId}`) as { value?: string } | undefined)?.value;
+function readSetting(db: CompanyDatabase): string | undefined {
+  return (db.prepare('SELECT value FROM app_setting WHERE key = ?').get(SETTINGS_KEY) as { value?: string } | undefined)?.value;
+}
+
+function migrateLegacySettings(db: CompanyDatabase): string | undefined {
+  const isSettings = (value: string | undefined): value is string => {
+    if (!value) return false;
+    try { const parsed: unknown = JSON.parse(value); return Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed)); }
+    catch { return false; }
+  };
+  return db.transaction(() => {
+    let current = readSetting(db);
+    if (!isSettings(current)) {
+      const legacy = db.prepare(`SELECT value FROM app_setting WHERE key GLOB ?
+        ORDER BY CASE WHEN key = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`)
+        .get(`${SETTINGS_KEY}.*`, `${SETTINGS_KEY}.user`) as { value?: string } | undefined;
+      if (isSettings(legacy?.value)) {
+        db.prepare(`INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+          .run(SETTINGS_KEY, legacy.value, Date.now());
+        current = readSetting(db);
+      }
+    }
+    db.prepare('DELETE FROM app_setting WHERE key GLOB ?').run(`${SETTINGS_KEY}.*`);
+    return current;
+  })();
 }
 
 function normalizeEntry(input: unknown): DesktopAppAllowlistEntry | undefined {
@@ -76,13 +108,17 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   const allowedApps = Array.isArray(raw.allowedApps)
     ? [...new Map(raw.allowedApps.map(normalizeEntry).filter((entry): entry is DesktopAppAllowlistEntry => Boolean(entry)).map((entry) => [entry.id, entry])).values()]
     : [];
-  const requireApprovalFor = Array.isArray(raw.requireApprovalFor)
-    ? [...new Set(raw.requireApprovalFor.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim()))]
+  const isLegacyPolicy = raw.approvalPolicyVersion !== APPROVAL_POLICY_VERSION;
+  const storedApprovalCategories = Array.isArray(raw.requireApprovalFor)
+    ? raw.requireApprovalFor.filter((item): item is DesktopApprovalCategory => typeof item === 'string' && APPROVAL_CATEGORIES.includes(item as DesktopApprovalCategory))
     : [...DEFAULT_SETTINGS.requireApprovalFor];
+  const requireApprovalFor: DesktopApprovalCategory[] = [...new Set<DesktopApprovalCategory>(isLegacyPolicy
+    ? [...storedApprovalCategories.filter((item) => item !== 'physical-input'), 'clipboard-read']
+    : storedApprovalCategories)];
   const max = typeof raw.maxOutputBytes === 'number' && Number.isFinite(raw.maxOutputBytes)
     ? Math.max(8_000, Math.min(256_000, Math.floor(raw.maxOutputBytes)))
     : DEFAULT_SETTINGS.maxOutputBytes;
-  return { enabled: raw.enabled === true, allowedApps, requireApprovalFor, maxOutputBytes: max };
+  return { enabled: raw.enabled === true, allowedApps, requireApprovalFor, approvalPolicyVersion: APPROVAL_POLICY_VERSION, maxOutputBytes: max };
 }
 
 const UNKNOWN_PERMISSIONS: DesktopPermissionStatus = {
@@ -179,20 +215,28 @@ export class DesktopInstallService {
     this.refresh();
   }
 
-  settings = (userId = 'user'): DesktopSettings => {
-    // The settings page writes the current user's default policy. A worker may
-    // override it with its own key, but an absent worker key must inherit the
-    // user policy or the capability would silently appear disabled to workers.
-    const raw = readSetting(this.db, userId) ?? (userId === 'user' ? undefined : readSetting(this.db, 'user'));
+  settings = (): DesktopSettings => {
+    const raw = migrateLegacySettings(this.db);
     if (!raw) return { ...DEFAULT_SETTINGS, allowedApps: [...DEFAULT_SETTINGS.allowedApps] };
-    try { return normalizeDesktopSettings(JSON.parse(raw)); } catch { return { ...DEFAULT_SETTINGS, allowedApps: [] }; }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      const normalized = normalizeDesktopSettings(parsed);
+      const version = parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>).approvalPolicyVersion
+        : undefined;
+      if (version !== APPROVAL_POLICY_VERSION) {
+        this.db.prepare(`UPDATE app_setting SET value = ?, updated_at = ? WHERE key = ?`)
+          .run(JSON.stringify(normalized), Date.now(), SETTINGS_KEY);
+      }
+      return normalized;
+    } catch { return { ...DEFAULT_SETTINGS, allowedApps: [] }; }
   };
 
-  setSettings = (patch: Partial<DesktopSettings>, userId = 'user'): DesktopSettings => {
-    const next = normalizeDesktopSettings({ ...this.settings(userId), ...patch });
+  setSettings = (patch: Partial<DesktopSettings>): DesktopSettings => {
+    const next = normalizeDesktopSettings({ ...this.settings(), ...patch });
     this.db.prepare(`INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-      .run(`${SETTINGS_KEY}.${userId}`, JSON.stringify(next), Date.now());
+      .run(SETTINGS_KEY, JSON.stringify(next), Date.now());
     this.refresh();
     return next;
   };
@@ -320,7 +364,7 @@ export class DesktopInstallService {
 
   permissionsGuide = async (): Promise<DesktopStatus> => {
     if (!this.binary) return this.status();
-    await execFileAsync(this.binary, ['permissions', '--guide'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch(() => undefined);
+    await execFilePlatform(this.binary, ['permissions', '--guide'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch(() => undefined);
     await this.probePermissions();
     this.syncPermissionState();
     return this.status();
@@ -340,7 +384,7 @@ export class DesktopInstallService {
 
   private async probePermissions(): Promise<void> {
     if (!this.binary) return;
-    const result = await execFileAsync(this.binary, ['permissions'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch((error: unknown) => ({ stdout: '', stderr: error instanceof Error ? error.message : String(error) }));
+    const result = await execFilePlatform(this.binary, ['permissions'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch((error: unknown) => ({ stdout: '', stderr: error instanceof Error ? error.message : String(error) }));
     const payload = parseJson(result.stdout ?? '');
     const data = payload?.data as Record<string, unknown> | undefined;
     const state = (key: string): DesktopPermissionStatus['accessibility'] => {
@@ -348,7 +392,7 @@ export class DesktopInstallService {
       return value === 'granted' || value === 'denied' || value === 'not_required' || value === 'unknown' ? value : 'unknown';
     };
     this.permissionsState = { accessibility: state('accessibility'), screenRecording: state('screen_recording'), automation: state('automation') };
-    const statusResult = await execFileAsync(this.binary, ['status'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch(() => ({ stdout: '' }));
+    const statusResult = await execFilePlatform(this.binary, ['status'], { timeout: 20_000, maxBuffer: 1_000_000 }).catch(() => ({ stdout: '' }));
     const statusPayload = parseJson(statusResult.stdout ?? '');
     const statusData = statusPayload?.data as Record<string, unknown> | undefined;
     this.supportedSurfaces = Array.isArray(statusData?.supported_surfaces) ? statusData.supported_surfaces.filter((item): item is string => typeof item === 'string') : [];

@@ -11,6 +11,9 @@ import { USER_MEMORY_OWNER } from '../memory/owners';
 import type {
   AssistantActivity,
   AssistantActivityPhase,
+  ChatMessagePage,
+  ChatSearchInput,
+  ChatSearchPage,
   ChatSnapshot,
   SendMessageInput,
 } from '@opc/shared/ipc';
@@ -36,6 +39,8 @@ function formatClock(date: Date = new Date()): string {
  * 执行体是随工作线临时存在的，它们只出现在工作线里。
  */
 export const ROUTER_ID = 'router';
+export const CHAT_MESSAGE_PAGE_SIZE = 100;
+type StoredActionCard = Extract<ChatContentBlock, { type: 'approval' | 'workflow' | 'ontologyApproval' }>;
 
 /** 聊天里说话的一方。`Agent` 结构上满足它；Router 不是 agent，也满足它。 */
 interface Speaker {
@@ -49,6 +54,10 @@ interface Speaker {
 function isActionCard(block: ChatContentBlock, type: 'approval' | 'workflow' | 'ontologyApproval', id: string): boolean {
   if (type === 'ontologyApproval') return block.type === 'ontologyApproval' && block.commandId === id;
   return (block.type === 'approval' || block.type === 'workflow') && block.type === type && block.reportId === id;
+}
+
+function isStoredActionCard(block: ChatContentBlock): block is StoredActionCard {
+  return block.type === 'approval' || block.type === 'workflow' || block.type === 'ontologyApproval';
 }
 
 const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
@@ -74,6 +83,7 @@ export interface ChatServiceSeed {
 export class ChatService {
   private snapshot: ChatSnapshot;
   private readonly db?: CompanyDatabase;
+  private initialOlderMessagesByConversation: Record<string, boolean> = {};
   private readonly routerStreams = new Map<string, { messageId: string; started: boolean; generation?: number }>();
   private readonly activityGenerations = new Map<string, number>();
   private readonly activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -99,11 +109,13 @@ export class ChatService {
 
   constructor(seed: ChatServiceSeed & { db?: CompanyDatabase }) {
     this.db = seed.db;
+    const conversations = this.db
+      ? this.loadConversations(seed.conversations)
+      : seed.conversations.map(withVisibleMessages);
     this.snapshot = {
       agents: seed.agents ?? [],
-      conversations: this.db
-        ? this.loadConversations(seed.conversations)
-        : seed.conversations.map(withVisibleMessages),
+      conversations,
+      hasOlderMessagesByConversation: this.initialOlderMessagesByConversation,
       typingByConversation: {},
       activityByConversation: {},
     };
@@ -117,22 +129,172 @@ export class ChatService {
       .all() as { payload: string }[];
     if (rows.length === 0) return seed.map(withVisibleMessages);
 
-    const messageRows = this.db
-      .prepare('SELECT conversation_id, payload FROM message ORDER BY created_at, rowid')
-      .all() as { conversation_id: string; payload: string }[];
-
     return rows.map((row) => {
       const base = JSON.parse(row.payload) as Omit<Conversation, 'messages'>;
+      const messageRows = this.db!
+        .prepare(
+          `SELECT payload FROM message
+            WHERE conversation_id = ?
+              AND COALESCE(json_extract(payload, '$.kind'), 'text') NOT IN ('task', 'deliverable')
+            ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+        )
+        .all(base.id, CHAT_MESSAGE_PAGE_SIZE + 1) as { payload: string }[];
+      const hasMore = messageRows.length > CHAT_MESSAGE_PAGE_SIZE;
+      this.initialOlderMessagesByConversation[base.id] = hasMore;
       return withVisibleMessages({
         ...base,
         messages: messageRows
-          .filter((message) => message.conversation_id === base.id)
+          .slice(0, CHAT_MESSAGE_PAGE_SIZE)
+          .reverse()
           .map((message) => JSON.parse(message.payload) as Message),
       } as Conversation);
     });
   }
 
-  /** Conversation row + its message rows: the whole conversation is durable. */
+  loadOlderMessages = (conversationId: string, beforeMessageId: string): ChatMessagePage => {
+    if (!this.db) {
+      const messages = this.snapshot.conversations.find((item) => item.id === conversationId)?.messages ?? [];
+      const beforeIndex = messages.findIndex((message) => message.id === beforeMessageId);
+      if (beforeIndex <= 0) {
+        this.setHasOlderMessages(conversationId, false);
+        return { messages: [], hasMore: false };
+      }
+      const start = Math.max(0, beforeIndex - CHAT_MESSAGE_PAGE_SIZE);
+      const hasMore = start > 0;
+      this.setHasOlderMessages(conversationId, hasMore);
+      return { messages: messages.slice(start, beforeIndex), hasMore };
+    }
+
+    const cursor = this.db
+      .prepare('SELECT created_at, rowid AS row_id FROM message WHERE conversation_id = ? AND id = ?')
+      .get(conversationId, beforeMessageId) as { created_at: number; row_id: number } | undefined;
+    if (!cursor) {
+      this.setHasOlderMessages(conversationId, false);
+      return { messages: [], hasMore: false };
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT payload FROM message
+          WHERE conversation_id = ?
+            AND (created_at, rowid) < (?, ?)
+            AND COALESCE(json_extract(payload, '$.kind'), 'text') NOT IN ('task', 'deliverable')
+          ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(conversationId, cursor.created_at, cursor.row_id, CHAT_MESSAGE_PAGE_SIZE + 1) as { payload: string }[];
+    const hasMore = rows.length > CHAT_MESSAGE_PAGE_SIZE;
+    this.setHasOlderMessages(conversationId, hasMore);
+    return {
+      messages: rows
+        .slice(0, CHAT_MESSAGE_PAGE_SIZE)
+        .reverse()
+        .map((row) => JSON.parse(row.payload) as Message),
+      hasMore,
+    };
+  };
+
+  searchMessages = (input: ChatSearchInput): ChatSearchPage => {
+    const query = input.query?.trim().slice(0, 300).toLocaleLowerCase() ?? '';
+    const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 30)));
+    const offset = Math.max(0, Math.floor(input.offset ?? 0));
+    const from = input.from ? Date.parse(`${input.from}T00:00:00`) : undefined;
+    const to = input.to ? Date.parse(`${input.to}T23:59:59.999`) : undefined;
+    const matches = (message: Message, createdAt: number) =>
+      (input.senderId === undefined || message.senderId === input.senderId) &&
+      (input.kind === undefined || message.kind === input.kind) &&
+      (!query || (message.text ?? '').toLocaleLowerCase().includes(query)) &&
+      (from === undefined || !Number.isFinite(from) || createdAt >= from) &&
+      (to === undefined || !Number.isFinite(to) || createdAt <= to);
+
+    if (!this.db) {
+      const rows = this.snapshot.conversations.flatMap((conversation) =>
+        conversation.messages
+          .filter((message) => message.kind !== 'task' && message.kind !== 'deliverable')
+          .filter((message) => matches(message, Date.parse(message.timestamp) || 0))
+          .map((message) => ({
+            conversationId: conversation.id,
+            conversationTitle: conversation.title,
+            createdAt: Date.parse(message.timestamp) || 0,
+            message,
+          })),
+      ).reverse();
+      const page = rows.slice(offset, offset + limit + 1);
+      return { results: page.slice(0, limit), hasMore: page.length > limit };
+    }
+
+    const clauses = ["COALESCE(json_extract(message.payload, '$.kind'), 'text') NOT IN ('task', 'deliverable')"];
+    const params: (string | number)[] = [];
+    if (query) {
+      clauses.push("instr(lower(COALESCE(json_extract(message.payload, '$.text'), '')), ?) > 0");
+      params.push(query);
+    }
+    if (input.senderId) {
+      clauses.push("json_extract(message.payload, '$.senderId') = ?");
+      params.push(input.senderId);
+    }
+    if (input.kind) {
+      clauses.push("json_extract(message.payload, '$.kind') = ?");
+      params.push(input.kind);
+    }
+    if (from !== undefined && Number.isFinite(from)) {
+      clauses.push('message.created_at >= ?');
+      params.push(from);
+    }
+    if (to !== undefined && Number.isFinite(to)) {
+      clauses.push('message.created_at <= ?');
+      params.push(to);
+    }
+    const rows = this.db.prepare(
+      `SELECT message.conversation_id, message.payload, message.created_at, conversation.payload AS conversation_payload
+         FROM message JOIN conversation ON conversation.id = message.conversation_id
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY message.created_at DESC, message.rowid DESC LIMIT ? OFFSET ?`,
+    ).all(...params, limit + 1, offset) as {
+      conversation_id: string;
+      payload: string;
+      created_at: number;
+      conversation_payload: string;
+    }[];
+    return {
+      results: rows.slice(0, limit).map((row) => ({
+        conversationId: row.conversation_id,
+        conversationTitle: (JSON.parse(row.conversation_payload) as Conversation).title,
+        createdAt: row.created_at,
+        message: JSON.parse(row.payload) as Message,
+      })),
+      hasMore: rows.length > limit,
+    };
+  };
+
+  /** Action cards are few; let SQLite find their rows without hydrating transcripts. */
+  readActionCards = (): { conversationId: string; block: StoredActionCard }[] => {
+    if (!this.db) {
+      return this.snapshot.conversations.flatMap((conversation) =>
+        conversation.messages.flatMap((message) =>
+          (message.content ?? [])
+            .filter(isStoredActionCard)
+            .map((block) => ({ conversationId: conversation.id, block })),
+        ),
+      );
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT conversation_id, payload FROM message AS m
+          WHERE EXISTS (
+            SELECT 1 FROM json_each(m.payload, '$.content') AS block
+            WHERE json_extract(block.value, '$.type') IN ('approval', 'workflow', 'ontologyApproval')
+          )`,
+      )
+      .all() as { conversation_id: string; payload: string }[];
+    return rows.flatMap((row) => {
+      const message = JSON.parse(row.payload) as Message;
+      return (message.content ?? [])
+        .filter(isStoredActionCard)
+        .map((block) => ({ conversationId: row.conversation_id, block }));
+    });
+  };
+
+  /** Conversation metadata and the current hot message window are durable. */
   private persist(conversationId: string): void {
     if (!this.db) return;
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
@@ -153,7 +315,8 @@ export class ChatService {
       }), now, now);
 
     const insert = this.db.prepare(
-      'INSERT OR REPLACE INTO message (id, conversation_id, payload, created_at) VALUES (?, ?, ?, ?)',
+      `INSERT INTO message (id, conversation_id, payload, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload`,
     );
     for (const message of messages) {
       insert.run(message.id, conversation.id, JSON.stringify(message), now);
@@ -410,10 +573,13 @@ export class ChatService {
     const counterpart = conversation.memberIds[0];
     const ownerId = counterpart === ROUTER_ID ? USER_MEMORY_OWNER : counterpart;
     if (!ownerId) return { written: 0, skipped: '这条会话还没有归属' };
-    const messages = conversation.messages
-      .filter((message) => message.kind === 'text' && message.text)
-      .map((message) => ({ senderId: message.senderId, text: message.text ?? '' }));
-    return this.consolidate({ conversationId, ownerId, messages });
+    return this.consolidate({
+      conversationId,
+      ownerId,
+      messages: this.readTranscript(conversationId)
+        .filter((message) => message.kind === 'text' && message.text)
+        .map((message) => ({ senderId: message.senderId, text: message.text ?? '' })),
+    });
   };
 
   /**
@@ -659,6 +825,33 @@ export class ChatService {
       this.removeActionCard('workflow', reportId);
       return;
     }
+    if (this.db) {
+      const rows = this.actionCardRows('workflow', reportId);
+      const updatedById = new Map<string, Message>();
+      for (const row of rows) {
+        const message = JSON.parse(row.payload) as Message;
+        const updated = {
+          ...message,
+          content: message.content?.map((block) =>
+            block.type === 'workflow' && block.reportId === reportId ? { ...block, state } : block,
+          ),
+        };
+        this.db.prepare('UPDATE message SET payload = ? WHERE conversation_id = ? AND id = ?')
+          .run(JSON.stringify(updated), row.conversation_id, message.id);
+        updatedById.set(message.id, updated);
+      }
+      if (updatedById.size > 0) {
+        this.commit({ conversations: this.snapshot.conversations.map((conversation) => ({
+          ...(conversation.messages.some((message) => updatedById.has(message.id))
+            ? {
+                ...conversation,
+                messages: conversation.messages.map((message) => updatedById.get(message.id) ?? message),
+              }
+            : conversation),
+        })) });
+      }
+      return;
+    }
     this.commit({
       conversations: this.snapshot.conversations.map((conversation) => ({
         ...conversation,
@@ -682,7 +875,58 @@ export class ChatService {
     type: 'approval' | 'workflow' | 'ontologyApproval',
     reportId: string,
   ): void {
-    const removedMessageIds: { conversationId: string; messageId: string }[] = [];
+    if (this.db) {
+      const rows = this.actionCardRows(type, reportId);
+      const changedByConversation = new Map<string, Set<string>>();
+      const updatedById = new Map<string, Message>();
+      const deletedIds = new Set<string>();
+      for (const row of rows) {
+        const message = JSON.parse(row.payload) as Message;
+        const content = message.content ?? [];
+        const remaining = content.filter((block) => !isActionCard(block, type, reportId));
+        const changed = changedByConversation.get(row.conversation_id) ?? new Set<string>();
+        changed.add(message.id);
+        changedByConversation.set(row.conversation_id, changed);
+        if (remaining.length > 0) {
+          const updated = { ...message, content: remaining };
+          this.db.prepare('UPDATE message SET payload = ? WHERE conversation_id = ? AND id = ?')
+            .run(JSON.stringify(updated), row.conversation_id, message.id);
+          updatedById.set(message.id, updated);
+        } else {
+          this.db.prepare('DELETE FROM message WHERE conversation_id = ? AND id = ?')
+            .run(row.conversation_id, message.id);
+          deletedIds.add(message.id);
+        }
+      }
+      if (changedByConversation.size === 0) return;
+
+      const latestByConversation = new Map<string, Message | undefined>();
+      const latestQuery = this.db.prepare(
+        `SELECT payload FROM message WHERE conversation_id = ?
+          AND COALESCE(json_extract(payload, '$.kind'), 'text') NOT IN ('task', 'deliverable')
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      );
+      for (const conversationId of changedByConversation.keys()) {
+        const row = latestQuery.get(conversationId) as { payload: string } | undefined;
+        latestByConversation.set(conversationId, row ? JSON.parse(row.payload) as Message : undefined);
+      }
+      this.commit({ conversations: this.snapshot.conversations.map((conversation) => {
+        const changedIds = changedByConversation.get(conversation.id);
+        if (!changedIds) return conversation;
+        const messages = conversation.messages
+          .filter((message) => !deletedIds.has(message.id))
+          .map((message) => updatedById.get(message.id) ?? message);
+        const latest = latestByConversation.get(conversation.id);
+        return {
+          ...conversation,
+          messages,
+          lastMessage: latest ? previewOf(latest) : '还没有对话',
+          ...(latest ? { timestamp: latest.timestamp } : {}),
+        };
+      }) });
+      return;
+    }
+
     const conversations = this.snapshot.conversations.map((conversation) => {
       let changed = false;
       const messages = conversation.messages.flatMap((message) => {
@@ -695,8 +939,10 @@ export class ChatService {
         const remaining = content.filter(
           (block) => !isActionCard(block, type, reportId),
         );
-        if (remaining.length > 0) return [{ ...message, content: remaining }];
-        removedMessageIds.push({ conversationId: conversation.id, messageId: message.id });
+        if (remaining.length > 0) {
+          const updated = { ...message, content: remaining };
+          return [updated];
+        }
         return [];
       });
 
@@ -711,12 +957,30 @@ export class ChatService {
         ...(latest ? { timestamp: latest.timestamp } : {}),
       };
     });
-
-    if (this.db) {
-      const remove = this.db.prepare('DELETE FROM message WHERE conversation_id = ? AND id = ?');
-      for (const removed of removedMessageIds) remove.run(removed.conversationId, removed.messageId);
-    }
     this.commit({ conversations });
+  }
+
+  private actionCardRows(type: 'approval' | 'workflow' | 'ontologyApproval', id: string): { conversation_id: string; payload: string }[] {
+    if (!this.db) return [];
+    const idField = type === 'ontologyApproval' ? 'commandId' : 'reportId';
+    return this.db.prepare(
+      `SELECT conversation_id, payload FROM message AS m
+        WHERE EXISTS (
+          SELECT 1 FROM json_each(m.payload, '$.content') AS block
+          WHERE json_extract(block.value, '$.type') = ?
+            AND json_extract(block.value, '$.${idField}') = ?
+        )`,
+    ).all(type, id) as { conversation_id: string; payload: string }[];
+  }
+
+  private setHasOlderMessages(conversationId: string, hasMore: boolean): void {
+    if (this.snapshot.hasOlderMessagesByConversation[conversationId] === hasMore) return;
+    this.commit({
+      hasOlderMessagesByConversation: {
+        ...this.snapshot.hasOlderMessagesByConversation,
+        [conversationId]: hasMore,
+      },
+    }, { persist: false });
   }
 
   /**
@@ -757,18 +1021,25 @@ export class ChatService {
     message: Message,
     { read, persist = true }: { read: boolean; persist?: boolean },
   ): void {
+    const hasOlderMessagesByConversation = { ...this.snapshot.hasOlderMessagesByConversation };
     this.commit({
       conversations: this.snapshot.conversations.map((item) => {
         if (item.id !== conversation.id) return item;
         const unread = read ? 0 : (item.unreadCount ?? 0) + 1;
+        const messages = [...item.messages, message];
+        if (this.db && messages.length > CHAT_MESSAGE_PAGE_SIZE) {
+          hasOlderMessagesByConversation[item.id] = true;
+          messages.splice(0, messages.length - CHAT_MESSAGE_PAGE_SIZE);
+        }
         return {
           ...item,
-          messages: [...item.messages, message],
+          messages,
           lastMessage: previewOf(message),
           timestamp: message.timestamp,
           unreadCount: unread || undefined,
         };
       }),
+      hasOlderMessagesByConversation,
     }, { persist });
   }
 
@@ -799,6 +1070,7 @@ export class ChatService {
   }
 
   private removeStreamMessage(conversationId: string, messageId: string, persist: boolean): void {
+    this.db?.prepare('DELETE FROM message WHERE conversation_id = ? AND id = ?').run(conversationId, messageId);
     this.commit({
       conversations: this.snapshot.conversations.map((conversation) => {
         if (conversation.id !== conversationId) return conversation;

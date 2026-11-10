@@ -7,7 +7,6 @@ export const EXTENSION_KEY: Record<string, string> = {
   'opc.work': 'work',
   'coding-tools': 'coding',
   'opc.sandbox': 'sandbox',
-  'opc.limits': 'limits',
   'opc.image': 'image',
   'opc.speech': 'speech',
   'opc.decision': 'decision',

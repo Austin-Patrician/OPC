@@ -7,7 +7,7 @@ import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { registerTraceRecorder, type TraceRecorder } from './trace';
 import { childStatusLabel } from './children';
-import { priceUsage } from './usage';
+import { diffCost, diffUsage, priceUsage } from './usage';
 
 export interface HarnessBrainDeps {
   /** The runtime this task runs in (keyed by worker, not by person). */
@@ -22,6 +22,24 @@ export interface HarnessBrainDeps {
   /** USD per 1M tokens for the selected model. */
   price: (model: ModelRef) => { inputUsdPerM: number; outputUsdPerM: number };
   onTokens: (taskId: string, tokens: number) => void;
+  recordUsage?: (usage: {
+    taskId: string;
+    workerId?: string;
+    providerId: string;
+    modelId: string;
+    input: number;
+    output: number;
+    total: number;
+    costUsd?: number;
+    providerCostUsd?: number;
+    configuredCostUsd?: number;
+    costSource?: 'provider' | 'configured' | 'unpriced';
+    startedAt: number;
+    finishedAt: number;
+    durationMs: number;
+    conversationId: string;
+    status: 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
+  }) => void;
   /**
    * 动作流（`09-worker-spec.md` §3.4）。不给就是"这个任务没有轨迹"，
    * 不影响执行——观测的缺陷不能变成一个失败的任务。
@@ -112,6 +130,16 @@ export class HarnessBrain implements TaskBrain {
       output: number;
       total: number;
       costUsd?: number;
+      providerCostUsd?: number;
+      configuredCostUsd?: number;
+      costSource?: 'provider' | 'configured' | 'unpriced';
+      providerId?: string;
+      modelId?: string;
+      startedAt?: number;
+      finishedAt?: number;
+      durationMs?: number;
+      conversationId?: string;
+      status?: 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
     }) => void;
   }): Promise<{ answer?: string }> {
     const { task, workspaceDir, durableTaskId, log, feedback, reportUsage } = context;
@@ -122,6 +150,7 @@ export class HarnessBrain implements TaskBrain {
     const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
     const ctx = await this.deps.context();
 
+    const callStartedAt = Date.now();
     const before = await harness.usage(ctx);
     let conversation = durableTaskId ? this.conversations.get(durableTaskId) : undefined;
     if (!conversation && durableTaskId) {
@@ -176,8 +205,29 @@ export class HarnessBrain implements TaskBrain {
       // pi 报过钱就用它的（它知道缓存价与分档价），没报才按配置的单价算——所以没有
       // 价目表的 provider 也能得到一个可预期的 0。
       const { tokens: spent, costUsd } = priceUsage(before, after, this.deps.price(model));
+      // pi usage cost is calculated from its local model price table; it is not
+      // evidence of an amount reported by the upstream provider.
+      const configuredCostUsd = Math.max(diffCost(before, after), costUsd) || undefined;
+      const costSource: 'configured' | 'unpriced' = configuredCostUsd ? 'configured' : 'unpriced';
+      const finishedAt = Date.now();
+      const delta = diffUsage(before, after);
+      const usageRecord = {
+        ...delta,
+        total: spent,
+        ...(costUsd > 0 ? { costUsd } : {}),
+        ...(configuredCostUsd ? { configuredCostUsd } : {}),
+        costSource,
+        providerId: model.providerId,
+        modelId: model.modelId,
+        startedAt: callStartedAt,
+        finishedAt,
+        durationMs: finishedAt - callStartedAt,
+        conversationId: String(conversation.id),
+        status: settled.status === 'done' ? 'ok' as const : 'interrupted' as const,
+      };
+      this.deps.recordUsage?.({ taskId: task.id, ...(task.workerId ? { workerId: task.workerId } : {}), ...usageRecord });
       if (spent > 0 || costUsd > 0) {
-        reportUsage?.({ input: 0, output: 0, total: spent, costUsd });
+        reportUsage?.(usageRecord);
         log(
           costUsd > 0
             ? `模型用量：${spent} tokens · $${costUsd.toFixed(4)}`

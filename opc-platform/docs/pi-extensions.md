@@ -84,12 +84,11 @@ jiti 冷启动约 250 ms（实测），只在启用/文件变更时发生，不�
 ```
 coding-tools（essential）
 opc.sandbox          ← 所有工具调用的唯一入口（路径/命令策略）
-opc.limits
 opc.image / speech / decision / ocr / memory / comm / decompose …
 外部 Pi 扩展（pi.<slug>）   ← 最后
 ```
 
-放最后意味着外部扩展自己的工具调用也要经过沙箱和调用上限；反过来（先装）它们就能绕过去。
+放最后意味着外部扩展自己的工具调用也要经过沙箱；反过来（先装）它们就能绕过去。工具调用不设固定次数上限。
 
 外部扩展是**公司级**开关，安装给每个在岗员工；单个员工不想用，就在员工档案的工具策略里
 关掉 `pi.<slug>`（复用已有的 `EmployeeToolPolicy.disabledExtensions`，没有新概念）。

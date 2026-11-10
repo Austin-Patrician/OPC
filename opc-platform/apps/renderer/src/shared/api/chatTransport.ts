@@ -1,4 +1,4 @@
-import type { ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
+import type { ChatMessagePage, ChatSearchInput, ChatSearchPage, ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
 
 /**
  * The single seam between the UI and the Electron main process.
@@ -10,6 +10,8 @@ import type { ChatSnapshot, SendMessageInput } from '@opc/shared/ipc';
 export interface ChatTransport {
   getSnapshot(): ChatSnapshot;
   subscribe(listener: () => void): () => void;
+  loadOlderMessages(conversationId: string, beforeMessageId: string): Promise<ChatMessagePage>;
+  searchMessages(input: ChatSearchInput): Promise<ChatSearchPage>;
   sendMessage(input: SendMessageInput): void;
   markRead(conversationId: string): void;
   dispose(): void;
@@ -18,6 +20,7 @@ export interface ChatTransport {
 export const EMPTY_SNAPSHOT: ChatSnapshot = {
   agents: [],
   conversations: [],
+  hasOlderMessagesByConversation: {},
   typingByConversation: {},
   activityByConversation: {},
 };
