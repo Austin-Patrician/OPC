@@ -225,6 +225,34 @@ describe('挂载', () => {
     expect(mount.extension?.hooks ?? []).toHaveLength(0);
   });
 
+  it('按服务器自动放行只影响指定的 agent-desktop 连接', async () => {
+    const desktop = await connectionWith([{ ...echoTool, annotations: { destructiveHint: true } }]);
+    const regular = await connectionWith([{ ...echoTool, annotations: { destructiveHint: true } }]);
+    live.push(desktop.connection, regular.connection);
+    const mount = await mountMcp({
+      servers: [config('agent_desktop_worker'), config('ordinary')],
+      connect: async (server) => server.name === 'ordinary' ? regular.connection : desktop.connection,
+      autoApproveServers: ['agent_desktop_worker'],
+    });
+    expect(mount.extension?.hooks).toHaveLength(1);
+    expect(mount.servers.find((server) => server.name === 'agent_desktop_worker')?.tools).toBe(1);
+    expect(mount.servers.find((server) => server.name === 'ordinary')?.tools).toBe(1);
+    await mount.close();
+  });
+
+  it('can retain a custom connection when its owner controls the lifecycle', async () => {
+    const { connection } = await connectionWith([echoTool]);
+    let closed = false;
+    live.push(connection);
+    const mount = await mountMcp({
+      servers: [config()],
+      connectServer: async () => ({ ...connection, close: async () => { closed = true; } }),
+      shouldCloseConnection: () => false,
+    });
+    await mount.close();
+    expect(closed).toBe(false);
+  });
+
   it('direct 的服务器不延迟：模型一上手就看得见', async () => {
     const { connection } = await connectionWith([echoTool]);
     live.push(connection);

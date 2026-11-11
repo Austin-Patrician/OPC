@@ -82,6 +82,7 @@ const home = 'C:/home';
 const project = 'C:/work/app';
 const globalRoot = `${home}/.pi/agent/extensions`;
 const projectRoot = `${project}/.pi/extensions`;
+const packageRoot = `${home}/.pi/agent/npm/node_modules`;
 
 const scan = (entries: Record<string, FakeEntry>) =>
   scanPiExtensions({ homeDir: home, projectDir: project, ...fakeIo(entries) });
@@ -166,6 +167,78 @@ describe('scanPiExtensions', () => {
     expect(result.entries.map((entry) => posix(entry.entry)).sort()).toEqual(
       [`${home}/shared/work.ts`, `${project}/tools/extra/index.ts`].sort(),
     );
+  });
+
+  it('resolves pi install packages from settings.json into Pi\'s npm tree', () => {
+    const result = scan({
+      [`${home}/.pi/agent/settings.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ packages: ['npm:pi-web-access'] }),
+      },
+      [`${packageRoot}/pi-web-access/package.json`]: {
+        kind: 'file',
+        text: JSON.stringify({
+          name: 'pi-web-access',
+          version: '0.47.0',
+          description: 'Web search',
+          pi: { extensions: ['./dist'] },
+        }),
+      },
+      [`${packageRoot}/pi-web-access/dist/index.js`]: { kind: 'file' },
+      // A transitive dependency that happens to ship an index.js is not a Pi package.
+      [`${packageRoot}/left-pad/index.js`]: { kind: 'file' },
+      [`${packageRoot}/left-pad/package.json`]: { kind: 'file', text: '{"name":"left-pad"}' },
+    });
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({
+      name: 'pi-web-access',
+      version: '0.47.0',
+      description: 'Web search',
+      scope: 'global',
+    });
+    expect(posix(result.entries[0]!.entry)).toBe(`${packageRoot}/pi-web-access/dist/index.js`);
+    expect(posix(result.entries[0]!.dir)).toBe(`${packageRoot}/pi-web-access`);
+  });
+
+  it('resolves package names from Pi\'s npm project, including scoped and versioned specs', () => {
+    const result = scan({
+      [`${home}/.pi/agent/settings.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ packages: ['npm:@acme/tools@2.0.0', 'npm:pinned@1.2.3'] }),
+      },
+      [`${packageRoot}/@acme/tools/package.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ name: '@acme/tools', pi: { extensions: ['./src/main.ts'] } }),
+      },
+      [`${packageRoot}/@acme/tools/src/main.ts`]: { kind: 'file' },
+      [`${packageRoot}/pinned/package.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ name: 'pinned', pi: { extensions: ['./index.ts'] } }),
+      },
+      [`${packageRoot}/pinned/index.ts`]: { kind: 'file' },
+    });
+
+    expect(result.entries.map((entry) => [entry.name, posix(entry.entry)])).toEqual([
+      ['@acme/tools', `${packageRoot}/@acme/tools/src/main.ts`],
+      ['pinned', `${packageRoot}/pinned/index.ts`],
+    ]);
+  });
+
+  it('reads packages recorded only in Pi\'s npm project manifest', () => {
+    const result = scan({
+      [`${home}/.pi/agent/npm/package.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ dependencies: { 'pi-web-access': '^0.47.0' } }),
+      },
+      [`${packageRoot}/pi-web-access/package.json`]: {
+        kind: 'file',
+        text: JSON.stringify({ name: 'pi-web-access', pi: { extensions: ['./dist'] } }),
+      },
+      [`${packageRoot}/pi-web-access/dist/index.js`]: { kind: 'file' },
+    });
+
+    expect(result.entries.map((entry) => entry.name)).toEqual(['pi-web-access']);
   });
 
   it('survives a malformed settings.json', () => {

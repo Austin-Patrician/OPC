@@ -70,7 +70,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
     const index = visibleMessages.findIndex((message) => message.id === targetMessageId);
     if (index < 0) return;
 
-    virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'smooth' });
+    virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + index, align: 'center', behavior: 'smooth' });
     scrolledTargetRef.current = targetMessageId;
     setHighlightedMessageId(targetMessageId);
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -78,7 +78,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
       setHighlightedMessageId((current) => current === targetMessageId ? null : current);
       highlightTimerRef.current = null;
     }, 5_000);
-  }, [targetMessageId, visibleMessages]);
+  }, [firstItemIndex, targetMessageId, visibleMessages]);
 
   useEffect(() => () => {
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -136,7 +136,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
         followOutput={followOutput}
         atBottomStateChange={handleAtBottomChange}
         startReached={() => void loadOlder()}
-        initialTopMostItemIndex={{ index: Math.max(0, visibleMessages.length - 1), align: 'end' }}
+        initialTopMostItemIndex={{ index: firstItemIndex + Math.max(0, visibleMessages.length - 1), align: 'end' }}
         computeItemKey={(_, message) => message.id}
         increaseViewportBy={{ top: 400, bottom: 600 }}
         components={{
@@ -170,7 +170,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
       {!atBottom && !followingOutput && visibleMessages.length > 0 ? (
         <button
           type="button"
-          onClick={() => virtuosoRef.current?.scrollToIndex({ index: visibleMessages.length - 1, align: 'end', behavior: 'smooth' })}
+          onClick={() => virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + visibleMessages.length - 1, align: 'end', behavior: 'smooth' })}
           className="buddy-jump-to-bottom absolute bottom-3 left-1/2 z-20 inline-flex h-9 -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-surface px-4 text-xs-plus font-medium text-ink-secondary shadow-popover transition hover:border-accent/30 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
           <ArrowDown size={15} strokeWidth={2} />

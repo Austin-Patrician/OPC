@@ -1,38 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AppWindow, CheckCircle2, Download, Eye, HardDrive, RefreshCw, Search, Shield, Trash2, XCircle } from 'lucide-react';
+import { AppWindow, Download, Eye, HardDrive, RefreshCw, Search, Shield, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { DesktopAppView, DesktopApprovalCategory, DesktopInstallPhase, DesktopInstallProgress, DesktopSettings, DesktopStatus } from '@opc/shared/ipc';
-import { buttonClass, PageHeader, Row, Section, StatusBadge, Toggle } from '../kit';
-
-function DesktopAppIcon({ app }: { app: DesktopAppView }) {
-  const [failed, setFailed] = useState(false);
-  const initial = [...app.name.trim()][0]?.toLocaleUpperCase() ?? '?';
-  if (app.icon && !failed) {
-    return <img src={app.icon} alt="" className="size-7 shrink-0 rounded-md" onError={() => setFailed(true)} />;
-  }
-  return <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent/10 text-xs font-semibold text-accent">{initial}</span>;
-}
+import type { DesktopInstallPhase, DesktopInstallProgress, DesktopSettings, DesktopStatus } from '@opc/shared/ipc';
+import { buttonClass, PageHeader, Section, StatusBadge, Toggle } from '../kit';
 
 const DEFAULT: DesktopSettings = {
   enabled: false,
-  allowedApps: [],
-  requireApprovalFor: ['external-submit', 'destructive', 'clipboard-read', 'clipboard-write'],
-  maxOutputBytes: 64_000,
 };
-
-const APPROVAL_CATEGORIES: DesktopApprovalCategory[] = [
-  'desktop-access', 'screenshot', 'desktop-launch', 'window-focus', 'desktop-action',
-  'physical-input', 'clipboard-read', 'clipboard-write', 'external-submit', 'destructive',
-];
 
 export function DesktopPage() {
   const { t } = useTranslation();
   const bridge = window.opc?.desktop;
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [settings, setSettings] = useState<DesktopSettings>(DEFAULT);
-  const [apps, setApps] = useState<DesktopAppView[]>([]);
   const [busy, setBusy] = useState(false);
-  const [savingApproval, setSavingApproval] = useState<Set<DesktopApprovalCategory>>(() => new Set());
   const [installProgress, setInstallProgress] = useState<DesktopInstallProgress | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +26,6 @@ export function DesktopPage() {
       const [nextStatus, nextSettings] = await Promise.all([bridge.status(), bridge.getSettings()]);
       setStatus(nextStatus);
       setSettings(nextSettings);
-      if (nextStatus.healthy) setApps(await bridge.listApps());
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -74,31 +54,6 @@ export function DesktopPage() {
     } finally {
       setBusy(false);
     }
-  };
-
-  const setApprovalCategory = (category: DesktopApprovalCategory, requiresApproval: boolean) => {
-    if (!bridge || savingApproval.has(category)) return;
-    const categories = new Set(settings.requireApprovalFor);
-    if (requiresApproval) categories.add(category);
-    else categories.delete(category);
-    const requireApprovalFor = [...categories];
-    setSettings((current) => ({ ...current, requireApprovalFor }));
-    setSavingApproval((current) => new Set(current).add(category));
-    void bridge.setSettings({ requireApprovalFor })
-      .then(() => setNotice(t('settings.desktop.savedNotice')))
-      .catch(async (caught: unknown) => {
-        setError(caught instanceof Error ? caught.message : String(caught));
-        try {
-          setSettings(await bridge.getSettings());
-        } catch {
-          // Keep the optimistic value visible if the settings read also fails.
-        }
-      })
-      .finally(() => setSavingApproval((current) => {
-        const next = new Set(current);
-        next.delete(category);
-        return next;
-      }));
   };
 
   const install = async () => {
@@ -167,6 +122,7 @@ export function DesktopPage() {
     if (status.installState === 'error') return { tone: 'red' as const, label: t('settings.desktop.status.error'), detail: status.error ?? t('settings.desktop.status.errorDetail') };
     if (status.installState === 'uninstalled') return { tone: 'gray' as const, label: t('settings.desktop.status.uninstalled'), detail: t('settings.desktop.status.uninstalledDetail') };
     if (status.enabled && status.healthy) return { tone: 'green' as const, label: t('settings.desktop.status.enabled'), detail: t('settings.desktop.status.enabledDetail') };
+    if (status.enabled && status.runtimeHealthy && !status.mcpHealthy) return { tone: 'red' as const, label: t('settings.desktop.mcpUnavailable'), detail: status.mcpError ?? t('settings.desktop.mcpUnavailable') };
     return { tone: 'gray' as const, label: t('settings.desktop.status.installed'), detail: t('settings.desktop.status.installedDetail') };
   })();
 
@@ -184,17 +140,7 @@ export function DesktopPage() {
     return t('settings.desktop.installPhase.permissions');
   };
 
-  const installed = Boolean(status?.healthy) && status?.installState !== 'permission-required';
-  const currentPlatform = window.opc?.platform ?? 'unknown';
-  const selected = new Set(settings.allowedApps.filter((entry) => entry.enabled && entry.platform === currentPlatform).map((entry) => entry.id));
-  const toggleApp = (app: DesktopAppView) => {
-    const id = app.bundleId ?? app.process ?? app.name;
-    const next = selected.has(id)
-      ? settings.allowedApps.filter((entry) => entry.id !== id)
-      : [...settings.allowedApps, { id, label: app.name, platform: currentPlatform, enabled: true, source: 'user' as const }];
-    void save({ allowedApps: next });
-  };
-
+  const installed = Boolean(status?.runtimeHealthy) && status?.installState !== 'permission-required';
   return (
     <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
       <PageHeader
@@ -253,10 +199,10 @@ export function DesktopPage() {
             </div>
           </div>
           <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5 xl:border-r xl:border-b-0 sm:px-6">
-            <CheckCircle2 className="size-4 text-ink-tertiary" />
+            <AppWindow className="size-4 text-ink-tertiary" />
             <div>
-              <div className="text-2xs text-ink-quaternary">{t('settings.desktop.appPermissions')}</div>
-              <div className="mt-0.5 text-xs-plus font-medium text-ink-secondary">{t('settings.desktop.whitelistCount', { count: settings.allowedApps.filter((entry) => entry.enabled).length })}</div>
+              <div className="text-2xs text-ink-quaternary">{t('settings.desktop.mcpStatus')}</div>
+              <div className="mt-0.5 text-xs-plus font-medium text-ink-secondary">{status?.mcpHealthy ? t('settings.desktop.mcpReady', { count: status.mcpToolCount }) : t('settings.desktop.mcpUnavailable')}</div>
             </div>
           </div>
           <div className="flex items-center gap-2.5 px-5 py-3.5 sm:px-6">
@@ -266,6 +212,11 @@ export function DesktopPage() {
               <div className="mt-0.5 text-xs-plus font-medium text-ink-secondary">{formatBytes(status?.packageBytes)} · {formatBytes(status?.diskUsageBytes)}</div>
             </div>
           </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line px-5 py-3.5 text-xs-plus text-ink-secondary sm:px-6">
+          <span className="font-medium text-ink-tertiary">{t('settings.desktop.surfaces')}</span>
+          {status?.supportedSurfaces.length ? status.supportedSurfaces.map((surface) => <span key={surface} className="font-mono">{surface}</span>) : <span>{t('settings.desktop.noSurfaces')}</span>}
+          {status?.mcpError ? <span className="basis-full text-danger">{t('settings.desktop.mcpError', { error: status.mcpError })}</span> : null}
         </div>
         <div className="flex flex-col gap-3 border-t border-line px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-3">
@@ -309,60 +260,6 @@ export function DesktopPage() {
           </div>
         ) : null}
       </section>
-      <div className="mt-4">
-        <Section title={t('settings.desktop.whitelistTitle')} description={t('settings.desktop.whitelistDesc')}>
-          <div className="border-b border-line px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-medium text-ink">{t('settings.desktop.runningApps')}</div>
-                <div className="text-xs-plus text-ink-tertiary">{t('settings.desktop.selectHint')}</div>
-              </div>
-              <button type="button" className={buttonClass.secondary} disabled={!installed || busy} onClick={() => void load()}>
-                <RefreshCw className="size-3.5" />
-                {t('settings.desktop.scan')}
-              </button>
-            </div>
-          </div>
-          {apps.length ? (
-            apps.map((app) => {
-              const id = app.bundleId ?? app.process ?? app.name;
-              const enabled = selected.has(id);
-              return (
-                <button key={id} type="button" onClick={() => toggleApp(app)} className="flex w-full items-center justify-between gap-3 border-b border-line px-4 py-3 text-left last:border-b-0 hover:bg-surface-muted/50">
-                  <span className="flex min-w-0 items-center gap-3">
-                    <DesktopAppIcon app={app} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-ink">{app.name}</span>
-                      <span className="block truncate font-mono text-2xs text-ink-quaternary">{app.bundleId ?? app.process ?? id}</span>
-                    </span>
-                  </span>
-                  {enabled ? <CheckCircle2 className="size-4 shrink-0 text-success" /> : <XCircle className="size-4 shrink-0 text-ink-quaternary" />}
-                </button>
-              );
-            })
-          ) : (
-            <div className="px-4 py-5 text-sm text-ink-tertiary">{t('settings.desktop.emptyApps')}</div>
-          )}
-        </Section>
-      </div>
-      <div className="mt-4">
-        <Section title={t('settings.desktop.actionPolicyTitle')} description={t('settings.desktop.actionPolicyDesc')}>
-          {APPROVAL_CATEGORIES.map((category) => {
-            const key = `settings.desktop.approvalCategories.${category}` as const;
-            const label = t(`${key}.label`);
-            return (
-              <Row key={category} label={label} hint={t(`${key}.hint`)}>
-                <Toggle
-                  checked={settings.requireApprovalFor.includes(category)}
-                  disabled={busy || savingApproval.has(category)}
-                  label={t('settings.desktop.requireApprovalToggle', { action: label })}
-                  onChange={(requiresApproval) => setApprovalCategory(category, requiresApproval)}
-                />
-              </Row>
-            );
-          })}
-        </Section>
-      </div>
       <div className="mt-4">
         <Section title={t('settings.desktop.inspectorTitle')} description={t('settings.desktop.inspectorDesc')}>
           <div className="flex items-center gap-2 border-b border-line px-4 py-3">

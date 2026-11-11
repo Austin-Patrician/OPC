@@ -151,19 +151,20 @@ describe('event', () => {
 });
 
 describe('report', () => {
-  it('keeps ask-user questions out of attention while emitting a chat action', () => {
+  it('keeps ask-user questions out of the Router queue while emitting a chat action', () => {
     const thread = threads.createThread({ title: 'A' });
     const created: string[] = [];
     threads.onReportCreated = (report) => created.push(report.id);
     const report = threads.addReport({
       threadId: thread.id,
-      level: 'silent',
+      level: 'decide',
       kind: 'question',
       title: '需要你回复',
       body: '选哪个方案？',
     });
     expect(created).toEqual([report.id]);
     expect(threads.listPendingConversationReports().map((item) => item.id)).toEqual([report.id]);
+    expect(threads.listUnannouncedReports()).toEqual([]);
   });
 
   it('puts a decision above a newer notification', () => {

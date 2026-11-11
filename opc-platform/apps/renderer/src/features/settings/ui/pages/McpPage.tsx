@@ -212,7 +212,7 @@ export function McpPage() {
   return (
     <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
       <PageHeader
-        crumbs={[t('settings.group.mcp')]}
+        crumbs={[t('settings.group.capabilities')]}
         title={t('settings.mcp.title')}
         description={t('settings.mcp.description')}
         actions={

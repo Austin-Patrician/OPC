@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   CalendarClock,
-  Grid3X3,
   MessageCircle,
   Settings,
 } from 'lucide-react';
@@ -26,7 +25,6 @@ export function NavRail() {
   const name = userName(profile, t('company.userFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
   const runtimeActive = location.pathname.startsWith('/runtime');
-  const skillsActive = location.pathname.startsWith('/skills');
   const schedulesActive = location.pathname.startsWith('/schedules');
 
   useEffect(() => {
@@ -85,16 +83,6 @@ export function NavRail() {
             )}
           >
             <Activity size={20} strokeWidth={1.85} />
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/skills')}
-            aria-label={t('nav.skills')}
-            aria-current={skillsActive ? 'page' : undefined}
-            title={t('nav.skills')}
-            className={cn('buddy-rail-button relative', skillsActive && 'buddy-rail-button-active')}
-          >
-            <Grid3X3 size={19} strokeWidth={1.8} />
           </button>
           <button
             type="button"

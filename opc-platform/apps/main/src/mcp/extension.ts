@@ -67,6 +67,10 @@ function spillToFile(text: string): string {
 export async function mountMcp(input: {
   servers: readonly McpServerConfig[];
   connect?: (config: McpServerConfig) => Promise<McpConnection>;
+  /** Per-mount connection factory for isolated runtimes such as desktop sessions. */
+  connectServer?: (config: McpServerConfig) => Promise<McpConnection>;
+  shouldCloseConnection?: (config: McpServerConfig) => boolean;
+  autoApproveServers?: readonly string[];
   userDataDir?: string;
   /**
    * 服务器宣布工具变了之后，重新造好的那一份扩展交给它去**就地替换**。
@@ -76,15 +80,15 @@ export async function mountMcp(input: {
    */
   onToolsChanged?: (extension: Extension) => void;
 }): Promise<McpMount> {
-  const connect = input.connect ?? sharedMcpConnection;
+  const connect = input.connectServer ?? input.connect ?? sharedMcpConnection;
   /*
    * 默认连接是**进程级共享**的（`sharedMcpConnection`）：一百个执行体连同一个服务器，
    * 等于一百个子进程。共享的东西不该由某一次挂载关掉——所以只有调用方自己给了
    * `connect`（测试、探针）时才归它所有。
    */
-  const ownsConnections = input.connect !== undefined;
+  const ownsConnections = input.connect !== undefined || input.connectServer !== undefined;
   const statuses: McpServerStatus[] = [];
-  const opened: McpConnection[] = [];
+  const opened: Array<{ config: McpServerConfig; connection: McpConnection }> = [];
 
   const enabled = input.servers.filter(isEnabled);
   const approvalPolicy = input.userDataDir ? readApprovalPolicy(input.userDataDir) : { servers: {} };
@@ -92,7 +96,7 @@ export async function mountMcp(input: {
     enabled.map(async (config) => {
       try {
         const connection = await connect(config);
-        opened.push(connection);
+        opened.push({ config, connection });
         return { config, connection };
       } catch (error) {
         statuses.push({
@@ -134,7 +138,7 @@ export async function mountMcp(input: {
       const exposure = exposureOf(entry.config);
       const description = entry.tool.description ?? entry.tool.title ?? entry.tool.name;
       // 服务器自己声明的后果（`destructiveHint` / `openWorldHint`）——不是我们猜的。
-      const autoApprove = toolApproval(
+      const autoApprove = input.autoApproveServers?.includes(entry.server) || toolApproval(
         approvalPolicy,
         entry.server,
         entry.tool.name,
@@ -240,8 +244,9 @@ export async function mountMcp(input: {
     servers: statuses,
     close: async () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
-      if (!ownsConnections) return;
-      for (const connection of opened) await connection.close().catch(() => undefined);
+      for (const { config, connection } of opened) {
+        if (input.shouldCloseConnection?.(config) ?? ownsConnections) await connection.close().catch(() => undefined);
+      }
     },
   };
   return mount;

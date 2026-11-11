@@ -287,13 +287,17 @@
   const decisionRows = count('[data-testid="decision-model-row"]');
   const decisionRunButton = Boolean(document.querySelector('[data-testid="run-decision"]'));
 
-  // ── 设置 → 工作区与压缩：工作台的规矩 + 记忆巩固审计 ───────────────────────
-  await go('#/settings?page=compaction', 900);
+  // ── 设置 → 行为：工作台的规矩与记忆巩固审计 ───────────────────────────────
+  await go('#/settings?page=workspaceRules', 700);
   const factsForm = Boolean(document.querySelector('[data-testid="fact-subject"]'));
   const factRows = count('[data-testid="fact-row"]');
+  if (factsForm && factRows === 0) throw new Error('规矩写进去了，规矩页却一行都读不到');
+  await go('#/settings?page=consolidation', 700);
   const runRows = count('[data-testid="consolidation-run-row"]');
-  if (factsForm && factRows === 0) throw new Error('规矩写进去了，压缩页却一行都读不到');
   const consolidationRuns = await window.opc.memory.consolidationRuns(executor.id);
+
+  // ── 设置 → 上下文压缩：阈值设置独立于规矩和记忆 ───────────────────────────
+  await go('#/settings?page=compaction', 900);
 
   // ── 设置 → 调度：两层过滤可配，而且改完立刻落库 ──────────────────────────
   await go('#/settings?page=triage', 900);

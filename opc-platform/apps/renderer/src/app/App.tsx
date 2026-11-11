@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
-import { CapabilitiesPage } from '@/pages/capabilities/CapabilitiesPage';
 import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
@@ -34,7 +33,8 @@ export function App() {
           <Route path="attention" element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
-          <Route path="skills" element={<CapabilitiesPage />} />
+          {/* 技能与工具已并入设置：旧深链接重定向到对应的设置子页。 */}
+          <Route path="skills" element={<Navigate to="/settings?page=capabilitiesExtensions" replace />} />
           <Route path="schedules" element={<SchedulesPage />} />
           <Route path="runtime" element={<RuntimeRoute />} />
           <Route path="settings" element={<SettingsPage />} />

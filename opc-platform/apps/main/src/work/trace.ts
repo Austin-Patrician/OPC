@@ -173,8 +173,13 @@ export function traceRowFor(
   result: ToolExecutionResult,
   ms?: number,
 ): Parameters<TraceRecorder['record']>[0] {
-  const argsDigest = digestArgs(call.arguments as Record<string, unknown> | undefined);
-  const failure = result.isError === true ? failureDigest(result) : '';
+  const desktopTool = isDesktopTool(call.name);
+  const argsDigest = desktopTool
+    ? digestDesktopArgs(call.arguments as Record<string, unknown> | undefined)
+    : digestArgs(call.arguments as Record<string, unknown> | undefined);
+  const failure = result.isError === true
+    ? desktopTool ? '桌面工具调用失败' : failureDigest(result)
+    : desktopTool ? desktopOutcome(call.name, result) : '';
   return {
     kind: 'tool',
     // 嵌套调用（`executeTool`）标出来：它在时间线上不是模型的直接一步，
@@ -184,12 +189,60 @@ export function traceRowFor(
     // clue when a short path lookup or shell command goes wrong. Keep them in
     // the existing bounded digest field so old databases need no migration.
     argsDigest: failure
-      ? `${clip(argsDigest, 60)}${argsDigest ? ' → ' : ''}${clip(failure, argsDigest ? 55 : DIGEST_MAX)}`
+      ? clip(`${argsDigest}${argsDigest ? ' → ' : ''}${failure}`)
       : argsDigest,
     ok: result.isError !== true,
     ...(ms === undefined ? {} : { ms }),
     ...(result.usage ? { tokens: usageTotal(result.usage) } : {}),
   };
+}
+
+const SAFE_DESKTOP_ARGUMENTS = new Set([
+  'action', 'app', 'app_id', 'combo', 'ref', 'ref_id', 'role', 'surface', 'window_id',
+]);
+
+function isDesktopTool(name: string): boolean {
+  return /(?:^|__)desktop_[a-z0-9_]+(?:（嵌套）)?$/i.test(name);
+}
+
+function digestDesktopArgs(args: Record<string, unknown> | undefined): string {
+  if (!args) return '';
+  return Object.entries(args)
+    .filter(([key]) => SAFE_DESKTOP_ARGUMENTS.has(key.toLowerCase()))
+    .slice(0, 4)
+    .map(([key, value]) => `${key}=${clip(oneLine(String(value ?? '')), 24)}`)
+    .join(' ');
+}
+
+function desktopOutcome(name: string, result: ToolExecutionResult): string {
+  const marker = name.toLowerCase().lastIndexOf('__desktop_');
+  const tool = marker >= 0 ? name.slice(marker + '__desktop_'.length).replace(/（嵌套）$/, '').toLowerCase() : '';
+  const value = desktopResultData(result);
+  if (tool === 'snapshot') {
+    const complete = typeof value?.complete === 'boolean' ? `complete=${value.complete}` : '';
+    const refs = typeof value?.ref_count === 'number' ? `refs=${value.ref_count}` : '';
+    return ['snapshot returned', complete, refs].filter(Boolean).join('; ');
+  }
+  if (tool === 'list_apps' || tool === 'list_windows' || tool === 'list_surfaces') {
+    const key = tool === 'list_apps' ? 'apps' : tool === 'list_windows' ? 'windows' : 'surfaces';
+    const entries = value?.[key];
+    return Array.isArray(entries) ? `${key}=${entries.length}` : `${key} returned`;
+  }
+  if (tool === 'status' || tool === 'version' || tool === 'permissions') return `${tool} returned`;
+  return 'tool returned successfully; effect unverified';
+}
+
+function desktopResultData(result: ToolExecutionResult): Record<string, unknown> | undefined {
+  const text = result.output?.flatMap((block) => block.type === 'text' ? [block.text] : [])[0];
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as { data?: unknown };
+    return parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
+      ? parsed.data as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function failureDigest(result: ToolExecutionResult): string {

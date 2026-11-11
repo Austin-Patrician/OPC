@@ -5,6 +5,7 @@ export interface RouterWorkerCapability {
   name: string;
   template: WorkerTemplate;
   tools: string[];
+  desktop?: boolean;
   omittedTools?: number;
 }
 
@@ -35,6 +36,7 @@ const ROUTER_VISIBLE_TOOLS = new Set([
 ]);
 
 const ROUTER_TOOL_LIMIT = 16;
+const ROUTER_DESKTOP_TOOL_LIMIT = 4;
 const ROUTER_TOOL_PRIORITY = [
   'browser_open',
   'browser_snapshot',
@@ -62,11 +64,14 @@ const ROUTER_TOOL_PRIORITY = [
 const ROUTER_TOOL_RANK: ReadonlyMap<string, number> = new Map(ROUTER_TOOL_PRIORITY.map((name, index) => [name, index]));
 
 export function summarizeWorkerTools(toolNames: readonly string[]): Pick<RouterWorkerCapability, 'tools' | 'omittedTools'> {
-  const tools = [...new Set(toolNames)]
+  const unique = [...new Set(toolNames)];
+  const desktopTools = unique.filter((name) => name.startsWith('mcp__agent_desktop_'));
+  const tools = unique
     .filter((name) => ROUTER_VISIBLE_TOOLS.has(name))
-    .sort((left, right) => (ROUTER_TOOL_RANK.get(left) ?? ROUTER_TOOL_PRIORITY.length) - (ROUTER_TOOL_RANK.get(right) ?? ROUTER_TOOL_PRIORITY.length));
+    .concat(desktopTools.slice(0, ROUTER_DESKTOP_TOOL_LIMIT))
+    .sort((left, right) => (ROUTER_TOOL_RANK.get(left) ?? (left.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)) - (ROUTER_TOOL_RANK.get(right) ?? (right.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)));
   const visible = tools.slice(0, ROUTER_TOOL_LIMIT);
-  const omitted = tools.length - visible.length;
+  const omitted = tools.length - visible.length + Math.max(0, desktopTools.length - ROUTER_DESKTOP_TOOL_LIMIT);
   return omitted > 0 ? { tools: visible, omittedTools: omitted } : { tools: visible };
 }
 
@@ -84,7 +89,8 @@ export function renderRouterWorkerCapabilities(capabilities: readonly RouterWork
   for (const capability of capabilities) {
     const tools = capability.tools.length > 0 ? capability.tools.join('、') : '无可展示工具';
     const suffix = capability.omittedTools ? `（另有 ${capability.omittedTools} 个工具未列出）` : '';
-    lines.push(`- ${capability.name} · ${capability.template}：${tools}${suffix}`);
+    const desktop = capability.desktop || capability.tools.some((tool) => tool.startsWith('mcp__agent_desktop_'));
+    lines.push(`- ${capability.name} · ${capability.template}${desktop ? '（含 agent-desktop 桌面 CLI 能力）' : ''}：${tools}${suffix}`);
   }
   lines.push(
     '用户请求匹配这些能力时，应调用 open_line_of_work 交给 Worker；能力目录不授予 Router 本身执行权限。',

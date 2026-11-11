@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { app as electronApp, nativeImage } from 'electron';
-import type { DesktopApprovalCategory, DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
+import type { DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
 import type { DesktopInstallService } from './install';
 import { execFilePlatform } from '../process/execFilePlatform';
+import { connectMcp, type McpConnection } from '../mcp/connection';
+import type { McpServerConfig } from '../mcp/contract';
 
 const execFileAsync = promisify(execFile);
 
@@ -263,27 +265,9 @@ export function desktopSessionName(taskId: string): string {
   return `opc-${readable}-${digest}`;
 }
 
-const DENIED_APP_PATTERN = /(?:terminal|iterm|powershell|cmd(?:\.exe)?|command prompt|system settings|system preferences|keychain|1password|keepass|credential manager|task manager|registry editor|security|antivirus|xcode|sudo)/i;
-const CONSEQUENTIAL_TEXT = /(?:submit|send|buy|purchase|checkout|delete|remove|publish|post|confirm|approve|pay|transfer|login|log\s*in|sign\s*out|save|提交|发送|购买|结算|删除|移除|发布|确认|批准|支付|转账|登录|退出|保存|确定)/i;
-const DESTRUCTIVE_TEXT = /(?:delete|remove|buy|purchase|checkout|pay|transfer|删除|移除|购买|结算|支付|转账)/i;
-const SENSITIVE_FIELD_TEXT = /(?:password|passcode|one.?time|verification|auth(?:entication)? code|security code|secret|token|api.?key|credit.?card|card number|cvv|cvc|密码|口令|验证码|校验码|安全码|密钥|令牌|银行卡|卡号)/i;
 
 function parseEnvelope(text: string): { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } } | undefined {
   try { return JSON.parse(text) as { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } }; } catch { return undefined; }
-}
-
-export function desktopAppAllowed(settings: DesktopSettings, appId: string): boolean {
-  const normalized = appId.trim().toLowerCase();
-  return Boolean(normalized) && !DENIED_APP_PATTERN.test(normalized) && settings.allowedApps.some((entry) => entry.enabled && entry.platform === process.platform && !DENIED_APP_PATTERN.test(`${entry.id} ${entry.label}`) && (entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized));
-}
-
-export function desktopRequiresApproval(settings: DesktopSettings, category: DesktopApprovalCategory): boolean {
-  return settings.requireApprovalFor.includes(category);
-}
-
-export function desktopClickApprovalCategory(preview: string): 'external-submit' | 'destructive' | undefined {
-  if (!CONSEQUENTIAL_TEXT.test(preview)) return undefined;
-  return DESTRUCTIVE_TEXT.test(preview) ? 'destructive' : 'external-submit';
 }
 
 export function desktopCommandOptions(command: string, appId?: string, windowId?: string): string[] {
@@ -298,23 +282,15 @@ export function desktopCommandOptions(command: string, appId?: string, windowId?
   return [];
 }
 
-function findRef(node: unknown, ref: string): Record<string, unknown> | undefined {
-  if (!node || typeof node !== 'object') return undefined;
-  const value = node as Record<string, unknown>;
-  if (value.ref_id === ref || value.ref === ref || value.refId === ref) return value;
-  for (const child of Object.values(value)) {
-    if (Array.isArray(child)) for (const item of child) { const found = findRef(item, ref); if (found) return found; }
-    else { const found = findRef(child, ref); if (found) return found; }
-  }
-  return undefined;
-}
-
 export class DesktopBroker {
   private readonly sessions = new Map<string, Session>();
   /** The exact tree that minted refs. Never validate a ref against a newer tree. */
   private readonly snapshots = new Map<string, { data: unknown; appId?: string; windowId?: string }>();
   private readonly locks = new Map<string, Promise<void>>();
   private visibleTask?: string;
+  private mcpHealthy = false;
+  private mcpToolCount = 0;
+  private mcpError?: string;
   private cleanupTimer: ReturnType<typeof setInterval>;
 
   constructor(private readonly install: DesktopInstallService) {
@@ -322,15 +298,79 @@ export class DesktopBroker {
     this.cleanupTimer.unref?.();
   }
 
-  status = () => this.install.status();
+  status = () => {
+    const runtime = this.install.status();
+    const mcpHealthy = runtime.enabled ? this.mcpHealthy : false;
+    return {
+      ...runtime,
+      runtimeHealthy: runtime.healthy,
+      healthy: runtime.healthy && (!runtime.enabled || mcpHealthy),
+      mcpHealthy,
+      mcpToolCount: this.mcpToolCount,
+      ...(this.mcpError ? { mcpError: this.mcpError } : {}),
+    };
+  };
   settings = () => this.install.settings();
   setSettings = (patch: Partial<DesktopSettings>) => this.install.setSettings(patch);
   installRuntime = (onProgress?: (progress: DesktopInstallProgress) => void) => this.install.install(onProgress);
-  initialize = () => this.install.initialize();
+  initialize = async () => {
+    await this.install.initialize();
+    return this.probeMcp();
+  };
+  probeMcp = async () => {
+    if (!this.install.settings().enabled) {
+      this.setMcpStatus({ healthy: false });
+      return this.status();
+    }
+    if (!this.install.status().healthy) {
+      this.setMcpStatus({ healthy: false, error: this.install.status().error });
+      return this.status();
+    }
+    try {
+      const probe = await this.connectMcp('healthcheck');
+      const toolCount = probe.tools.length;
+      await probe.close();
+      this.setMcpStatus({ healthy: toolCount > 0, toolCount, ...(toolCount > 0 ? {} : { error: 'agent-desktop MCP 未发现工具' }) });
+    } catch (error) {
+      this.setMcpStatus({ healthy: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return this.status();
+  };
   uninstallRuntime = async (deleteRuntime = true) => { await this.disposeSessions(); return this.install.uninstall(deleteRuntime); };
   doctor = () => this.install.refresh();
   permissions = () => this.install.permissions();
   permissionsGuide = () => this.install.permissionsGuide();
+
+  setMcpStatus(input: { healthy: boolean; toolCount?: number; error?: string }): void {
+    this.mcpHealthy = input.healthy;
+    this.mcpToolCount = input.toolCount ?? 0;
+    this.mcpError = input.error;
+  }
+
+  async connectMcp(workerId: string): Promise<McpConnection> {
+    const binary = this.install.binaryPath();
+    if (!binary || !this.install.status().healthy || !this.settings().enabled) throw new Error('桌面运行时未安装、未启用或权限不足');
+    const name = desktopSessionName(workerId);
+    const started = await this.raw(['session', 'start', '--name', name, '--no-trace']);
+    const sessionId = desktopSessionId(started);
+    if (!sessionId) throw new Error(started.text || 'agent-desktop 未能创建 MCP session');
+    const config: McpServerConfig = { name: `agent_desktop_${name.replace(/-/g, '_')}`, command: binary, args: ['--session', sessionId, 'mcp'], autoApprove: true, description: 'agent-desktop 提供的完整桌面操作命令集' };
+    try {
+      const connection = await connectMcp(config);
+      this.setMcpStatus({ healthy: true, toolCount: connection.tools.length });
+      return {
+        ...connection,
+        close: async () => {
+          await connection.close();
+          await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true }).catch(() => undefined);
+        },
+      };
+    } catch (error) {
+      this.setMcpStatus({ healthy: false, error: error instanceof Error ? error.message : String(error) });
+      await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true }).catch(() => undefined);
+      throw error;
+    }
+  }
 
   async listApps(): Promise<DesktopAppView[]> {
     const result = await this.raw(['list-apps'], undefined, undefined, true);
@@ -362,7 +402,6 @@ export class DesktopBroker {
 
   async execute(input: DesktopSessionInput, command: string, args: readonly string[] = [], options: { appId?: string; windowId?: string; stdin?: string } = {}): Promise<DesktopResult> {
     const appId = options.appId ?? input.appId;
-    if (appId && !desktopAppAllowed(this.settings(), appId)) return { ok: false, text: `应用不在白名单中：${appId}` };
     return this.withLock(input.taskId, async () => {
       const session = await this.session(input);
       const commandFlags = desktopCommandOptions(command, appId, options.windowId ?? input.windowId);
@@ -387,38 +426,6 @@ export class DesktopBroker {
       ...(session.windowId ? { windowId: session.windowId } : {}),
     });
     return result;
-  }
-
-  async clickRisk(input: DesktopSessionInput, ref: string, options: { appId?: string; windowId?: string } = {}): Promise<{ verified: boolean; consequential: boolean; approvalCategory?: 'external-submit' | 'destructive'; preview?: string }> {
-    const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
-    const snapshot = this.snapshots.get(input.taskId);
-    const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return { verified: false, consequential: false };
-    const target = findRef(snapshot.data, ref);
-    if (!target) return { verified: false, consequential: false };
-    const preview = [target.name, target.value, ...(Array.isArray(target.available_actions) ? target.available_actions : [])].filter((item): item is string => typeof item === 'string').join(' ').trim().slice(0, 240);
-    const approvalCategory = desktopClickApprovalCategory(preview);
-    return { verified: true, consequential: Boolean(approvalCategory), ...(approvalCategory ? { approvalCategory } : {}), ...(preview ? { preview } : {}) };
-  }
-
-  /** Verify a ref-bearing command against the exact Snapshot that minted it. */
-  async refVerified(input: DesktopSessionInput, ref: string, options: { appId?: string; windowId?: string } = {}): Promise<boolean> {
-    const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
-    const snapshot = this.snapshots.get(input.taskId);
-    const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return false;
-    return Boolean(findRef(snapshot.data, ref));
-  }
-
-  async sensitiveField(input: DesktopSessionInput, ref: string, options: { appId?: string; windowId?: string } = {}): Promise<boolean | undefined> {
-    const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
-    const snapshot = this.snapshots.get(input.taskId);
-    const appId = options.appId ?? input.appId ?? session?.appId;
-    if (!session || !snapshot || snapshot.appId !== appId || snapshot.windowId !== (options.windowId ?? input.windowId ?? session.windowId) || !desktopAppAllowed(this.settings(), appId ?? '')) return undefined;
-    const target = findRef(snapshot.data, ref);
-    if (!target) return undefined;
-    const description = [target.name, target.value, target.role, target.placeholder, target.description, target.help].filter((item): item is string => typeof item === 'string').join(' ');
-    return SENSITIVE_FIELD_TEXT.test(description);
   }
 
   async show(taskId: string): Promise<void> {
@@ -479,8 +486,8 @@ export class DesktopBroker {
       ...(session?.headed ? ['--headed'] : []),
       ...args,
     ];
-    const outputLimit = settings.maxOutputBytes;
-    const child = execFilePlatform(binary, commandArgs, { timeout: 90_000, maxBuffer: Math.max(64_000, outputLimit * 4), windowsHide: true });
+    const outputLimit = 2_000_000;
+    const child = execFilePlatform(binary, commandArgs, { timeout: 90_000, maxBuffer: 8_000_000, windowsHide: true });
     if (stdin !== undefined) child.child.stdin?.end(stdin);
     const output = await child.catch((error: unknown) => ({ stdout: '', stderr: error instanceof Error ? error.message : String(error), error }));
     const text = `${output.stdout ?? ''}${output.stderr ? `\n${output.stderr}` : ''}`.trim();

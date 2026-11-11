@@ -31,24 +31,15 @@ describe('agent-desktop release selection', () => {
   });
 });
 
-describe('desktop approval policy migration', () => {
-  it('releases common input by default while keeping sensitive categories gated', () => {
-    const settings = normalizeDesktopSettings(undefined);
-    expect(settings.requireApprovalFor).toEqual(['external-submit', 'destructive', 'clipboard-read', 'clipboard-write']);
-    expect(settings.approvalPolicyVersion).toBe(1);
-  });
-
-  it('migrates legacy defaults and allows future user choices to persist', () => {
-    const migrated = normalizeDesktopSettings({
-      requireApprovalFor: ['external-submit', 'destructive', 'clipboard-write', 'physical-input'],
-    });
-    expect(migrated.requireApprovalFor).toEqual(['external-submit', 'destructive', 'clipboard-write', 'clipboard-read']);
-
-    const customized = normalizeDesktopSettings({
-      approvalPolicyVersion: 1,
-      requireApprovalFor: ['physical-input'],
-    });
-    expect(customized.requireApprovalFor).toEqual(['physical-input']);
+describe('desktop settings migration', () => {
+  it('drops legacy app allowlists and approval rules while preserving the master switch', () => {
+    expect(normalizeDesktopSettings({
+      enabled: true,
+      allowedApps: [{ id: 'Chrome', enabled: false }],
+      requireApprovalFor: ['external-submit'],
+      maxOutputBytes: 12,
+    })).toEqual({ enabled: true });
+    expect(normalizeDesktopSettings(undefined)).toEqual({ enabled: false });
   });
 });
 
@@ -67,16 +58,13 @@ describe('global desktop settings migration', () => {
 
     try {
       const service = new DesktopInstallService(db, userDataDir);
-      const expectedApps = [
-        { id: 'com.google.Chrome', label: 'Google Chrome', platform: process.platform, enabled: true, source: 'user' },
-      ];
-      expect(service.settings().allowedApps).toEqual(expectedApps);
+      expect(service.settings()).toEqual({ enabled: true });
       expect((db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings') as { value: string }).value)
-        .toContain('com.google.Chrome');
+        .toBe('{"enabled":true}');
       expect(db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings.user')).toBeUndefined();
       expect(db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings.person-1')).toBeUndefined();
-      service.setSettings({ allowedApps: [] });
-      expect(service.settings().allowedApps).toEqual([]);
+      service.setSettings({ enabled: false });
+      expect(service.settings()).toEqual({ enabled: false });
     } finally {
       db.close();
       rmSync(userDataDir, { recursive: true, force: true });

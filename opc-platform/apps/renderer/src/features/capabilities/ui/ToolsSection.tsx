@@ -27,7 +27,7 @@ import {
   isExternalExtension,
 } from '@/shared/lib/extensionCopy';
 import { cn } from '@/shared/lib/cn';
-import { toolAgentCounts, type ToolGroup } from './model/grouping';
+import { toolAgentCounts, type ToolGroup } from '../model/grouping';
 
 export function ToolsSection({
   groups,

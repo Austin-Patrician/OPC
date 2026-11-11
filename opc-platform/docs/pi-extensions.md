@@ -42,6 +42,11 @@ Pi 的扩展是**模块加载即执行**：`export default (pi) => { pi.register
 另外读 `~/.pi/agent/settings.json` 的 `extensions: [...]`（支持 `~/` 展开），pi 的全局安装列表
 就记在这里。隐藏目录和 `node_modules` 跳过。
 
+`pi install npm:<name>` 装的包不在上面两个目录里：Pi 把包放进自己的 npm 工程
+`~/.pi/agent/npm/node_modules/`，把 `npm:<name>` 记在 `settings.json#packages`。扫描器两边都读，
+只接受 `package.json` 里声明了 `pi.extensions` 的包，所以 `node_modules` 里的普通依赖不会被误当成扩展。
+清单入口指向目录（如 `"./dist"`）时，按 `index.js → index.mjs → …` 找实际模块。
+
 **id 是 POSIX 化的绝对路径**（`C:/Users/.../opc-demo`），而 `entry` / `dir` 保留原生路径。
 这么做是因为 UI、`pi-extensions.json`、测试都在不同平台上比较 id，原生分隔符会让它们各自
 `replace(/\\/g,'/')` 一遍；统一在扫描出口做一次更省事。**不要从 id 反推路径再去读文件。**
@@ -112,7 +117,7 @@ mtime 取"入口 + 清单 + 目录"三者最大，所以只改 `package.json` �
 - **不是沙箱**。启用的扩展和 OPC 同等权限，这是信任框存在的唯一原因。
 - **没有进程隔离**。Electron `utilityProcess` 是下一步；现在和 Pi 自己一样跑在主进程。
 - **无交互式 UI**。`ctx.ui.*` 一律按取消处理，因为渲染进程 ↔ 扩展的桥还没建。
-- **不支持 `pi install` 的包目录**。`~/.pi/agent/npm/` 之类要等 Pi 的解析器搬过来。
+- **git / 本地路径包**。`npm:` 规格会解析到 Pi 的 npm 工程；`git:` 之类要等 Pi 的完整解析器搬过来。
 
 技能（`~/.agents/skills` 的 SKILL.md）走的是另一条路，见 `docs/skills.md`：纯文本，
 不需要信任，也不会在这里被 import。

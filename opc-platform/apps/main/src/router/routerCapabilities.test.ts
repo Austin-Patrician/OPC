@@ -65,4 +65,15 @@ describe('Router Worker capability directory', () => {
     expect(text).toContain('open_line_of_work');
     expect(text).not.toContain('desktop_snapshot(');
   });
+
+  it('includes dynamically named agent-desktop MCP tools in the directory', () => {
+    const tool = 'mcp__agent_desktop_opc_task_abc123__screenshot';
+    const result = summarizeWorkerTools(['internal_tool', tool]);
+    expect(result.tools).toContain(tool);
+    const text = renderRouterWorkerCapabilities([
+      { name: '桌面助手', template: 'code', tools: result.tools, desktop: true },
+    ]);
+    expect(text).toContain('agent-desktop 桌面 CLI 能力');
+    expect(text).toContain(tool);
+  });
 });

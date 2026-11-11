@@ -1510,41 +1510,23 @@ export interface DesktopPermissionStatus {
   screenRecording: "granted" | "denied" | "unknown" | "not_required";
   automation: "granted" | "denied" | "unknown" | "not_required";
 }
-export interface DesktopAppAllowlistEntry {
-  id: string;
-  label: string;
-  platform: string;
-  enabled: boolean;
-  source: "system" | "user";
-}
-export type DesktopApprovalCategory =
-  | "desktop-access"
-  | "screenshot"
-  | "desktop-launch"
-  | "window-focus"
-  | "desktop-action"
-  | "physical-input"
-  | "clipboard-read"
-  | "clipboard-write"
-  | "external-submit"
-  | "destructive";
 export interface DesktopSettings {
   enabled: boolean;
-  allowedApps: DesktopAppAllowlistEntry[];
-  requireApprovalFor: DesktopApprovalCategory[];
-  approvalPolicyVersion?: number;
-  maxOutputBytes: number;
 }
 export interface DesktopStatus {
   installState: DesktopInstallState;
   enabled: boolean;
   version?: string;
   binary?: string;
+  runtimeHealthy: boolean;
   healthy: boolean;
   packageBytes?: number;
   diskUsageBytes?: number;
   permissions: DesktopPermissionStatus;
   supportedSurfaces: string[];
+  mcpHealthy: boolean;
+  mcpToolCount: number;
+  mcpError?: string;
   error?: string;
 }
 export type DesktopInstallPhase =

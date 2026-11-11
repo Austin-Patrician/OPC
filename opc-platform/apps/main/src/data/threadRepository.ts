@@ -746,7 +746,9 @@ export class ThreadRepository {
     const rows = this.statement(
       `SELECT report.*, thread.reply_target AS thread_reply_target
          FROM report JOIN thread ON thread.id = report.thread_id
-        WHERE report.announced_at IS NULL ${options.includeSilent ? '' : "AND report.level != 'silent'"}
+        WHERE report.announced_at IS NULL
+          AND report.kind != 'question'
+          ${options.includeSilent ? '' : "AND report.level != 'silent'"}
          ORDER BY report.created_at ASC, report.rowid ASC LIMIT ?`,
     ).all(limit) as ReportRow[];
     return rows.map(toReport);

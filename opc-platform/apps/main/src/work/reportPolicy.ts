@@ -15,6 +15,11 @@ export function shouldPromoteManualCompletion(
     return false;
   }
 
-  // Legacy line-level reports have no task id; task reports must resolve to a root task.
-  return report.taskId === null || Boolean(task && !task.parentTaskId);
+  // A line-level summary is an audit record, not evidence that a task completed.
+  return report.taskId !== null && Boolean(task && !task.parentTaskId);
+}
+
+/** Only actionable reports that are not already represented by a chat card wake Router. */
+export function shouldWakeRouterForReport(report: WorkReport): boolean {
+  return report.level !== 'silent' && report.kind !== 'question';
 }

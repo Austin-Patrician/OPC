@@ -187,14 +187,18 @@ async function importFactory(entry: string, options: LoadOptions): Promise<(pi: 
   // Pi extension working from a directory outside this app:
   //   - the host packages Pi provides (typebox, pi-ai, pi-durable) resolve to
   //     OPC's copies, so schema classes and helpers are shared, not duplicated;
-  //   - `@earendil-works/pi-coding-agent` is a stand-in: the real package is a
-  //     23 MB CLI, and extensions only import helpers and types from it.
+  //   - `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are
+  //     stand-ins: the first is a 23 MB CLI, the second only matters for
+  //     terminal rendering, which OPC replaces with its own UI.
   const { createJiti } = await import('jiti');
   const jiti = createJiti(entry, {
     interopDefault: true,
     moduleCache: false,
     alias: hostAliases(),
-    virtualModules: { '@earendil-works/pi-coding-agent': codingAgentApi() },
+    virtualModules: {
+      '@earendil-works/pi-coding-agent': codingAgentApi(),
+      '@earendil-works/pi-tui': tuiApi(),
+    },
   });
   const module = (await jiti.import(entry)) as Record<string, unknown>;
   return pickFactory(module, entry);
@@ -290,6 +294,44 @@ function codingAgentApi() {
     isFindToolResult: (event: unknown) => hasToolName(event, 'find'),
     isLsToolResult: (event: unknown) => hasToolName(event, 'ls'),
   };
+}
+
+/**
+ * `@earendil-works/pi-tui` is a terminal toolkit. Extensions import it to build
+ * `registerMessageRenderer` output, which OPC does not render, so the stub only
+ * has to keep module evaluation from failing. `truncateToWidth` is a pure string
+ * helper and is implemented for real because extensions also call it eagerly.
+ */
+function tuiApi() {
+  class Component {
+    render(): string[] {
+      return [];
+    }
+    invalidate(): void {}
+    addChild(): void {}
+    removeChild(): void {}
+    clear(): void {}
+  }
+
+  return new Proxy(
+    {
+      Box: Component,
+      Container: Component,
+      Spacer: Component,
+      Text: Component,
+      TruncatedText: Component,
+      truncateToWidth: (value: string, width: number) =>
+        value.length > width ? value.slice(0, Math.max(0, width)) : value,
+    } as Record<string, unknown>,
+    {
+      get(target, key) {
+        if (key in target) return target[key as string];
+        if (typeof key !== 'string') return undefined;
+        // Unknown constructors stay constructible; unknown helpers return ''.
+        return /^[A-Z]/.test(key) ? Component : () => '';
+      },
+    },
+  );
 }
 
 const hasToolName = (event: unknown, name: string) => {

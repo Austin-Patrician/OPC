@@ -326,7 +326,7 @@ OK | sandbox | sandbox-exec · backend=seatbelt · 越界写入 exit=1（已阻�
 
 | 阶段 | 行为 |
 |---|---|
-| 发现 | `~/.pi/agent/extensions`（全局）+ `.pi/extensions`（项目）+ `settings.json#extensions`，一层深，支持 `name.ts` / `name/index.ts` / `package.json#pi.extensions` |
+| 发现 | `~/.pi/agent/extensions`（全局）+ `.pi/extensions`（项目）+ `settings.json#extensions` + `settings.json#packages`（`npm:` 包，实际文件在 `~/.pi/agent/npm/node_modules`），一层深，支持 `name.ts` / `name/index.ts` / `package.json#pi.extensions` |
 | 列出 | 名字、版本、作用域、入口路径；未启用的行**不显示工具列表**（那需要先跑一遍代码） |
 | 启用 | 首次弹信任框（明说"权限等同 OPC"）→ 记 id → import |
 | 装载 | `registerTool` → pi-durable 工具；`tool_call` → `beforeTool` hook（可拦截/改参）；其余 API 记进 `unsupported`，UI 标"部分支持" |
@@ -340,7 +340,7 @@ OK | sandbox | sandbox-exec · backend=seatbelt · 越界写入 exit=1（已阻�
   开关变化后清掉缓存的 harness，不用重启。
 
 未做：进程隔离（`utilityProcess`）、`ctx.ui.*` 交互式 UI（当前 fail closed，`confirm` 一律返回
-`false`）、`pi install` 的 npm 目录解析。
+`false`）、`git:` / 本地路径包的解析。
 
 ### 本机技能：一行广告 + 按需读全文（技能与工具页）
 

@@ -40,7 +40,7 @@ import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { initAppPaths, appPaths } from './paths';
 import { WorkService } from './work/workService';
-import { shouldPromoteManualCompletion } from './work/reportPolicy';
+import { shouldPromoteManualCompletion, shouldWakeRouterForReport } from './work/reportPolicy';
 import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
 import { BillingSettingsService } from './work/billingSettings';
@@ -424,14 +424,15 @@ async function bootstrap(): Promise<void> {
       const promoted = threads.promoteReport(report.id);
       if (promoted) report = promoted;
     }
-    if (conversationId && activity && activity.phase !== 'idle') {
+    const shouldWake = shouldWakeRouterForReport(report);
+    if (shouldWake && conversationId && activity && activity.phase !== 'idle') {
       chat?.setActivity(conversationId, 'organizing');
     }
     // A completed worker writes its result through this callback. Updating the
     // activity indicator alone is not enough: the Router must be scheduled to
     // consume the new report, otherwise the conversation remains in thinking
     // forever until another user message happens to wake it.
-    wakeRouter();
+    if (shouldWake) wakeRouter();
     // Worker reports are input to the Router's final response. Only a direct
     // question remains an interactive chat card; approvals have their own card
     // callback below. This keeps the user-facing transcript free of duplicate
@@ -447,6 +448,7 @@ async function bootstrap(): Promise<void> {
       body: report.body,
       state: 'pending',
     });
+    if (report.level === 'decide') chat?.setActivity(conversationId, 'waiting_user');
   };
   threads.onReportRead = (reportId) => {
     chat?.updateWorkflowCard(reportId, 'resolved');

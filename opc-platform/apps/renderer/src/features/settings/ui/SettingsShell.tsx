@@ -13,15 +13,20 @@ import { VoicePage } from './pages/VoicePage';
 import { RuntimePage } from './pages/RuntimePage';
 import { SelfCheckPage } from './pages/SelfCheckPage';
 import { MemoryPage } from './pages/MemoryPage';
+import { WorkspaceRulesPage } from './pages/WorkspaceRulesPage';
+import { ConsolidationPage } from './pages/ConsolidationPage';
 import { TriagePage } from './pages/TriagePage';
 import { WatchdogPage } from './pages/WatchdogPage';
 import { McpPage } from './pages/McpPage';
 import { BrowserPage } from './pages/BrowserPage';
 import { DesktopPage } from './pages/DesktopPage';
 import { AssistantToolsPage } from './pages/AssistantToolsPage';
+import { CapabilitiesExtensionsPage } from './pages/CapabilitiesExtensionsPage';
+import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
+import { CapabilitiesToolsPage } from './pages/CapabilitiesToolsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
-import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Plug, Settings2, ShieldCheck } from 'lucide-react';
+import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
 const PAGE_IDS = [
@@ -33,7 +38,12 @@ const PAGE_IDS = [
   'triage',
   'watchdog',
   'memory',
+  'workspaceRules',
+  'consolidation',
   'runtime',
+  'capabilitiesExtensions',
+  'capabilitiesTools',
+  'capabilitiesSkills',
   'llm',
   'image',
   'voice',
@@ -49,8 +59,7 @@ const PAGE_IDS = [
 
 type PageId = (typeof PAGE_IDS)[number];
 
-const isPageId = (value: string | null): value is PageId =>
-  PAGE_IDS.some((id) => id === value);
+const isPageId = (value: string | null): value is PageId => PAGE_IDS.some((id) => id === value);
 
 interface Group {
   id: string;
@@ -101,6 +110,8 @@ export function SettingsShell() {
         { id: 'triage', label: t('settings.page.triage') },
         { id: 'watchdog', label: t('settings.page.watchdog') },
         { id: 'memory', label: t('settings.page.memory') },
+        { id: 'workspaceRules', label: t('settings.page.workspaceRules') },
+        { id: 'consolidation', label: t('settings.page.consolidation') },
       ],
     },
     {
@@ -124,13 +135,18 @@ export function SettingsShell() {
       pages: [{ id: 'runtime', label: t('settings.page.runtime') }],
     },
     {
-      // MCP 是外部能力，不是模型选型：单独成组，避免和 LLM/Image/Voice/Decision
-      // 挤在同一个子菜单里。
-      id: 'mcp',
-      label: t('settings.group.mcp'),
-      icon: Plug,
-      color: '#30B0C7',
-      pages: [{ id: 'mcp', label: 'MCP' }],
+      // 技能、工具与扩展是同一份运行时能力清单的三种切面，和 MCP 一起
+      // 收进设置，避免导航栏再多一个一级入口。
+      id: 'capabilities',
+      label: t('settings.group.capabilities'),
+      icon: Boxes,
+      color: '#22B560',
+      pages: [
+        { id: 'capabilitiesExtensions', label: t('settings.page.capabilitiesExtensions') },
+        { id: 'capabilitiesTools', label: t('settings.page.capabilitiesTools') },
+        { id: 'capabilitiesSkills', label: t('settings.page.capabilitiesSkills') },
+        { id: 'mcp', label: 'MCP' },
+      ],
     },
     {
       // Outgoing traffic is infrastructure, not a model concern: its own group
@@ -196,8 +212,18 @@ export function SettingsShell() {
         return <WatchdogPage />;
       case 'memory':
         return <MemoryPage />;
+      case 'workspaceRules':
+        return <WorkspaceRulesPage />;
+      case 'consolidation':
+        return <ConsolidationPage />;
       case 'runtime':
         return <RuntimePage />;
+      case 'capabilitiesExtensions':
+        return <CapabilitiesExtensionsPage />;
+      case 'capabilitiesTools':
+        return <CapabilitiesToolsPage />;
+      case 'capabilitiesSkills':
+        return <CapabilitiesSkillsPage />;
       case 'llm':
         return <LlmPage />;
       case 'image':
@@ -231,7 +257,10 @@ export function SettingsShell() {
           <p className="mt-0.5 text-xs-plus text-ink-tertiary">{t('settings.subtitleShort')}</p>
         </div>
 
-        <nav aria-label={t('settings.title')} className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+        <nav
+          aria-label={t('settings.title')}
+          className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3"
+        >
           {groups.map((group) => {
             const Icon = group.icon;
             const hasSubmenu = group.pages.length > 1;
@@ -245,11 +274,15 @@ export function SettingsShell() {
                   data-testid={`settings-group-${group.id}`}
                   onClick={() => {
                     if (hasSubmenu && inGroup) {
-                      setCollapsed((previous) => ({ ...previous, [group.id]: !previous[group.id] }));
+                      setCollapsed((previous) => ({
+                        ...previous,
+                        [group.id]: !previous[group.id],
+                      }));
                       return;
                     }
                     setPage(group.pages[0]!.id);
-                    if (hasSubmenu) setCollapsed((previous) => ({ ...previous, [group.id]: false }));
+                    if (hasSubmenu)
+                      setCollapsed((previous) => ({ ...previous, [group.id]: false }));
                   }}
                   aria-expanded={hasSubmenu ? open : undefined}
                   className={cn(
@@ -270,7 +303,12 @@ export function SettingsShell() {
                   </span>
                   <span className="flex-1 text-left">{group.label}</span>
                   {hasSubmenu ? (
-                    <span className={cn('text-2xs text-ink-quaternary transition-transform', open && 'rotate-90')}>
+                    <span
+                      className={cn(
+                        'text-2xs text-ink-quaternary transition-transform',
+                        open && 'rotate-90',
+                      )}
+                    >
                       ›
                     </span>
                   ) : null}

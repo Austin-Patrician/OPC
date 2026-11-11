@@ -39,6 +39,7 @@ import { ThreadRepository } from '../data/threadRepository';
 import type { AppPaths } from '../env';
 import type { McpServerConfig } from '../mcp/contract';
 import { mountMcp, type McpMount } from '../mcp/extension';
+import { sharedMcpConnection } from '../mcp/connection';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
@@ -100,7 +101,6 @@ import { createSkillsExtension } from '../skills/extension';
 import type { ContextGraphStore } from '../ontology/types';
 import type { BrowserBroker } from '../browser/broker';
 import { createBrowserToolExtension } from './browserTool';
-import { createDesktopToolExtension } from './desktopTool';
 import type { DesktopBroker } from '../desktop/broker';
 import { summarizeWorkerTools, type RouterWorkerCapability } from '../router/routerCapabilities';
 import { createAssistantToolsExtension } from '../assistant/assistantTools';
@@ -1346,6 +1346,7 @@ export class WorkService {
         name: agent.name,
         template: agent.template,
         ...summarizeWorkerTools(agent.tools.map((tool) => tool.name)),
+        desktop: agent.tools.some((tool) => tool.name.startsWith('mcp__agent_desktop_')),
       }));
   };
 
@@ -1360,13 +1361,26 @@ export class WorkService {
    */
   /** 这个执行体的 MCP 挂载；没有配置就是 null。 */
   private async mcpMountFor(workerId: string): Promise<McpMount | null> {
-    const servers = this.deps.mcp?.() ?? [];
+    const desktop = this.deps.desktop;
+    const desktopEnabled = desktop?.status().runtimeHealthy === true && desktop.settings().enabled === true;
+    const servers = [
+      ...(this.deps.mcp?.() ?? []),
+      ...(desktopEnabled ? [{ name: `agent_desktop_${workerId.replace(/[^A-Za-z0-9_]/g, '_')}`, command: desktop!.status().binary!, args: ['mcp'], autoApprove: true, description: 'agent-desktop 提供的完整桌面操作命令集' }] : []),
+    ];
     if (servers.length === 0) return null;
 
     const cached = this.mcpMounts.get(workerId);
     if (cached) return cached;
 
-    const opening = mountMcp({ servers, userDataDir: this.deps.paths.userData });
+    const opening = mountMcp({
+      servers,
+      userDataDir: this.deps.paths.userData,
+      connectServer: (config) => config.name.startsWith('agent_desktop_')
+        ? desktop!.connectMcp(workerId)
+        : sharedMcpConnection(config),
+      shouldCloseConnection: (config) => config.name.startsWith('agent_desktop_'),
+      autoApproveServers: servers.filter((config) => config.name.startsWith('agent_desktop_')).map((config) => config.name),
+    });
     this.mcpMounts.set(workerId, opening);
     try {
       const mount = await opening;
@@ -1383,6 +1397,10 @@ export class WorkService {
         });
       }
       this.mcpServers.set(workerId, mount.servers);
+      if (desktopEnabled && desktop) {
+        const desktopServer = mount.servers.find((server) => server.name.startsWith('agent_desktop_'));
+        desktop.setMcpStatus({ healthy: Boolean(desktopServer && !desktopServer.error), toolCount: desktopServer?.tools, error: desktopServer?.error });
+      }
       // 一个都没连上就别占着一个槽：它会让界面显示"有 MCP"，而实际什么都没有。
       if (!mount.extension) {
         this.mcpMounts.delete(workerId);
@@ -1670,30 +1688,6 @@ export class WorkService {
             }),
           }
         : { name: 'opc.browser', essential: false, available: false, reason: 'browser-not-installed-or-disabled' },
-    );
-
-    const desktop = this.deps.desktop;
-    const desktopAvailable = desktop?.status().healthy === true && desktop.settings().enabled === true;
-    slots.push(
-      desktopAvailable && desktop
-        ? {
-            name: 'opc.desktop',
-            essential: false,
-            available: true,
-            extension: createDesktopToolExtension({
-              broker: desktop,
-              taskId: () => currentTaskIdFor(personId),
-              workerId: subject.id,
-              authorize: (tool, title, metadata) => {
-                const taskId = currentTaskIdFor(personId);
-                if (!taskId) return false;
-                if (this.repository.hasMcpPermit(taskId, tool)) return true;
-                this.askForApproval({ taskId, tool, title, ...(metadata ? { desktop: metadata } : {}) });
-                return false;
-              },
-            }),
-          }
-        : { name: 'opc.desktop', essential: false, available: false, reason: 'desktop-not-installed-or-disabled' },
     );
 
     return slots;

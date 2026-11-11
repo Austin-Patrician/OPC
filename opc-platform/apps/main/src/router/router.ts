@@ -354,7 +354,11 @@ export function composeInput(
     if (lines.length > 0) lines.push('');
     lines.push(`## 执行体汇报（${reports.length}，都还没告诉用户）`);
     for (const report of reports) {
-      lines.push(`- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.title}`);
+      lines.push(
+        `- ${report.id} · 线 ${report.threadId} · ${report.level} · ${report.kind}` +
+          (report.taskId ? ` · 任务 ${report.taskId}` : '') +
+          ` · ${report.title}`,
+      );
       if (report.replyTarget) lines.push(`  原始信道回复地址（只能原样使用）：${report.replyTarget.address}`);
       if (report.body.trim()) {
         lines.push(indent(spillText(report.body, `recall ${report.id}`, perItem)));
@@ -373,6 +377,7 @@ export function composeInput(
     '判断：这些里有哪些需要用户知道？哪些该派活（open_line_of_work）？' +
       '哪些直接不管？任何用户可见的最终回复都必须调用 reply_to_user，并提交按顺序排列的 blocks；' +
       '普通文字使用 markdown block，媒体和文件使用对应 block。不要把工具调用、思考或中间文本当成回复。' +
+      '汇报非核验。桌面 recall task:<taskId>，只报轨迹事实。调用成功不等于生效；标题未变不证按键无效。无证据说“效果未确认”，勿猜。' +
       '面向用户只写结果、状态和下一步：不要解释派活、工作线、执行体、工具、模型、验收或内部能力。' +
       '成功派发后台任务且尚无结果时，不发送开始确认；若用户同时提出了可立即回答的问题，只回答该问题。' +
       '任务已有结果时直接交付结果；失败只说已确认的原因和下一步。',

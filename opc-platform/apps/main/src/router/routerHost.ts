@@ -445,6 +445,8 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       return { ok: false, reason: unfinishedReason(blocking) };
 
     threads.setState(threadId, "done");
+    // Closing a line records its final summary for history; the preceding task
+    // report is the user-facing result, so this must remain audit-only.
     threads.addReport({
       threadId,
       level: "silent",

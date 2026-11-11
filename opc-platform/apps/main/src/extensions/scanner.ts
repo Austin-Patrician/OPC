@@ -14,6 +14,11 @@ import path from 'node:path';
  *   <root>/name.ts                       single file
  *   <root>/name/index.ts                 directory entry
  *   <root>/name/package.json#pi.extensions   manifest (first entry wins)
+ *
+ * Packages installed with `pi install npm:<name>` never land in `extensions/`:
+ * Pi keeps them in its own npm project at `~/.pi/agent/npm/node_modules/` and
+ * records the spec in `settings.json#packages`. Both are read here, so an
+ * installed package is listed without the user copying it anywhere.
  */
 
 const ENTRY_NAMES = ['index.ts', 'index.mts', 'index.cts', 'index.js', 'index.mjs', 'index.cjs'];
@@ -71,6 +76,11 @@ export function piExtensionRoots(homeDir: string, projectDir: string): { scope: 
   ];
 }
 
+/** Where `pi install npm:<name>` puts packages: a private npm project's tree. */
+export function piPackageRoot(homeDir: string): string {
+  return path.join(homeDir, '.pi', 'agent', 'npm', 'node_modules');
+}
+
 export function scanPiExtensions(options: ScanOptions): ScanResult {
   const readDir = options.readDir ?? defaultReadDir;
   const readText = options.readText ?? defaultReadText;
@@ -93,6 +103,20 @@ export function scanPiExtensions(options: ScanOptions): ScanResult {
     if (found) entries.set(found.id, found);
   }
 
+  // `pi install npm:<name>` writes a spec to `settings.json#packages` and adds
+  // the package to Pi's own npm project. Both sources are unioned: settings is
+  // authoritative, while the npm project also covers a hand-edited settings
+  // file that has not been reconciled yet.
+  const packageNames = new Set([
+    ...declaredPackageNames(options.homeDir, readText),
+    ...installedPackageNames(options.homeDir, readText),
+  ]);
+  for (const name of packageNames) {
+    const target = path.join(piPackageRoot(options.homeDir), ...name.split('/'));
+    const found = describePackage(target, 'global', { readDir, readText, stat });
+    if (found) entries.set(found.id, found);
+  }
+
   return {
     roots: roots.map((root) => root.dir),
     entries: [...entries.values()].sort((a, b) => a.name.localeCompare(b.name)),
@@ -100,19 +124,77 @@ export function scanPiExtensions(options: ScanOptions): ScanResult {
 }
 
 function declaredPaths(homeDir: string, readText: (file: string) => string | undefined): string[] {
-  const settingsFile = path.join(homeDir, '.pi', 'agent', 'settings.json');
-  const raw = readText(settingsFile);
+  const settings = readSettings(homeDir, readText);
+  if (!settings) return [];
+  return settings.extensions
+    .map((value) => resolveDeclaredPath(value, homeDir))
+    .filter((value): value is string => Boolean(value));
+}
+
+/**
+ * `npm:pkg`, `npm:@scope/pkg` and versioned forms all reduce to the directory
+ * name npm would create. Non-npm specs (git URLs, local paths) are ignored:
+ * Pi's resolver owns those, and guessing would list the wrong directory.
+ */
+function declaredPackageNames(homeDir: string, readText: (file: string) => string | undefined): string[] {
+  const settings = readSettings(homeDir, readText);
+  if (!settings) return [];
+  return settings.packages
+    .map(npmPackageName)
+    .filter((value): value is string => Boolean(value));
+}
+
+/** Direct dependencies of Pi's npm project: what `pi install` actually installed. */
+function installedPackageNames(homeDir: string, readText: (file: string) => string | undefined): string[] {
+  const manifestFile = path.join(homeDir, '.pi', 'agent', 'npm', 'package.json');
+  const raw = readText(manifestFile);
   if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as { extensions?: unknown };
-    if (!Array.isArray(parsed.extensions)) return [];
-    return parsed.extensions
-      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      .map((value) => expandHome(value.trim(), homeDir))
-      .filter((value) => path.isAbsolute(value));
+    const parsed = JSON.parse(raw) as { dependencies?: unknown };
+    return Object.keys((parsed.dependencies ?? {}) as Record<string, unknown>);
   } catch {
     return [];
   }
+}
+
+function readSettings(homeDir: string, readText: (file: string) => string | undefined) {
+  const settingsFile = path.join(homeDir, '.pi', 'agent', 'settings.json');
+  const raw = readText(settingsFile);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { extensions?: unknown; packages?: unknown };
+    return {
+      extensions: strings(parsed.extensions),
+      packages: strings(parsed.packages),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
+    : [];
+
+const npmPackageName = (spec: string): string | undefined => {
+  if (!spec.startsWith('npm:')) return undefined;
+  const raw = spec.slice(4).trim();
+  if (!raw) return undefined;
+  // Version suffixes are `@` after the name; scoped names start with `@scope/`.
+  const slash = raw.startsWith('@') ? raw.indexOf('/') : -1;
+  const at = raw.indexOf('@', slash + 1);
+  const name = at > 0 ? raw.slice(0, at) : raw;
+  return /^(@[^/]+\/)?[^/@]+$/.test(name) ? name : undefined;
+};
+
+/** Relative settings entries resolve against `~/.pi/agent`, same as Pi. */
+function resolveDeclaredPath(value: string, homeDir: string): string | undefined {
+  const expanded = expandHome(value, homeDir);
+  const resolved = path.isAbsolute(expanded)
+    ? expanded
+    : path.resolve(path.join(homeDir, '.pi', 'agent'), expanded);
+  return resolved;
 }
 
 function expandHome(value: string, homeDir: string) {
@@ -134,6 +216,38 @@ function readRoot(
     if (candidate) found.push(candidate);
   }
   return found;
+}
+
+/**
+ * `node_modules` also holds transitive dependencies, so this only runs for
+ * package names declared in `settings.json` or installed at the top level of
+ * Pi's npm project. A package that merely ships an `index.js` is never listed.
+ */
+function describePackage(
+  target: string,
+  scope: PiExtensionScope,
+  io: Required<Pick<ScanOptions, 'readDir' | 'readText' | 'stat'>>,
+): ScannedExtension | undefined {
+  const info = io.stat(target);
+  if (!info?.isDirectory()) return undefined;
+
+  const manifestPath = path.join(target, 'package.json');
+  const manifest = readManifest(io.readText(manifestPath));
+  if (!manifest?.declared) return undefined;
+
+  const entry = resolveManifestEntry(target, manifest, io);
+  if (!entry) return undefined;
+
+  return {
+    id: toPosix(target),
+    name: manifest.name ?? path.basename(target),
+    description: manifest.description ?? '',
+    version: manifest.version ?? '',
+    scope,
+    dir: target,
+    entry,
+    mtime: newest(info.mtimeMs, io.stat(manifestPath)?.mtimeMs, io.stat(entry)?.mtimeMs),
+  };
 }
 
 /** Resolve one file or directory into an extension, or `undefined` when it is not one. */
@@ -165,7 +279,7 @@ function describe(
   const manifestPath = path.join(target, 'package.json');
   const manifest = readManifest(io.readText(manifestPath));
   if (manifest) {
-    const entry = resolveManifestEntry(target, manifest);
+    const entry = resolveManifestEntry(target, manifest, io);
     if (entry) {
       return {
         id: toPosix(target),
@@ -218,6 +332,8 @@ interface Manifest {
   version?: string;
   description?: string;
   extensions: string[];
+  /** True only when the manifest actually declares `pi.extensions`. */
+  declared: boolean;
 }
 
 function readManifest(raw: string | undefined): Manifest | undefined {
@@ -225,26 +341,40 @@ function readManifest(raw: string | undefined): Manifest | undefined {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const pi = (parsed.pi ?? {}) as { extensions?: unknown };
-    const list = Array.isArray(pi.extensions)
-      ? pi.extensions.filter((value): value is string => typeof value === 'string')
+    const declared = Array.isArray(pi.extensions);
+    const list = declared
+      ? (pi.extensions as unknown[]).filter((value): value is string => typeof value === 'string')
       : [];
     return {
       ...(typeof parsed.name === 'string' ? { name: parsed.name } : {}),
       ...(typeof parsed.version === 'string' ? { version: parsed.version } : {}),
       ...(typeof parsed.description === 'string' ? { description: parsed.description } : {}),
       extensions: list,
+      declared,
     };
   } catch {
     return undefined;
   }
 }
 
-function resolveManifestEntry(dir: string, manifest: Manifest): string | undefined {
+function resolveManifestEntry(
+  dir: string,
+  manifest: Manifest,
+  io: Required<Pick<ScanOptions, 'readDir' | 'readText' | 'stat'>>,
+): string | undefined {
   // Only plain relative paths; globs and exclusions need Pi's full resolver.
   const first = manifest.extensions.find((value) => !/[*?[\]!]/.test(value));
   if (!first) return undefined;
   const entry = path.resolve(dir, first);
-  return isModuleFile(entry) ? entry : undefined;
+  if (isModuleFile(entry)) return entry;
+  // Packages compiled ahead of time point at a directory (`"./dist"`); resolve
+  // it to that directory's index file, which is what Pi's resolver does.
+  if (!io.stat(entry)?.isDirectory()) return undefined;
+  for (const name of ENTRY_NAMES) {
+    const inside = path.join(entry, name);
+    if (io.stat(inside)?.isFile()) return inside;
+  }
+  return undefined;
 }
 
 const newest = (...values: (number | undefined)[]) =>

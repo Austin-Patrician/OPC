@@ -1,8 +1,4 @@
-import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { formatAppDate } from '@/shared/lib/appTime';
-import type { FactView } from '@opc/shared/ipc';
-import { cn } from '@/shared/lib/cn';
 import { useModels } from '@/features/models/model/useModels';
 import { NumberField, PageHeader, Row, Section, Toggle } from '../kit';
 
@@ -23,7 +19,8 @@ export function CompactionPage() {
   const recommendedReserve = Math.min(16_384, Math.round(contextWindow * 0.1));
   const compaction = models.compaction;
 
-  const patch = (next: Partial<typeof compaction>) => void models.setCompaction({ ...compaction, ...next });
+  const patch = (next: Partial<typeof compaction>) =>
+    void models.setCompaction({ ...compaction, ...next });
 
   return (
     <>
@@ -34,7 +31,10 @@ export function CompactionPage() {
       />
 
       <div className="space-y-4">
-        <Section title={t('settings.compaction.model')} description={t('settings.compaction.modelHint')}>
+        <Section
+          title={t('settings.compaction.model')}
+          description={t('settings.compaction.modelHint')}
+        >
           <Row
             label={llm ? `${llm.providerId} / ${llm.modelId}` : t('models.notConfigured')}
             hint={t('settings.compaction.contextHint', { tokens: contextWindow.toLocaleString() })}
@@ -43,7 +43,10 @@ export function CompactionPage() {
           </Row>
         </Section>
 
-        <Section title={t('settings.compaction.title')} description={t('settings.compaction.sectionDesc')}>
+        <Section
+          title={t('settings.compaction.title')}
+          description={t('settings.compaction.sectionDesc')}
+        >
           <Row label={t('settings.compaction.enabled')}>
             <Toggle
               label={t('settings.compaction.enabled')}
@@ -53,7 +56,9 @@ export function CompactionPage() {
           </Row>
           <Row
             label={t('settings.compaction.reserve')}
-            hint={t('settings.compaction.reserveHint', { recommended: recommendedReserve.toLocaleString() })}
+            hint={t('settings.compaction.reserveHint', {
+              recommended: recommendedReserve.toLocaleString(),
+            })}
             disabled={!compaction.enabled}
           >
             <div className="flex items-center gap-2">
@@ -108,183 +113,6 @@ export function CompactionPage() {
           {t('settings.compaction.footnote')}
         </p>
       </div>
-
-      <WorkspaceFacts />
-      <ConsolidationRuns />
     </>
-  );
-}
-
-/** Audit trail of "下班反思": how many runs, how many memories, what failed. */
-function ConsolidationRuns() {
-  const { t } = useTranslation();
-  const [runs, setRuns] = useState<Awaited<ReturnType<NonNullable<typeof window.opc>['memory']['consolidationRuns']>>>([]);
-
-  useEffect(() => {
-    let alive = true;
-    void window
-      .opc!.memory.consolidationRuns()
-      .then((rows) => {
-        if (alive) setRuns(rows);
-      })
-      .catch(() => {
-        if (alive) setRuns([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  return (
-    <Section
-      title={`${t('settings.runs.title')} · ${runs.length}`}
-      description={t('settings.runs.desc')}
-    >
-      {runs.length === 0 ? (
-        <p className="px-4 py-5 text-sm text-ink-quaternary">{t('settings.runs.empty')}</p>
-      ) : (
-        <ul data-testid="consolidation-runs">
-          {runs.map((run) => (
-            <li
-              key={run.id}
-              data-testid="consolidation-run-row"
-              className="flex items-center gap-3 border-t border-line px-4 py-2 text-xs"
-            >
-              <span className="w-32 shrink-0 font-mono text-3xs text-ink-quaternary">
-                {new Date(run.startedAt).toLocaleString()}
-              </span>
-              <span className="w-16 shrink-0 font-mono text-3xs">
-                {run.status === 'done' ? (
-                  <span className="text-success">done</span>
-                ) : run.status === 'skipped' ? (
-                  <span className="text-ink-quaternary">skipped</span>
-                ) : run.status === 'failed' ? (
-                  <span className="text-danger">failed</span>
-                ) : (
-                  <span className="text-accent">running</span>
-                )}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-ink-secondary">
-                {run.status === 'done'
-                  ? t('settings.runs.created', { count: run.memoriesCreated, episodes: run.episodeCount })
-                  : (run.error ?? '—')}
-              </span>
-              <span className="shrink-0 font-mono text-3xs text-ink-quaternary">{run.ownerId.slice(0, 8)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Section>
-  );
-}
-
-/**
- * 工作台层级的事实：它们会进每一个执行体的提示词。
- * 同一个 subject 再写一次会取代旧值，历史留在库里。
- */
-function WorkspaceFacts() {
-  const { t } = useTranslation();
-  const [facts, setFacts] = useState<FactView[]>([]);
-  const [subject, setSubject] = useState('');
-  const [object, setObject] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void window
-      .opc!.facts.list({})
-      .then((rows) => {
-        if (alive) setFacts(rows);
-      })
-      .catch(() => {
-        if (alive) setFacts([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const save = async () => {
-    if (!subject.trim() || !object.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setFacts(
-        await window.opc!.facts.write({
-          scopeType: 'global',
-          subject: subject.trim(),
-          object: object.trim(),
-        }),
-      );
-      setSubject('');
-      setObject('');
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Section
-      title={`${t('settings.facts.title')} · ${facts.length}`}
-      description={t('settings.facts.desc')}
-    >
-      {facts.length === 0 ? (
-        <p className="px-4 py-5 text-sm text-ink-quaternary">{t('settings.facts.empty')}</p>
-      ) : (
-        <ul data-testid="facts">
-          {facts.map((fact) => (
-            <li
-              key={fact.id}
-              data-testid="fact-row"
-              className="flex items-start gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
-            >
-              <span className="mt-0.5 rounded bg-surface-muted px-1.5 py-0.5 font-mono text-3xs text-ink-tertiary">
-                {fact.subject}
-              </span>
-              <span className="min-w-0 flex-1 text-sm leading-relaxed text-ink">{fact.object}</span>
-              <span className="shrink-0 font-mono text-3xs text-ink-quaternary">
-                {formatAppDate(fact.validFrom)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="flex flex-wrap items-end gap-2 border-t border-line px-4 py-3">
-        <input
-          data-testid="fact-subject"
-          value={subject}
-          onChange={(event) => setSubject(event.target.value)}
-          placeholder={t('settings.facts.subject')}
-          className="h-8 w-36 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-        />
-        <input
-          data-testid="fact-object"
-          value={object}
-          onChange={(event) => setObject(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') void save();
-          }}
-          placeholder={t('settings.facts.object')}
-          className="h-8 min-w-40 flex-1 rounded-md border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
-        />
-        <button
-          type="button"
-          data-testid="fact-save"
-          disabled={busy || !subject.trim() || !object.trim()}
-          onClick={() => void save()}
-          className={cn(
-            'h-8 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover',
-            (busy || !subject.trim() || !object.trim()) && 'opacity-40',
-          )}
-        >
-          {t('settings.facts.save')}
-        </button>
-      </div>
-      {error ? <p className="px-4 pb-3 text-xs text-danger">{error}</p> : null}
-    </Section>
   );
 }

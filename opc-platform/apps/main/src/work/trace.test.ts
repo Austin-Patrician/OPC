@@ -163,6 +163,51 @@ describe('一次工具调用 → 一行动作', () => {
     expect(traceRowFor(call(), withUsage as unknown as ToolExecutionResult).tokens).toBe(15);
     expect(traceRowFor(call(), result()).tokens).toBeUndefined();
   });
+
+  it('桌面工具轨迹脱敏输入值，只记录快照的结构化摘要', () => {
+    const row = traceRowFor(
+      call({
+        name: 'mcp__agent_desktop_worker__desktop_snapshot',
+        arguments: { window_id: 'w-12', text: '收件箱里的私人内容', secret: '不得落日志' },
+      }),
+      {
+        output: [{ type: 'text', text: JSON.stringify({ data: {
+          complete: true,
+          ref_count: 34,
+          tree: { name: '私人窗口标题', children: [{ name: '邮件正文' }] },
+        } }) }],
+      } as unknown as ToolExecutionResult,
+    );
+
+    expect(row.ok).toBe(true);
+    expect(row.argsDigest).toContain('window_id=w-12');
+    expect(row.argsDigest).toContain('complete=true');
+    expect(row.argsDigest).toContain('refs=34');
+    expect(row.argsDigest).not.toContain('私人');
+    expect(row.argsDigest).not.toContain('不得落日志');
+  });
+
+  it('按键工具成功只说明调用成功，不推断界面已经变化', () => {
+    const row = traceRowFor(
+      call({ name: 'mcp__agent_desktop_worker__desktop_press', arguments: { combo: 'c' } }),
+      { output: [{ type: 'text', text: '{"ok":true}' }] } as unknown as ToolExecutionResult,
+    );
+
+    expect(row.argsDigest).toContain('effect unverified');
+    expect(row.argsDigest).not.toContain('undefined');
+  });
+
+  it('桌面剪贴板失败不把输入值或工具错误正文写入轨迹', () => {
+    const row = traceRowFor(
+      call({ name: 'mcp__agent_desktop_worker__desktop_clipboard_set', arguments: { text: '收件人@example.com' } }),
+      { isError: true, output: [{ type: 'text', text: '敏感输入值和完整错误' }] } as unknown as ToolExecutionResult,
+    );
+
+    expect(row.ok).toBe(false);
+    expect(row.argsDigest).toContain('桌面工具调用失败');
+    expect(row.argsDigest).not.toContain('@example.com');
+    expect(row.argsDigest).not.toContain('完整错误');
+  });
 });
 
 describe('登记表：hook 怎么找到那个任务的记录器', () => {

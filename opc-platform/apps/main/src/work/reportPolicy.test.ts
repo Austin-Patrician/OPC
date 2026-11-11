@@ -1,6 +1,6 @@
 import type { WorkReport, WorkTask, WorkThread } from '@opc/shared/domain';
 import { describe, expect, it } from 'vitest';
-import { shouldPromoteManualCompletion } from './reportPolicy';
+import { shouldPromoteManualCompletion, shouldWakeRouterForReport } from './reportPolicy';
 
 const report = (overrides: Partial<WorkReport> = {}): WorkReport => ({
   id: 'report-1',
@@ -55,7 +55,16 @@ describe('manual completion visibility', () => {
     expect(shouldPromoteManualCompletion(report({ level: 'notify' }), thread(), task())).toBe(false);
   });
 
-  it('keeps legacy line-level completion reports eligible', () => {
-    expect(shouldPromoteManualCompletion(report({ taskId: null }), thread(), undefined)).toBe(true);
+  it('keeps taskless line summaries as audit records', () => {
+    expect(shouldPromoteManualCompletion(report({ taskId: null }), thread(), undefined)).toBe(false);
+  });
+});
+
+describe('report wake policy', () => {
+  it('wakes Router for actionable reports only', () => {
+    expect(shouldWakeRouterForReport(report({ level: 'decide' }))).toBe(true);
+    expect(shouldWakeRouterForReport(report({ level: 'notify' }))).toBe(true);
+    expect(shouldWakeRouterForReport(report({ level: 'silent' }))).toBe(false);
+    expect(shouldWakeRouterForReport(report({ kind: 'question', level: 'decide' }))).toBe(false);
   });
 });

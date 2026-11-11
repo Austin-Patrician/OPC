@@ -1177,7 +1177,8 @@ export function registerIpc({
     ipcMain.handle(IPC.desktop.getSettings, () => desktop.settings());
     ipcMain.handle(IPC.desktop.setSettings, async (_event, patch: unknown) => {
       if (!patch || typeof patch !== 'object') throw new Error('desktop:setSettings 参数非法');
-      const result = desktop.setSettings(patch as Record<string, unknown>);
+      desktop.setSettings(patch as Record<string, unknown>);
+      const result = await desktop.probeMcp();
       await work.invalidateAllHarnesses();
       desktopBroadcast();
       return result;

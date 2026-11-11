@@ -25,7 +25,6 @@
     "attention": "注意力队列",
     "im": "对话",
     "runtime": "系统运行态",
-    "skills": "技能与工具",
     "schedules": "定时计划",
     "issues": "工作项",
     "budget": "预算中心",
@@ -427,7 +426,7 @@
       "behavior": "行为",
       "models": "模型",
       "runtime": "运行时",
-      "mcp": "MCP",
+      "capabilities": "技能与工具",
       "network": "网络",
       "assistantTools": "助手工具",
       "browser": "浏览器",
@@ -437,7 +436,7 @@
     },
     "page": {
       "appearance": "外观与语言",
-      "compaction": "工作区与压缩",
+      "compaction": "上下文压缩",
       "company": "个人偏好",
       "billing": "计费",
       "usage": "Usage 用量",
@@ -446,9 +445,14 @@
       "browser": "Personal Agent 浏览器",
       "desktop": "桌面控制",
       "runtime": "运行时",
+      "capabilitiesExtensions": "扩展",
+      "capabilitiesTools": "工具",
+      "capabilitiesSkills": "技能",
       "triage": "事件调度",
       "watchdog": "进展监督",
-      "memory": "它记得什么"
+      "memory": "它记得什么",
+      "workspaceRules": "工作台的规矩",
+      "consolidation": "记忆巩固"
     },
     "assistantTools": {
       "description": "为 Router 和 Worker 配置时间、天气、联网检索与计算能力。",
@@ -558,7 +562,7 @@
     },
     "desktop": {
       "title": "桌面控制",
-      "description": "通过操作系统 Accessibility Tree 控制白名单应用。默认后台运行；逐类审批策略可在本页配置。",
+      "description": "通过 agent-desktop 原生 CLI 向 Worker 提供完整桌面能力。应用选择与动作由运行时自身支持范围决定。",
       "subtitle": "让 Personal Agent 通过原生可访问性树观察并操作桌面应用。",
       "refresh": "刷新",
       "nativeCapability": "原生能力",
@@ -577,7 +581,7 @@
         "uninstalled": "未安装",
         "uninstalledDetail": "安装后 Personal Agent 才能控制桌面应用",
         "enabled": "已启用",
-        "enabledDetail": "桌面控制已按应用白名单开放",
+        "enabledDetail": "agent-desktop MCP 已连接并向 Worker 提供工具",
         "installed": "已安装",
         "installedDetail": "运行时已就绪，可按需启用"
       },
@@ -593,11 +597,15 @@
       "needsPermission": "需要系统授权",
       "controlMode": "控制方式",
       "backgroundSemantic": "后台语义操作",
-      "appPermissions": "应用权限",
-      "whitelistCount": "{{count}} 个白名单应用",
+      "mcpStatus": "agent-desktop MCP",
+      "mcpReady": "已连接 · {{count}} 个工具",
+      "mcpUnavailable": "尚未连接",
+      "surfaces": "可用 surface",
+      "noSurfaces": "当前运行时未报告可用 surface",
+      "mcpError": "MCP 握手失败：{{error}}",
       "packageDisk": "安装包 / 占用",
       "enable": "启用桌面控制",
-      "enableHint": "Worker 只能操作下方白名单应用",
+      "enableHint": "Worker 可调用运行时提供的桌面工具",
       "install": "安装运行时",
       "reinstall": "重新安装",
       "installing": "安装中",
@@ -611,30 +619,9 @@
       "removedNotice": "桌面运行时已删除",
       "permissionGuideOpened": "已打开系统权限引导",
       "permissionRefreshed": "权限状态已刷新",
-      "confirmRemove": "删除 OPC 的 agent-desktop 运行时？应用白名单会保留。",
+      "confirmRemove": "删除 OPC 的 agent-desktop 运行时？",
       "progressAria": "桌面控制安装进度（估算）",
       "progressNote": "整体进度为估算；下载量按实时字节统计。",
-      "whitelistTitle": "应用白名单",
-      "whitelistDesc": "桌面应用白名单是本机全局策略。未列入白名单的应用即使通过审批也不能被控制。",
-      "runningApps": "当前运行应用",
-      "selectHint": "选择后允许该 Agent 读取和操作应用的 Accessibility Tree。",
-      "scan": "扫描",
-      "emptyApps": "安装并授予权限后扫描当前运行应用。",
-      "actionPolicyTitle": "动作策略",
-      "actionPolicyDesc": "开启某类别的开关表示执行前需要审批；关闭后自动执行。高风险类别也可以自行关闭审批。",
-      "requireApprovalToggle": "要求审批：{{action}}",
-      "approvalCategories": {
-        "desktop-access": { "label": "读取应用界面", "hint": "读取白名单应用的控件树、文本和属性。" },
-        "screenshot": { "label": "截取窗口", "hint": "捕获白名单应用的当前窗口画面。" },
-        "desktop-launch": { "label": "启动应用", "hint": "启动白名单中的桌面应用。" },
-        "window-focus": { "label": "聚焦窗口", "hint": "将白名单应用窗口设为当前目标。" },
-        "desktop-action": { "label": "常规控件操作", "hint": "点击、切换、选择和滚动；高风险点击仍按下方对应类别处理。" },
-        "physical-input": { "label": "键盘与表单输入", "hint": "输入文本和按键，包括 Ctrl/⌘+V 粘贴及 Enter。" },
-        "clipboard-read": { "label": "直接读取剪贴板", "hint": "把系统剪贴板内容读取到任务中。" },
-        "clipboard-write": { "label": "直接写入剪贴板", "hint": "修改系统剪贴板内容。" },
-        "external-submit": { "label": "外部提交", "hint": "发送、发布、登录、确认等可能向外部产生影响的操作。" },
-        "destructive": { "label": "破坏性或支付操作", "hint": "删除、购买、支付、转账等高影响操作。" }
-      },
       "inspectorTitle": "桌面控制 Inspector",
       "inspectorDesc": "读取当前任务的实时 Accessibility Snapshot。只读取 OPC 已创建的 session，不会启动新的桌面操作。",
       "taskPlaceholder": "输入正在执行的 taskId",
@@ -1465,10 +1452,8 @@
     }
   },
   "capabilities": {
-    "title": "技能与工具",
-    "subtitle": "实时查看工作台当前可用的技能、工具与扩展。",
     "refresh": "刷新",
-    "readAt": "读取于 {{time}}",
+    "extensionsPageDescription": "本机 Pi 扩展与内置扩展；启停会改变每个执行体实际装载的能力。",
     "unknownExtension": "未登记的扩展，能力以工具清单为准。",
     "tabs": {
       "extensions": "扩展",
@@ -1495,7 +1480,7 @@
       "title": "本机 Pi 扩展",
       "description": "从 ~/.pi/agent/extensions 与 .pi/extensions 发现，和 Pi 自己的自动加载位置一致。扫描只读文件；启用才把它的代码载入主进程。",
       "empty": "没有发现 Pi 扩展。",
-      "emptyHint": "把 .ts 文件或带 index.ts 的目录放进上面的任一目录，然后刷新。用 `pi install` 安装的包，只有在这些目录里出现后才会被列出来。",
+      "emptyHint": "把 .ts 文件或带 index.ts 的目录放进上面的任一目录，然后刷新。用 `pi install` 安装的包会从 Pi 自己的 npm 目录自动读取。",
       "scope": {
         "global": "全局",
         "project": "当前项目"
@@ -1527,7 +1512,15 @@
       "files": "{{count}} 个文件"
     },
     "extensionsTitle": "内置扩展",
-    "extensionsHint": "按扩展分组，同一扩展只列一次；徽标里的数字是安装该扩展的执行体数。具体工具在「工具」页。有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有其他执行体时，对应工具不会出现。",
+    "extensionsHint": "按扩展分组，同一扩展只列一次；右上角的数字是这个扩展提供的工具数。具体工具在「工具」页。",
+    "extensionsHintSecondary": "有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有其他执行体时，对应工具不会出现。",
+    "builtin": {
+      "badgeLabel": "{{count}} 个工具",
+      "details": {
+        "tools": "提供的工具",
+        "noTools": "这个扩展没有注册工具。"
+      }
+    },
     "extensionAgents": "{{count}} 个执行体",
     "extensionToolCount": "{{count}} 个工具",
     "extensionNoTools": "无工具",

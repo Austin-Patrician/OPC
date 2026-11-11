@@ -243,11 +243,57 @@ describe('调度循环', () => {
     expect(first.reports).toBe(1);
     expect(delivered[0]).toContain('执行体汇报（1');
     expect(delivered[0]).toContain('产出 report.md');
+    expect(delivered[0]).toContain('· report · 做完了');
 
     // 第二轮没有新东西：讲过的不会再讲一遍。
     const second = await router.tick();
     expect(second.reports).toBe(0);
     expect(delivered).toHaveLength(1);
+  });
+
+  it('线级关闭摘要只留档，不进入 Router 通知输入', async () => {
+    const thread = threads.createThread({ title: '在飞书回复张帆：好咧', source: 'manual' });
+    const summary = '仍未发出；当前会话身份无法确认。';
+    threads.addReport({ threadId: thread.id, level: 'silent', title: thread.title, body: summary });
+
+    const { router, delivered } = make();
+    const report = await router.tick();
+
+    expect(report.reports).toBe(0);
+    expect(delivered).toHaveLength(0);
+    expect(threads.listReportsOf(thread.id, 1)[0]?.body).toBe(summary);
+  });
+
+  it('带聊天卡片的问题不再生成第二条 Router 回复', async () => {
+    const thread = threads.createThread({ title: '请示' });
+    threads.addReport({ threadId: thread.id, level: 'decide', kind: 'question', title: '需要你选择', body: 'A 还是 B？' });
+
+    const { router, delivered } = make();
+    const report = await router.tick();
+
+    expect(report.reports).toBe(0);
+    expect(delivered).toHaveLength(0);
+    expect(threads.listUnannouncedReports()).toHaveLength(0);
+  });
+
+  it('Router 报告上下文包含报告类型与任务关联', () => {
+    const thread = threads.createThread({ title: '处理文件' });
+    const report = threads.addReport({
+      threadId: thread.id,
+      taskId: 'task-42',
+      level: 'notify',
+      title: '完成',
+    });
+
+    expect(composeInput([], [report])).toContain('· report · 任务 task-42 · 完成');
+  });
+
+  it('要求 Router 核对执行体汇报，不把工具调用或未变化标题当成效果证据', () => {
+    const text = composeInput([], []);
+    expect(text).toContain('汇报非核验');
+    expect(text).toContain('recall task:<taskId>');
+    expect(text).toContain('标题未变不证按键无效');
+    expect(text).toContain('效果未确认');
   });
 
   it('交不进去就回滚：宁可重复一遍，不可丢一次', async () => {
