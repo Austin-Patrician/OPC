@@ -101,15 +101,22 @@ describe('你中途改方向', () => {
     ]);
   });
 
-  it('活已经收尾了就如实拒绝：改方向得开新线，不是改一条关掉的线', async () => {
+  it('活已经收尾后（WarmIdle）继续 steer 会自动在同一工作区和上下文无缝续跑', async () => {
     const thread = threads.createThread({ title: '写个服务' });
     const task = openTaskOn(thread.id);
     db.prepare("UPDATE task SET status = 'accepted' WHERE id = ?").run(task.id);
 
-    const result = await work.steerThread(thread.id, '换个做法');
+    const result = await work.steerThread(thread.id, '顺手再加个健康检查接口');
 
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain('收尾');
+    expect(result.ok).toBe(true);
+    expect(result.continuedTaskId).toBeTruthy();
+    const followUp = work.getTask(result.continuedTaskId!);
+    expect(followUp?.threadId).toBe(thread.id);
+    expect(followUp?.workspaceRelPath).toBe(task.workspaceRelPath);
+    expect(followUp?.turnMode).toBe('append');
+
+    await work.abortThread(thread.id, '测试结束清理');
+    await work.dispose();
   });
 
   it('等验收的活要重做，而不是在验收里改', async () => {

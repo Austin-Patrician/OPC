@@ -100,16 +100,16 @@ export function SpeakButton({ text }: { text: string }) {
         aria-label={state === 'playing' ? t('chat.speech.stopReading') : t('chat.speech.readAloud')}
         aria-pressed={state === 'playing'}
         className={cn(
-          'inline-flex size-5 items-center justify-center rounded text-ink-quaternary transition-colors hover:bg-ink/5 hover:text-accent',
+          'inline-flex size-6 items-center justify-center rounded-md text-ink-quaternary transition-colors hover:bg-surface-hover hover:text-ink',
           state === 'playing' && 'text-accent',
         )}
       >
         {state === 'loading' ? (
-          <Loader2 className="size-3 animate-spin" />
+          <Loader2 className="size-3.5 animate-spin" />
         ) : state === 'playing' ? (
-          <Square className="size-2.5 fill-current" />
+          <Square className="size-3 fill-current" />
         ) : (
-          <Volume2 className="size-3" />
+          <Volume2 className="size-3.5" />
         )}
       </button>
       {error ? (

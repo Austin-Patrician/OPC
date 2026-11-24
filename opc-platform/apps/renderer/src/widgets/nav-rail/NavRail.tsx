@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Activity,
   CalendarClock,
   MessageCircle,
   Settings,
@@ -12,6 +11,7 @@ import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompa
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
+import { emitBuddySignal } from '@/shared/ui/buddyEvents';
 import { IdentityPopover } from '@/widgets/title-bar/IdentityPopover';
 
 export function NavRail() {
@@ -19,13 +19,40 @@ export function NavRail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [brandPulseCount, setBrandPulseCount] = useState(0);
+  const [brandBouncing, setBrandBouncing] = useState(false);
+  const brandBounceTimerRef = useRef<number | null>(null);
   const identityRef = useRef<HTMLDivElement>(null);
   const profile = useCompanyProfile();
   const updateProfile = useCompany((state) => state.update);
   const name = userName(profile, t('company.userFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
-  const runtimeActive = location.pathname.startsWith('/runtime');
   const schedulesActive = location.pathname.startsWith('/schedules');
+
+  useEffect(() => {
+    return () => {
+      if (brandBounceTimerRef.current !== null) {
+        window.clearTimeout(brandBounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleBrandClick = () => {
+    navigate('/chat');
+    emitBuddySignal({ kind: 'brand-summon' });
+    setBrandBouncing(false);
+    setBrandPulseCount((count) => count + 1);
+    window.requestAnimationFrame(() => {
+      setBrandBouncing(true);
+    });
+    if (brandBounceTimerRef.current !== null) {
+      window.clearTimeout(brandBounceTimerRef.current);
+    }
+    brandBounceTimerRef.current = window.setTimeout(() => {
+      brandBounceTimerRef.current = null;
+      setBrandBouncing(false);
+    }, 540);
+  };
 
   useEffect(() => {
     if (!identityOpen) return;
@@ -44,23 +71,35 @@ export function NavRail() {
   }, [identityOpen]);
 
   return (
-    <aside className="buddy-rail relative z-40 flex w-[90px] shrink-0 flex-col items-center justify-between py-4 select-none">
+    <aside className="buddy-rail relative z-40 flex w-[64px] shrink-0 flex-col items-center justify-between py-3.5 select-none">
       <div className="flex flex-col items-center">
-        <div className="buddy-traffic mb-5 flex items-center gap-[7px]" aria-hidden>
-          <span className="size-[11px] rounded-full bg-[#ff5f57]" />
-          <span className="size-[11px] rounded-full bg-[#febc2e]" />
-          <span className="size-[11px] rounded-full bg-[#28c840]" />
+        <div className="buddy-traffic mb-4 flex items-center gap-[6px]" aria-hidden>
+          <span className="size-[10px] rounded-full bg-[#ff5f57]" />
+          <span className="size-[10px] rounded-full bg-[#febc2e]" />
+          <span className="size-[10px] rounded-full bg-[#28c840]" />
         </div>
         <button
           type="button"
-          onClick={() => navigate('/chat')}
-          className="flex flex-col items-center"
+          onClick={handleBrandClick}
+          className={cn(
+            'buddy-brand-btn relative flex size-9 items-center justify-center rounded-xl transition hover:bg-surface-hover',
+            brandBouncing && 'buddy-brand-bouncing',
+          )}
           title="Buddy"
+          aria-label="Buddy"
         >
-          <BuddyMark size="lg" />
-          <span className="mt-1.5 text-[15px] font-bold tracking-tight text-[#18221e]">Buddy</span>
+          {brandBouncing ? (
+            <span
+              key={brandPulseCount}
+              className="buddy-brand-ring pointer-events-none absolute inset-0 rounded-xl"
+              aria-hidden
+            />
+          ) : null}
+          <span className="buddy-brand-inner inline-flex">
+            <BuddyMark size="sm" animated={false} />
+          </span>
         </button>
-        <div className="mt-5 flex flex-col items-center gap-2.5">
+        <div className="mt-4 flex flex-col items-center gap-2">
           <button
             type="button"
             onClick={() => navigate('/chat')}
@@ -69,20 +108,7 @@ export function NavRail() {
             title={t('nav.im')}
             className={cn('buddy-rail-button relative', chatActive && 'buddy-rail-button-active')}
           >
-            <MessageCircle size={21} strokeWidth={1.9} />
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/runtime')}
-            aria-label={t('nav.runtime')}
-            aria-current={runtimeActive ? 'page' : undefined}
-            title={t('nav.runtime')}
-            className={cn(
-              'buddy-rail-button relative',
-              runtimeActive && 'buddy-rail-button-active',
-            )}
-          >
-            <Activity size={20} strokeWidth={1.85} />
+            <MessageCircle size={19} strokeWidth={1.75} />
           </button>
           <button
             type="button"
@@ -92,7 +118,7 @@ export function NavRail() {
             title={t('nav.schedules')}
             className={cn('buddy-rail-button relative', schedulesActive && 'buddy-rail-button-active')}
           >
-            <CalendarClock size={19} strokeWidth={1.8} />
+            <CalendarClock size={18} strokeWidth={1.75} />
           </button>
         </div>
       </div>
@@ -105,7 +131,7 @@ export function NavRail() {
           title={t('common.settings')}
           className="buddy-rail-button buddy-settings-button"
         >
-          <Settings size={19} strokeWidth={1.75} />
+          <Settings size={18} strokeWidth={1.75} />
         </button>
         <div ref={identityRef} className="relative">
           <button
@@ -114,7 +140,7 @@ export function NavRail() {
             onClick={() => setIdentityOpen((open) => !open)}
             aria-label={t('titleBar.profile')}
             aria-expanded={identityOpen}
-            className="flex rounded-full border border-white/80 shadow-sm transition hover:ring-2 hover:ring-[#22b560]/25"
+            className="flex rounded-full border border-line shadow-card transition hover:ring-2 hover:ring-accent/25"
           >
             <Avatar name={name} src={profile.userAvatar} size="sm" className="size-8" />
           </button>

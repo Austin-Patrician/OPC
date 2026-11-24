@@ -85,24 +85,45 @@ export interface RouterToolDeps {
 
   /**
    * 你中途改方向。`live` = 真的插进了正在跑的会话；`queued` = 记在这条线上，
-   * 等它开跑/重试时带上。`ok: false` 表示这条线已经收尾，改方向得开新线。
+   * 等它开跑/重试时带上。若线程刚完成也可无缝续跑。
    */
   steerLine(
     threadId: string,
     note: string,
-  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number }>;
+    options?: { updatedObjective?: string; updatedOutputs?: TaskContract['outputs'] },
+  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number; continuedTaskId?: string }>;
+
+  /** 在已有工作线（运行中或 WarmIdle）上继续追加改动或转向，复用同一工作区和上下文。 */
+  continueLine?(input: {
+    threadId: string;
+    instruction: string;
+    mode: 'append' | 'pivot';
+    updatedOutputs?: TaskContract['outputs'];
+    acceptance?: TaskContract['acceptance'];
+  }): Promise<
+    | { ok: true; threadId: string; taskId: string | null; workerId?: string; mode: 'append' | 'pivot' | 'steered' }
+    | { ok: false; reason: string }
+  >;
+
+  /** 立即中止一条工作线上正在运行或排队的任务。 */
+  abortLine?(
+    threadId: string,
+    reason: string,
+    options?: { closeThread?: boolean },
+  ): Promise<{ ok: boolean; abortedTasks?: number; reason?: string }>;
 
   askUser(threadId: string | null, question: string): { ok: boolean; reason?: string };
 
   closeLine(threadId: string, summary: string): { ok: boolean; reason?: string };
 
-  /** 记一件关于你的事（偏好、否决过的方向、要求的格式）。 */
-  /**
-   * 记一条。
-   *
-   * `standing` 是"每轮都要在场"的那一层：称呼、语气、格式禁令。只有用户明说
-   * 「以后都这样」时才该用它——常驻层有硬上限，塞满了会挤掉真正重要的。
-   */
+  /** Dynamic standing/preferences/rules prompt section (replaces per-turn user-message duplication). */
+  standingSection?: () => string | undefined | Promise<string | undefined>;
+  /** Dynamic workspace rules prompt section. */
+  rulesSection?: () => string | undefined | Promise<string | undefined>;
+  /** Dynamic 1-line summary board of active and recently warm threads. */
+  activeLinesBoard?: () => string | undefined | Promise<string | undefined>;
+
+  /** 记一件关于你的事（偏好、铁律、避坑经验或专题事实）。 */
   remember(
     text: string,
     options?: { standing?: boolean; kind?: string; subject?: string },
@@ -113,16 +134,6 @@ export interface RouterToolDeps {
 
   /** 按一句话回想以前记过什么。带 id，别人才追得回出处。 */
   recallMemory(query: string): Promise<{ ok: boolean; items?: MemoryHit[]; reason?: string }>;
-
-  /** Durable, evidence-backed write boundary for ontology actions. */
-  ontologyCommand?(input: {
-    objectType: string;
-    objectId: string;
-    action: string;
-    args?: Record<string, unknown>;
-    expectedVersion?: number;
-    idempotencyKey: string;
-  }): Promise<{ ok: boolean; command: { commandId: string; status: string; approvalId: string | null; error: string | null }; error?: string }>;
 
   /** Dynamic metadata-only view of tools available to Workers. */
   workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
@@ -170,14 +181,16 @@ export function createRouterTools(deps: RouterToolDeps) {
           '哪件事卡住了要不要说。你不介入单件事内部怎么拆。',
           '用户在活还没干完时改主意，用 steer_line 把那句话带到那条线上——那仍然是同一件事，',
           '不要为此开第二条线。',
+          '用户基于已有工作线的产物/代码/页面追加需求、小改或换方案时，优先用 continue_line（mode="append" 追加，mode="pivot" 放弃当前跑偏路线并在同一工作区转向），不要重新 open_line_of_work。',
+          '用户明确要求停下或放弃某件正在跑的活时，立即调用 abort_line，不要等它跑完。',
           '用户明确要求未来某个时间提醒或重复检查时，用 create_schedule 建立计划；用户没有给出必要日期、时间或时区时先询问。',
           '定时请求到期后视作用户预先安排的输入，结合届时上下文决定是否 open_line_of_work；不要只因为计划到期就盲目执行过时或失去意义的请求。',
           '',
           '## 你要记得',
-          '你是一个跨天、跨工作线连续的存在：他说过什么、否决过什么，不该每次重新问。',
-          '听到"以后都这样""别再做 X"这类要求，用 remember 记下来；',
-          '拿不准他以前的偏好时，先 recall_memory，别用猜测填空。',
-          '输入里如果带着"工作台的规矩"，那是长期有效的约定，优先于你这一次的临时判断。',
+          '你的系统上下文里每轮都带有用户画像（USER.md）、长期铁律（RULES.md）和专题目录，输入里也会自动附带相关的避坑提醒（PLAYBOOK.md）与专题片段。',
+          '听到用户明确说“以后都这样”“别再做 X”时，用 remember 记下来；发现某条规则过时或用户否决时，先 recall_memory 查出引用 id（如 memory:RULES.md#1），再 forget_memory。',
+          '遇到与专题/过往经历相关但当前输入未附带的细节，主动用 recall_memory 或 recall 读取（memory:topics/<slug>.md 等），不要用猜测填空。',
+          '输入或系统段里如果带着“工作台的规矩”与“长期铁律”，那是长期有效的约定，优先于你的临时判断。',
           '',
           '## 你不做什么',
           '较大的任务由后台执行体完成，你不直接读写文件、跑命令或改代码；时间、天气、网页检索与计算可使用本机提供的常用工具直接处理。',
@@ -217,6 +230,39 @@ export function createRouterTools(deps: RouterToolDeps) {
             }),
           ]
         : []),
+      ...(deps.rulesSection
+        ? [
+            section('workspace-rules', async () => {
+              try {
+                return (await deps.rulesSection!()) || undefined;
+              } catch {
+                return undefined;
+              }
+            }),
+          ]
+        : []),
+      ...(deps.standingSection
+        ? [
+            section('user-standing', async () => {
+              try {
+                return (await deps.standingSection!()) || undefined;
+              } catch {
+                return undefined;
+              }
+            }),
+          ]
+        : []),
+      ...(deps.activeLinesBoard
+        ? [
+            section('active-lines-board', async () => {
+              try {
+                return (await deps.activeLinesBoard!()) || undefined;
+              } catch {
+                return undefined;
+              }
+            }),
+          ]
+        : []),
     ],
     tools: [
       ...(deps.assistantTools ? createAssistantToolsExtension(deps.assistantTools).tools ?? [] : []),
@@ -224,26 +270,28 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'open_line_of_work',
         description:
-          '把一件事派出去：提供明确的 objective、deliverable、outputs 和可选验收条件，' +
+          '开一条全新的工作线（适合独立新主题）。如果是在已有工作线的代码/文件/页面上追加改动或调整方向，请优先使用 continue_line 或 steer_line。' +
           '启动后台任务后立即返回，不会等它跑完；成功启动本身不需要聊天确认。' +
           '任务结束或需要用户输入时再反馈。返回的 id 是内部引用，不能原样放进用户回复。',
         parameters: Type.Object({
           contract: Type.Object({
             objective: Type.String({ description: '要解决的问题或要达成的目标。' }),
             deliverable: Type.String({ description: '完成后必须交付什么。' }),
-            outputs: Type.Array(
-              Type.Union([
-                Type.Object({
-                  kind: Type.Literal('text'),
-                  description: Type.String({ description: '文本回答的内容和形状。' }),
-                }),
-                Type.Object({
-                  kind: Type.Literal('file'),
-                  description: Type.String({ description: '文件交付物的内容和用途。' }),
-                  path: Type.String({ description: '工作区内的相对路径。' }),
-                }),
-              ]),
-              { minItems: 1, description: '声明需要验收的文本或文件输出；不限制 Worker 的实现方式。' },
+            outputs: Type.Optional(
+              Type.Array(
+                Type.Union([
+                  Type.Object({
+                    kind: Type.Literal('text'),
+                    description: Type.String({ description: '文本回答的内容和形状。' }),
+                  }),
+                  Type.Object({
+                    kind: Type.Literal('file'),
+                    description: Type.String({ description: '文件交付物的内容和用途。' }),
+                    path: Type.String({ description: '工作区内的相对路径。' }),
+                  }),
+                ]),
+                { minItems: 1, description: '可选：声明需要验收的文本或文件输出；省略时默认接受文本结论。' },
+              ),
             ),
             attachments: Type.Optional(Type.Array(Type.Object({
               id: Type.String(), name: Type.String(), path: Type.String(), size: Type.Number(),
@@ -291,8 +339,11 @@ export function createRouterTools(deps: RouterToolDeps) {
           ),
         }),
         execute: async (args) => {
+          const outputs = args.contract.outputs?.length
+            ? args.contract.outputs
+            : [{ kind: 'text' as const, description: args.contract.deliverable || '完成后的结论与交付结果' }];
           const result = deps.openLine({
-            contract: args.contract,
+            contract: { ...args.contract, outputs },
             ...(args.title ? { title: args.title } : {}),
             ...(args.thread_key ? { threadKey: args.thread_key } : {}),
             ...(args.template ? { template: args.template } : {}),
@@ -399,16 +450,42 @@ export function createRouterTools(deps: RouterToolDeps) {
       defineTool({
         name: 'steer_line',
         description:
-          '用户中途改了方向：把这句话带到一条**还没收尾**的线上。' +
-          '正在跑的活在这一轮之后就能看到它；还没开跑的活会在开跑时看到它。' +
+          '用户中途改了方向或追加小需求：把这句话带到一条工作线上，并可同步更新目标/产出清单。' +
+          '正在跑的活在这一轮之后就能看到它；如果该线刚完成，会自动在同一工作区和上下文续跑。' +
           '不要为此开第二条线——同一件事换个方向还是同一件事。',
         parameters: Type.Object({
           thread_id: Type.String(),
           note: Type.String({ description: '改什么、为什么改。执行体会把它当成最高优先级的说明。' }),
+          updated_objective: Type.Optional(Type.String({ description: '可选：更新后的活目标（LivingGoal）。' })),
+          updated_outputs: Type.Optional(
+            Type.Array(
+              Type.Union([
+                Type.Object({
+                  kind: Type.Literal('text'),
+                  description: Type.String(),
+                }),
+                Type.Object({
+                  kind: Type.Literal('file'),
+                  description: Type.String(),
+                  path: Type.String(),
+                }),
+              ]),
+              { description: '可选：同步更新后的交付物清单。' },
+            ),
+          ),
         }),
         execute: async (args) => {
-          const result = await deps.steerLine(args.thread_id, args.note);
+          const result = await deps.steerLine(args.thread_id, args.note, {
+            ...(args.updated_objective ? { updatedObjective: args.updated_objective } : {}),
+            ...(args.updated_outputs ? { updatedOutputs: args.updated_outputs } : {}),
+          });
           if (!result.ok) return fail(`没带上：${result.reason ?? '未知原因'}`);
+          if (result.continuedTaskId) {
+            return ok('已在该工作线的原有上下文和工作区上继续执行新要求；不要发送开始确认。', {
+              threadId: args.thread_id,
+              taskId: result.continuedTaskId,
+            });
+          }
           return ok(
             result.live > 0
               ? `已经插到正在跑的活上（${result.live} 条），它这一轮就能看到。`
@@ -416,6 +493,95 @@ export function createRouterTools(deps: RouterToolDeps) {
           );
         },
       }),
+
+      ...(deps.continueLine
+        ? [
+            defineTool({
+              name: 'continue_line',
+              description:
+                '在已有工作线（无论正在运行还是刚完成/待机）的同一工作区和同一执行体上下文里继续干活。' +
+                'mode="append" 用于追加功能、顺手修改细节、继续调研；' +
+                'mode="pivot" 用于推翻当前跑偏的路线：会自动中止旧任务、清理错路上下文，再从干净检查点按新方向继续。' +
+                '不要为了增量改动去 open_line_of_work。',
+              parameters: Type.Object({
+                thread_id: Type.String({ description: '已有工作线的 id。' }),
+                instruction: Type.String({ description: '这次追加的新要求或转向后的具体指令。' }),
+                mode: Type.Optional(
+                  Type.Union([Type.Literal('append'), Type.Literal('pivot')], {
+                    description: 'append（默认）：在当前成果上增量修改；pivot：中止旧路线并从干净检查点转向。',
+                  }),
+                ),
+                updated_outputs: Type.Optional(
+                  Type.Array(
+                    Type.Union([
+                      Type.Object({ kind: Type.Literal('text'), description: Type.String() }),
+                      Type.Object({ kind: Type.Literal('file'), description: Type.String(), path: Type.String() }),
+                    ]),
+                    { description: '可选：更新后的交付物清单。' },
+                  ),
+                ),
+                acceptance: Type.Optional(
+                  Type.Object({
+                    command: Type.Array(Type.String(), { minItems: 1 }),
+                    template: Type.Optional(
+                      Type.Union([
+                        Type.Literal('http-ok'),
+                        Type.Literal('node-test'),
+                        Type.Literal('image-200'),
+                        Type.Literal('review-verdict'),
+                      ]),
+                    ),
+                  }),
+                ),
+              }),
+              execute: async (args) => {
+                const mode = args.mode ?? 'append';
+                const result = await deps.continueLine!({
+                  threadId: args.thread_id,
+                  instruction: args.instruction,
+                  mode,
+                  ...(args.updated_outputs ? { updatedOutputs: args.updated_outputs } : {}),
+                  ...(args.acceptance ? { acceptance: args.acceptance } : {}),
+                });
+                if (!result.ok) return fail(`没续上：${result.reason}`);
+                return ok(
+                  result.mode === 'steered'
+                    ? '已将增量改动注入当前正在运行的执行体；不要发送开始确认。'
+                    : mode === 'pivot'
+                      ? '已中止原路线并从干净上下文转向继续执行；不要发送开始确认。'
+                      : '已在原工作区与上下文中启动增量修改；不要发送开始确认。',
+                  { threadId: result.threadId, taskId: result.taskId, workerId: result.workerId ?? null },
+                );
+              },
+            }),
+          ]
+        : []),
+
+      ...(deps.abortLine
+        ? [
+            defineTool({
+              name: 'abort_line',
+              description:
+                '立即中止某条工作线上正在运行或排队的后台任务。当用户说“先停下”“别做了”“方向错了先中止”时使用。',
+              parameters: Type.Object({
+                thread_id: Type.String({ description: '要中止的工作线 id。' }),
+                reason: Type.String({ description: '中止原因，简短一句话。' }),
+                close_thread: Type.Optional(
+                  Type.Boolean({ description: '是否同时关闭这条工作线（默认 false，保留工作区供后续 continue_line）。' }),
+                ),
+              }),
+              execute: async (args) => {
+                const result = await deps.abortLine!(args.thread_id, args.reason, {
+                  closeThread: args.close_thread === true,
+                });
+                if (!result.ok) return fail(`没停成：${result.reason ?? '未知原因'}`);
+                return ok(`已中止工作线上的后台任务（${result.abortedTasks ?? 0} 个）。`, {
+                  threadId: args.thread_id,
+                });
+              },
+            }),
+          ]
+        : []),
 
       defineTool({
         name: 'ask_user',
@@ -519,44 +685,12 @@ export function createRouterTools(deps: RouterToolDeps) {
       }),
 
       defineTool({
-        name: 'ontology_command',
-        description:
-          '通过个人本体的唯一写入边界执行结构化动作。用于更新 Goal、Preference、Project，' +
-          '或撤回一条有证据的断言。动作会幂等记录；高风险动作会在当前对话展示审批卡，' +
-          '批准后继续执行同一条命令。不要用它替代普通的 open_line_of_work。',
-        parameters: Type.Object({
-          object_type: Type.String({ description: '对象类型，例如 Goal、Project、User。' }),
-          object_id: Type.String({ description: '对象 id；新建 Project 时可使用临时标识。' }),
-          action: Type.String({ description: '动作，例如 update_goal、update_preference、create_project、retract_assertion。' }),
-          args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-          expected_version: Type.Optional(Type.Number()),
-          idempotency_key: Type.String({ description: '同一业务动作的稳定幂等键。' }),
-        }),
-        execute: async (args) => {
-          if (!deps.ontologyCommand) return fail('当前运行环境没有启用本体命令服务。');
-          const result = await deps.ontologyCommand({
-            objectType: args.object_type,
-            objectId: args.object_id,
-            action: args.action,
-            ...(args.args ? { args: args.args as Record<string, unknown> } : {}),
-            ...(typeof args.expected_version === 'number' ? { expectedVersion: args.expected_version } : {}),
-            idempotencyKey: args.idempotency_key,
-          });
-          if (!result.ok) return fail(`本体命令未执行：${result.error ?? result.command.error ?? '未知原因'}`);
-          return ok(`本体命令 ${result.command.commandId} 当前状态：${result.command.status}`, {
-            commandId: result.command.commandId,
-            approvalId: result.command.approvalId,
-          });
-        },
-      }),
-
-      defineTool({
         name: 'forget_memory',
         description:
           '撤掉一条记忆。用户说「以后别这样了」「那条不算」的时候用它。' +
-          '不知道是哪一条，先 recall_memory 找到 id。撤掉是归档，不是销毁。',
+          '可传 memory:RULES.md#1、memory:PLAYBOOK.md#场景、memory:topics/<slug>.md 或规则原句/关键词。',
         parameters: Type.Object({
-          id: Type.String({ description: '要撤掉的那条记忆的 id（mem-…）。' }),
+          id: Type.String({ description: '要撤掉的记忆引用（如 memory:RULES.md#1）或对应关键词/原句。' }),
         }),
         execute: async (args) => {
           const result = await deps.forget(args.id);

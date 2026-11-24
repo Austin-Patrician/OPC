@@ -3,11 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { LOCALES, type Locale } from '@/shared/i18n/types';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
 import { BACKGROUND_KINDS, FONT_FAMILIES, FONT_SCALES } from '@/shared/theme/presets';
-import type { FontScaleId, ThemeMode } from '@/shared/theme/types';
+import type { BuddySizeId, FontFamilyId, FontScaleId, ThemeMode } from '@/shared/theme/types';
 import { cn } from '@/shared/lib/cn';
 import { useRef } from 'react';
-import { PageHeader, Row, Section, Segmented, SelectField } from '../kit';
+import { buttonClass, PageHeader, Row, Section, Segmented, SelectField, Toggle } from '../kit';
 import { MAX_BACKGROUND_BYTES } from '@/shared/theme/types';
+
+const BUDDY_SIZES: readonly BuddySizeId[] = ['sm', 'md', 'lg'];
 
 const THEMES: { value: ThemeMode; labelKey: string }[] = [
   { value: 'system', labelKey: 'settings.theme.system' },
@@ -119,8 +121,8 @@ export function AppearancePage() {
             <SelectField
               ariaLabel={t('settings.font')}
               value={prefs.fontFamilyId}
-              onChange={(next) => prefs.setFontFamily(next as (typeof FONT_FAMILIES)[number]['id'])}
-              className="w-[11rem]"
+              onChange={(next) => prefs.setFontFamily(next as FontFamilyId)}
+              className="w-[12.5rem]"
             >
               {FONT_FAMILIES.map((font) => (
                 <option key={font.id} value={font.id}>
@@ -176,6 +178,58 @@ export function AppearancePage() {
               </div>
             </Row>
           ) : null}
+        </Section>
+
+        <Section title={t('settings.buddy')} description={t('settings.buddyDesc')}>
+          <Row label={t('settings.buddyEnabled')} hint={t('settings.buddyEnabledHint')}>
+            <Toggle
+              checked={prefs.buddyCompanion.enabled}
+              onChange={(enabled) => prefs.updateBuddyCompanion({ enabled })}
+              label={t('settings.buddyEnabled')}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.buddySize')}
+            hint={t('settings.buddySizeHint')}
+            disabled={!prefs.buddyCompanion.enabled}
+          >
+            <Segmented<BuddySizeId>
+              label={t('settings.buddySize')}
+              value={prefs.buddyCompanion.size}
+              onChange={(size) => prefs.updateBuddyCompanion({ size })}
+              options={BUDDY_SIZES.map((id) => ({
+                value: id,
+                label: t(`settings.buddySize.${id}`),
+              }))}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.buddyBubbles')}
+            hint={t('settings.buddyBubblesHint')}
+            disabled={!prefs.buddyCompanion.enabled}
+          >
+            <Toggle
+              checked={prefs.buddyCompanion.bubbles}
+              onChange={(bubbles) => prefs.updateBuddyCompanion({ bubbles })}
+              label={t('settings.buddyBubbles')}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.buddyResetPos')}
+            hint={t('settings.buddyResetPosHint')}
+            disabled={!prefs.buddyCompanion.enabled}
+          >
+            <button
+              type="button"
+              onClick={prefs.resetBuddyPosition}
+              className={buttonClass.secondary}
+            >
+              {t('settings.buddyResetPosAction')}
+            </button>
+          </Row>
         </Section>
 
         <Section title={t('settings.language')}>

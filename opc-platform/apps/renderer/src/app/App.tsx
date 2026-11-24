@@ -1,4 +1,3 @@
-import { lazy, Suspense } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { AppShell } from './AppShell';
@@ -8,12 +7,6 @@ import { ChatPage } from '@/pages/chat/ChatPage';
 import { NotFoundPage } from '@/pages/not-found/NotFoundPage';
 import { SettingsPage } from '@/pages/settings/SettingsPage';
 import { SchedulesPage } from '@/pages/schedules/SchedulesPage';
-
-const SystemRuntimeView = lazy(() =>
-  import('@/pages/runtime/SystemRuntimeView').then(({ SystemRuntimeView: view }) => ({
-    default: view,
-  })),
-);
 
 /**
  * Hash routing keeps deep links working from `file://` inside the packaged app
@@ -28,15 +21,15 @@ export function App() {
       <ThemeSync />
       <Routes>
         <Route element={<AppShell />}>
-          {/* 对话是唯一的人机入口；旧的注意力深链接统一回到 Router。 */}
+          {/* 对话是唯一的人机入口；旧的注意力/运行态深链接统一回到 Router。 */}
           <Route index element={<Navigate to="/chat" replace />} />
           <Route path="attention" element={<Navigate to="/chat" replace />} />
+          <Route path="runtime" element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           {/* 技能与工具已并入设置：旧深链接重定向到对应的设置子页。 */}
           <Route path="skills" element={<Navigate to="/settings?page=capabilitiesExtensions" replace />} />
           <Route path="schedules" element={<SchedulesPage />} />
-          <Route path="runtime" element={<RuntimeRoute />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
@@ -44,20 +37,6 @@ export function App() {
       {/* First-run guide: overlays the shell until the install has completed it. */}
       <OnboardingGuide />
     </HashRouter>
-  );
-}
-
-function RuntimeRoute() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-0 flex-1 items-center justify-center bg-[#F2EEE7] font-mono text-[11px] uppercase tracking-[0.18em] text-[#9A9389]">
-          Loading runtime…
-        </div>
-      }
-    >
-      <SystemRuntimeView />
-    </Suspense>
   );
 }
 

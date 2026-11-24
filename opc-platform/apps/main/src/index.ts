@@ -8,13 +8,10 @@ import { ChatService } from './chat/chatService';
 import { referencedConversationArtifacts } from './chat/conversationArtifacts';
 import { readMcpConfig } from './mcp/config';
 import { closeAllMcpConnections, configureMcpAuth } from './mcp/connection';
-import { USER_MEMORY_OWNER } from './memory/owners';
 import { loadSmokeScript } from './smoke';
-import { consolidateConversation } from './memory/consolidation';
-import { ConsolidationRunStore } from './memory/consolidationRun';
-import { createMemoryExtraction, type MemoryExtractor } from './memory/extraction';
-import { MemoryService } from './memory/memoryService';
-import { SignalStore } from './memory/signals';
+import { MarkdownMemoryStore } from './memory/markdownMemoryStore';
+import { MemorySearchIndex } from './memory/memorySearchIndex';
+import { MemoryReflector } from './memory/memoryReflector';
 import { FactService } from './memory/factService';
 import { resetCompany } from './seed/resetCompany';
 import { openCompanyDatabase, type CompanyDatabase } from './data/companyDatabase';
@@ -27,7 +24,6 @@ import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
 import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
 import { IPC } from '@opc/shared/ipc';
-import type { RouterToolDeps } from './router/routerTools';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
 import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyRuntime';
@@ -63,9 +59,6 @@ import { WatchdogModelStore } from './watchdog/model';
 import { createWatchdogAnswerer } from './watchdog/ask';
 import { WatchdogPolicyStore } from './watchdog/policy';
 import { createRouterHost } from './router/routerHost';
-import { SqliteContextGraphStore } from './ontology/contextGraphStore';
-import { OntologyCommandService } from './ontology/commandService';
-import { OntologyOutboxDispatcher } from './ontology/outboxDispatcher';
 import { TriagePolicyStore } from './router/triagePolicy';
 import { createLineOpener } from './router/workDispatch';
 import type { TickReport } from './router/router';
@@ -115,8 +108,6 @@ const isWatchdogProbe = process.env.OPC_WATCHDOG_PROBE === '1';
 const isWatchdogJudgeProbe = process.env.OPC_WATCHDOG_JUDGE_PROBE === '1';
 /** `OPC_DECOMPOSE_PROBE=1`: hierarchy, three hard constraints, children run. */
 const isDecomposeProbe = process.env.OPC_DECOMPOSE_PROBE === "1";
-/** `OPC_CONSOLIDATION_RUN_PROBE=1`: skipped and done runs are both recorded. */
-const isConsolidationRunProbe = process.env.OPC_CONSOLIDATION_RUN_PROBE === '1';
 /** `OPC_BLOCKER_PROBE=1`: a task with an unfinished blocker refuses to start. */
 const isBlockerProbe = process.env.OPC_BLOCKER_PROBE === '1';
 /** `OPC_ISSUE_META_PROBE=1`: priority / labels / due date round-trip through the repo. */
@@ -128,12 +119,6 @@ const runTaskRef = process.env.OPC_RUN_TASK;
 const isRunTask = Boolean(runTaskRef);
 /** `OPC_FACT_PROBE=1`: company facts are versioned and reach the executor's prompt. */
 const isFactProbe = process.env.OPC_FACT_PROBE === '1';
-/** `OPC_ARCHIVE_PROBE=1`: idle conversation → archived → consolidated once. */
-const isArchiveProbe = process.env.OPC_ARCHIVE_PROBE === '1';
-/** `OPC_CONSOLIDATE_PROBE=1`: a settled conversation becomes long-term memory. */
-const isConsolidateProbe = process.env.OPC_CONSOLIDATE_PROBE === '1';
-/** `OPC_MEMORY_PROBE=1`: write → recall into the prompt → recall strengthens it. */
-const isMemoryProbe = process.env.OPC_MEMORY_PROBE === '1';
 /** `OPC_CHAT_PERSIST_PROBE=1`: messages survive a ChatService restart. */
 const isChatPersistProbe = process.env.OPC_CHAT_PERSIST_PROBE === '1';
 /** `OPC_RESET_COMPANY=1`: wipe business rows, re-seed the one default executor. */
@@ -495,83 +480,11 @@ async function bootstrap(): Promise<void> {
     });
   }
 
-  // Consolidation summariser: the same provider the agents answer with, so nothing
-  // is invented when no model is configured (consolidation then writes nothing).
-  const summarize = async ({ messages: turns }: { messages: { senderId: string; text: string }[] }) => {
-    const defaults = modelConfig.getDefaults().llm;
-    if (!defaults) throw new Error('未配置默认 LLM 模型');
-    const models = await modelConfig.runtime.createModels();
-    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
-    if (!model) throw new Error('找不到模型');
-    const transcript = turns.map((turn) => `${turn.senderId === 'user' ? '你' : '助手'}：${turn.text}`).join('\n');
-    const answer = await models.complete(model, {
-      systemPrompt: [
-        '下面是一段助手和用户的对话。只提炼**会改变下次行为**的东西：',
-        '- 他明确要求过的做法、他偏好什么、他讨厌什么',
-        '- 关于他本人或他的工作的稳定事实',
-        '',
-        '**不要记**这几类。它们是这份数据变脏的全部原因：',
-        '- 这段对话里发生了什么：进度、结论、失败、谁说了什么、工具报了什么错',
-        '- 方法论与通用原则（"应当先确认验收标准"这种话对谁都成立，等于没说）',
-        '- 同一个意思的第二种说法',
-        '',
-        '每条一行，格式为「类型|内容」，类型只能是 preference / fact。',
-        '一条都提炼不出来就输出空——这是正常结果，不是失败。',
-      ].join('\n'),
-      messages: [{ role: 'user', content: [{ type: 'text', text: transcript }] }],
-    } as never);
-    const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('');
-    return text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.includes('|'))
-      .map((line) => {
-        const [rawKind, ...rest] = line.split('|');
-        // 只收这两类：`experience` 是情景记录，属于对话历史，不属于记忆。
-        const kind = (['fact', 'preference'] as const).includes(
-          rawKind!.trim() as 'fact' | 'preference',
-        )
-          ? (rawKind!.trim() as 'fact' | 'preference')
-          : 'fact';
-        return { kind, content: rest.join('|').trim() };
-      })
-      .filter((lesson) => lesson.content.length > 0);
-  };
-  chat.consolidate = async ({ conversationId, ownerId, messages: turns }) =>
-    consolidateConversation(memory, { conversationId, ownerId, messages: turns }, summarize, {
-      runs: consolidationRuns,
-    });
-
-  // 这里本来有 `chat.replyWithModel`：一个执行体用「你是「X」，岗位是 Y」的人设直接
-  // 回答你。v2 的双层架构里没有这条路——Worker 只向 Router 汇报，由 Router 统一
-  // 对外说话（§2.2）。留着它就等于留了第二个能回答你的人。
-  const memory = new MemoryService(db, {
-    /**
-     * 一条偏好被升进常驻层时告诉你。
-     *
-     * 升级之后它每一轮都在生效——**不可见的自动升级是赌博**。所以要说一句，并且给出
-     * 两条后路：当场否决，或者去设置页改。
-     */
-    onPromoted: ({ content, observations }) => {
-      // 通知是加分项：聊天服务还没起来时，记忆本身已经升级好了，不该因此回滚。
-      const conversationId = chat?.ensureAssistant();
-      if (!conversationId) return;
-      try {
-        chat?.appendRouterMessage(
-          conversationId,
-          `你提过 ${observations} 次的这件事，我记成长期规矩了：「${content}」。` +
-            '不对的话跟我说一声，或者去 设置 → 它记得什么 里改。',
-        );
-      } catch (error) {
-        console.warn('[memory] 晋级没通知出去（不影响记忆本身）', error);
-      }
-    },
-  });
+  // Markdown-first memory engine (`<userData>/memory/`): pure .md files + in-memory BM25 index + incremental reflector.
+  const memoryStore = new MarkdownMemoryStore(path.join(appPaths.userData, 'memory'));
+  memoryStore.ensureInitialized();
+  const memoryIndex = new MemorySearchIndex(memoryStore);
   const facts = new FactService(db);
-  const consolidationRuns = new ConsolidationRunStore(db);
   const billingSettings = new BillingSettingsService(db);
   billingSettings.ensureDefaults();
   const usage = new UsageRepository(db);
@@ -585,95 +498,42 @@ async function bootstrap(): Promise<void> {
   const speechService = new SpeechService(modelConfig, networkClient, usage);
   const decisionService = new DecisionService(modelConfig, usage, () => billingSettings.get().pricingMode);
 
-  /**
-   * 偏好抽取：把「返工理由」和「改方向」变成记忆。
-   *
-   * 后置、批量、可失败。它看的是用户**明确说出来的**要求，不是他说话的语气——
-   * 「图表要标上单位」是判定，「嗯……还行吧」不是。
-   *
-   * 格式是五行一段的朴素文本，和归档巩固用的是同一套办法（`models.complete` 而不是
-   * 另造一个结构化协议）：这里要的是"模型把话讲清楚"，不是"把 JSON 解析对"。
-   * 解析失败的一行就丢掉，不要为了填满结构去猜。
-   */
-  const extractPreferences: MemoryExtractor = async (signals) => {
-    const defaults = modelConfig.getDefaults().llm;
-    if (!defaults) throw new Error('未配置默认 LLM 模型');
-    const models = await modelConfig.runtime.createModels();
-    const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
-    if (!model) throw new Error('找不到模型');
-
-    const transcript = signals
-      .map((signal) => `[${signal.origin === 'rework' ? '让我重做' : '中途改方向'}] ${signal.text}`)
-      .join('\n');
-    const answer = await models.complete(model, {
-      systemPrompt: [
-        '下面是一个人让助手重做、或中途改变方向时说的话。',
-        '把里面**明确表达出来、以后仍然成立**的要求提炼成条目。每条一行，五段用 | 分隔：',
-        '类型|主题|时效|范围|内容',
-        '- 类型：preference / constraint / format / workflow / person / term / fact',
-        '- 主题：这条讲的是哪件事，用一个稳定的短英文名（如 reply.length、chart.units）；说不清就写 -',
-        '- 时效：stable（一直有效）/ slow（多数偏好）/ session（只这阵子有效）',
-        '- 范围：person（关于这个人）/ thread（只关于这一单）',
-        '- 内容：一句可执行的话，不要写"他好像""可能"。',
-        '只提炼他明确说过的，不要推测。一次性的意见（"这版先这样"）不算。没有值得记的就一行都不输出。',
-      ].join('\n'),
-      messages: [{ role: 'user', content: [{ type: 'text', text: transcript }] }],
-    } as never);
-
-    const text = ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('');
-    return parseExtracted(text);
-  };
-
-  const contextGraph = new SqliteContextGraphStore(db);
-  // Created after WorkService, but Router's harness is lazy. This late-bound
-  // reference lets the Router expose the same command boundary without a
-  // second implementation or a bootstrap cycle.
-  let ontologyCommands: OntologyCommandService | null = null;
-  const preferenceExtraction = createMemoryExtraction({
-    signals: new SignalStore(db),
-    memory,
-    extract: extractPreferences,
-    onWritten: ({ candidate, memoryId, signals }) => {
-      const content = candidate.content.trim();
-      if (!content) return;
-      const episode = contextGraph.appendEpisode({
-        sourceType: 'memory.extraction',
-        sourceId: memoryId,
-        actor: 'model',
-        content,
-        metadata: { confidence: 0.65, candidate: true, sourceSignals: signals.map((signal) => signal.id) },
-      });
-      const user = contextGraph.resolveEntity('user')!;
-      // Extracted memories remain candidate evidence (confidence < 1). They
-      // never become standing constraints automatically.
-      contextGraph.assertFact({
-        subjectEntityId: user.id,
-        predicate: candidate.kind === 'fact' ? 'describes' : 'prefers',
-        objectValue: content,
-        valueType: 'text',
-        sourceEpisodeId: episode.id,
-        confidence: 0.65,
-      });
+  const memoryReflector = new MemoryReflector({
+    store: memoryStore,
+    complete: async ({ systemPrompt, userPrompt }) => {
+      const defaults = modelConfig.getDefaults().llm;
+      if (!defaults) throw new Error('未配置默认 LLM 模型');
+      const models = await modelConfig.runtime.createModels();
+      const model = await modelConfig.runtime.resolveModel(defaults.providerId, defaults.modelId);
+      if (!model) throw new Error('找不到模型');
+      const answer = await models.complete(model, {
+        systemPrompt,
+        messages: [{ role: 'user', content: [{ type: 'text', text: userPrompt }] }],
+      } as never);
+      return ((answer as { content?: { type: string; text?: string }[] }).content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join('');
+    },
+    readMessagesSince: (afterMessageId, limit = 40) => {
+      const assistantId = chat?.ensureAssistant();
+      if (!assistantId || !chat) return [];
+      const transcript = chat
+        .readTranscript(assistantId)
+        .filter((message) => message.kind === 'text' && Boolean(message.text?.trim()))
+        .map((message) => ({
+          id: message.id,
+          senderId: message.senderId,
+          text: message.text ?? '',
+          createdAt: Date.now(),
+        }));
+      if (!afterMessageId) return transcript.slice(-limit);
+      const idx = transcript.findIndex((m) => m.id === afterMessageId);
+      const slice = idx >= 0 ? transcript.slice(idx + 1) : transcript.slice(-limit);
+      return slice.slice(0, limit);
     },
   });
-  // Ontology graph semantics live beside existing business data; task/worker/
-  // approval tables remain authoritative and are never shadow-copied.
-  const ontologyOutbox = new OntologyOutboxDispatcher(contextGraph);
-  ontologyOutbox.subscribe((event) => {
-    systemEvents.recordSafely({
-      kind: 'ontology.changed',
-      severity: 'info',
-      subjectType: 'router',
-      subjectId: event.aggregateId,
-      summary: `Ontology 事件：${event.eventType}`,
-      detail: { eventType: event.eventType, aggregateType: event.aggregateType, aggregateId: event.aggregateId, payload: event.payload },
-    });
-  });
-  ontologyOutbox.start();
-  app.on('before-quit', () => ontologyOutbox.stop());
+  app.on('before-quit', () => memoryReflector.dispose());
   // One runtime service for the whole process: employees, acceptance scripts and
   // the settings page must see exactly the same interpreters. The app-owned
   // `<userData>/runtimes` directory is where the PATH shims live.
@@ -741,9 +601,10 @@ async function bootstrap(): Promise<void> {
     images: imageService,
     speech: speechService,
     decisions: decisionService,
-    memory,
+    memoryStore,
+    memoryIndex,
+    memoryReflector,
     facts,
-    contextGraph,
     network: networkClient,
     runtime: runtimeService,
     ocr,
@@ -833,25 +694,17 @@ async function bootstrap(): Promise<void> {
     policy: () => triage.get(),
     /** 语义门用的分类器；没配模型时这一层自动关掉，不是错误。 */
     decisions: decisionService,
-    /**
-     * Router 的记忆。
-     *
-     * 归属是**用户**（`'user'`），不是 `'router'`：一条「以后结论放前面」是关于他的，
-     * 执行体也得能读到。归档巩固写的是同一个归属，所以写的人和读的人终于是同一个。
-     */
-    memory,
+    memoryStore,
+    memoryIndex,
+    memoryReflector,
     /** 工作台的规矩：执行体的提示词里有，Router 也得有。 */
     facts,
     personalPreferences: () => {
       const profile = new CompanyService(db).get();
       return { tone: profile.replyTone, detail: profile.replyDetail, instructions: profile.replyInstructions };
     },
-    contextGraph,
     workerCapabilities: () => work?.routerCapabilities() ?? [],
     schedules,
-    ontologyCommand: (input: Parameters<NonNullable<RouterToolDeps['ontologyCommand']>>[0]) => ontologyCommands
-      ? ontologyCommands.execute({ actor: 'router', ...input })
-      : Promise.resolve({ ok: false, command: { commandId: '', status: 'failed', approvalId: null, error: '本体命令服务尚未就绪' }, error: '本体命令服务尚未就绪' }),
     openLine: createLineOpener({
       threads,
       createTask: work!.createTask,
@@ -859,7 +712,9 @@ async function bootstrap(): Promise<void> {
       startTask: (taskId) => work!.runTask(taskId),
       // 谁来干：按模板匹配技能，而不是"名单里的第一个"。
       resolveWorker: ({ threadId, template, hint }) => {
-        const people = threads.listAllWorkers().map((worker) => ({
+        const templates = threads.listTemplateWorkers();
+        const pool = templates.length > 0 ? templates : threads.listAllWorkers();
+        const people = pool.map((worker) => ({
           ownerId: worker.id,
           name: worker.name,
           skills: worker.skills,
@@ -918,7 +773,13 @@ async function bootstrap(): Promise<void> {
      * 没有这一行，`steer_line` 就是一个空插座：模型会调它、会失败，而"改主意"
      * 在双层架构里没有第二条路可走——你只能看着一条跑错方向的活跑完。
      */
-    steer: (threadId, note) => work!.steerThread(threadId, note),
+    steer: (threadId, note, options) => work!.steerThread(threadId, note, options),
+    continueLine: (input) => work!.continueThread(input),
+    abortLine: (threadId, reason, options) =>
+      work!.abortThread(threadId, reason, {
+        closeThread: options?.closeThread === true,
+        pruneFailedTurn: true,
+      }),
   });
   const goalRouter = routerHost;
 
@@ -947,11 +808,7 @@ async function bootstrap(): Promise<void> {
    * 执行体，Router 就再也听不到你说话了——那是把信道和执行流混成一件事。
    */
   chat.onUserMessage = ({ conversationId, text, attachments }) => {
-    try {
-      contextGraph.appendEpisode({ sourceType: 'conversation', sourceId: conversationId, actor: 'user', content: text });
-    } catch (error) {
-      console.warn('[ontology] 保存对话 Episode 失败', error);
-    }
+    memoryReflector.noteUserMessage();
     const priorArtifacts = referencedConversationArtifacts({
       text,
       messages: chat!.readTranscript(conversationId),
@@ -962,6 +819,15 @@ async function bootstrap(): Promise<void> {
       (attachment, index, all) => all.findIndex((candidate) => candidate.path === attachment.path) === index,
     );
     threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text, ...(files.length ? { attachments: files } : {}) } });
+    // Option A: If Router is mid-generation, preemptively abort it and prune its dead turn,
+    // then immediately run a fresh tick so Router can decide steer/continue/abort/open in 1-2s.
+    if (goalRouter.router.busy || goalRouter.session.busy) {
+      void goalRouter
+        .interrupt('user_new_message', { requeue: true })
+        .catch(() => undefined)
+        .finally(() => pushTick());
+      return;
+    }
     pushTick();
   };
 
@@ -989,67 +855,6 @@ async function bootstrap(): Promise<void> {
     console.warn('issue key backfill failed', error);
   }
 
-  ontologyCommands = new OntologyCommandService({
-    db,
-    graph: contextGraph,
-    work,
-    company: new CompanyService(db),
-    requestApproval: ({ command, reason }) => {
-      const conversationId = chat!.ensureAssistant();
-      chat!.appendOntologyApprovalCard(conversationId, {
-        type: 'ontologyApproval',
-        commandId: command.commandId,
-        action: command.action,
-        objectType: command.objectType,
-        title: '助手请求执行一项操作',
-        body: `${reason}\n\n动作：${command.action}\n对象：${command.objectId}`,
-        state: 'pending',
-      });
-      // The command id is the durable approval handle. There is no synthetic
-      // task/report involved, so approval stays attached to this command's
-      // original execution thread.
-      return command.commandId;
-    },
-    onApprovalResolved: (command, state) => {
-      chat!.updateOntologyApprovalCard(command.commandId, state === 'failed' ? 'rejected' : state);
-      const message = state === 'approved'
-        ? `已完成：${command.action}（${command.objectId}）`
-        : state === 'failed'
-          ? `执行失败：${command.action}（${command.objectId}）${command.error ? `：${command.error}` : ''}`
-          : `已拒绝：${command.action}（${command.objectId}）`;
-      chat!.appendRouterMessage(chat!.ensureAssistant(), message);
-    },
-  });
-
-  // Remove cards whose command was already completed while the app was closed.
-  for (const card of chat.readActionCards().flatMap(({ block }) =>
-    block.type === 'ontologyApproval' ? [block] : [],
-  )) {
-    const command = contextGraph.getCommand(card.commandId);
-    if (!command || ['succeeded', 'failed', 'rejected'].includes(command.status)) {
-      chat!.updateOntologyApprovalCard(card.commandId, command?.status === 'succeeded' ? 'approved' : 'rejected');
-    }
-  }
-  // Recover a pending command card if the process stopped between the durable
-  // command write and the chat snapshot write. The command itself remains the
-  // source of truth, so recovery never creates a second execution.
-  const existingOntologyCards = new Set(chat.readActionCards().flatMap(({ block }) =>
-    block.type === 'ontologyApproval' ? [block.commandId] : [],
-  ));
-  const recoveryConversation = chat.ensureAssistant();
-  for (const command of contextGraph.listCommands('pending')) {
-    if (!command.approvalId || existingOntologyCards.has(command.commandId)) continue;
-    chat.appendOntologyApprovalCard(recoveryConversation, {
-      type: 'ontologyApproval',
-      commandId: command.commandId,
-      action: command.action,
-      objectType: command.objectType,
-      title: '助手请求执行一项操作',
-      body: `命令 ${command.action} 需要用户确认\n\n动作：${command.action}\n对象：${command.objectId}`,
-      state: 'pending',
-    });
-  }
-
   disposeIpc = registerIpc({
     chat,
     work,
@@ -1057,12 +862,11 @@ async function bootstrap(): Promise<void> {
     speech: speechService,
     decisions: decisionService,
     facts,
-    ontology: contextGraph,
-    ontologyCommands,
+    memoryStore,
+    memoryIndex,
+    memoryReflector,
     browser: browserBroker,
     desktop: desktopBroker,
-    consolidationRuns,
-    events: systemEvents,
     triage,
     schedules,
     watchdog: {
@@ -1078,34 +882,6 @@ async function bootstrap(): Promise<void> {
       }),
       // 模型/钥匙在别的页面改的：这里把子进程手里的那份刷新掉。
       onModelChanged: () => watchdogHost?.refreshModel(),
-    },
-    memories: {
-      list: () =>
-        memory.list(USER_MEMORY_OWNER).map((item) => ({
-          id: item.id,
-          tier: item.tier,
-          kind: item.kind,
-          subject: item.subject,
-          content: item.content,
-          createdAt: item.createdAt,
-          sourceType: item.sourceType,
-          observations: item.observations,
-          scopeType: item.scopeType,
-        })),
-      update: (id: string, content: string) => memory.update(id, content),
-      forget: (id: string) => memory.forget(id),
-      // 谁知道自己的记忆归谁：活的执行体、活的线、再加上这个人。
-      // `'router'` 不在里面——那是 P0 之前的旧归属，也该被问一句。
-      orphans: () =>
-        memory.orphanOwners(
-          new Set([
-            USER_MEMORY_OWNER,
-            ...threads.listAllWorkers().map((worker) => worker.id),
-            ...threads.listActiveThreads(200).map((thread) => thread.id),
-          ]),
-        ),
-      claim: (ownerId: string) => memory.claim(ownerId),
-      discard: (ownerId: string) => memory.discardOwner(ownerId),
     },
     triggers: {
       status: triggerStatus,
@@ -1132,6 +908,20 @@ async function bootstrap(): Promise<void> {
     startGoal,
     piExtensions,
     piSkills,
+    routerControls: {
+      interrupt: async (reason = '用户点击停止') => {
+        await goalRouter.interrupt(reason, { requeue: false }).catch(() => undefined);
+        const aborted = await work!.abortActiveThreads(reason);
+        const conversationId = chat?.ensureAssistant();
+        if (conversationId) {
+          chat?.setActivity(conversationId, 'idle');
+        }
+        return { ok: true, abortedThreads: aborted.abortedThreads };
+      },
+      getContextStats: () => goalRouter.contextStats(),
+      compactContext: () => goalRouter.compactContext(),
+      resetContext: (handoff) => goalRouter.resetContext(handoff),
+    },
   });
 
   // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。
@@ -1423,24 +1213,6 @@ async function bootstrap(): Promise<void> {
       watcher.stop();
     });
 
-    /**
-     * 偏好抽取排在后台：用户点完「重做」要立刻看到活重新跑起来，不能等一次模型调用。
-     * 五分钟一次，顺带把"上次没配模型时积下的"一起处理掉。
-     */
-    const runExtraction = (): void => {
-      void preferenceExtraction.run().then(
-        (result) => {
-          if (result.written > 0) console.warn('[memory] 从返工/改方向里抽出', result.written, '条偏好');
-          else if (result.skipped) console.warn('[memory] 本轮没抽：', result.skipped);
-        },
-        (error: unknown) => console.error('[memory] 抽取失败，信号留着下一轮再试', error),
-      );
-    };
-    runExtraction();
-    const extractionTimer = setInterval(runExtraction, 5 * 60_000);
-    extractionTimer.unref?.();
-    app.on('before-quit', () => clearInterval(extractionTimer));
-
     // 旧的程序层 Watchdog 已经退休（W4）：判据从 `task.steps` 搬到了 `task_trace`，
     // 跑在子进程里（`watchdog/child.ts`）。它唯一的用户可见出口——
     // 「这条线可能卡住了」——由 `onEscalated` 接着发，判据是 incident 升级。
@@ -1483,14 +1255,10 @@ const isHeadlessMode =
   isMcpProbe ||
   isSubagentProbe ||
   isModelProbe ||
-  isConsolidationRunProbe ||
   isBlockerProbe ||
   isIssueMetaProbe ||
   isPricingProbe ||
   isFactProbe ||
-  isArchiveProbe ||
-  isConsolidateProbe ||
-  isMemoryProbe ||
   isChatPersistProbe ||
   isResetCompany ||
   isFirstRunProbe ||
@@ -1541,12 +1309,15 @@ if (!hasLock) {
       const credentialStore = new FileCredentialStore(`${appPaths.userData}/credentials.json`);
       const modelConfig = new ModelConfigService(db, credentialStore, networkClient);
       seedExecutor(db);
+      const memoryStore = new MarkdownMemoryStore(path.join(appPaths.userData, 'memory'));
+      memoryStore.ensureInitialized();
       const work = new WorkService({
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
         modelConfig,
-        memory: new MemoryService(db),
+        memoryStore,
+        memoryIndex: new MemorySearchIndex(memoryStore),
         facts: new FactService(db),
       });
 
@@ -1610,64 +1381,6 @@ if (!hasLock) {
       return;
     }
 
-
-    if (isConsolidationRunProbe) {
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consol-run-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const executor = seedExecutor(db);
-      const memory = new MemoryService(db);
-      const runs = new ConsolidationRunStore(db);
-
-      const slice = {
-        conversationId: 'conv-run-probe',
-        ownerId: executor.id,
-        messages: [
-          { senderId: 'user', text: '交付先给最小可运行版本' },
-          { senderId: executor.id, text: '明白' },
-        ],
-      };
-
-      const skipped = await consolidateConversation(memory, slice, undefined, { runs });
-      const done = await consolidateConversation(
-        memory,
-        slice,
-        async ({ messages }) =>
-          messages
-            .filter((message) => message.senderId === 'user')
-            .map((message) => ({ kind: 'preference' as const, content: `你的要求：${message.text}` })),
-        { runs },
-      );
-      const failed = await consolidateConversation(
-        memory,
-        slice,
-        async () => {
-          throw new Error('模型崩了');
-        },
-        { runs },
-      ).catch((error) => ({ written: 0, skipped: String(error) }));
-
-      const rows = runs.list(10);
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'consolidation-run',
-          skipped,
-          done,
-          failedSkipped: 'skipped' in failed,
-          statuses: rows.map((run) => `${run.status}:${run.memoriesCreated}`),
-          total: rows.length,
-        }) + '\n',
-      );
-      app.exit(
-        rows.length === 3 &&
-          rows.some((run) => run.status === 'skipped') &&
-          rows.some((run) => run.status === 'done' && run.memoriesCreated === 1) &&
-          rows.some((run) => run.status === 'failed')
-          ? 0
-          : 1,
-      );
-      return;
-    }
 
     if (isBlockerProbe) {
       process.env.OPC_BRAIN_VARIANT ??= 'ok';
@@ -1819,7 +1532,8 @@ if (!hasLock) {
       const db = openCompanyDatabase(appPaths.database);
       const executor = seedExecutor(db);
       const facts = new FactService(db);
-      const memory = new MemoryService(db);
+      const memoryStore = new MarkdownMemoryStore(path.join(appPaths.userData, 'memory'));
+      memoryStore.ensureInitialized();
       const threads = new ThreadRepository(db);
       // 作用域只剩两层：整个工作台的规定，和某条工作线自己的规定。
       const line = threads.createThread({ title: '写季度留存方案' });
@@ -1849,7 +1563,8 @@ if (!hasLock) {
         db,
         paths: appPaths,
         upsertTaskCard: () => undefined,
-        memory,
+        memoryStore,
+        memoryIndex: new MemorySearchIndex(memoryStore),
         facts,
       });
       const created = work.createTask({
@@ -1876,205 +1591,6 @@ if (!hasLock) {
         }) + '\n',
       );
       app.exit(current.length === 2 && !current.some((fact) => fact.statement.includes('另一条线')) ? 0 : 1);
-      return;
-    }
-
-    if (isArchiveProbe) {
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-archive-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const memory = new MemoryService(db);
-
-      const chatProbe = new ChatService({
-        db,
-        conversations: [],
-      });
-      // Deterministic summariser stand-in; the real one is models.complete.
-      chatProbe.consolidate = async ({ conversationId, ownerId, messages: turns }) => {
-        const userLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
-        let written = 0;
-        for (const line of userLines.filter((entry) => entry.includes('README'))) {
-          await memory.remember({
-            ownerId,
-            kind: 'preference',
-            content: `你的要求：${line}`,
-            scope: { type: 'personal' },
-            sourceType: 'consolidation',
-            sourceId: conversationId,
-          });
-          written += 1;
-        }
-        return { written };
-      };
-
-      const conversationId = chatProbe.ensureAssistant();
-      // 两句而不是一句：巩固的下限是"会话太短就不值得"，而这里没有执行体替它回话，
-      // 只有你自己说的话。
-      chatProbe.sendMessage({ conversationId, text: '文档以后放 README 里就够了，别单开 wiki' });
-      chatProbe.sendMessage({ conversationId, text: '交付都先给我最小可运行版本' });
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      // Nothing is idle yet.
-      const early = await chatProbe.sweepIdleConversations(60 * 60 * 1000);
-      // Backdate the row, as if you walked away an hour ago.
-      db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(
-        Date.now() - 2 * 60 * 60 * 1000,
-        conversationId,
-      );
-      const swept = await chatProbe.sweepIdleConversations(60 * 60 * 1000);
-      const again = await chatProbe.sweepIdleConversations(0);
-      const row = db
-        .prepare('SELECT archived_at, consolidated_at FROM conversation WHERE id = ?')
-        .get(conversationId) as { archived_at: number | null; consolidated_at: number | null };
-
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'archive',
-          earlySweep: early.length,
-          swept,
-          idempotentSecondSweep: again.length,
-          archivedAt: row.archived_at !== null,
-          consolidatedAt: row.consolidated_at !== null,
-          // 巩固出来的是**关于这个人**的记忆，所以它挂在用户身上，不挂在 Router 身上
-          // （`memory/owners.ts`）。这条断言以前是 `ROUTER_ID`——那正是被修掉的那个归属。
-          memories: memory.listForOwner(USER_MEMORY_OWNER).map((item) => item.content),
-        }) + '\n',
-      );
-      app.exit(
-        early.length === 0 &&
-          swept.length === 1 &&
-          again.length === 0 &&
-          row.consolidated_at !== null &&
-          // 归档只是机械动作；这条链的意义是"归档之后真的变成了记忆"。
-          memory.countForOwner(USER_MEMORY_OWNER) > 0
-          ? 0
-          : 1,
-      );
-      return;
-    }
-
-    if (isConsolidateProbe) {
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-consolidate-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const executor = seedExecutor(db);
-      const memory = new MemoryService(db);
-
-      const conversation = {
-        conversationId: 'conv-probe',
-        ownerId: executor.id,
-        messages: [
-          { senderId: 'user', text: '以后交付都先给我最小可运行版本，别一次性堆功能' },
-          { senderId: executor.id, text: '明白，先跑通再扩展。' },
-          { senderId: 'user', text: '文档放 README 里就够了' },
-        ],
-      };
-
-      // 1) no summarizer → nothing invented
-      const withoutModel = await consolidateConversation(memory, conversation, undefined);
-
-      // 2) with a summarizer (a deterministic stand-in for the model in this probe)
-      const withModel = await consolidateConversation(memory, conversation, async ({ messages: turns }) => {
-        const userLines = turns.filter((turn) => turn.senderId === 'user').map((turn) => turn.text);
-        return userLines
-          .filter((line) => line.includes('最小可运行') || line.includes('README'))
-          .map((line) => ({
-            content: `你的要求：${line}`,
-            kind: 'preference' as const,
-          }));
-      });
-
-      const stored = memory.listForOwner(executor.id);
-      const recalled = await memory.retrieve({
-        owners: [executor.id],
-        query: '这单怎么交付，文档放哪',
-        scopes: [{ type: 'personal' }],
-        limit: 2,
-      });
-
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'consolidate',
-          withoutModel,
-          withModel,
-          stored: stored.map((item) => item.content),
-          topRecall: recalled[0]?.content ?? null,
-        }) + '\n',
-      );
-      app.exit(withModel.written === 2 && withoutModel.written === 0 ? 0 : 1);
-      return;
-    }
-
-    if (isMemoryProbe) {
-      process.env.OPC_BRAIN_VARIANT ??= 'ok';
-      app.setPath('userData', mkdtempSync(path.join(tmpdir(), 'opc-memory-')));
-      initAppPaths();
-      const db = openCompanyDatabase(appPaths.database);
-      const executor = seedExecutor(db);
-      const memory = new MemoryService(db);
-
-      await memory.remember({
-        ownerId: executor.id,
-        kind: 'experience',
-        content: '健康检查服务必须监听 3000 端口，验收脚本会用 curl 打 /health',
-        scope: { type: 'personal' },
-        sourceType: 'manual',
-      });
-      await memory.remember({
-        ownerId: executor.id,
-        kind: 'preference',
-        content: '你偏好先给最小可运行版本，再补文档',
-        scope: { type: 'personal' },
-        sourceType: 'manual',
-      });
-      await memory.remember({
-        ownerId: executor.id,
-        kind: 'experience',
-        content: '配色只用语义 token，不写死 hex',
-        scope: { type: 'personal' },
-        sourceType: 'manual',
-      });
-
-      const recalled = await memory.retrieve({
-        owners: [executor.id],
-        query: '写一个健康检查服务，要能被 curl 验收',
-        scopes: [{ type: 'personal' }],
-        limit: 2,
-      });
-      const afterRecall = memory.listForOwner(executor.id).find((item) => item.id === recalled[0]?.id);
-      const totalBefore = memory.countForOwner(executor.id);
-
-      const work = new WorkService({
-        db,
-        paths: appPaths,
-        upsertTaskCard: () => undefined,
-        memory,
-      });
-      const created = work.createTask({
-        title: '写健康检查服务',
-        brief: 'node:http，/health 返回 200',
-        deliverableSpec: 'server.js 在 3000 端口返回 200',
-        assigneeId: executor.id,
-        estTokens: 4000,
-        acceptanceCommand: [],
-        acceptanceTemplate: 'http-ok',
-      });
-      if (!created.ok) throw new Error('记忆探针创建任务失败');
-      const finished = await work.runTaskAndWait(created.task.id);
-      const injected = finished.steps.find((step) => step.text.startsWith('注入'));
-
-      process.stdout.write(
-        JSON.stringify({
-          probe: 'memory',
-          written: totalBefore,
-          topRecall: recalled[0]?.content ?? null,
-          recallCount: afterRecall ? 1 : 0,
-          injectedIntoPrompt: injected?.text ?? null,
-          taskStatus: finished.status,
-          memoriesAfterTask: memory.countForOwner(executor.id),
-        }) + '\n',
-      );
-      app.exit(injected ? 0 : 1);
       return;
     }
 
@@ -2798,42 +2314,4 @@ if (!hasLock) {
     void desktopBroker?.dispose();
     desktopBroker = null;
   });
-}
-
-/**
- * 解析抽取结果。
- *
- * 解析失败的一行直接丢——宁可少记一条，也不要把半句话猜成一条偏好。
- */
-function parseExtracted(text: string): {
-  kind: 'preference' | 'constraint' | 'format' | 'workflow' | 'person' | 'term' | 'fact';
-  subject: string | null;
-  volatility: 'stable' | 'slow' | 'session';
-  scope: 'person' | 'thread';
-  content: string;
-}[] {
-  const kinds = ['preference', 'constraint', 'format', 'workflow', 'person', 'term', 'fact'] as const;
-  const volatilities = ['stable', 'slow', 'session'] as const;
-
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.includes('|'))
-    .map((line) => {
-      const [rawKind, rawSubject, rawVolatility, rawScope, ...rest] = line.split('|');
-      const content = rest.join('|').trim();
-      if (content.length === 0) return null;
-      const kind = kinds.find((value) => value === rawKind?.trim().toLowerCase()) ?? 'preference';
-      const volatility =
-        volatilities.find((value) => value === rawVolatility?.trim().toLowerCase()) ?? 'slow';
-      const subject = rawSubject?.trim();
-      return {
-        kind,
-        subject: !subject || subject === '-' ? null : subject,
-        volatility,
-        scope: rawScope?.trim().toLowerCase() === 'thread' ? ('thread' as const) : ('person' as const),
-        content,
-      };
-    })
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 }

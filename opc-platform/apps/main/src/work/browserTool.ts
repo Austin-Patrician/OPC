@@ -7,11 +7,14 @@ import type { BrowserBroker, BrowserSessionInput } from '../browser/broker';
 export interface BrowserToolDeps {
   broker: BrowserBroker;
   taskId: () => string | undefined;
+  threadId?: () => string | undefined;
   workerId: string;
   userId: string;
   workspace: () => string | undefined;
   authorize?: (tool: string, title: string, metadata?: { action: string; url?: string; preview?: string; sessionId?: string }) => boolean;
 }
+
+const MAX_INLINE_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 
 function fail(text: string): ToolExecutionResult {
   return { isError: true, output: [{ type: 'text' as const, text }] };
@@ -21,7 +24,8 @@ export function createBrowserToolExtension(deps: BrowserToolDeps) {
   const session = (): BrowserSessionInput => {
     const taskId = deps.taskId();
     if (!taskId) throw new Error('浏览器工具只能在任务执行期间使用');
-    return { taskId, workerId: deps.workerId, userId: deps.userId };
+    const threadId = deps.threadId?.();
+    return { taskId, ...(threadId ? { threadId } : {}), workerId: deps.workerId, userId: deps.userId };
   };
   const gated = (tool: string, title: string, metadata?: { action: string; url?: string; preview?: string; sessionId?: string }): boolean => deps.authorize?.(tool, title, metadata) ?? true;
   return defineExtension({
@@ -149,12 +153,31 @@ export function createBrowserToolExtension(deps: BrowserToolDeps) {
       }),
       defineTool({
         name: 'browser_screenshot',
-        description: '截取当前浏览器页面并保存为当前任务产物。',
+        description: '截取当前浏览器页面并保存为当前任务产物，同时将截图作为图像内容返回给多模态模型查看。',
         deferred: true,
         parameters: Type.Object({}),
         execute: async (): Promise<ToolExecutionResult> => {
-          try { const result = await deps.broker.screenshot(session()); return result.ok ? { output: [{ type: 'text', text: `${result.text}\n产物：${result.path ?? ''}` }], details: { artifact: result.path ?? '' } } : fail(result.text); }
-          catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+          try {
+            const result = await deps.broker.screenshot(session());
+            if (!result.ok) return fail(result.text);
+            const output: NonNullable<ToolExecutionResult['output']> = [
+              { type: 'text', text: `${result.text}\n产物：${result.path ?? ''}` },
+            ];
+            if (result.path) {
+              try {
+                const stat = await fs.promises.stat(result.path);
+                if (stat.isFile() && stat.size > 0 && stat.size <= MAX_INLINE_SCREENSHOT_BYTES) {
+                  const data = (await fs.promises.readFile(result.path)).toString('base64');
+                  output.unshift({ type: 'image', data, mimeType: 'image/png' });
+                }
+              } catch {
+                // Keep text fallback if file could not be read.
+              }
+            }
+            return { output, details: { artifact: result.path ?? '' } };
+          } catch (error) {
+            return fail(error instanceof Error ? error.message : String(error));
+          }
         },
       }),
       defineTool({

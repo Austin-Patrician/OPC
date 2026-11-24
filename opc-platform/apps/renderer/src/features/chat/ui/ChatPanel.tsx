@@ -1,70 +1,126 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ArrowRight, Check, Lightbulb, ListChecks } from 'lucide-react';
+import { ArrowRight, Check, Compass, Lightbulb, ListChecks } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Agent } from '@/entities/agent/model/types';
 import type { Conversation } from '@/entities/conversation/model/types';
 import { Composer } from './Composer';
 import { MessageStream } from './MessageStream';
+import {
+  INITIAL_FIRST_ITEM_INDEX,
+  mergeSnapshotMessages,
+  prependOlderMessages,
+  type MessageStreamState,
+} from '../lib/messageList';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
-import type { ChatAttachmentRef, Message } from '@opc/shared/domain';
-import type { ChatMessagePage } from '@opc/shared/ipc';
+import type { ChatAttachmentRef } from '@opc/shared/domain';
+import type { AssistantActivityPhase, ChatMessagePage } from '@opc/shared/ipc';
 
 interface ChatPanelProps {
   conversation: Conversation;
   agents: readonly Agent[];
   typingNames: readonly string[];
+  activityPhase?: AssistantActivityPhase;
   hasOlderMessages: boolean;
   loadOlderMessages: (beforeMessageId: string) => Promise<ChatMessagePage>;
   targetMessageId?: string;
+  onWelcomeVisibilityChange?: (visible: boolean) => void;
   onSend: (text: string, mentionIds: string[], attachments?: ChatAttachmentRef[]) => void;
 }
+
+const BUSY_PHASES: ReadonlySet<AssistantActivityPhase> = new Set([
+  'thinking',
+  'delegating',
+  'working',
+  'organizing',
+  'typing',
+]);
 
 /** Center column: header, virtualized stream, composer. */
 export function ChatPanel({
   conversation,
   agents,
   typingNames,
+  activityPhase,
   hasOlderMessages,
   loadOlderMessages,
   targetMessageId,
+  onWelcomeVisibilityChange,
   onSend,
 }: ChatPanelProps) {
-  const [loadedMessages, setLoadedMessages] = useState<Message[]>(conversation.messages);
-  const loadedMessagesRef = useRef(loadedMessages);
+  const [streamState, setStreamState] = useState<MessageStreamState>(() => ({
+    messages: conversation.messages,
+    firstItemIndex: INITIAL_FIRST_ITEM_INDEX,
+  }));
+  const streamStateRef = useRef(streamState);
+  streamStateRef.current = streamState;
+  const [runningThreads, setRunningThreads] = useState<Record<string, true>>({});
 
   useEffect(() => {
-    setLoadedMessages((current) => {
-      const merged = mergeSnapshotMessages(current, conversation.messages);
-      loadedMessagesRef.current = merged;
-      return merged;
+    const onProgress = window.opc?.work?.onProgress;
+    if (!onProgress) return undefined;
+    return onProgress((event) => {
+      setRunningThreads((current) => {
+        const isRunning = event.state === 'running';
+        const alreadyRunning = Boolean(current[event.threadId]);
+        if (isRunning === alreadyRunning) return current;
+        if (isRunning) return { ...current, [event.threadId]: true };
+        const next = { ...current };
+        delete next[event.threadId];
+        return next;
+      });
+    });
+  }, []);
+
+  const hasRunningWorker = Object.keys(runningThreads).length > 0;
+  const isBusy = Boolean(hasRunningWorker || (activityPhase && BUSY_PHASES.has(activityPhase)));
+  const isWelcomeVisible = streamState.messages.length === 0;
+
+  useEffect(() => {
+    onWelcomeVisibilityChange?.(isWelcomeVisible);
+    return () => onWelcomeVisibilityChange?.(false);
+  }, [isWelcomeVisible, onWelcomeVisibilityChange]);
+
+  const handleInterruptAll = useCallback(() => {
+    void window.opc?.chat?.interrupt('用户点击停止');
+  }, []);
+
+  useEffect(() => {
+    setStreamState((current) => {
+      const merged = mergeSnapshotMessages(current.messages, conversation.messages);
+      if (merged === current.messages) return current;
+      const next = { ...current, messages: merged };
+      streamStateRef.current = next;
+      return next;
     });
   }, [conversation.messages]);
 
   const handleLoadOlder = useCallback(async (beforeMessageId: string) => {
     const page = await loadOlderMessages(beforeMessageId);
     if (page.messages.length > 0) {
-      setLoadedMessages((current) => {
-        const merged = mergeOlderMessages(current, page.messages);
-        loadedMessagesRef.current = merged;
-        return merged;
+      setStreamState((current) => {
+        const next = prependOlderMessages(current, page.messages);
+        streamStateRef.current = next;
+        return next;
       });
     }
     return page;
   }, [loadOlderMessages]);
 
   useEffect(() => {
-    if (!targetMessageId || loadedMessagesRef.current.some((message) => message.id === targetMessageId)) return;
+    if (!targetMessageId || streamStateRef.current.messages.some((message) => message.id === targetMessageId)) return;
     let cancelled = false;
     void (async () => {
-      let messages = loadedMessagesRef.current;
-      let cursor = messages[0]?.id;
-      while (cursor && !messages.some((message) => message.id === targetMessageId)) {
+      let state = streamStateRef.current;
+      let cursor = state.messages[0]?.id;
+      while (cursor && !state.messages.some((message) => message.id === targetMessageId)) {
         const page = await loadOlderMessages(cursor);
         if (cancelled || page.messages.length === 0) break;
-        messages = mergeOlderMessages(messages, page.messages);
-        loadedMessagesRef.current = messages;
+        const nextState = prependOlderMessages(state, page.messages);
+        if (nextState === state) break;
+        state = nextState;
+        streamStateRef.current = nextState;
         cursor = page.messages[0]?.id;
-        setLoadedMessages(messages);
+        setStreamState(nextState);
         if (!page.hasMore) break;
       }
     })();
@@ -74,22 +130,23 @@ export function ChatPanel({
   // Newest first; the composer walks it backwards on ArrowUp / ArrowDown.
   const sentHistory = useMemo(
     () =>
-      loadedMessages
+      streamState.messages
         .flatMap((message) =>
           message.senderId === 'user' && message.kind === 'text' && message.text?.trim() ? [message.text] : [],
         )
         .reverse(),
-    [loadedMessages],
+    [streamState.messages],
   );
 
   return (
     <main className="buddy-chat relative flex min-w-0 flex-1 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col">
-        {loadedMessages.length === 0 ? (
+        {streamState.messages.length === 0 ? (
           <WelcomeCanvas onSend={(text) => onSend(text, [])} />
         ) : (
           <MessageStream
-            messages={loadedMessages}
+            messages={streamState.messages}
+            firstItemIndex={streamState.firstItemIndex}
             agents={agents}
             typingNames={typingNames}
             hasOlderMessages={hasOlderMessages}
@@ -98,45 +155,29 @@ export function ChatPanel({
           />
         )}
 
-        <Composer key={conversation.id} onSend={onSend} history={sentHistory} />
+        <Composer
+          key={conversation.id}
+          onSend={onSend}
+          history={sentHistory}
+          busy={isBusy}
+          onStop={handleInterruptAll}
+        />
       </div>
     </main>
   );
 }
 
-function mergeSnapshotMessages(current: Message[], incoming: readonly Message[]): Message[] {
-  const merged = current.slice();
-  const indexById = new Map(merged.map((message, index) => [message.id, index]));
-  for (const message of incoming) {
-    const index = indexById.get(message.id);
-    if (index === undefined) {
-      indexById.set(message.id, merged.length);
-      merged.push(message);
-    } else {
-      merged[index] = message;
-    }
-  }
-  return merged;
-}
-
-function mergeOlderMessages(current: Message[], older: readonly Message[]): Message[] {
-  const existing = new Map(current.map((message) => [message.id, message]));
-  const merged = older.map((message) => existing.get(message.id) ?? message);
-  const mergedIds = new Set(merged.map((message) => message.id));
-  return [...merged, ...current.filter((message) => !mergedIds.has(message.id))];
-}
-
 function WelcomeCanvas({ onSend }: { onSend: (text: string) => void }) {
   const { t } = useTranslation();
   return (
-    <div className="buddy-welcome min-h-0 flex-1 overflow-y-auto px-5 sm:px-8">
-      <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col items-center justify-start px-1 pt-3 pb-6 text-center sm:px-0">
+    <div className="buddy-welcome min-h-0 flex-1 overflow-y-auto px-6">
+      <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col items-center justify-center py-6 text-center">
         <div className="relative mb-3">
-          <div className="buddy-welcome-halo absolute -inset-3 rounded-full blur-xl" />
-          <BuddyMark size="xl" />
+          <div className="buddy-welcome-halo absolute -inset-5 rounded-full blur-xl" />
+          <BuddyMark size="2xl" interactive />
         </div>
         <div className="buddy-online-badge inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium">
-          <span className="size-1.5 rounded-full bg-[#22b560]" />
+          <span className="size-1.5 rounded-full bg-success" />
           {t('chat.welcome.online')}
         </div>
         <h1 className="buddy-welcome-title mt-3 text-[22px] font-bold tracking-tight">
@@ -151,11 +192,13 @@ function WelcomeCanvas({ onSend }: { onSend: (text: string) => void }) {
             {t('chat.welcome.tryOne')}
           </p>
           <button type="button" onClick={() => onSend(t('chat.welcome.prompts.plan.message'))} className="buddy-starter group flex w-full flex-col items-center gap-4 rounded-[16px] border p-3.5 text-left transition-all sm:flex-row">
-            <img src="https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=320&h=220&fit=crop&auto=format" alt={t('chat.welcome.cardImageAlt')} className="h-[78px] w-full shrink-0 rounded-[11px] border border-black/[0.04] object-cover sm:w-[116px]" />
+            <span className="flex size-12 shrink-0 items-center justify-center rounded-xl border border-line bg-surface-muted text-ink-secondary">
+              <Compass size={22} strokeWidth={1.7} />
+            </span>
             <span className="min-w-0 flex-1 space-y-2">
               <span className="buddy-starter-title block text-[14px] font-medium leading-snug">“{t('chat.welcome.prompts.plan.title')}”</span>
               <span className="flex items-center justify-between gap-2">
-                <span className="buddy-welcome-result inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] font-medium"><span className="flex size-4 items-center justify-center rounded-full bg-[#22b560] text-white"><Check size={10} strokeWidth={3} /></span>{t('chat.welcome.prompts.plan.description')}</span>
+                <span className="buddy-welcome-result inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] font-medium"><span className="flex size-4 items-center justify-center rounded-full bg-success text-white"><Check size={10} strokeWidth={3} /></span>{t('chat.welcome.prompts.plan.description')}</span>
                 <span className="buddy-welcome-action inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium opacity-80 transition group-hover:translate-x-0.5 group-hover:opacity-100">{t('chat.welcome.tryIt')}<ArrowRight size={14} /></span>
               </span>
             </span>

@@ -97,6 +97,18 @@ export class OwnerQueue {
     return total;
   }
 
+  /** Removes a queued (not yet started) task from an owner's queue and settles its waiters. */
+  cancelQueued(ownerId: string, taskId: string): boolean {
+    const queue = this.waiting.get(ownerId);
+    if (!queue) return false;
+    const index = queue.indexOf(taskId);
+    if (index === -1) return false;
+    queue.splice(index, 1);
+    if (queue.length === 0) this.waiting.delete(ownerId);
+    this.settle(taskId);
+    return true;
+  }
+
   /** 等这个任务跑完。它已经结束过的话永远不返回——调用方先用 `isRunning` 判。 */
   whenDone(taskId: string): Promise<void> {
     return new Promise<void>((resolve) => {

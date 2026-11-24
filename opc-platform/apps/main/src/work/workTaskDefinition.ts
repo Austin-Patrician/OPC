@@ -70,35 +70,13 @@ export interface WorkTaskResult {
  */
 export interface WorkTaskServices {
   brain: TaskBrain;
-  /** Recalls the assignee's memories for this task; absent = memory disabled. */
-  recallMemories?: (task: {
+  /** Recalls Markdown-first memory pack (`USER.md` + `RULES.md`, matched `PLAYBOOK.md`, matched `topics/`). */
+  recallMemoryPack?: (task: {
     assigneeId: string;
     title: string;
     brief: string;
-    /** 这条工作线自己的经验能一起召回（v2 的记忆作用域）。 */
     threadId?: string;
-  }) => Promise<{ kind: string; content: string; scopeType: string }[]>;
-  /** Evidence-backed, bounded personal ontology context. */
-  recallOntology?: (task: { workTaskId: string; assigneeId: string; threadId?: string; title: string; brief: string }) => string | undefined;
-  /** Company/department facts that apply to this assignee. */
-  /**
-   * 常驻约束（`standing` 层）。
-   *
-   * 单独一个口子而不是塞进 `recallMemories`：那个是"按相关度挑几条"，这个是
-   * "每一轮原样在场"。混在一起，用户说过的那条禁令就会因为本轮不相关而消失。
-   */
-  recallStanding?: (task: { assigneeId: string }) => Promise<{ content: string }[]>;
-  /**
-   * 做事规矩（`format` / `workflow`）。
-   *
-   * 单独一个口子，不塞进 `recallMemories`：那个是"按相关度挑几条经验"，这个是"每次
-   * 都要遵守的约束"。混在一起，用户的格式要求就会因为本轮字面不相关而消失——而那正是
-   * 他重复说过三次的事。
-   */
-  recallProcedural?: (task: {
-    assigneeId: string;
-    threadId?: string;
-  }) => Promise<{ kind: string; content: string }[]>;
+  }) => Promise<{ core?: string; playbook: string[]; topics: string[] }>;
   recallFacts?: (task: {
     assigneeId: string;
     /** 这条线自己的规定能一起召回。 */
@@ -178,90 +156,30 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
       const workTask = toWorkTask(repository, task.input.workTaskId);
       const workspaceDir = ensureDir(task.input.workspaceDir);
 
-      // Recall before producing: the same ranking the design specifies (identity →
-      // scoped memory → task query), with a hard cap so the prompt stays small.
-      if (services?.recallMemories) {
+      if (services?.recallMemoryPack) {
         try {
-          const memories = await services.recallMemories({
+          const pack = await services.recallMemoryPack({
             assigneeId: workTask.assigneeId,
             title: workTask.title,
             brief: workTask.brief,
             ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
           });
-          if (memories.length > 0) {
-            workTask.memories = memories;
-            logStep(task.input.workTaskId, `注入 ${memories.length} 条记忆`, {
-              repository,
-              recordDurableStep,
-              onTaskChanged,
-            });
-          }
-        } catch (error) {
-          logStep(task.input.workTaskId, `记忆检索失败（${error instanceof Error ? error.message : String(error)}）`, {
-            repository,
-            recordDurableStep,
-            onTaskChanged,
-          });
-        }
-      }
-
-      if (services?.recallOntology) {
-        try {
-          const ontologyContext = services.recallOntology({
-            workTaskId: task.input.workTaskId,
-            assigneeId: workTask.assigneeId,
-            title: workTask.title,
-            brief: workTask.brief,
-            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
-          });
-          if (ontologyContext) workTask.ontologyContext = ontologyContext;
-        } catch (error) {
-          logStep(task.input.workTaskId, `本体上下文读取失败（${error instanceof Error ? error.message : String(error)}）`, {
-            repository,
-            recordDurableStep,
-            onTaskChanged,
-          });
-        }
-      }
-
-      if (services?.recallStanding) {
-        try {
-          const standing = await services.recallStanding({ assigneeId: workTask.assigneeId });
-          if (standing.length > 0) {
-            workTask.standing = standing;
-            logStep(task.input.workTaskId, `注入 ${standing.length} 条常驻约束`, {
-              repository,
-              recordDurableStep,
-              onTaskChanged,
-            });
+          if (pack.core) workTask.memoryCore = pack.core;
+          if (pack.playbook.length > 0) workTask.memoryPlaybook = pack.playbook;
+          if (pack.topics.length > 0) workTask.memoryTopics = pack.topics;
+          const totalItems =
+            (pack.core ? 1 : 0) + pack.playbook.length + pack.topics.length;
+          if (totalItems > 0) {
+            logStep(
+              task.input.workTaskId,
+              `注入记忆上下文（核心画像/铁律${pack.core ? '√' : '×'} · 避坑 ${pack.playbook.length} 条 · 专题 ${pack.topics.length} 条）`,
+              { repository, recordDurableStep, onTaskChanged },
+            );
           }
         } catch (error) {
           logStep(
             task.input.workTaskId,
-            `常驻约束读取失败（${error instanceof Error ? error.message : String(error)}）`,
-            { repository, recordDurableStep, onTaskChanged },
-          );
-        }
-      }
-
-      if (services?.recallProcedural) {
-        try {
-          const procedural = await services.recallProcedural({
-            assigneeId: workTask.assigneeId,
-            ...(workTask.threadId ? { threadId: workTask.threadId } : {}),
-          });
-          if (procedural.length > 0) {
-            workTask.procedural = procedural;
-            logStep(task.input.workTaskId, `注入 ${procedural.length} 条做事规矩`, {
-              repository,
-              recordDurableStep,
-              onTaskChanged,
-            });
-          }
-        } catch (error) {
-          logStep(
-            task.input.workTaskId,
-            `做事规矩读取失败（${error instanceof Error ? error.message : String(error)}）`,
+            `记忆上下文读取失败（${error instanceof Error ? error.message : String(error)}）`,
             { repository, recordDurableStep, onTaskChanged },
           );
         }
@@ -347,6 +265,15 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         if (answer) repository.setAnswer(workTask.id, answer);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const latestStatus = repository.getTask(task.input.workTaskId)?.status;
+        if (runtime.signal.aborted || latestStatus === 'cancelled') {
+          logStep(task.input.workTaskId, '任务已中止，停止继续执行', {
+            repository,
+            recordDurableStep,
+            onTaskChanged,
+          });
+          return;
+        }
         if (services?.approvalPending?.(task.input.workTaskId)) {
           logStep(task.input.workTaskId, `等待审批（${message}）`, {
             repository,

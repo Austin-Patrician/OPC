@@ -5,7 +5,7 @@ import { execFilePlatform } from '../process/execFilePlatform';
 import type { BrowserInstallProgress } from '@opc/shared/ipc';
 import type { BrowserInstallService, BrowserSettings, BrowserStatus } from './install';
 
-export interface BrowserSessionInput { taskId: string; workerId: string; userId?: string; }
+export interface BrowserSessionInput { taskId: string; threadId?: string; workerId: string; userId?: string; }
 export interface BrowserResult { ok: boolean; text: string; details?: Record<string, unknown>; }
 export interface BrowserArtifact { ok: boolean; path?: string; text: string; }
 export interface BrowserArtifactRegistration { (taskId: string, absolutePath: string): void; }
@@ -127,14 +127,14 @@ export class BrowserBroker {
 
   async show(taskId: string): Promise<void> {
     this.visibleTask = taskId;
-    const session = [...this.sessions.values()].find((item) => item.taskId === taskId);
+    const session = [...this.sessions.values()].find((item) => item.taskId === taskId || item.threadId === taskId);
     if (session) await this.run(session, ['get', 'url'], ['--headed', 'true']);
   }
 
   async hide(taskId?: string): Promise<void> {
     const targetTask = taskId ?? this.visibleTask;
     if (!taskId || this.visibleTask === taskId) this.visibleTask = undefined;
-    const session = [...this.sessions.values()].find((item) => item.taskId === targetTask);
+    const session = [...this.sessions.values()].find((item) => item.taskId === targetTask || item.threadId === targetTask);
     if (session) await this.run(session, ['get', 'url'], ['--headed', 'false']);
   }
 
@@ -180,11 +180,18 @@ export class BrowserBroker {
   }
 
   private session(input: BrowserSessionInput): Session {
-    const readable = input.taskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'task';
-    const digest = crypto.createHash('sha256').update(input.taskId).digest('hex').slice(0, 12);
+    // Thread-scoped browser session: follow-up turns on the same Living Worker thread
+    // reuse the open browser tabs and page state instead of starting from blank.
+    const scopeKey = input.threadId || input.taskId;
+    const readable = scopeKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'task';
+    const digest = crypto.createHash('sha256').update(scopeKey).digest('hex').slice(0, 12);
     const id = `opc-${readable}-${digest}`;
     const existing = this.sessions.get(id);
-    if (existing) { existing.lastUsedAt = Date.now(); return existing; }
+    if (existing) {
+      existing.taskId = input.taskId;
+      existing.lastUsedAt = Date.now();
+      return existing;
+    }
     const session: Session = { ...input, id, profile: this.install.profilePath(input.userId ?? 'default'), lastUsedAt: Date.now() };
     this.sessions.set(id, session);
     return session;

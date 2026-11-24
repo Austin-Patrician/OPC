@@ -121,22 +121,6 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(conversation.lastMessage).toBe('助手: 前一条结论');
   });
 
-  it('Ontology 命令审批卡处理后从聊天中移除', () => {
-    const chat = new ChatService({ agents: [], conversations: [] });
-    const id = chat.ensureAssistant();
-    chat.appendOntologyApprovalCard(id, {
-      type: 'ontologyApproval',
-      commandId: 'command-1',
-      action: 'delegate_task',
-      objectType: 'Task',
-      title: '助手请求执行一项操作',
-      body: '请确认',
-      state: 'pending',
-    });
-    chat.updateOntologyApprovalCard('command-1', 'approved');
-    expect(chat.readTranscript(id)).toEqual([]);
-  });
-
   it('混合消息只移除审批块，保留其他内容', () => {
     const chat = new ChatService({ agents: [], conversations: [] });
     const id = chat.ensureAssistant();
@@ -356,6 +340,43 @@ describe('ChatService：Router 是聊天的对面', () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('Router 流式增量更新对快照广播按 40ms 节流，但 getSnapshot 同步最新且完成时立即刷新', async () => {
+    const chat = new ChatService({ agents: [], conversations: [] });
+    const id = chat.ensureAssistant();
+    const snapshots: string[] = [];
+    chat.subscribe((snapshot) => {
+      const text = snapshot.conversations.find((item) => item.id === id)?.messages.at(-1)?.text;
+      if (text !== undefined) snapshots.push(text);
+    });
+
+    const messageId = chat.beginRouterStream(id)!;
+    // 首包立即推送（之前的 setActivity('typing') 还没有消息正文）
+    chat.updateRouterStream(id, messageId, 'A');
+    expect(snapshots).toEqual(['A']);
+
+    // 40ms 内连续高频增量：getSnapshot 始终同步最新，但订阅广播合并到 40ms 尾部一次
+    await vi.advanceTimersByTimeAsync(10);
+    chat.updateRouterStream(id, messageId, 'AB');
+    chat.updateRouterStream(id, messageId, 'ABC');
+    expect(chat.getSnapshot().conversations[0]?.messages.at(-1)?.text).toBe('ABC');
+    expect(snapshots).toEqual(['A']);
+
+    await vi.advanceTimersByTimeAsync(30);
+    expect(snapshots).toEqual(['A', 'ABC']);
+
+    // 紧接着高频更新后再立即 finishRouterStream：应取消待定定时器并立即推送最终结果
+    await vi.advanceTimersByTimeAsync(5);
+    chat.updateRouterStream(id, messageId, 'ABCD');
+    expect(snapshots).toEqual(['A', 'ABC']);
+    chat.finishRouterStream(id, messageId, 'ABCDE');
+    expect(snapshots).toEqual(['A', 'ABC', 'ABCDE', 'ABCDE']);
+
+    // 确保定时器已清空，不会再多推旧快照
+    await vi.advanceTimersByTimeAsync(100);
+    expect(snapshots).toEqual(['A', 'ABC', 'ABCDE', 'ABCDE']);
+    chat.dispose();
   });
 
   it('初始旧会话会隐藏历史任务卡并从最新可见消息生成预览', () => {

@@ -7,7 +7,7 @@ import {
   type ToolExecutionResult,
   type ToolHookCall,
 } from '@earendil-works/pi-durable';
-import type { TaskTraceKind } from '@opc/shared/domain';
+import type { TaskTrace, TaskTraceKind } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 
 /**
@@ -57,6 +57,7 @@ export interface TraceRecorder {
 export function createTraceRecorder(deps: {
   repository: TaskRepository;
   taskId: string;
+  onRecord?: (trace: TaskTrace) => void;
 }): TraceRecorder {
   let seq = deps.repository.maxTraceSeq(deps.taskId);
   let warned = false;
@@ -66,8 +67,9 @@ export function createTraceRecorder(deps: {
     record(input) {
       seq += 1;
       try {
-        deps.repository.appendTrace({ taskId: deps.taskId, seq, ...input });
+        const entry = deps.repository.appendTrace({ taskId: deps.taskId, seq, ...input });
         deps.repository.pruneTrace(deps.taskId, TRACE_HEAD, TRACE_TAIL);
+        deps.onRecord?.(entry);
       } catch (error) {
         // 记轨迹失败不该让一个正在干活的执行体停下来。说一次，然后继续。
         if (!warned) {

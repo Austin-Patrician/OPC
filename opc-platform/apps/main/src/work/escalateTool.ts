@@ -155,7 +155,8 @@ export function createHandBackToolExtension(deps: HandBackToolDeps) {
       defineTool({
         name: 'hand_back',
         description:
-          '把这条工作线交回给调度它的那个助手：目标变了、缺权限、或者本来就不是执行类的工作。' +
+          '把这条工作线交回给调度助手：仅当你彻底缺乏所需工具/权限、或任务类型完全不匹配时使用。' +
+          '如果是用户基于当前成果追加小改动或微调需求，请直接在当前工作区完成，不要交回。' +
           '交回不是失败——它不消耗一次尝试。交回之后你不会再收到这条线上的新事件。',
         parameters: Type.Object({
           reason: Type.String({ description: '为什么不该由你做，一句话说清。' }),

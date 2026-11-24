@@ -287,14 +287,17 @@
   const decisionRows = count('[data-testid="decision-model-row"]');
   const decisionRunButton = Boolean(document.querySelector('[data-testid="run-decision"]'));
 
-  // ── 设置 → 行为：工作台的规矩与记忆巩固审计 ───────────────────────────────
+  // ── 设置 → 行为：工作台的规矩与记忆状态 ───────────────────────────────
   await go('#/settings?page=workspaceRules', 700);
   const factsForm = Boolean(document.querySelector('[data-testid="fact-subject"]'));
   const factRows = count('[data-testid="fact-row"]');
   if (factsForm && factRows === 0) throw new Error('规矩写进去了，规矩页却一行都读不到');
   await go('#/settings?page=consolidation', 700);
   const runRows = count('[data-testid="consolidation-run-row"]');
-  const consolidationRuns = await window.opc.memory.consolidationRuns(executor.id);
+  const memoryStatus = await window.opc.memory.status();
+  if (!memoryStatus || typeof memoryStatus.docCount !== 'number') {
+    throw new Error('记忆状态读取失败');
+  }
 
   // ── 设置 → 上下文压缩：阈值设置独立于规矩和记忆 ───────────────────────────
   await go('#/settings?page=compaction', 900);
@@ -472,7 +475,7 @@
     factsForm,
     factRows,
     runRows,
-    consolidationRunRows: Array.isArray(consolidationRuns) ? consolidationRuns.length : -1,
+    consolidationRunRows: Array.isArray(memoryStatus.recentRuns) ? memoryStatus.recentRuns.length : -1,
     triageGroups,
     triageSources,
     triageRestored,

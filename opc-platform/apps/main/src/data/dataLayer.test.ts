@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemoryService } from '../memory/memoryService';
 import { CompanyService } from '../company/companyService';
 import { openCompanyDatabase, probeSqlite, type CompanyDatabase } from './companyDatabase';
 import { MIGRATIONS, SCHEMA_VERSION } from './schema';
@@ -429,40 +428,6 @@ describe('TaskRepository', () => {
       [open.id, running.id].sort(),
     );
     expect(repository.listRunning().map((task) => task.id)).toEqual([running.id]);
-  });
-});
-
-describe('MemoryService', () => {
-  it("never returns another line's memory", async () => {
-    const worker = seedWorker();
-    const memory = new MemoryService(db);
-    const mine = seedWorker('小王').threadId!;
-    const theirs = seedWorker('小李').threadId!;
-
-    await memory.remember({
-      ownerId: worker.id,
-      kind: 'experience',
-      content: '上线前先跑一遍冒烟脚本，避免端口冲突',
-      scope: { type: 'thread', id: mine },
-      sourceType: 'task',
-    });
-
-    const ownLine = await memory.retrieve({
-      owners: [worker.id],
-      query: '冒烟脚本',
-      scopes: [{ type: 'thread', id: mine }],
-      limit: 3,
-    });
-    expect(ownLine).toHaveLength(1);
-
-    // 同一个执行体、另一条线：那条线的经验不该出现在这里。
-    const otherLine = await memory.retrieve({
-      owners: [worker.id],
-      query: '冒烟脚本',
-      scopes: [{ type: 'thread', id: theirs }],
-      limit: 3,
-    });
-    expect(otherLine).toHaveLength(0);
   });
 });
 

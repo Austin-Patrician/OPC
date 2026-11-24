@@ -5,6 +5,7 @@ import type { ThreadRepository } from '../data/threadRepository';
 import type { TriggerReplyTarget } from '../trigger/types';
 import type { SemanticScreener } from './semanticGate';
 import { DEFAULT_INLINE_BUDGET, perItemBudget, spillText, type InlineBudget } from './inline';
+import { RouterInterruptedError } from './routerSession';
 import { isValidThreadKey } from './threadKey';
 import { bodyOf } from './triage';
 
@@ -98,9 +99,13 @@ export interface RouterDeps {
    * 它不参与检索、不看相关度、不衰减：每一轮原样在场。
    */
   standing?: () => readonly string[];
+  /** 本地 Pull-Auto 相关记忆/避坑自动召回（<2ms 词法索引，零 LLM 开销）。 */
+  recallContext?: (events: readonly TriggerEvent[]) => string | undefined;
   /** 一轮最多看多少条事件。 */
   batchSize?: number;
   now?: () => number;
+  /** Preemptively aborts an in-flight Router session turn when interrupted by the user. */
+  abortCurrent?: (reason?: string) => Promise<void> | void;
 }
 
 export interface TickReport {
@@ -127,10 +132,43 @@ export class Router {
   private readonly batchSize: number;
   private inFlight: Promise<TickReport> | null = null;
   private rerunRequested = false;
+  private interruptState: { active: boolean; requeue: boolean } = { active: false, requeue: false };
 
   constructor(private readonly deps: RouterDeps) {
     this.batchSize = deps.batchSize ?? DEFAULT_BATCH;
   }
+
+  /** True while a tick is currently running (including waiting for Router LLM turn). */
+  get busy(): boolean {
+    return this.inFlight !== null;
+  }
+
+  /**
+   * Immediately interrupts the in-flight Router turn (if any).
+   * - `requeue: true` (default for Option A new-message interrupt): rolls back the
+   *   interrupted batch so the next tick sees both the interrupted input and the new message together.
+   * - `requeue: false` (explicit Stop button): discards the interrupted turn without replaying it.
+   */
+  interrupt = async (
+    reason = 'user_interrupt',
+    options: { requeue?: boolean } = {},
+  ): Promise<boolean> => {
+    const running = this.inFlight;
+    const requeue = options.requeue ?? false;
+    if (!running) {
+      await this.deps.abortCurrent?.(reason);
+      return false;
+    }
+    this.interruptState = { active: true, requeue };
+    if (!requeue) this.rerunRequested = false;
+    try {
+      await this.deps.abortCurrent?.(reason);
+    } catch (error) {
+      console.warn('[router] abortCurrent failed', error);
+    }
+    await running.catch(() => undefined);
+    return true;
+  };
 
   /**
    * 一轮。可以按定时器调用，也可以连着调两次。
@@ -242,6 +280,8 @@ export class Router {
     this.deps.threads.markAnnounced(reports.map((row) => row.id));
     report.routed = slow.length;
 
+    this.interruptState = { active: false, requeue: false };
+    const recalled = this.deps.recallContext?.(slow)?.trim() || undefined;
     try {
       await this.deps.deliver(
         composeInput(
@@ -249,11 +289,24 @@ export class Router {
           reports,
           this.deps.rules?.() ?? [],
           this.deps.standing?.() ?? [],
+          DEFAULT_INLINE_BUDGET,
+          recalled,
         ),
         collectReplyTargets(slow, reports),
         { attachments: collectAttachments(slow) },
       );
     } catch (error) {
+      const interrupted = this.interruptState;
+      this.interruptState = { active: false, requeue: false };
+      if (interrupted.active || error instanceof RouterInterruptedError) {
+        if (interrupted.requeue) {
+          this.deps.threads.resetTriage(slow.map((event) => event.id));
+          this.deps.threads.unmarkAnnounced(reports.map((row) => row.id));
+        }
+        report.routed = 0;
+        report.reports = 0;
+        return report;
+      }
       // 交不进去就把标记撤回，下一轮重来。宁可重复一次，不可丢一次。
       this.deps.threads.resetTriage(slow.map((event) => event.id));
       this.deps.threads.unmarkAnnounced(reports.map((row) => row.id));
@@ -311,6 +364,7 @@ export function composeInput(
   rules: readonly string[] = [],
   standing: readonly string[] = [],
   budget: InlineBudget = DEFAULT_INLINE_BUDGET,
+  recalledMemory?: string,
 ): string {
   const lines: string[] = [];
   // 预算按"要内联的对象数"分摊，不是每条一个定值：3 条时给足，40 条时压低。
@@ -325,6 +379,11 @@ export function composeInput(
   if (standing.length > 0) {
     lines.push(`## 用户要求过、一直有效的（${standing.length} 条，违反就是错）`);
     for (const rule of standing) lines.push(`- ${spillText(rule, 'recall_memory', budget.ceiling)}`);
+    lines.push('');
+  }
+
+  if (recalledMemory?.trim()) {
+    lines.push(recalledMemory.trim());
     lines.push('');
   }
 
@@ -374,13 +433,10 @@ export function composeInput(
 
   lines.push('');
   lines.push(
-    '判断：这些里有哪些需要用户知道？哪些该派活（open_line_of_work）？' +
-      '哪些直接不管？任何用户可见的最终回复都必须调用 reply_to_user，并提交按顺序排列的 blocks；' +
-      '普通文字使用 markdown block，媒体和文件使用对应 block。不要把工具调用、思考或中间文本当成回复。' +
+    '判断：该新开线（open_line_of_work）、在已有工作线上追加/转向（continue_line / steer_line）、中止跑偏任务（abort_line），还是直接回复？' +
+      '任何用户可见的最终回复都必须调用 reply_to_user 并提交 blocks。' +
       '汇报非核验。桌面 recall task:<taskId>，只报轨迹事实。调用成功不等于生效；标题未变不证按键无效。无证据说“效果未确认”，勿猜。' +
-      '面向用户只写结果、状态和下一步：不要解释派活、工作线、执行体、工具、模型、验收或内部能力。' +
-      '成功派发后台任务且尚无结果时，不发送开始确认；若用户同时提出了可立即回答的问题，只回答该问题。' +
-      '任务已有结果时直接交付结果；失败只说已确认的原因和下一步。',
+      '面向用户只写结果、状态和下一步；不要解释内部调度、工具或模型。成功派发/续跑且尚无结果时，不发送开始确认。',
   );
 
   return lines.join('\n');

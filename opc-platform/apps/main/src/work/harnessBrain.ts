@@ -1,7 +1,7 @@
 import type { WorkTask } from '@opc/shared/domain';
 import type { Context } from '@earendil-works/chord/context';
 import type { ModelRef } from '@opc/shared/domain';
-import type { Harness, Conversation } from '@earendil-works/pi-durable';
+import type { ContextEdit, Conversation, ConversationId, Harness } from '@earendil-works/pi-durable';
 import { registerSandboxAttachments, registerSandboxWorkspace } from '../sandbox/workspaces';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
@@ -50,6 +50,12 @@ export interface HarnessBrainDeps {
    * 知道的——这条回调是两者之间的桥。不给我就是"这个运行时没有要审批的东西"。
    */
   registerApproval?: (conversationId: unknown, taskId: string) => () => void;
+  /** Persistent Living Worker conversation lookup by workerId. */
+  workerConversation?: (workerId: string) => { conversationId: string | null; lastCleanEntryId: number | null } | null;
+  /** Saves a Living Worker's persistent conversation id and optional clean checkpoint entry id. */
+  onWorkerConversation?: (workerId: string, conversationId: string, lastCleanEntryId?: number | null) => void;
+  /** Records the conversation tail entry id right before a task turn begins (for clean pivot pruning). */
+  onTaskCheckpoint?: (taskId: string, entryId: number | null) => void;
 }
 
 /**
@@ -119,6 +125,72 @@ export class HarnessBrain implements TaskBrain {
     return true;
   };
 
+  /** Immediately aborts an in-flight Worker conversation generation. */
+  abortLive = async (taskId: string): Promise<boolean> => {
+    const conversation = this.live.get(taskId);
+    if (!conversation) return false;
+    const ctx = await this.deps.context();
+    if (typeof conversation.abort === 'function') {
+      await conversation.abort(ctx).catch(() => undefined);
+    }
+    return true;
+  };
+
+  /**
+   * Non-destructively prunes an aborted/pivoted turn's entries from a Living Worker's
+   * active context using pi-durable ContextEdit, keeping prior clean turns intact.
+   */
+  pruneAfterCheckpoint = async (
+    identity: RuntimeIdentity,
+    conversationId: string,
+    fromEntryId: number | null,
+    tombstone: string,
+  ): Promise<number> => {
+    const { harness } = await this.deps.harnessFor(identity);
+    const ctx = await this.deps.context();
+    const numericId = Number(conversationId);
+    const convId = (Number.isFinite(numericId) ? numericId : conversationId) as ConversationId;
+    const conversation = await harness.conversation(convId, ctx).catch(() => undefined);
+    if (!conversation || typeof conversation.context !== 'function') return 0;
+    const view = await conversation.context(ctx).catch(() => undefined);
+    if (!view) return 0;
+    const cutoff = fromEntryId ?? 0;
+    const targets = view.entries.filter(
+      (entry) =>
+        Number(entry.id) > cutoff &&
+        entry.kind !== 'pi.system' &&
+        entry.kind !== 'pi.system_patch' &&
+        entry.kind !== 'pi.compaction' &&
+        entry.kind !== 'pi.reset',
+    );
+    if (targets.length === 0) return 0;
+    const edits: ContextEdit[] = targets.map((entry, index) =>
+      index === 0
+        ? {
+            target: entry.id,
+            action: 'replace',
+            messages: [
+              {
+                role: 'user',
+                content: `[上一轮路线已中止并清理，忽略之前未采纳的尝试：${tombstone}]`,
+                timestamp: Date.now(),
+              } as never,
+            ],
+          }
+        : { target: entry.id, action: 'omit' },
+    );
+    await conversation
+      .submit(
+        {
+          type: 'write',
+          entry: { kind: 'opc.worker_prune', data: { fromEntryId: cutoff, count: edits.length, at: Date.now() }, edits },
+        } as never,
+        ctx,
+      )
+      .catch(() => undefined);
+    return edits.length;
+  };
+
   async execute(context: {
     task: WorkTask;
     workspaceDir: string;
@@ -153,7 +225,35 @@ export class HarnessBrain implements TaskBrain {
     const callStartedAt = Date.now();
     const before = await harness.usage(ctx);
     let conversation = durableTaskId ? this.conversations.get(durableTaskId) : undefined;
-    if (!conversation && durableTaskId) {
+    let reusedWarmConversation = false;
+
+    // Living Worker: reuse the thread worker's persistent conversation when available.
+    if (!conversation && task.workerId && this.deps.workerConversation) {
+      const saved = this.deps.workerConversation(task.workerId);
+      if (saved?.conversationId && typeof harness.conversation === 'function') {
+        const numericId = Number(saved.conversationId);
+        const convId = (Number.isFinite(numericId) ? numericId : saved.conversationId) as ConversationId;
+        const found = await harness.conversation(convId, ctx).catch(() => undefined);
+        if (found) {
+          conversation = found;
+          reusedWarmConversation = true;
+          if (typeof conversation.configure === 'function') {
+            await conversation
+              .configure(
+                {
+                  model: { provider: model.providerId, modelId: model.modelId },
+                  thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
+                  cwd: workspaceDir,
+                } as never,
+                ctx,
+              )
+              .catch(() => undefined);
+          }
+        }
+      }
+    }
+
+    if (!conversation && durableTaskId && typeof harness.commit === 'function') {
       const existingId = await harness.commit(async (tx) => {
         const page = await tx.scanConversations({ ownerTaskId: durableTaskId as never, order: 'descending' }, 1);
         return page.items[0]?.id;
@@ -161,11 +261,14 @@ export class HarnessBrain implements TaskBrain {
       if (existingId) conversation = await harness.conversation(existingId, ctx);
     }
     if (!conversation) {
+      const persistent = Boolean(task.workerId && this.deps.onWorkerConversation);
       conversation = await harness.createConversation(
         {
-          ownership: durableTaskId
-            ? { kind: 'task', taskId: durableTaskId as never }
-            : { kind: 'ownerless' },
+          ownership: persistent
+            ? { kind: 'ownerless' }
+            : durableTaskId
+              ? { kind: 'task', taskId: durableTaskId as never }
+              : { kind: 'ownerless' },
           // cwd is the task workspace: every tool call is rooted there.
           // pi's ModelRef uses `provider`; ours uses `providerId`.
           agent: {
@@ -177,8 +280,19 @@ export class HarnessBrain implements TaskBrain {
         },
         ctx,
       );
+      if (persistent && task.workerId) {
+        this.deps.onWorkerConversation?.(task.workerId, String(conversation.id));
+      }
     }
     if (durableTaskId) this.conversations.set(durableTaskId, conversation);
+
+    // Record pre-turn checkpoint entry id so a future pivot can cleanly prune this turn.
+    if (typeof conversation.context === 'function') {
+      const preView = await conversation.context(ctx).catch(() => undefined);
+      const lastEntry = preView?.entries[preView.entries.length - 1];
+      const checkpointId = lastEntry ? Number(lastEntry.id) : null;
+      this.deps.onTaskCheckpoint?.(task.id, checkpointId);
+    }
 
     // The sandbox hook needs to know which directory this conversation may touch.
     registerSandboxWorkspace(conversation.id, workspaceDir);
@@ -190,13 +304,22 @@ export class HarnessBrain implements TaskBrain {
     const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder) : null;
     const stopApproval = this.deps.registerApproval?.(conversation.id, task.id) ?? null;
 
-    log(`交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`);
+    log(
+      reusedWarmConversation
+        ? `复用热上下文继续 pi 循环（${task.turnMode ?? 'append'}）：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`
+        : `交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`,
+    );
     if (feedback) log(`修复上下文：${feedback.reason}`);
+
+    const promptContent =
+      reusedWarmConversation && (task.turnMode === 'append' || task.turnMode === 'pivot') && !feedback
+        ? buildDeltaPrompt(task)
+        : buildPrompt(task, feedback);
 
     this.live.set(task.id, conversation);
     try {
       const submission = await conversation.submit(
-        { type: 'input', content: buildPrompt(task, feedback) },
+        { type: 'input', content: promptContent },
         ctx,
       );
       const settled = await submission.wait(ctx);
@@ -253,6 +376,11 @@ export class HarnessBrain implements TaskBrain {
           ? await conversation.commit((tx) => tx.entry(settled.answer), ctx)
           : undefined;
       const answer = assistantText(answerEntry);
+      if (task.workerId && this.deps.onWorkerConversation && typeof conversation.context === 'function') {
+        const postView = await conversation.context(ctx).catch(() => undefined);
+        const tail = postView?.entries[postView.entries.length - 1];
+        this.deps.onWorkerConversation(task.workerId, String(conversation.id), tail ? Number(tail.id) : null);
+      }
       log('pi 循环结束');
       return answer ? { answer } : {};
     } catch (error) {
@@ -343,7 +471,7 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
   lines.push(
     '',
     `要求：`,
-    '1. 按输出要求完成交付；只有契约声明的文件才需要创建。',
+    '1. 按当前目标与输出要求完成交付；在同一工作区内可以增量迭代并保留先前有用产物。',
     '2. 用 bash 做**离线**检查（例如 `node --check server.js`）；**不要**启动长驻服务、不要访问网络——',
     '   沙箱会阻断出网，而系统会在沙箱外用真实验收脚本启动并判定。',
     '3. 确认无误后立即结束；如果要求文本回答，把结论放在最终回答里。',
@@ -366,18 +494,13 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     for (const entry of steers) lines.push(`- ${entry.note}`);
   }
 
-  // 用户亲口要求过、一直有效的那些。排在"工作台的规定"之前：前者是他刚说的，
-  // 后者是配置里的默认值，冲突时听刚说的那个人。
-  if (task.standing && task.standing.length > 0) {
-    lines.push('', '用户要求过、一直有效（必须遵守）：');
-    for (const rule of task.standing) lines.push(`- ${rule.content}`);
+  if (task.memoryCore?.trim()) {
+    lines.push('', '用户环境、习惯与长期铁律（必须遵守）：', task.memoryCore.trim());
   }
 
-  // 用户要求过的格式与流程。它排在"相关经验"之前、"工作台的规定"之后：这是他对**输出**
-  // 的要求，比我们默认的习惯优先。
-  if (task.procedural && task.procedural.length > 0) {
-    lines.push('', '用户要求过的做事规矩（必须遵守）：');
-    for (const rule of task.procedural) lines.push(`- ${rule.content}`);
+  if (task.memoryPlaybook && task.memoryPlaybook.length > 0) {
+    lines.push('', '历史避坑提醒（动手前务必先核对，避免重复踩坑）：');
+    for (const tip of task.memoryPlaybook) lines.push(`- ${tip}`);
   }
 
   if (task.facts && task.facts.length > 0) {
@@ -385,13 +508,9 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     for (const fact of task.facts) lines.push(`- ${fact.statement}`);
   }
 
-  if (task.memories && task.memories.length > 0) {
-    lines.push('', '你想起的相关经验（按相关度排序，可直接使用）：');
-    for (const memory of task.memories) lines.push(`- ${memory.content}`);
-  }
-
-  if (task.ontologyContext?.trim()) {
-    lines.push('', '个人本体上下文（只把有证据的内容当作事实；低置信度内容需核实）：', task.ontologyContext);
+  if (task.memoryTopics && task.memoryTopics.length > 0) {
+    lines.push('', '相关专题与背景知识：');
+    for (const topic of task.memoryTopics) lines.push(`- ${topic}`);
   }
 
   if (feedback) {
@@ -405,6 +524,50 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
     );
   }
 
+  return lines.join('\n');
+}
+
+/**
+ * Concise delta prompt used when a Living Worker resumes an existing warm conversation
+ * (`turnMode: 'append' | 'pivot'`). Avoids repeating full cold-start boilerplate.
+ */
+export function buildDeltaPrompt(task: WorkTask): string {
+  const contract = task.contract ?? {
+    objective: task.brief,
+    deliverable: task.deliverableSpec,
+    outputs: [],
+  };
+  const header =
+    task.turnMode === 'pivot'
+      ? '用户调整了方向（已清理上一轮跑偏尝试，请保留工作区中仍有用的部分并按新方向继续）：'
+      : '用户基于你当前的工作区和成果提出了增量要求（直接在此基础上修改/追加即可，无需从头推倒）：';
+  const lines = [
+    header,
+    '',
+    `新指令：${contract.objective}`,
+    ...(contract.deliverable && contract.deliverable !== contract.objective ? [`期望交付：${contract.deliverable}`] : []),
+  ];
+  if (contract.outputs.length > 0) {
+    lines.push('更新后的输出要求：');
+    for (const output of contract.outputs) {
+      lines.push(
+        output.kind === 'file'
+          ? `- 文件 ${output.path}：${output.description}`
+          : `- 文本回答：${output.description}`,
+      );
+    }
+  }
+  if (contract.attachments?.length) {
+    lines.push('', '本次新增可读取附件（只读）：');
+    for (const attachment of contract.attachments) {
+      lines.push(`- ${attachment.name} · ${attachment.size} bytes · ${attachment.path}`);
+    }
+  }
+  if (task.memoryPlaybook && task.memoryPlaybook.length > 0) {
+    lines.push('', '历史避坑提醒（本次增量修改也请留意）：');
+    for (const tip of task.memoryPlaybook) lines.push(`- ${tip}`);
+  }
+  lines.push('', '完成后请做必要的离线检查，并在最终回答里简洁说明改动与结果。');
   return lines.join('\n');
 }
 

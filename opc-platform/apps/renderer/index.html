@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="color-scheme" content="light dark" />
     <title>OPC Agent 工作台</title>
     <script>
@@ -28,7 +28,7 @@
           var scaleMap = { sm: 0.9, md: 1, lg: 1.08, xl: 1.16 };
           root.style.fontSize = (scaleMap[scale] || 1) * 100 + '%';
           if (prefs.locale) root.lang = prefs.locale;
-          if (prefs.fontFamilyId) root.dataset.font = prefs.fontFamilyId;
+          root.dataset.font = prefs.fontFamilyId || 'inter';
           if (prefs.background && prefs.background.kind) {
             root.dataset.bg = prefs.background.kind;
           }

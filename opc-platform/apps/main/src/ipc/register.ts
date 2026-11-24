@@ -1,14 +1,9 @@
 import {
   IPC,
-  type RuntimeObservatorySnapshot,
-  type RuntimeObservatoryRequest,
-  type RuntimeEventView,
   type WatchdogActionView,
   type WatchdogIncidentView,
   type SendMessageInput,
   type ChatSearchInput,
-  type MemoryView,
-  type OrphanMemoryGroup,
   type TriggerPatch,
   type TriggerStatus,
   type UsageFilter,
@@ -26,6 +21,7 @@ import type {
   BillingSettingsPatch,
   TriagePolicyPatch,
   WorkThread,
+  RouterContextStats,
   RouterScheduleDraft,
   RouterSchedulePatch,
 } from "@opc/shared/domain";
@@ -41,7 +37,9 @@ import type { OcrSettings } from "@opc/shared/ocr";
 import type { FactService } from "../memory/factService";
 import type { TriagePolicyStore } from "../router/triagePolicy";
 import type { ThreadRepository } from "../data/threadRepository";
-import type { ConsolidationRunStore } from "../memory/consolidationRun";
+import type { MarkdownMemoryStore } from "../memory/markdownMemoryStore";
+import type { MemorySearchIndex } from "../memory/memorySearchIndex";
+import type { MemoryReflector } from "../memory/memoryReflector";
 import type { AuthService } from "../models/authService";
 import type { CompanyService } from "../company/companyService";
 import { readImageArtifact } from "../work/artifacts";
@@ -72,9 +70,6 @@ import type { PiExtensionHost } from "../extensions/host";
 import type { PiSkillHost } from "../skills/host";
 import type { WorkService } from "../work/workService";
 import type { BillingSettingsService } from "../work/billingSettings";
-import type { SystemEventRepository } from "../data/systemEventRepository";
-import type { ContextGraphStore } from "../ontology/types";
-import type { OntologyCommandService } from "../ontology/commandService";
 import type { BrowserBroker } from "../browser/broker";
 import type { DesktopBroker } from "../desktop/broker";
 import type { AssistantToolsService } from "../assistant/assistantTools";
@@ -125,24 +120,15 @@ interface RegisterOptions {
   workspaceRoot: string;
   /** v2 核心：工作线 / 执行体 / 事件 / 汇报。 */
   threads: ThreadRepository;
-  /** Runtime observatory reads this safe, persisted event stream. */
-  events: SystemEventRepository;
   /** 你丢一个目标：开线 + 入队事件 + 立刻推一次 Router（由 bootstrap 注入）。 */
   startGoal: (goal: string) => Promise<WorkThread>;
   facts: FactService;
-  consolidationRuns: ConsolidationRunStore;
+  memoryStore: MarkdownMemoryStore;
+  memoryIndex: MemorySearchIndex;
+  memoryReflector: MemoryReflector;
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
   schedules: RouterScheduleRepository;
-  /** 记忆：读写都在服务里，这里只转发。 */
-  memories: {
-    list: () => MemoryView[];
-    update: (id: string, content: string) => boolean;
-    forget: (id: string) => boolean;
-    orphans: () => OrphanMemoryGroup[];
-    claim: (ownerId: string) => number;
-    discard: (ownerId: string) => number;
-  };
   /** 触发源：外部平台推进来的那扇门。 */
   triggers: {
     status: () => TriggerStatus;
@@ -152,10 +138,15 @@ interface RegisterOptions {
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
   piSkills: PiSkillHost;
-  ontology: ContextGraphStore;
-  ontologyCommands: OntologyCommandService;
   browser?: BrowserBroker;
   desktop?: DesktopBroker;
+  /** Interrupt and context hygiene controls for the live Router session. */
+  routerControls?: {
+    interrupt(reason?: string): Promise<{ ok: boolean; abortedThreads: number }>;
+    getContextStats(): Promise<RouterContextStats>;
+    compactContext(): Promise<{ ok: boolean; reason?: string }>;
+    resetContext(handoff?: string): Promise<{ ok: boolean; reason?: string }>;
+  };
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -168,10 +159,11 @@ export function registerIpc({
   auth,
   workspaceRoot,
   threads,
-  events,
   startGoal,
   facts,
-  consolidationRuns,
+  memoryStore,
+  memoryIndex,
+  memoryReflector,
   company,
   network,
   assistantTools,
@@ -185,12 +177,10 @@ export function registerIpc({
   triage,
   schedules,
   triggers,
-  memories,
   watchdog,
-  ontology,
-  ontologyCommands,
   browser,
   desktop,
+  routerControls,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -231,22 +221,10 @@ export function registerIpc({
   };
 
   const unsubscribeWork = work.subscribe((task) => {
-    const runtimeEvent: RuntimeEventView = {
-      id: `runtime-${task.id}-${task.updatedAt ?? Date.now()}`,
-      at: task.updatedAt ?? Date.now(),
-      kind: `task.${task.status}`,
-      severity: task.status === "failed" ? "error" : "info",
-      subjectType: "task",
-      subjectId: task.id,
-      summary: `${task.status} · ${task.title}`,
-      detail: JSON.stringify({ workerId: task.workerId ?? task.assigneeId, threadId: task.threadId ?? null }),
-    };
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
-        window.webContents.send(IPC.work.taskEvent, task);
-        window.webContents.send(IPC.runtime.changedEvent, runtimeEvent);
-      }
-    }
+    broadcast(IPC.work.taskEvent, task);
+  });
+  const unsubscribeWorkProgress = work.subscribeProgress((progress) => {
+    broadcast(IPC.work.progressEvent, progress);
   });
 
   const unsubscribe = chat.subscribe((snapshot) => {
@@ -338,52 +316,6 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.runtime.snapshot, () => runtime.snapshot());
-
-  ipcMain.handle(IPC.runtime.observatory, (_event, request?: RuntimeObservatoryRequest): RuntimeObservatorySnapshot => {
-    const mode = request?.mode === "detail" ? "detail" : "summary";
-    const tasks = work.listAllTasks(200);
-    // Keep recently retired executors in the read-only observatory payload long
-    // enough for the renderer to show their last completed task after a handoff.
-    const workers = threads.listRuntimeWorkers(Date.now() - 10 * 60_000);
-    const traces: RuntimeObservatorySnapshot["traces"] = {};
-    if (mode === "detail" && (request?.taskId || request?.workerId)) {
-      const selected = request.taskId ? tasks.filter((task) => task.id === request.taskId) : tasks.filter((task) => (task.workerId ?? task.assigneeId) === request.workerId);
-      for (const task of selected) traces[task.id] = work.listTrace(task.id, 40);
-    }
-    return {
-      generatedAt: Date.now(),
-      workers,
-      tasks,
-      traces,
-      incidents: watchdog.incidents.listRecent(50),
-      actions: mode === "detail" ? watchdog.actions.listRecent(20) : [],
-      events: mode === "detail" ? events.listRecent(80) : [],
-      heartbeat: events.readHeartbeat(),
-    };
-  });
-
-  // Worker status and watchdog heartbeats are persisted outside WorkService, so
-  // they do not have a task subscription to trigger the renderer. A small
-  // unref'ed pulse keeps the live observatory responsive while the snapshot
-  // remains the single source of truth.
-  let runtimePulseSeq = 0;
-  const runtimePulse = setInterval(() => {
-    const heartbeat = events.readHeartbeat();
-    const workers = threads.listAllWorkers();
-    const now = Date.now();
-    const pulse: RuntimeEventView = {
-      id: `runtime-pulse-${now}-${runtimePulseSeq++}`,
-      at: heartbeat?.at ?? now,
-      kind: heartbeat?.state === 'stopping' ? 'system.stopping' : 'system.heartbeat',
-      severity: 'info',
-      subjectType: 'system',
-      subjectId: heartbeat?.instanceId ?? 'main',
-      summary: `runtime pulse · ${workers.length} workers`,
-      detail: JSON.stringify({ workerIds: workers.map((worker) => worker.id), heartbeat }),
-    };
-    broadcast(IPC.runtime.changedEvent, pulse);
-  }, 2000);
-  runtimePulse.unref?.();
 
   // Re-detects every profile; the settings page calls this explicitly so a
   // version is never probed during a tool call.
@@ -518,6 +450,39 @@ export function registerIpc({
     if (typeof conversationId !== "string")
       throw new Error("chat:markRead 参数非法");
     chat.markRead(conversationId);
+  });
+  ipcMain.handle(IPC.chat.interrupt, async (_event, reason: unknown) => {
+    const label = typeof reason === "string" && reason.trim() ? reason.trim() : "用户点击停止";
+    if (routerControls) return routerControls.interrupt(label);
+    const result = await work.abortActiveThreads(label);
+    return { ok: true, abortedThreads: result.abortedThreads };
+  });
+  ipcMain.handle(IPC.chat.getContextStats, async () => {
+    if (routerControls) return routerControls.getContextStats();
+    return {
+      estimatedTokens: 0,
+      contextWindow: 128_000,
+      usageRatio: 0,
+      entryCount: 0,
+      prunedCount: 0,
+      busy: false,
+      compacting: false,
+    } satisfies RouterContextStats;
+  });
+  ipcMain.handle(IPC.chat.compactContext, async () => {
+    if (!routerControls) return { ok: false, reason: "Router 尚未就绪" };
+    return routerControls.compactContext();
+  });
+  ipcMain.handle(IPC.chat.resetContext, async (_event, handoff: unknown) => {
+    if (!routerControls) return { ok: false, reason: "Router 尚未就绪" };
+    return routerControls.resetContext(typeof handoff === "string" ? handoff : undefined);
+  });
+  ipcMain.handle(IPC.work.abortThread, async (_event, threadId: unknown, reason: unknown) => {
+    if (typeof threadId !== "string" || !threadId.trim()) {
+      throw new Error("work:abortThread 需要 threadId");
+    }
+    const label = typeof reason === "string" && reason.trim() ? reason.trim() : "用户中止任务";
+    return work.abortThread(threadId, label, { closeThread: false, pruneFailedTurn: true });
   });
 
   ipcMain.handle(IPC.models.list, () => models.listProviders());
@@ -783,41 +748,51 @@ export function registerIpc({
       return catalog;
     },
   );
-  ipcMain.handle(IPC.memory.consolidationRuns, (_event, ownerId: unknown) =>
-    consolidationRuns.list(
-      20,
-      typeof ownerId === "string" ? ownerId : undefined,
-    ),
+  ipcMain.handle(IPC.memory.listDocs, () => memoryStore.listDocs());
+  ipcMain.handle(IPC.memory.readDoc, (_event, relPath: unknown) => {
+    if (typeof relPath !== "string" || !relPath.trim()) {
+      throw new Error("memory:readDoc 参数非法");
+    }
+    return memoryStore.readDoc(relPath);
+  });
+  ipcMain.handle(IPC.memory.writeDoc, (_event, relPath: unknown, content: unknown) => {
+    if (typeof relPath !== "string" || typeof content !== "string") {
+      throw new Error("memory:writeDoc 参数非法");
+    }
+    return memoryStore.writeDoc(relPath, content, { reason: "manual-ui" });
+  });
+  ipcMain.handle(IPC.memory.deleteDoc, (_event, relPath: unknown) => {
+    if (typeof relPath !== "string" || !relPath.trim()) {
+      throw new Error("memory:deleteDoc 参数非法");
+    }
+    return memoryStore.deleteDoc(relPath, "manual-ui-delete");
+  });
+  ipcMain.handle(IPC.memory.search, (_event, query: unknown, limit: unknown) => {
+    if (typeof query !== "string") {
+      throw new Error("memory:search 参数非法");
+    }
+    return memoryIndex.search(query, {
+      limit: typeof limit === "number" && Number.isFinite(limit) ? limit : 12,
+      minScore: 0.1,
+    });
+  });
+  ipcMain.handle(IPC.memory.reflectNow, () => memoryReflector.reflectNow());
+  ipcMain.handle(IPC.memory.listSnapshots, () => memoryStore.listSnapshots());
+  ipcMain.handle(IPC.memory.rollbackSnapshot, (_event, snapshotId: unknown) => {
+    if (typeof snapshotId !== "string" || !snapshotId.trim()) {
+      throw new Error("memory:rollbackSnapshot 参数非法");
+    }
+    return memoryStore.rollbackSnapshot(snapshotId);
+  });
+  ipcMain.handle(IPC.memory.openFolder, async () => {
+    memoryStore.ensureInitialized();
+    const root = memoryStore.getRootDir();
+    const openError = await shell.openPath(root);
+    return { ok: !openError, path: root };
+  });
+  ipcMain.handle(IPC.memory.status, () =>
+    memoryStore.status(memoryReflector.isReflecting()),
   );
-
-  // 两层过滤的策略：读一份、写一份。写的是部分更新，没提到的字段保持原值——
-  // 表单只提交它改过的那几行，不整份覆盖。
-  ipcMain.handle(IPC.memory.list, () => memories.list());
-  ipcMain.handle(IPC.memory.update, (_event, id: unknown, content: unknown) => {
-    if (typeof id !== "string" || typeof content !== "string") {
-      throw new Error("memory:update 参数非法");
-    }
-    return memories.update(id, content);
-  });
-  ipcMain.handle(IPC.memory.orphans, () => memories.orphans());
-  ipcMain.handle(IPC.memory.claim, (_event, ownerId: unknown) => {
-    if (typeof ownerId !== "string" || ownerId.trim().length === 0) {
-      throw new Error("memory:claim 参数非法");
-    }
-    return memories.claim(ownerId);
-  });
-  ipcMain.handle(IPC.memory.discard, (_event, ownerId: unknown) => {
-    if (typeof ownerId !== "string" || ownerId.trim().length === 0) {
-      throw new Error("memory:discard 参数非法");
-    }
-    return memories.discard(ownerId);
-  });
-  ipcMain.handle(IPC.memory.forget, (_event, id: unknown) => {
-    if (typeof id !== "string" || id.trim().length === 0) {
-      throw new Error("memory:forget 参数非法");
-    }
-    return memories.forget(id);
-  });
 
   ipcMain.handle(IPC.trigger.status, () => triggers.status());
   ipcMain.handle(IPC.trigger.set, (_event, patch: unknown) => {
@@ -944,40 +919,6 @@ export function registerIpc({
       50,
     );
   });
-
-  ipcMain.handle(IPC.ontology.context, (_event, raw: unknown) => {
-    const input = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {};
-    const subject = typeof input.subjectEntityId === 'string' && input.subjectEntityId.trim() ? input.subjectEntityId : 'ontology-user';
-    return ontology.contextPack(subject, {
-      query: typeof input.query === 'string' ? input.query : undefined,
-      maxHops: typeof input.maxHops === 'number' ? input.maxHops : undefined,
-      maxAssertions: typeof input.maxAssertions === 'number' ? input.maxAssertions : undefined,
-    });
-  });
-  ipcMain.handle(IPC.ontology.history, (_event, raw: unknown) => {
-    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:history 参数非法');
-    const input = raw as Record<string, unknown>;
-    if (typeof input.subjectEntityId !== 'string' || !input.subjectEntityId.trim()) throw new Error('ontology:history 需要 subjectEntityId');
-    return ontology.assertionHistory(input.subjectEntityId, typeof input.predicate === 'string' ? input.predicate : undefined);
-  });
-  ipcMain.handle(IPC.ontology.command, (_event, raw: unknown) => {
-    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:command 参数非法');
-    const input = raw as Record<string, unknown>;
-    if (!['user', 'router', 'worker'].includes(String(input.actor))) throw new Error('ontology:command actor 非法');
-    if (typeof input.objectType !== 'string' || typeof input.objectId !== 'string' || typeof input.action !== 'string' || typeof input.idempotencyKey !== 'string') throw new Error('ontology:command 缺少 objectType/objectId/action/idempotencyKey');
-    // Execution actors are main-process identities. The renderer may submit a
-    // user command, but must not impersonate Router/Worker to bypass policy.
-    if (input.actor !== 'user') throw new Error('ontology:command 只能由用户身份提交');
-    return ontologyCommands.execute({ actor: 'user', objectType: input.objectType, objectId: input.objectId, action: input.action, args: input.args, expectedVersion: typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined, idempotencyKey: input.idempotencyKey, approvalId: typeof input.approvalId === 'string' ? input.approvalId : undefined }).then((result) => result.command);
-  });
-  ipcMain.handle(IPC.ontology.commandStatus, (_event, raw: unknown) => {
-    if (typeof raw !== 'object' || raw === null) throw new Error('ontology:commandStatus 参数非法');
-    const input = raw as Record<string, unknown>;
-    if (typeof input.commandId !== 'string' || !['approved', 'rejected'].includes(String(input.status))) throw new Error('ontology:commandStatus 只能由审批流程设置为 approved / rejected');
-    if (input.status === 'approved') return ontologyCommands.approve(input.commandId).then((result) => result.command);
-    return ontologyCommands.transition(input.commandId, 'rejected', input.result, typeof input.error === 'string' ? input.error : undefined);
-  });
-  ipcMain.handle(IPC.ontology.outbox, (_event, limit: unknown) => ontology.pendingOutbox(typeof limit === 'number' ? limit : 100));
 
   // ── Work threads ───────────────────────────────────────────────────────
   ipcMain.handle(IPC.threads.start, (_event, goal: unknown) => {
@@ -1439,7 +1380,7 @@ export function registerIpc({
     unsubscribeWork();
     unsubscribeUsage();
     unsubscribeSchedules();
-    clearInterval(runtimePulse);
+    unsubscribeWorkProgress();
     ipcMain.removeHandler(IPC.billing.get);
     for (const channel of [IPC.router.listSchedules, IPC.router.createSchedule, IPC.router.updateSchedule,
       IPC.router.cancelSchedule, IPC.router.listScheduleOccurrences]) ipcMain.removeHandler(channel);
@@ -1454,6 +1395,7 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.trace);
     ipcMain.removeHandler(IPC.work.createTask);
     ipcMain.removeHandler(IPC.work.runTask);
+    ipcMain.removeHandler(IPC.work.abortThread);
     for (const channel of Object.values(IPC.mcp)) ipcMain.removeHandler(channel);
     for (const channel of Object.values(IPC.browser)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.app.getInfo);
@@ -1467,6 +1409,10 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.ensureAssistant);
     ipcMain.removeHandler(IPC.chat.archive);
     ipcMain.removeHandler(IPC.chat.restore);
+    ipcMain.removeHandler(IPC.chat.interrupt);
+    ipcMain.removeHandler(IPC.chat.getContextStats);
+    ipcMain.removeHandler(IPC.chat.compactContext);
+    ipcMain.removeHandler(IPC.chat.resetContext);
   };
 }
 

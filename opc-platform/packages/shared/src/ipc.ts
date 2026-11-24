@@ -45,6 +45,8 @@ import type {
   SpeechTranscribeResult,
   TaskTrace,
   WorkTask,
+  WorkerProgressEvent,
+  RouterContextStats,
   ChatAttachmentRef,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
@@ -69,6 +71,10 @@ export const IPC = {
     snapshotEvent: "chat:snapshot",
     chooseAttachments: "chat:chooseAttachments",
     materializeClipboardAttachment: "chat:materializeClipboardAttachment",
+    interrupt: "chat:interrupt",
+    getContextStats: "chat:getContextStats",
+    compactContext: "chat:compactContext",
+    resetContext: "chat:resetContext",
   },
   diagnostics: {
     report: "diagnostics:report",
@@ -109,21 +115,17 @@ export const IPC = {
     list: "facts:list",
     write: "facts:write",
   },
-  ontology: {
-    context: "ontology:context",
-    history: "ontology:history",
-    command: "ontology:command",
-    commandStatus: "ontology:commandStatus",
-    outbox: "ontology:outbox",
-  },
   memory: {
-    consolidationRuns: "memory:consolidationRuns",
-    list: "memory:list",
-    update: "memory:update",
-    forget: "memory:forget",
-    orphans: "memory:orphans",
-    claim: "memory:claim",
-    discard: "memory:discard",
+    listDocs: "memory:listDocs",
+    readDoc: "memory:readDoc",
+    writeDoc: "memory:writeDoc",
+    deleteDoc: "memory:deleteDoc",
+    search: "memory:search",
+    reflectNow: "memory:reflectNow",
+    listSnapshots: "memory:listSnapshots",
+    rollbackSnapshot: "memory:rollbackSnapshot",
+    openFolder: "memory:openFolder",
+    status: "memory:status",
   },
   router: {
     getTriage: "router:getTriage",
@@ -224,7 +226,9 @@ export const IPC = {
     trace: "work:trace",
     createTask: "work:createTask",
     runTask: "work:runTask",
+    abortThread: "work:abortThread",
     taskEvent: "work:taskChanged",
+    progressEvent: "work:progress",
   },
   billing: {
     get: "billing:get",
@@ -256,8 +260,6 @@ export const IPC = {
   },
   runtime: {
     snapshot: "runtime:snapshot",
-    observatory: "runtime:observatory",
-    changedEvent: "runtime:changed",
     probe: "runtime:probe",
     setActive: "runtime:setActive",
     chooseBinary: "runtime:chooseBinary",
@@ -408,6 +410,14 @@ export interface ChatBridge {
   ): Promise<{ archived: boolean; written: number }>;
   /** Moves an archived conversation back into the active list. */
   restore(conversationId: string): Promise<void>;
+  /** Hard-stops active Router generation and active Worker threads. */
+  interrupt(reason?: string): Promise<{ ok: boolean; abortedThreads: number }>;
+  /** Live health stats of the Router's active context window. */
+  getContextStats(): Promise<RouterContextStats>;
+  /** Manually compacts the Router context window. */
+  compactContext(): Promise<{ ok: boolean; reason?: string }>;
+  /** Starts a fresh Router focus with a concise handoff. */
+  resetContext(handoff?: string): Promise<{ ok: boolean; reason?: string }>;
 }
 
 export interface WorkBridge {
@@ -445,6 +455,10 @@ export interface WorkBridge {
     type?: "blocks" | "duplicates" | "relates",
   ): Promise<WorkTask>;
   onTaskChanged(listener: (task: WorkTask) => void): () => void;
+  /** Immediately aborts running/queued tasks on a thread. */
+  abortThread(threadId: string, reason?: string): Promise<{ ok: boolean; abortedTasks?: number; reason?: string }>;
+  /** Real-time sideband Worker progress events for the chat UI. */
+  onProgress(listener: (event: WorkerProgressEvent) => void): () => void;
 }
 
 export interface ModelsBridge {
@@ -571,18 +585,6 @@ export interface FactView {
   statement: string;
   confidence: number;
   validFrom: number;
-}
-
-export interface ConsolidationRunView {
-  id: string;
-  ownerId: string;
-  conversationIds: string[];
-  episodeCount: number;
-  memoriesCreated: number;
-  status: "running" | "done" | "failed" | "skipped";
-  error: string | null;
-  startedAt: number;
-  finishedAt: number | null;
 }
 
 /** One tool exactly as the runtime installed it for an agent. */
@@ -713,55 +715,73 @@ export interface SkillsBridge {
   setEnabled(id: string, enabled: boolean): Promise<PiSkillCatalog>;
 }
 
-/**
- * 一条记忆，给「它记得什么」这一页看。
- *
- * 界面必须能回答三个问题：**记住了什么**、**记错了怎么改**、**它是从哪知道的**。
- * 第三条尤其重要——能追到来源的记忆才是可信的记忆。
- */
-export interface MemoryView {
-  id: string;
-  /** `standing` 每轮都生效；`long` 命中相关度才出现。 */
-  tier: "long" | "standing";
-  kind: string;
-  /** 主题键：同一条规矩改过几次都只留一条，靠它认出来。 */
-  subject: string | null;
-  content: string;
-  createdAt: number;
-  sourceType: string;
-  /** 被观察到几次。到 3 次会自己升进常驻层。 */
-  observations: number;
-  scopeType: string;
+export type MemoryDocCategory = "user" | "rules" | "playbook" | "topic" | "daily";
+
+export interface MemoryDocSummary {
+  relPath: string;
+  category: MemoryDocCategory;
+  title: string;
+  size: number;
+  updatedAt: number;
+  itemCount?: number;
 }
 
-/**
- * 一组没有归属的记忆。
- *
- * 真实存在过的坑：早期版本把记忆挂在执行体名下，那些执行体早就不在了，于是有一批记忆
- * 谁也读不到。V33 明确决定不在迁移里猜归属——代价就是这个。出口不是再猜一次，
- * 是问用户一句：这些是以前记的，还要吗。
- */
-export interface OrphanMemoryGroup {
-  ownerId: string;
-  count: number;
-  samples: string[];
+export interface MemoryDocDetail extends MemoryDocSummary {
+  content: string;
+}
+
+export interface MemorySearchHit {
+  id: string;
+  relPath: string;
+  category: MemoryDocCategory;
+  docTitle: string;
+  sectionTitle: string;
+  snippet: string;
+  score: number;
+  updatedAt: number;
+}
+
+export interface MemorySnapshotView {
+  id: string;
+  relPath: string;
+  createdAt: number;
+  reason: string;
+  size: number;
+}
+
+export interface MemoryReflectionRunView {
+  id: string;
+  trigger: "conversation" | "signal" | "compact" | "manual";
+  startedAt: number;
+  finishedAt: number;
+  status: "done" | "skipped" | "failed";
+  summary: string;
+  changedFiles: string[];
+  error?: string;
+}
+
+export interface MemoryStatusView {
+  rootDir: string;
+  docCount: number;
+  ruleCount: number;
+  maxRules: number;
+  pendingSignals: number;
+  lastReflectedAt: number | null;
+  reflecting: boolean;
+  recentRuns: MemoryReflectionRunView[];
 }
 
 export interface MemoryBridge {
-  /** Recent consolidation runs — the audit trail of "下班反思". */
-  consolidationRuns(ownerId?: string): Promise<ConsolidationRunView[]>;
-  /** 当前有效的全部记忆。常驻的排在最前。 */
-  list(): Promise<MemoryView[]>;
-  /** 改一条的说法。改的是内容，不是归属。 */
-  update(id: string, content: string): Promise<boolean>;
-  /** 撤掉一条。归档，不是销毁。 */
-  forget(id: string): Promise<boolean>;
-  /** 挂在已经不存在的归属上的那些，按归属分组。 */
-  orphans(): Promise<OrphanMemoryGroup[]>;
-  /** 收下：归到「关于你」名下。返回搬过去的条数。 */
-  claim(ownerId: string): Promise<number>;
-  /** 丢掉：归档整组。返回条数。 */
-  discard(ownerId: string): Promise<number>;
+  listDocs(): Promise<MemoryDocSummary[]>;
+  readDoc(relPath: string): Promise<MemoryDocDetail>;
+  writeDoc(relPath: string, content: string): Promise<MemoryDocDetail>;
+  deleteDoc(relPath: string): Promise<boolean>;
+  search(query: string, limit?: number): Promise<MemorySearchHit[]>;
+  reflectNow(): Promise<MemoryReflectionRunView>;
+  listSnapshots(): Promise<MemorySnapshotView[]>;
+  rollbackSnapshot(snapshotId: string): Promise<{ ok: boolean; relPath?: string; reason?: string }>;
+  openFolder(): Promise<{ ok: boolean; path: string }>;
+  status(): Promise<MemoryStatusView>;
 }
 
 /**
@@ -965,11 +985,6 @@ export interface AssistantToolsBridge {
 export interface RuntimeBridge {
   /** Stored profiles plus the last known availability, without spawning. */
   snapshot(): Promise<RuntimeSnapshot>;
-  /** Live operational data for the Runtime observatory. */
-  observatory(
-    request?: RuntimeObservatoryRequest,
-  ): Promise<RuntimeObservatorySnapshot>;
-  onChanged(listener: (event: RuntimeEventView) => void): () => void;
   /** Re-detects every profile (spawns `--version` with a timeout). */
   probe(): Promise<RuntimeSnapshot>;
   setActive(kind: RuntimeKind, profileId: string | null): Promise<RuntimeState>;
@@ -988,42 +1003,6 @@ export interface RuntimeBridge {
   /** On/off and output shape for `ocr_image`; applies to the next call. */
   ocr(): Promise<OcrSettings>;
   setOcr(next: OcrSettings): Promise<OcrSettings>;
-}
-
-/** A safe, read-only view of the currently running desktop runtime. */
-export interface RuntimeObservatorySnapshot {
-  generatedAt: number;
-  workers: Worker[];
-  tasks: WorkTask[];
-  traces: Record<string, TaskTrace[]>;
-  incidents: WatchdogIncidentView[];
-  actions: WatchdogActionView[];
-  events: RuntimeEventView[];
-  heartbeat: RuntimeHeartbeatView | null;
-}
-
-export interface RuntimeObservatoryRequest {
-  mode?: "summary" | "detail";
-  workerId?: string;
-  taskId?: string;
-}
-
-export interface RuntimeEventView {
-  id: string;
-  at: number;
-  kind: string;
-  severity: "info" | "warning" | "error";
-  subjectType: string;
-  subjectId: string;
-  summary: string;
-  detail: string;
-}
-
-export interface RuntimeHeartbeatView {
-  instanceId: string;
-  pid: number;
-  at: number;
-  state: "running" | "stopping";
 }
 
 /**
@@ -1145,7 +1124,6 @@ export interface OpcBridge {
   extensions: ExtensionsBridge;
   skills: SkillsBridge;
   facts: FactsBridge;
-  ontology: OntologyBridge;
   memory: MemoryBridge;
   router: RouterBridge;
   trigger: TriggerBridge;
@@ -1304,63 +1282,6 @@ export interface UsageBridge {
   report(filter: UsageFilter): Promise<UsageReport>;
   exportCsv(filter: UsageFilter): Promise<boolean>;
   onChanged(listener: () => void): () => void;
-}
-
-export interface OntologyContextView {
-  subjectEntityId: string;
-  prompt: string;
-  profile: Record<string, unknown>;
-  entities: unknown[];
-  assertions: unknown[];
-}
-
-export interface OntologyCommandView {
-  commandId: string;
-  actor: "user" | "router" | "worker";
-  objectType: string;
-  objectId: string;
-  action: string;
-  args: unknown;
-  expectedVersion: number | null;
-  idempotencyKey: string;
-  status: string;
-  approvalId: string | null;
-  result: unknown;
-  error: string | null;
-  createdAt: number;
-  updatedAt: number;
-  completedAt: number | null;
-}
-
-export interface OntologyBridge {
-  context(input?: {
-    subjectEntityId?: string;
-    query?: string;
-    maxHops?: number;
-    maxAssertions?: number;
-  }): Promise<OntologyContextView>;
-  history(input: {
-    subjectEntityId: string;
-    predicate?: string;
-  }): Promise<unknown[]>;
-  command(input: {
-    actor: "user" | "router" | "worker";
-    objectType: string;
-    objectId: string;
-    action: string;
-    args?: unknown;
-    expectedVersion?: number;
-    idempotencyKey: string;
-    approvalId?: string;
-  }): Promise<OntologyCommandView>;
-  /** Only the chat approval surface may transition a command from the renderer. */
-  commandStatus(
-    commandId: string,
-    status: "approved" | "rejected",
-    result?: unknown,
-    error?: string,
-  ): Promise<OntologyCommandView | null>;
-  outbox(limit?: number): Promise<unknown[]>;
 }
 
 /**

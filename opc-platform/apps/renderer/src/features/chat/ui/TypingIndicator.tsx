@@ -10,8 +10,8 @@ export function TypingIndicator({ names }: TypingIndicatorProps) {
   if (names.length === 0) return null;
 
   return (
-    <div className="flex w-fit items-center gap-2 rounded-full bg-accent-soft px-3 py-1.5 text-sm text-accent-ink">
-      <Sparkles className="size-3.5" aria-hidden />
+    <div className="inline-flex w-fit items-center gap-2 rounded-full border border-line/80 bg-surface-muted px-3 py-1 text-xs font-medium text-ink-secondary">
+      <Sparkles className="size-3 text-accent" aria-hidden />
       <span role="status">{t('chat.typing', { names: names.join('、') })}</span>
     </div>
   );

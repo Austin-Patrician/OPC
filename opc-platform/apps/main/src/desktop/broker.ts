@@ -265,6 +265,36 @@ export function desktopSessionName(taskId: string): string {
   return `opc-${readable}-${digest}`;
 }
 
+/** Extracts stdout/stderr strings even when child_process rejects on non-zero exit. */
+export function extractExecErrorOutput(error: unknown): { stdout: string; stderr: string } {
+  const candidate = error as { stdout?: unknown; stderr?: unknown } | null | undefined;
+  const stdout = typeof candidate?.stdout === 'string' ? candidate.stdout : '';
+  const rawStderr = typeof candidate?.stderr === 'string' ? candidate.stderr : '';
+  const stderr = rawStderr.trim()
+    ? rawStderr
+    : error instanceof Error
+      ? error.message
+      : String(error);
+  return { stdout, stderr };
+}
+
+/** Parses the SID column from `whoami /user /fo csv /nh` output (`"DOMAIN\\user","S-1-5-..."`). */
+export function parseCurrentUserSid(csv: string): string | undefined {
+  const trimmed = csv.trim();
+  if (!trimmed) return undefined;
+  const match = /"(S-1-[0-9-]+)"/.exec(trimmed);
+  return match?.[1];
+}
+
+function toStringEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> | undefined {
+  if (!env) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') result[key] = value;
+  }
+  return result;
+}
+
 
 function parseEnvelope(text: string): { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } } | undefined {
   try { return JSON.parse(text) as { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } }; } catch { return undefined; }
@@ -292,6 +322,7 @@ export class DesktopBroker {
   private mcpToolCount = 0;
   private mcpError?: string;
   private cleanupTimer: ReturnType<typeof setInterval>;
+  private desktopEnvPromise?: Promise<NodeJS.ProcessEnv | undefined>;
 
   constructor(private readonly install: DesktopInstallService) {
     this.cleanupTimer = setInterval(() => { void this.cleanupIdle(); }, 10 * 60_000);
@@ -351,10 +382,19 @@ export class DesktopBroker {
     const binary = this.install.binaryPath();
     if (!binary || !this.install.status().healthy || !this.settings().enabled) throw new Error('桌面运行时未安装、未启用或权限不足');
     const name = desktopSessionName(workerId);
+    const desktopEnv = await this.ensureDesktopEnv();
+    const mcpEnv = toStringEnv(desktopEnv);
     const started = await this.raw(['session', 'start', '--name', name, '--no-trace']);
     const sessionId = desktopSessionId(started);
     if (!sessionId) throw new Error(started.text || 'agent-desktop 未能创建 MCP session');
-    const config: McpServerConfig = { name: `agent_desktop_${name.replace(/-/g, '_')}`, command: binary, args: ['--session', sessionId, 'mcp'], autoApprove: true, description: 'agent-desktop 提供的完整桌面操作命令集' };
+    const config: McpServerConfig = {
+      name: `agent_desktop_${name.replace(/-/g, '_')}`,
+      command: binary,
+      args: ['--session', sessionId, 'mcp'],
+      ...(mcpEnv ? { env: mcpEnv } : {}),
+      autoApprove: true,
+      description: 'agent-desktop 提供的完整桌面操作命令集',
+    };
     try {
       const connection = await connectMcp(config);
       this.setMcpStatus({ healthy: true, toolCount: connection.tools.length });
@@ -362,12 +402,12 @@ export class DesktopBroker {
         ...connection,
         close: async () => {
           await connection.close();
-          await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true }).catch(() => undefined);
+          await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true, ...(desktopEnv ? { env: desktopEnv } : {}) }).catch(() => undefined);
         },
       };
     } catch (error) {
       this.setMcpStatus({ healthy: false, error: error instanceof Error ? error.message : String(error) });
-      await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true }).catch(() => undefined);
+      await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true, ...(desktopEnv ? { env: desktopEnv } : {}) }).catch(() => undefined);
       throw error;
     }
   }
@@ -476,20 +516,67 @@ export class DesktopBroker {
     return session;
   }
 
+  private async ensureDesktopEnv(): Promise<NodeJS.ProcessEnv | undefined> {
+    if (process.platform !== 'win32') return undefined;
+    if (this.desktopEnvPromise) return this.desktopEnvPromise;
+    this.desktopEnvPromise = (async () => {
+      const homeDir = typeof this.install.privateHomeDir === 'function'
+        ? this.install.privateHomeDir()
+        : undefined;
+      if (!homeDir) return undefined;
+      const agentDesktopDir = path.join(homeDir, '.agent-desktop');
+      try {
+        fs.mkdirSync(agentDesktopDir, { recursive: true });
+        const whoami = await execFileAsync('whoami', ['/user', '/fo', 'csv', '/nh'], {
+          timeout: 5_000,
+          windowsHide: true,
+        }).catch(() => ({ stdout: '' }));
+        const sid = parseCurrentUserSid(whoami.stdout);
+        const principal = sid ? `*${sid}` : process.env.USERNAME?.trim();
+        if (principal) {
+          for (const target of [homeDir, agentDesktopDir]) {
+            await execFileAsync(
+              'icacls',
+              [
+                target,
+                '/inheritance:r',
+                '/grant:r',
+                '*S-1-5-18:(OI)(CI)F',
+                '*S-1-5-32-544:(OI)(CI)F',
+                `${principal}:(OI)(CI)F`,
+              ],
+              { timeout: 5_000, windowsHide: true },
+            ).catch(() => undefined);
+          }
+        }
+        return { ...process.env, USERPROFILE: homeDir, HOME: homeDir };
+      } catch {
+        return undefined;
+      }
+    })();
+    return this.desktopEnvPromise;
+  }
+
   private async raw(args: readonly string[], sessionId?: string, stdin?: string, allowDisabled = false): Promise<DesktopResult> {
     const binary = this.install.binaryPath();
     const session = sessionId ? [...this.sessions.values()].find((entry) => entry.id === sessionId) : undefined;
     const settings = this.install.settings();
     if (!binary || !this.install.status().healthy || (!allowDisabled && !settings.enabled)) return { ok: false, text: '桌面运行时未安装、未启用或权限不足' };
+    const desktopEnv = await this.ensureDesktopEnv();
     const commandArgs = [
       ...(sessionId ? ['--session', sessionId] : []),
       ...(session?.headed ? ['--headed'] : []),
       ...args,
     ];
     const outputLimit = 2_000_000;
-    const child = execFilePlatform(binary, commandArgs, { timeout: 90_000, maxBuffer: 8_000_000, windowsHide: true });
+    const child = execFilePlatform(binary, commandArgs, {
+      timeout: 90_000,
+      maxBuffer: 8_000_000,
+      windowsHide: true,
+      ...(desktopEnv ? { env: desktopEnv } : {}),
+    });
     if (stdin !== undefined) child.child.stdin?.end(stdin);
-    const output = await child.catch((error: unknown) => ({ stdout: '', stderr: error instanceof Error ? error.message : String(error), error }));
+    const output = await child.catch((error: unknown) => ({ ...extractExecErrorOutput(error), error }));
     const text = `${output.stdout ?? ''}${output.stderr ? `\n${output.stderr}` : ''}`.trim();
     const payload = parseEnvelope(output.stdout ?? '');
     if ('error' in output || !payload?.ok) return { ok: false, text: (payload?.error?.message ?? text) || 'agent-desktop 执行失败', data: payload?.data, details: { code: payload?.error?.code, disposition: payload?.error?.disposition, ...(sessionId ? { sessionId } : {}) } };

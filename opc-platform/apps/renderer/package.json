@@ -8,9 +8,12 @@
     "test": "vitest run --root ../.."
   },
   "dependencies": {
-    "@react-three/drei": "^10.7.9",
-    "@react-three/fiber": "^9.8.2",
-    "@react-three/postprocessing": "^3.2.2",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/newsreader": "^5.3.0",
+    "@fontsource-variable/noto-sans-sc": "^5.3.1",
+    "@fontsource-variable/noto-serif-sc": "^5.3.1",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
     "clsx": "^2.1.1",
     "echarts": "^6.0.0",
     "i18next": "^26.7.2",
@@ -18,7 +21,6 @@
     "lucide-react": "^1.70.0",
     "mermaid": "^12.3.0",
     "onnxruntime-web": "1.23.2",
-    "postprocessing": "^6.39.6",
     "ppu-paddle-ocr": "6.6.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -31,14 +33,12 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.7.0",
-    "three": "^0.187.0",
     "vega-embed": "^7.3.0",
     "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@opc/shared": "workspace:*",
     "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@types/three": "^0.187.0"
+    "@types/react-dom": "^19.3.0"
   }
 }

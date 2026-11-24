@@ -11,8 +11,9 @@ import type { AssistantActivity } from '@opc/shared/ipc';
  * 一个助手说话（Super-agent 的连续感），任务结果和需要用户处理的动作都回到这条会话里。
  */
 export function ChatPage() {
-  const { setChatActivity } = useOutletContext<{
+  const { setChatActivity, setWelcomeVisible } = useOutletContext<{
     setChatActivity: (activity: AssistantActivity | undefined) => void;
+    setWelcomeVisible: (visible: boolean) => void;
   }>();
   const { conversationId } = useParams<{ conversationId: string }>();
   const [searchParams] = useSearchParams();
@@ -28,6 +29,10 @@ export function ChatPage() {
     setChatActivity(activity);
     return () => setChatActivity(undefined);
   }, [activity, setChatActivity]);
+
+  useEffect(() => {
+    if (!active) setWelcomeVisible(false);
+  }, [active, setWelcomeVisible]);
 
   // 没有会话就建一条：你不该先"选一个对象"才能说话。
   useEffect(() => {
@@ -67,9 +72,11 @@ export function ChatPage() {
       conversation={active}
       agents={agents}
       typingNames={typingByConversation[active.id] ?? []}
+      activityPhase={activity?.phase}
       targetMessageId={targetMessageId}
       hasOlderMessages={hasOlderMessagesByConversation[active.id] ?? false}
       loadOlderMessages={(beforeMessageId) => loadOlderMessages(active.id, beforeMessageId)}
+      onWelcomeVisibilityChange={setWelcomeVisible}
       onSend={(text, mentionIds, attachments) => sendMessage({ conversationId: active.id, text, mentionIds, attachments })}
     />
   );

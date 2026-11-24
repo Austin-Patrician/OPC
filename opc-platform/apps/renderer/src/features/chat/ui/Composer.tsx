@@ -5,96 +5,72 @@ import { useTranslation } from 'react-i18next';
 import { useModels } from '@/features/models/model/useModels';
 import { useVoiceRecorder } from '../model/useVoiceRecorder';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
+import { emitBuddySignal } from '@/shared/ui/buddyEvents';
 
 /** Maximum visible rows before the composer starts scrolling. */
-const MAX_COMPOSER_ROWS = 5;
+const MAX_COMPOSER_ROWS = 6;
 
 interface ComposerProps {
   onSend: (text: string, mentionIds: string[], attachments?: ChatAttachmentRef[]) => void;
   /** Previously sent user messages, newest first. */
   history: readonly string[];
+  /** True while Router or a background Worker is actively running. */
+  busy?: boolean;
+  /** Hard-stops active Router generation and running Workers. */
+  onStop?: () => void;
 }
 
-/** Single-line Buddy composer, matching the supplied IM home reference. */
-export function Composer({ onSend, history }: ComposerProps) {
+/** Floating editorial two-row composer card aligned with the 760px message column. */
+export function Composer({ onSend, history, busy = false, onStop }: ComposerProps) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [historyDraft, setHistoryDraft] = useState('');
-  /** True once the draft needs more than one line in the compact row layout. */
-  const [isMultiline, setIsMultiline] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const barRef = useRef<HTMLDivElement>(null);
-  const measureRef = useRef<HTMLDivElement>(null);
-  const attachRef = useRef<HTMLButtonElement>(null);
-  const micRef = useRef<HTMLButtonElement>(null);
-  const sendRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<ChatAttachmentRef[]>([]);
   const [dragging, setDragging] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const lastTypingSignalRef = useRef(0);
+
   useEffect(() => {
     if (!voiceError) return;
     const timeout = window.setTimeout(() => setVoiceError(null), 8_000);
     return () => window.clearTimeout(timeout);
   }, [voiceError]);
-  /**
-   * Decide whether the draft still fits on one line. The measurement always
-   * uses the textarea width of the compact layout, so the decision cannot flip
-   * back and forth after the layout itself becomes wider.
-   */
-  const updateMultiline = useCallback(() => {
-    const bar = barRef.current;
-    const input = inputRef.current;
-    const measure = measureRef.current;
-    if (!bar || !input || !measure) return;
-    const style = window.getComputedStyle(bar);
-    const horizontalPadding =
-      (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
-    const gap = Number.parseFloat(style.columnGap) || 12;
-    const controlsWidth =
-      (attachRef.current?.offsetWidth ?? 18) +
-      (micRef.current?.offsetWidth ?? 34) +
-      (sendRef.current?.offsetWidth ?? 34);
-    const compactWidth = Math.max(
-      40,
-      bar.clientWidth - horizontalPadding - controlsWidth - gap * 3 - 2,
-    );
-    measure.style.width = `${compactWidth}px`;
-    const lineHeight = Number.parseFloat(window.getComputedStyle(measure).lineHeight) || 20;
-    setIsMultiline(measure.scrollHeight > lineHeight + 1);
-  }, []);
-  // Grow with the content up to five lines, then scroll inside the textarea.
+
+  // Grow smoothly with content up to MAX_COMPOSER_ROWS, then scroll internally.
   const resizeInput = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
     input.style.height = 'auto';
     const style = window.getComputedStyle(input);
-    const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+    const lineHeight = Number.parseFloat(style.lineHeight) || 22;
     const verticalPadding =
       (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
     const maxHeight = lineHeight * MAX_COMPOSER_ROWS + verticalPadding;
     input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`;
     input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, []);
+
   useLayoutEffect(() => {
-    updateMultiline();
     resizeInput();
-  }, [text, isMultiline, updateMultiline, resizeInput]);
+  }, [text, resizeInput]);
+
   useEffect(() => {
-    const bar = barRef.current;
-    if (!bar || typeof ResizeObserver === 'undefined') return undefined;
-    let lastWidth = bar.clientWidth;
+    const input = inputRef.current;
+    if (!input || typeof ResizeObserver === 'undefined') return undefined;
+    let lastWidth = input.clientWidth;
     const observer = new ResizeObserver(() => {
-      if (bar.clientWidth === lastWidth) return;
-      lastWidth = bar.clientWidth;
-      updateMultiline();
+      if (input.clientWidth === lastWidth) return;
+      lastWidth = input.clientWidth;
       resizeInput();
     });
-    observer.observe(bar);
+    observer.observe(input);
     return () => observer.disconnect();
-  }, [updateMultiline, resizeInput]);
+  }, [resizeInput]);
+
   const models = useModels();
   const asrRef = models.defaults.asr;
   const asrConfigured = Boolean(
@@ -104,6 +80,7 @@ export function Composer({ onSend, history }: ComposerProps) {
       ),
     ),
   );
+
   /** Set text and put the caret at the end, used when recalling history. */
   const applyComposerText = (value: string) => {
     setText(value);
@@ -142,6 +119,7 @@ export function Composer({ onSend, history }: ComposerProps) {
     const value = text.trim();
     if (!value && attachments.length === 0) return;
     onSend(value, [], attachments);
+    emitBuddySignal({ kind: 'sent' });
     setText('');
     setAttachments([]);
     resetHistory();
@@ -150,6 +128,11 @@ export function Composer({ onSend, history }: ComposerProps) {
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
+    if (event.key === 'Escape' && busy && onStop) {
+      event.preventDefault();
+      onStop();
+      return;
+    }
     if (event.key === 'Enter') {
       // Shift+Enter inserts a newline; plain Enter sends.
       if (event.shiftKey) return;
@@ -205,35 +188,44 @@ export function Composer({ onSend, history }: ComposerProps) {
   };
 
   return (
-    <div className="buddy-composer-wrap shrink-0 px-6 pt-2 pb-5 sm:px-10">
+    <div className="buddy-composer-wrap shrink-0 px-6 pt-1 pb-5">
       {attachments.length > 0 ? <AttachmentTray attachments={attachments} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} /> : null}
-      {attachmentError ? <div className="buddy-attachment-error mx-auto mb-2 w-full max-w-[880px]" role="status">{attachmentError}</div> : null}
-      <div ref={barRef} className={`buddy-composer-bar mx-auto grid min-h-[52px] w-full max-w-[880px] grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-2 rounded-[15px] px-4 py-2 ${dragging ? 'buddy-composer-dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); void addFiles([...event.dataTransfer.files]); }}>
-        <div
-          ref={measureRef}
-          aria-hidden="true"
-          className="pointer-events-none invisible absolute top-0 left-0 whitespace-pre-wrap break-words text-[13px] leading-5"
-        >
-          {text || ' '}{text.endsWith('\n') ? ' ' : ''}
-        </div>
+      {attachmentError ? <div className="buddy-attachment-error mx-auto mb-2 w-full max-w-[760px]" role="status">{attachmentError}</div> : null}
+      <div
+        className={`buddy-composer-bar mx-auto flex w-full max-w-[760px] flex-col rounded-[20px] ${dragging ? 'buddy-composer-dragging' : ''}`}
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (!dragging) {
+            setDragging(true);
+            emitBuddySignal({ kind: 'file-drag', active: true });
+          }
+        }}
+        onDragLeave={() => {
+          setDragging(false);
+          emitBuddySignal({ kind: 'file-drag', active: false });
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          const files = [...event.dataTransfer.files];
+          if (files.length > 0) emitBuddySignal({ kind: 'file-drop' });
+          else emitBuddySignal({ kind: 'file-drag', active: false });
+          void addFiles(files);
+        }}
+      >
         {dragging ? <div className="buddy-composer-drop-hint" aria-hidden="true"><Paperclip size={15} />松开即可添加附件</div> : null}
         <input ref={fileInputRef} type="file" multiple hidden onChange={(event) => { void addFiles([...event.target.files ?? []]); event.currentTarget.value = ''; }} />
-        <button
-          ref={attachRef}
-          type="button"
-          onClick={() => void window.opc!.chat.chooseAttachments().then((chosen) => setAttachments((current) => [...current, ...chosen].slice(0, 20))).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error)))}
-          title={t('chat.action.attach')}
-          aria-label={t('chat.action.attach')}
-          className={`buddy-composer-icon shrink-0 ${isMultiline ? 'col-start-1 row-start-2' : 'col-start-1 row-start-1'}`}
-        >
-          <Paperclip size={18} strokeWidth={1.8} />
-        </button>
         <textarea
           ref={inputRef}
           rows={1}
           value={text}
           onChange={(event) => {
             setText(event.target.value);
+            const now = Date.now();
+            if (event.target.value.length > 0 && now - lastTypingSignalRef.current >= 600) {
+              lastTypingSignalRef.current = now;
+              emitBuddySignal({ kind: 'typing' });
+            }
             // Editing a recalled message turns it into a fresh draft.
             if (historyIndex !== null) {
               setHistoryIndex(null);
@@ -245,35 +237,61 @@ export function Composer({ onSend, history }: ComposerProps) {
           autoFocus
           placeholder={t('chat.inputPlaceholder')}
           aria-label={t('chat.inputPlaceholder')}
-          className={`buddy-composer-input chat-scrollbar-reveal min-w-0 w-full resize-none bg-transparent px-0 py-0 text-[13px] leading-5 outline-none ${isMultiline ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'}`}
+          className="buddy-composer-input chat-scrollbar-reveal w-full min-w-0 resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-[14.5px] leading-[1.55] outline-none"
         />
-        <button
-          ref={micRef}
-          type="button"
-          onClick={toggleVoice}
-          disabled={!asrConfigured || voice.state === 'transcribing'}
-          title={asrConfigured ? t(voice.state === 'recording' ? 'chat.speech.stopRecording' : 'chat.action.voice') : t('chat.speech.noAsr')}
-          aria-label={asrConfigured ? t(voice.state === 'recording' ? 'chat.speech.stopRecording' : 'chat.action.voice') : t('chat.speech.noAsr')}
-          aria-pressed={voice.state === 'recording'}
-          className={`buddy-composer-icon buddy-mic-button flex size-[34px] shrink-0 items-center justify-center rounded-full ${isMultiline ? 'col-start-3 row-start-2' : 'col-start-3 row-start-1'} ${voice.state === 'recording' ? 'buddy-recording-button' : ''} disabled:cursor-not-allowed disabled:opacity-35`}
-        >
-          {voice.state === 'transcribing' ? <LoaderCircle className="animate-spin" size={18} /> : voice.state === 'recording' ? <Square size={16} fill="currentColor" /> : <Mic size={18} />}
-        </button>
-        <button
-          ref={sendRef}
-          type="button"
-          onClick={submit}
-          disabled={!canSend}
-          aria-label={t('common.send')}
-          className={`buddy-send-button flex size-[34px] shrink-0 items-center justify-center rounded-full text-white transition disabled:cursor-default disabled:opacity-45 disabled:shadow-none ${isMultiline ? 'col-start-4 row-start-2' : 'col-start-4 row-start-1'}`}
-        >
-          <ArrowUp size={17} strokeWidth={2.3} />
-        </button>
+        <div className="flex items-center justify-between gap-2 px-2.5 pt-1 pb-2.5">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void window.opc!.chat.chooseAttachments().then((chosen) => setAttachments((current) => [...current, ...chosen].slice(0, 20))).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error)))}
+              title={t('chat.action.attach')}
+              aria-label={t('chat.action.attach')}
+              className="buddy-composer-icon size-8 rounded-lg text-ink-tertiary hover:bg-surface-hover hover:text-ink"
+            >
+              <Paperclip size={17} strokeWidth={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={toggleVoice}
+              disabled={!asrConfigured || voice.state === 'transcribing'}
+              title={asrConfigured ? t(voice.state === 'recording' ? 'chat.speech.stopRecording' : 'chat.action.voice') : t('chat.speech.noAsr')}
+              aria-label={asrConfigured ? t(voice.state === 'recording' ? 'chat.speech.stopRecording' : 'chat.action.voice') : t('chat.speech.noAsr')}
+              aria-pressed={voice.state === 'recording'}
+              className={`buddy-composer-icon buddy-mic-button flex size-8 shrink-0 items-center justify-center rounded-lg ${voice.state === 'recording' ? 'buddy-recording-button' : ''} disabled:cursor-not-allowed disabled:opacity-35`}
+            >
+              {voice.state === 'transcribing' ? <LoaderCircle className="animate-spin" size={17} /> : voice.state === 'recording' ? <Square size={15} fill="currentColor" /> : <Mic size={17} strokeWidth={1.8} />}
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {busy && onStop && !canSend ? (
+              <button
+                type="button"
+                onClick={onStop}
+                title="停止当前执行（Esc）"
+                aria-label="停止当前执行"
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-danger text-white shadow-card transition hover:opacity-90"
+              >
+                <Square size={12} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={submit}
+                disabled={!canSend}
+                title={busy ? '发送并立即打断/调整当前执行' : t('common.send')}
+                aria-label={t('common.send')}
+                className="buddy-send-button flex size-8 shrink-0 items-center justify-center rounded-full transition disabled:cursor-default disabled:opacity-35 disabled:shadow-none"
+              >
+                <ArrowUp size={16} strokeWidth={2.3} />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
       {voice.state !== 'idle' || voiceError ? (
-        <div className="mx-auto mt-2 w-full max-w-[880px] px-2 text-[11px]" aria-live="polite">
+        <div className="mx-auto mt-2 w-full max-w-[760px] px-2 text-[11px]" aria-live="polite">
           {voiceError ? <span className="text-danger">{voiceError}</span> : null}
-          {voice.state === 'recording' ? <span className="text-accent-text">{t('chat.speech.recording')}</span> : null}
+          {voice.state === 'recording' ? <span className="text-accent-ink">{t('chat.speech.recording')}</span> : null}
           {voice.state === 'transcribing' ? <span className="text-ink-tertiary">{t('chat.speech.transcribing')}</span> : null}
         </div>
       ) : null}
@@ -283,7 +301,7 @@ export function Composer({ onSend, history }: ComposerProps) {
 
 function AttachmentTray({ attachments, onRemove }: { attachments: readonly ChatAttachmentRef[]; onRemove: (id: string) => void }) {
   return (
-    <div className="buddy-attachment-tray mx-auto mb-2 w-full max-w-[880px]" aria-label={`已选择 ${attachments.length} 个附件`}>
+    <div className="buddy-attachment-tray mx-auto mb-2 w-full max-w-[760px]" aria-label={`已选择 ${attachments.length} 个附件`}>
       <div className="buddy-attachment-tray-head">
         <span className="buddy-attachment-tray-label">附件</span>
         <span className="buddy-attachment-tray-count">{attachments.length}/20</span>

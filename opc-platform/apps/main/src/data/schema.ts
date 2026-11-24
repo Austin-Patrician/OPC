@@ -16,7 +16,7 @@
  * `MIGRATIONS`, so an existing company.db is upgraded in place instead of reset.
  */
 
-export const SCHEMA_VERSION = 57;
+export const SCHEMA_VERSION = 58;
 
 /** v1.0 is one company per installation (§1.3); its row is seeded on first open. */
 export const COMPANY_ID = 'company-local';
@@ -2224,7 +2224,33 @@ CREATE INDEX IF NOT EXISTS idx_router_schedule_occurrence_recent
   ON router_schedule_occurrence(schedule_id, scheduled_for DESC);
 `;
 
-export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57];
+/** V58: Living Worker thread workspace/goal, persistent worker conversation, and turn checkpoint metadata. */
+const V58 = `
+ALTER TABLE thread ADD COLUMN workspace_rel_path TEXT;
+ALTER TABLE thread ADD COLUMN living_goal TEXT;
+ALTER TABLE worker ADD COLUMN conversation_id TEXT;
+ALTER TABLE worker ADD COLUMN last_clean_entry_id INTEGER;
+ALTER TABLE task ADD COLUMN turn_mode TEXT NOT NULL DEFAULT 'initial';
+ALTER TABLE task ADD COLUMN checkpoint_entry_id INTEGER;
+`;
+
+/** V59: Drop ontology graph tables and wipe legacy SQLite memory/fact rows for Markdown-first memory clean slate. */
+const V59 = `
+DROP TABLE IF EXISTS ontology_outbox_event;
+DROP TABLE IF EXISTS ontology_action_command;
+DROP TABLE IF EXISTS ontology_profile_projection;
+DROP TABLE IF EXISTS ontology_assertion;
+DROP TABLE IF EXISTS ontology_predicate;
+DROP TABLE IF EXISTS ontology_episode;
+DROP TABLE IF EXISTS ontology_entity_alias;
+DROP TABLE IF EXISTS ontology_entity;
+DELETE FROM memory;
+DELETE FROM memory_signal;
+DELETE FROM consolidation_run;
+DELETE FROM fact;
+`;
+
+export const MIGRATIONS: readonly string[] = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V50, V51, V52, V53, V54, V55, V56, V57, V58, V59];
 /** Default company policy (§4.2 `settings`), overridable per installation. */
 export const DEFAULT_COMPANY_SETTINGS = {
   heartbeatMinutes: 15,

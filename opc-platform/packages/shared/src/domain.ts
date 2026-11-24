@@ -101,16 +101,6 @@ export type ChatContentBlock =
       state: 'pending' | 'allowed' | 'denied';
     }
   | {
-      /** A write command approval that is not tied to a WorkTask/report. */
-      type: 'ontologyApproval';
-      commandId: string;
-      action: string;
-      objectType: string;
-      title: string;
-      body: string;
-      state: 'pending' | 'approved' | 'rejected';
-    }
-  | {
       type: 'workflow';
       reportId: string;
       threadId: string;
@@ -319,6 +309,10 @@ export interface WorkTask {
    * workers on one thread never share a runtime. Absent on legacy tasks.
    */
   workerId?: string;
+  /** How this task relates to prior turns on the same thread. */
+  turnMode?: 'initial' | 'append' | 'pivot' | 'rework';
+  /** Durable conversation entry id before this turn began (for clean pivot pruning). */
+  checkpointEntryId?: number | null;
   /** Human handle, e.g. `ENG-12`; derived from the assignee's department code. */
   issueKey?: string;
   /** P0 (do it now) … P3 (someday). Defaults to P2. */
@@ -340,11 +334,13 @@ export interface WorkTask {
   acceptanceCommand: string[];
   /** The assignee's charter, when it has one. */
   /** The job's responsibilities, read live from `position → job` at task load. */
-  /** Memories recalled for this run (L2 personal experience, L5 episodic). */
-  memories?: { kind: string; content: string; scopeType: string }[];
-  /** Bounded ontology context pack, with evidence-backed graph assertions. */
-  ontologyContext?: string;
-  /** Current company/department facts (fact), most specific last. */
+  /** Standing core memory injected every run (USER.md excerpt + RULES.md). */
+  memoryCore?: string;
+  /** Matched pitfall warnings from PLAYBOOK.md for this task. */
+  memoryPlaybook?: string[];
+  /** Matched topic snippets from topics/*.md for this task. */
+  memoryTopics?: string[];
+  /** Current workspace rules (fact), most specific last. */
   facts?: { statement: string; scopeType: string }[];
   /**
    * 这件事的原始记录（事件 / 汇报 / 之前跑过的任务），带 ID 与摘要。
@@ -359,20 +355,6 @@ export interface WorkTask {
    * 已经做完了"。混在一起，父就分不清"谁说过什么"和"谁交了什么"。
    */
   children?: TaskChild[];
-  /**
-   * 常驻约束：用户要求过、一直有效的那几条。
-   *
-   * 和 `memories` 分开：那些是"按相关度想起来的相关经验"，可能这次一条都不相关；
-   * 这一组是**每一轮原样在场**的，不参与检索、不看相关度。
-   */
-  standing?: { content: string }[];
-  /**
-   * 做事规矩：用户要求过的格式与流程（`format` / `workflow`）。
-   *
-   * 和 `memories` 分开：那些是"按相关度想起来的相关经验"，是建议；这一组是**对输出的
-   * 约束**，不参与相关度筛选，必须遵守。
-   */
-  procedural?: { kind: string; content: string }[];
   /**
    * 你中途改的方向。
    *
@@ -1097,6 +1079,10 @@ export interface CreateTaskInput {
    * chosen a worker; omitted means "work it out from the assignee".
    */
   workerId?: string;
+  /** How this task relates to prior turns on the same thread. */
+  turnMode?: 'initial' | 'append' | 'pivot' | 'rework';
+  /** Durable conversation entry id before this turn began. */
+  checkpointEntryId?: number | null;
   estTokens: number;
   acceptanceCommand?: string[];
   acceptanceTemplate?: AcceptanceTemplate;
@@ -1206,6 +1192,10 @@ export interface WorkThread {
   id: string;
   title: string;
   goal: string;
+  /** Latest living goal evolved by steer_line / continue_line; defaults to goal. */
+  livingGoal?: string | null;
+  /** Persistent thread-level workspace directory shared across follow-up turns. */
+  workspaceRelPath?: string | null;
   /**
    * 这条线在**环境里**的身份：`folder:inbox/report.md`、`im:dm-router`、
    * `github:o/r#12`。
@@ -1311,6 +1301,10 @@ export interface Worker {
    */
   policyJson: string;
   status: WorkerStatus;
+  /** Persistent pi-durable conversation id reused across follow-up turns on this thread. */
+  conversationId?: string | null;
+  /** Last known clean durable entry id in this worker's conversation (for pivot pruning). */
+  lastCleanEntryId?: number | null;
   spentTokens: number;
   createdAt: number;
   retiredAt: number | null;
@@ -1452,4 +1446,28 @@ export interface WorkReport {
   replyTarget?: TriggerReplyTarget | null;
   createdAt: number;
   readAt: number | null;
+}
+
+/** Real-time sideband progress from a running Worker to the chat UI (never enters Router context). */
+export interface WorkerProgressEvent {
+  threadId: string;
+  taskId: string;
+  workerId?: string;
+  title: string;
+  toolName: string;
+  summary: string;
+  ok: boolean | null;
+  state: 'running' | 'completed' | 'aborted' | 'failed';
+  at: number;
+}
+
+/** Live health metrics of the Router's active context window. */
+export interface RouterContextStats {
+  estimatedTokens: number;
+  contextWindow: number;
+  usageRatio: number;
+  entryCount: number;
+  prunedCount: number;
+  busy: boolean;
+  compacting: boolean;
 }

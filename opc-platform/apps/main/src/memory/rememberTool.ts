@@ -7,16 +7,14 @@ export interface RememberToolDeps {
   taskId: () => string | undefined;
   remember: (input: {
     content: string;
-    kind: 'experience' | 'fact' | 'preference' | 'summary';
+    scope: 'playbook' | 'topic';
+    section?: string;
   }) => Promise<string>;
 }
 
 /**
- * `remember`: the agent's own way to keep something. Without it a worker can only
- * learn from finished tasks; with it "下次注意 X" survives the run.
- *
- * Scope is decided by the host (personal + optional department), never by the
- * model, so a worker cannot write into another team's memory.
+ * Worker-side `remember`: saves a concrete reusable pitfall into `PLAYBOOK.md`
+ * or a project fact into `topics/`. Workers never mutate `USER.md` or `RULES.md`.
  */
 export function createRememberToolExtension(deps: RememberToolDeps) {
   return defineExtension({
@@ -25,11 +23,20 @@ export function createRememberToolExtension(deps: RememberToolDeps) {
       defineTool({
         name: 'remember',
         description:
-          'Save one durable lesson for your future self (a pitfall, a preference you were told, a fact about this project). Use it when something would be expensive to rediscover. Write one short sentence, not a paragraph.',
+          'Save one concrete, reusable lesson into PLAYBOOK.md (scope="playbook", default) or a project fact into topics/ (scope="topic"). For playbook pitfalls, write "避免：... → 正确做法：...". Never use for temporary task progress.',
         parameters: Type.Object({
-          content: Type.String({ description: 'One sentence, self-contained, in Chinese.' }),
-          kind: Type.Optional(
-            Type.String({ description: 'experience | fact | preference | summary (default experience)' }),
+          content: Type.String({
+            description: 'One concise, actionable Chinese sentence or "避免：... → 正确做法：...".',
+          }),
+          scope: Type.Optional(
+            Type.Union([Type.Literal('playbook'), Type.Literal('topic')], {
+              description: 'playbook (pitfall/workaround, default) | topic (stable project/domain fact)',
+            }),
+          ),
+          section: Type.Optional(
+            Type.String({
+              description: 'Optional scenario heading for playbook (e.g. Windows PowerShell) or topic slug/title.',
+            }),
           ),
         }),
         execute: async (args): Promise<ToolExecutionResult> => {
@@ -37,16 +44,14 @@ export function createRememberToolExtension(deps: RememberToolDeps) {
           if (content.length < 4) {
             return { isError: true, output: [{ type: 'text' as const, text: '记忆内容太短，没有保存' }] };
           }
-          const allowed = ['experience', 'fact', 'preference', 'summary'] as const;
-          const requested = args.kind?.trim().toLowerCase();
-          const kind = (allowed as readonly string[]).includes(requested ?? '')
-            ? (requested as (typeof allowed)[number])
-            : 'experience';
-
-          await deps.remember({ content, kind });
+          const scope = args.scope === 'topic' ? 'topic' : 'playbook';
+          const savedRef = await deps.remember({
+            content,
+            scope,
+            ...(args.section?.trim() ? { section: args.section.trim() } : {}),
+          });
           return {
-            output: [{ type: 'text' as const, text: `已记住（${kind}）：${content}` }],
-
+            output: [{ type: 'text' as const, text: `已写入 ${savedRef}：${content}` }],
           };
         },
       }),

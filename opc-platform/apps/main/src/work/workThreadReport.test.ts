@@ -7,9 +7,9 @@ import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDataba
 import { ThreadRepository } from '../data/threadRepository';
 import { TaskRepository } from '../data/taskRepository';
 import { UNVERIFIED_GATE } from './acceptanceGate';
-import { MemoryService } from '../memory/memoryService';
-import { USER_MEMORY_OWNER } from '../memory/owners';
-import { SignalStore } from '../memory/signals';
+import { MarkdownMemoryStore } from '../memory/markdownMemoryStore';
+import { MemoryReflector } from '../memory/memoryReflector';
+import { MemorySearchIndex } from '../memory/memorySearchIndex';
 import { WorkService } from './workService';
 
 /**
@@ -29,7 +29,9 @@ let paths: AppPaths;
 let work: WorkService;
 let threads: ThreadRepository;
 let assigneeId: string;
-let memory: MemoryService;
+let memoryStore: MarkdownMemoryStore;
+let memoryIndex: MemorySearchIndex;
+let memoryReflector: MemoryReflector;
 const approvalCards: { reportId: string; taskId: string; tool: string }[] = [];
 const approvalResolutions: { reportId: string; state: 'allowed' | 'denied' }[] = [];
 
@@ -55,7 +57,14 @@ beforeEach(() => {
   const home = threads.createThread({ title: '测试台', goal: '测试' });
   assigneeId = threads.createWorker({ name: '李雷', threadId: home.id }).id;
 
-  memory = new MemoryService(db);
+  memoryStore = new MarkdownMemoryStore(path.join(dir, 'memory'));
+  memoryStore.ensureInitialized();
+  memoryIndex = new MemorySearchIndex(memoryStore);
+  memoryReflector = new MemoryReflector({
+    store: memoryStore,
+    complete: async () => '{}',
+    readMessagesSince: () => [],
+  });
   approvalCards.length = 0;
   approvalResolutions.length = 0;
   work = new WorkService({
@@ -65,11 +74,14 @@ beforeEach(() => {
     upsertTaskCard: () => undefined,
     onApprovalCard: ({ report, task, tool }) => approvalCards.push({ reportId: report.id, taskId: task.id, tool }),
     onApprovalResolved: (reportId, state) => approvalResolutions.push({ reportId, state }),
-    memory,
+    memoryStore,
+    memoryIndex,
+    memoryReflector,
   });
 });
 
 afterEach(() => {
+  memoryReflector.dispose();
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -717,8 +729,7 @@ describe('a task dispatched without a line of work', () => {
  * 变成"一来一串事件"，这条就从"偶尔踩到"变成"每天都会踩到"。
  */
 describe('一个执行体同时只跑一个任务', () => {
-  function unsifted(title: string) {
-    const thread = threads.createThread({ title });
+  function unsiftedOn(threadId: string, title: string) {
     const created = work.createTask({
       title,
       brief: title,
@@ -727,21 +738,24 @@ describe('一个执行体同时只跑一个任务', () => {
       estTokens: 2_000,
       acceptanceCommand: [...UNVERIFIED_GATE],
       acceptanceTemplate: 'http-ok',
-      threadId: thread.id,
+      threadId,
     });
     if (!created.ok) throw new Error(created.error.message);
     return created.task;
   }
 
-  it('第二个任务排在第一个之后，不是同时开跑', async () => {
-    const first = unsifted('第一件');
-    const second = unsifted('第二件');
+  it('同一个执行体的第二个任务排在第一个之后，不是同时开跑', async () => {
+    const sharedThread = threads.createThread({ title: '同一条线' });
+    const first = unsiftedOn(sharedThread.id, '第一件');
+    const second = unsiftedOn(sharedThread.id, '第二件');
+    expect(first.workerId).toBe(second.workerId);
+    const workerKey = first.workerId ?? assigneeId;
 
     work.runTask(first.id);
     work.runTask(second.id);
 
     // 一眼就能看出排上了：一个在跑，一个在等。
-    expect(work.queueSnapshot(assigneeId)).toEqual({ running: first.id, waiting: 1 });
+    expect(work.queueSnapshot(workerKey)).toEqual({ running: first.id, waiting: 1 });
 
     for (let i = 0; i < 200; i += 1) {
       const a = new TaskRepository(db).getTask(first.id);
@@ -755,7 +769,7 @@ describe('一个执行体同时只跑一个任务', () => {
     expect(a.finishedAt).toBeGreaterThan(0);
     // 串行：第二个的开始时间不早于第一个的结束时间。
     expect(b.startedAt).toBeGreaterThanOrEqual(a.finishedAt!);
-    expect(work.queueSnapshot(assigneeId).running).toBeNull();
+    expect(work.queueSnapshot(workerKey).running).toBeNull();
   });
 });
 
@@ -845,48 +859,34 @@ describe('user steering', () => {
     const { thread, task } = await runOne();
     expect(task.status).toBe('accepted');
 
-    expect(memory.list(thread.id)).toHaveLength(0);
-    expect(memory.list(USER_MEMORY_OWNER)).toHaveLength(0);
-    expect(memory.list(assigneeId)).toHaveLength(0);
+    expect(memoryStore.listRules()).toHaveLength(0);
+    expect(memoryStore.readState().pendingSignals).toHaveLength(0);
     // 记录本身没丢：它在汇报里。
     expect(threads.listReportsOf(thread.id).length).toBeGreaterThan(0);
   });
 
-  it('用户要求过的做事规矩，会出现在执行体的提示词里', async () => {
-    // 故意让它的字面和任务标题高度重合：如果它走"相关度"那一路，这次一定会被捞到。
-    await memory.remember({
-      ownerId: USER_MEMORY_OWNER,
-      kind: 'format',
-      content: '健康检查服务里不要写注释',
-      scope: { type: 'personal' },
-      sourceType: 'manual',
-      subject: 'code.comments',
-    });
+  it('用户定下的长期铁律会进入执行体的核心记忆提示词', async () => {
+    memoryStore.addRule('健康检查服务里不要写注释');
 
     const { task } = await runOne();
     const steps = task.steps.map((step) => step.text);
 
-    // 走的是"做事规矩"那条通道。
-    expect(steps).toContain('注入 1 条做事规矩');
-    // 而且**只走这一条**：同一条要求既当规矩又当经验，模型会当成两条。
-    expect(steps.some((text) => /^注入 \d+ 条记忆$/.test(text))).toBe(false);
+    expect(steps.some((text) => text.startsWith('注入记忆上下文'))).toBe(true);
   });
 
-  it('把「重做」的理由收进偏好收集箱——这句话以前被拼进 brief 就冲掉了', async () => {
+  it('把「重做」的理由收进待整理信号队列', async () => {
     const { thread } = await needsJudgement();
     work.decideThread(thread.id, 'rework', '图表要标上单位，单位写在轴标题里');
 
-    const pending = new SignalStore(db).pending();
+    const pending = memoryStore.readState().pendingSignals;
     expect(pending.map((signal) => signal.origin)).toEqual(['rework']);
     expect(pending[0]?.text).toBe('图表要标上单位，单位写在轴标题里');
     expect(pending[0]?.threadId).toBe(thread.id);
 
-    // 返工是 fire-and-forget 的：不把它跑完，收尾时库就关了，那条正在跑的任务
-    // 会以一条 unhandled rejection 结束整个文件。
     await settle(new TaskRepository(db).latestForThread(thread.id)!.id);
   });
 
-  it('把「中途改方向」也收进去——和返工理由是同一类证据', () => {
+  it('把「中途改方向」也收进待整理信号队列', () => {
     const thread = threads.createThread({ title: '写周报', goal: '写周报' });
     const created = work.createTask({
       title: '写周报',
@@ -902,7 +902,7 @@ describe('user steering', () => {
 
     void work.steerThread(thread.id, '周报改成三段，别用编号列表');
 
-    const pending = new SignalStore(db).pending();
+    const pending = memoryStore.readState().pendingSignals;
     expect(pending.map((signal) => signal.origin)).toEqual(['steering']);
   });
 

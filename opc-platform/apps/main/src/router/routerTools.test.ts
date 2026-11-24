@@ -126,7 +126,6 @@ describe('Router 的工具带', () => {
       'forget_memory',
       'list_lines',
       'list_schedules',
-      'ontology_command',
       'open_line_of_work',
       'recall',
       'recall_memory',

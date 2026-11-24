@@ -7,6 +7,7 @@ import { BackgroundLayer } from '@/shared/ui/BackgroundLayer';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
 import { NavRail } from '@/widgets/nav-rail/NavRail';
 import { TitleBar } from '@/widgets/title-bar/TitleBar';
+import { BuddyCompanion } from '@/widgets/buddy-companion/BuddyCompanion';
 import { ChatSearchModal } from '@/features/chat/ui/ChatSearchModal';
 
 /**
@@ -16,10 +17,11 @@ import { ChatSearchModal } from '@/features/chat/ui/ChatSearchModal';
  */
 export function AppShell() {
   const location = useLocation();
-  const isChat = location.pathname.startsWith('/chat');
+  const isChat = location.pathname.startsWith('/chat') || location.pathname === '/';
   const [searchOpen, setSearchOpen] = useState(false);
   const [chatActivity, setChatActivity] = useState<AssistantActivity>();
-  const outlet = useOutlet({ setChatActivity });
+  const [welcomeVisible, setWelcomeVisible] = useState(false);
+  const outlet = useOutlet({ setChatActivity, setWelcomeVisible });
   // Keep the chat subtree mounted so Virtuoso retains its measured rows and scroll position.
   const cachedChatOutlet = useRef<ReactNode>(null);
   if (isChat && outlet) cachedChatOutlet.current = outlet;
@@ -27,35 +29,19 @@ export function AppShell() {
   useBillingSync();
   const background = useUiPrefs((state) => state.background);
 
-  const isRuntime = location.pathname.startsWith('/runtime');
-
   return (
     <div className="buddy-viewport relative isolate flex h-full w-full overflow-hidden">
       <BackgroundLayer kind={background.kind} url={background.url} />
       <div className="buddy-desktop relative z-10 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
         <div className="buddy-layout relative flex min-h-0 flex-1 overflow-hidden">
           <NavRail />
-          <div
-            className={`buddy-main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${isRuntime ? 'buddy-runtime-main' : ''}`}
-          >
-            {isRuntime ? (
-              <div className="pointer-events-none absolute inset-x-0 top-0 z-50">
-                <div className="pointer-events-auto">
-                  <TitleBar
-                    searchEnabled={false}
-                    onToggleSearch={() => undefined}
-                    overlay
-                  />
-                </div>
-              </div>
-            ) : (
-              <TitleBar
-                searchEnabled={isChat}
-                onToggleSearch={() => setSearchOpen((open) => !open)}
-                showChatStatus={isChat}
-                chatActivity={isChat ? chatActivity : undefined}
-              />
-            )}
+          <div className="buddy-main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <TitleBar
+              searchEnabled={isChat}
+              onToggleSearch={() => setSearchOpen((open) => !open)}
+              showChatStatus={isChat}
+              chatActivity={isChat ? chatActivity : undefined}
+            />
             <div className="relative flex min-h-0 flex-1 overflow-hidden">
               <div
                 aria-hidden={!isChat}
@@ -72,6 +58,11 @@ export function AppShell() {
             </div>
           </div>
         </div>
+        <BuddyCompanion
+          activity={chatActivity}
+          hidden={isChat && welcomeVisible}
+          isOnChatPage={isChat}
+        />
       </div>
       {searchOpen ? <ChatSearchModal onClose={() => setSearchOpen(false)} /> : null}
     </div>

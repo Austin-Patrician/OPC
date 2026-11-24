@@ -678,6 +678,8 @@ CREATE TABLE task_rebuild (
   due_at              INTEGER,
   thread_id           TEXT REFERENCES thread(id) ON DELETE SET NULL,
   worker_id           TEXT REFERENCES worker(id) ON DELETE SET NULL,
+  turn_mode           TEXT NOT NULL DEFAULT 'initial',
+  checkpoint_entry_id INTEGER,
   -- 指向 task 而不是 task_rebuild：建好之后这张表会被改名成 task，届时自引用成立。
   FOREIGN KEY (parent_task_id) REFERENCES task(id),
   FOREIGN KEY (review_of_task_id) REFERENCES task(id)
@@ -715,7 +717,7 @@ export function repairOwnershipColumns(db: CompanyDatabase): void {
       'is_review', 'depth', 'est_tokens', 'acceptance_command', 'acceptance_template',
       'status', 'workspace_rel_path', 'durable_task_id', 'attempts', 'tokens_used',
       'cost_usd', 'error', 'answer', 'error_kind', 'started_at', 'finished_at', 'created_at', 'updated_at',
-      'issue_key', 'priority', 'labels', 'due_at', 'thread_id', 'worker_id',
+      'issue_key', 'priority', 'labels', 'due_at', 'thread_id', 'worker_id', 'turn_mode', 'checkpoint_entry_id',
     ].filter((name) => taskColumns.includes(name));
     const extra = carried.join(', ');
 

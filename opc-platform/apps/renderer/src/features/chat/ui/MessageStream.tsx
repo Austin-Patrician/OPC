@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { ArrowDown, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, RotateCw } from 'lucide-react';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { userName } from '@/entities/company/model/options';
@@ -11,6 +11,7 @@ import type { ChatAttachmentRef } from '@opc/shared/domain';
 import type { ChatMessagePage } from '@opc/shared/ipc';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { RichText } from '@/entities/message/ui/RichText';
+import { isVisibleChatMessage } from '../lib/messageList';
 import { AssistantContent } from './AssistantContent';
 import { SpeakButton } from './SpeakButton';
 import { TypingIndicator } from './TypingIndicator';
@@ -18,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 
 interface MessageStreamProps {
   messages: readonly Message[];
+  firstItemIndex: number;
   agents: readonly Agent[];
   typingNames: readonly string[];
   hasOlderMessages: boolean;
@@ -25,35 +27,142 @@ interface MessageStreamProps {
   targetMessageId?: string;
 }
 
+interface StreamVirtuosoContext {
+  loadingOlder: boolean;
+  loadError: boolean;
+  typingNames: readonly string[];
+  onRetryLoadOlder: () => void;
+  historyLoadingLabel: string;
+  historyLoadFailedLabel: string;
+}
+
 const COLLAPSED_USER_MESSAGE_HEIGHT = 192;
+const VIEWPORT_OVERSCAN = { top: 600, bottom: 600 };
+
+const StreamHeader = memo(function StreamHeader({ context }: { context: StreamVirtuosoContext }) {
+  return (
+    <div className="flex h-9 items-center justify-center" role="status" aria-live="polite">
+      {context.loadingOlder ? (
+        <LoaderCircle size={15} className="animate-spin text-ink-tertiary" aria-label={context.historyLoadingLabel} />
+      ) : null}
+      {context.loadError ? (
+        <button
+          type="button"
+          onClick={context.onRetryLoadOlder}
+          className="rounded p-1 text-ink-tertiary hover:bg-surface-hover hover:text-ink"
+          title={context.historyLoadFailedLabel}
+          aria-label={context.historyLoadFailedLabel}
+        >
+          <RotateCw size={15} />
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
+const StreamFooter = memo(function StreamFooter({ context }: { context: StreamVirtuosoContext }) {
+  return (
+    <div className="buddy-message-gutter min-w-0 max-w-full px-6 pt-3 pb-6">
+      <TypingIndicator names={context.typingNames} />
+    </div>
+  );
+});
+
+const VIRTUOSO_COMPONENTS: Components<Message, StreamVirtuosoContext> = {
+  Header: StreamHeader,
+  Footer: StreamFooter,
+};
+
+function getMessageKey(_: number, message: Message): string {
+  return message.id;
+}
 
 /**
  * Virtualized message list. Only the visible window is mounted, so a
  * conversation with thousands of turns keeps a flat memory profile.
  */
-export function MessageStream({ messages, agents, typingNames, hasOlderMessages, onLoadOlder, targetMessageId }: MessageStreamProps) {
+export function MessageStream({
+  messages,
+  firstItemIndex,
+  agents,
+  typingNames,
+  hasOlderMessages,
+  onLoadOlder,
+  targetMessageId,
+}: MessageStreamProps) {
   const { t } = useTranslation();
   const profile = useCompanyProfile();
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const currentUserName = userName(profile, t('company.userFallback'));
   const visibleMessages = useMemo(
-    () => messages.filter((message) => message.kind !== 'task' && message.kind !== 'deliverable'),
+    () => messages.filter(isVisibleChatMessage),
     [messages],
   );
-  const [firstItemIndex, setFirstItemIndex] = useState(1_000_000);
   const [hasMore, setHasMore] = useState(hasOlderMessages);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
-  const [followingOutput, setFollowingOutput] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const loadingRef = useRef(false);
+  const userScrolledUpRef = useRef(false);
+  const [scrollerEl, setScrollerEl] = useState<HTMLElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrolledTargetRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const lastTailIdRef = useRef<string | undefined>(visibleMessages.at(-1)?.id);
 
   useEffect(() => setHasMore(hasOlderMessages), [hasOlderMessages]);
+
+  const handleScrollerRef = useCallback((ref: HTMLElement | Window | null) => {
+    setScrollerEl(ref instanceof HTMLElement ? ref : null);
+  }, []);
+
+  useEffect(() => {
+    if (!scrollerEl) return undefined;
+    let lastTouchY: number | null = null;
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        userScrolledUpRef.current = true;
+      }
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      lastTouchY = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const currentY = event.touches[0]?.clientY;
+      if (lastTouchY !== null && currentY !== undefined && currentY > lastTouchY) {
+        userScrolledUpRef.current = true;
+      }
+      if (currentY !== undefined) lastTouchY = currentY;
+    };
+    scrollerEl.addEventListener('wheel', onWheel, { passive: true });
+    scrollerEl.addEventListener('touchstart', onTouchStart, { passive: true });
+    scrollerEl.addEventListener('touchmove', onTouchMove, { passive: true });
+    return () => {
+      scrollerEl.removeEventListener('wheel', onWheel);
+      scrollerEl.removeEventListener('touchstart', onTouchStart);
+      scrollerEl.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [scrollerEl]);
+
+  useEffect(() => {
+    const tail = visibleMessages.at(-1);
+    if (!tail) {
+      lastTailIdRef.current = undefined;
+      return;
+    }
+    if (tail.id !== lastTailIdRef.current) {
+      lastTailIdRef.current = tail.id;
+      if (tail.senderId === 'user') {
+        userScrolledUpRef.current = false;
+        virtuosoRef.current?.scrollToIndex({
+          index: firstItemIndex + visibleMessages.length - 1,
+          align: 'end',
+          behavior: 'smooth',
+        });
+      }
+    }
+  }, [firstItemIndex, visibleMessages]);
 
   useEffect(() => {
     if (!targetMessageId) {
@@ -70,6 +179,7 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
     const index = visibleMessages.findIndex((message) => message.id === targetMessageId);
     if (index < 0) return;
 
+    userScrolledUpRef.current = true;
     virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + index, align: 'center', behavior: 'smooth' });
     scrolledTargetRef.current = targetMessageId;
     setHighlightedMessageId(targetMessageId);
@@ -82,30 +192,21 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
 
   useEffect(() => () => {
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    if (followTimerRef.current) clearTimeout(followTimerRef.current);
   }, []);
 
-  const followOutput = (isAtBottom: boolean) => {
-    if (!isAtBottom) return false;
-    setFollowingOutput(true);
-    if (followTimerRef.current) clearTimeout(followTimerRef.current);
-    followTimerRef.current = setTimeout(() => {
-      setFollowingOutput(false);
-      followTimerRef.current = null;
-    }, 600);
-    return 'smooth' as const;
-  };
+  const followOutput = useCallback((isAtBottom: boolean) => {
+    if (!isAtBottom || userScrolledUpRef.current) return false;
+    return 'auto' as const;
+  }, []);
 
-  const handleAtBottomChange = (next: boolean) => {
+  const handleAtBottomChange = useCallback((next: boolean) => {
     setAtBottom(next);
     if (next) {
-      setFollowingOutput(false);
-      if (followTimerRef.current) clearTimeout(followTimerRef.current);
-      followTimerRef.current = null;
+      userScrolledUpRef.current = false;
     }
-  };
+  }, []);
 
-  const loadOlder = async () => {
+  const loadOlder = useCallback(async () => {
     if (!hasMore || loadingRef.current) return;
     const beforeMessageId = visibleMessages[0]?.id;
     if (!beforeMessageId) return;
@@ -115,65 +216,85 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
     try {
       const page = await onLoadOlder(beforeMessageId);
       setHasMore(page.hasMore);
-      if (page.messages.length > 0) {
-        setFirstItemIndex((current) => current - page.messages.length);
-      }
     } catch {
       setLoadError(true);
     } finally {
       loadingRef.current = false;
       setLoadingOlder(false);
     }
-  };
+  }, [hasMore, onLoadOlder, visibleMessages]);
+
+  const handleRetryLoadOlder = useCallback(() => {
+    void loadOlder();
+  }, [loadOlder]);
+
+  const handleStartReached = useCallback(() => {
+    void loadOlder();
+  }, [loadOlder]);
+
+  const virtuosoContext = useMemo<StreamVirtuosoContext>(() => ({
+    loadingOlder,
+    loadError,
+    typingNames,
+    onRetryLoadOlder: handleRetryLoadOlder,
+    historyLoadingLabel: t('chat.historyLoading'),
+    historyLoadFailedLabel: t('chat.historyLoadFailed'),
+  }), [loadingOlder, loadError, typingNames, handleRetryLoadOlder, t]);
+
+  const renderItem = useCallback((_: number, message: Message) => (
+    <div className={`buddy-message-gutter min-w-0 max-w-full rounded-xl px-6 py-3 transition-colors duration-300 ${message.id === highlightedMessageId ? 'bg-amber-400/15 ring-1 ring-amber-400/30' : ''}`}>
+      <MessageRow
+        message={message}
+        agent={agentById.get(message.senderId)}
+        userName={currentUserName}
+      />
+    </div>
+  ), [agentById, currentUserName, highlightedMessageId]);
+
+  const jumpToLatest = useCallback(() => {
+    userScrolledUpRef.current = false;
+    virtuosoRef.current?.scrollToIndex({
+      index: firstItemIndex + visibleMessages.length - 1,
+      align: 'end',
+      behavior: 'smooth',
+    });
+  }, [firstItemIndex, visibleMessages.length]);
 
   return (
     <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
-      <Virtuoso
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-[var(--panel-bg-base)] to-transparent"
+      />
+      <Virtuoso<Message, StreamVirtuosoContext>
         ref={virtuosoRef}
-        data={visibleMessages as Message[]}
+        scrollerRef={handleScrollerRef}
+        data={visibleMessages}
+        context={virtuosoContext}
         firstItemIndex={firstItemIndex}
         className="h-full min-w-0 max-w-full overflow-x-hidden"
+        defaultItemHeight={96}
+        atBottomThreshold={48}
         followOutput={followOutput}
         atBottomStateChange={handleAtBottomChange}
-        startReached={() => void loadOlder()}
+        startReached={handleStartReached}
         initialTopMostItemIndex={{ index: firstItemIndex + Math.max(0, visibleMessages.length - 1), align: 'end' }}
-        computeItemKey={(_, message) => message.id}
-        increaseViewportBy={{ top: 400, bottom: 600 }}
-        components={{
-          Header: () => (
-            <div className="flex h-9 items-center justify-center" role="status" aria-live="polite">
-              {loadingOlder ? <LoaderCircle size={15} className="animate-spin text-ink-tertiary" aria-label={t('chat.historyLoading')} /> : null}
-              {loadError ? (
-                <button type="button" onClick={() => void loadOlder()} className="rounded p-1 text-ink-tertiary hover:bg-ink/5 hover:text-ink" title={t('chat.historyLoadFailed')} aria-label={t('chat.historyLoadFailed')}>
-                  <RotateCw size={15} />
-                </button>
-              ) : null}
-            </div>
-          ),
-          Footer: () => (
-            <div className="buddy-message-gutter min-w-0 max-w-full px-6 pt-4 pb-3">
-              <TypingIndicator names={typingNames} />
-            </div>
-          ),
-        }}
-        itemContent={(_, message) => (
-          <div className={`buddy-message-gutter min-w-0 max-w-full rounded-lg px-6 py-2 transition-colors duration-300 ${message.id === highlightedMessageId ? 'bg-amber-300/20 ring-1 ring-amber-400/25' : ''}`}>
-            <MessageRow
-              message={message}
-              agent={agentById.get(message.senderId)}
-              userName={currentUserName}
-              userAvatar={profile.userAvatar}
-            />
-          </div>
-        )}
+        computeItemKey={getMessageKey}
+        increaseViewportBy={VIEWPORT_OVERSCAN}
+        components={VIRTUOSO_COMPONENTS}
+        itemContent={renderItem}
       />
-      {!atBottom && !followingOutput && visibleMessages.length > 0 ? (
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-[var(--panel-bg-base)] to-transparent"
+      />
+      {!atBottom && visibleMessages.length > 0 ? (
         <button
           type="button"
-          onClick={() => virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + visibleMessages.length - 1, align: 'end', behavior: 'smooth' })}
-          className="buddy-jump-to-bottom absolute bottom-3 left-1/2 z-20 inline-flex h-9 -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-surface px-4 text-xs-plus font-medium text-ink-secondary shadow-popover transition hover:border-accent/30 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          onClick={jumpToLatest}
+          className="buddy-jump-to-bottom absolute bottom-4 left-1/2 z-20 inline-flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 text-xs font-medium text-ink-secondary shadow-popover transition hover:border-line-strong hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
-          <ArrowDown size={15} strokeWidth={2} />
+          <ArrowDown size={14} strokeWidth={2} />
           {t('chat.jumpToLatest')}
         </button>
       ) : null}
@@ -181,22 +302,20 @@ export function MessageStream({ messages, agents, typingNames, hasOlderMessages,
   );
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   message,
   agent,
   userName,
-  userAvatar,
 }: {
   message: Message;
   agent?: Agent;
   userName: string;
-  userAvatar?: string;
 }) {
   const { t } = useTranslation();
   if (message.kind === 'system') {
     return (
       <div className="flex justify-center py-1">
-        <span className="rounded-full bg-ink/5 px-3 py-1 text-xs-plus text-ink-tertiary">
+        <span className="rounded-full border border-line/80 bg-surface-muted px-3 py-1 text-xs-plus text-ink-tertiary">
           {message.text}
         </span>
       </div>
@@ -210,88 +329,90 @@ function MessageRow({
       : isRouter
         ? t('chat.sender.routerName')
         : message.senderName;
-  const displayRole = isRouter ? t('chat.sender.routerRole') : message.senderRole;
-  const avatarUrl = message.senderId === 'user' ? userAvatar : message.senderAvatarUrl ?? agent?.avatarUrl;
-  const containsActionCard = message.content?.some((block) => block.type === 'approval' || block.type === 'workflow' || block.type === 'ontologyApproval') ?? false;
+  const displayRole = isRouter ? undefined : message.senderRole;
+  const avatarUrl = message.senderAvatarUrl ?? agent?.avatarUrl;
+  const containsActionCard = message.content?.some((block) => block.type === 'approval' || block.type === 'workflow') ?? false;
+  const isStreaming = Boolean(message.streaming);
 
-  if (message.kind === 'task' || message.kind === 'deliverable') return null;
+  if (!isVisibleChatMessage(message)) return null;
 
   if (message.senderId === 'user') {
     return (
-      <div className="min-w-0 max-w-full space-y-3">
+      <div className="min-w-0 max-w-full space-y-2.5">
         {message.timeHeader ? <TimeHeader value={message.timeHeader} /> : null}
-        <div className="flex min-w-0 max-w-full items-start justify-end gap-2.5">
-          <div className="buddy-user-bubble min-w-0 max-w-[min(100%,44em)] rounded-[15px] rounded-br-[5px] px-4 py-3 text-md-plus leading-[1.58] break-words">
+        <div className="flex min-w-0 max-w-full justify-end">
+          <div className="buddy-user-bubble min-w-0 max-w-[min(82%,560px)] rounded-[20px] rounded-br-[6px] px-4 py-2.5 text-[14.5px] leading-[1.62] break-words">
             {message.text?.trim() ? <UserMessageText text={message.text} /> : null}
             <AttachmentList attachments={message.attachments} />
           </div>
-          <Avatar
-            name={displayName}
-            src={avatarUrl}
-            size="sm"
-            className="mt-0.5 size-avatar-sm"
-          />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-w-0 max-w-full space-y-2">
+    <div className="min-w-0 max-w-full space-y-1.5">
       {message.timeHeader ? <TimeHeader value={message.timeHeader} /> : null}
-      <div className="flex min-w-0 max-w-full items-start gap-2.5">
-        {message.senderId === 'router' ? (
-          <BuddyMark size="md" />
-        ) : (
-          <Avatar
-            name={displayName}
-            src={avatarUrl}
-            size="sm"
-            className="mt-0.5 size-avatar-sm"
-          />
-        )}
-        <div className="flex min-w-0 max-w-full flex-col items-start">
-          <div className="mb-1 flex items-center gap-1.5 px-0.5">
-            <span className="text-sm font-medium text-[#68756e]">{displayName}</span>
-            {displayRole ? (
-              <span className="rounded bg-ink/5 px-1.5 py-px text-2xs text-ink-tertiary">
-                {displayRole}
-              </span>
-            ) : null}
-            <span className="text-2xs text-ink-quaternary">{message.timestamp}</span>
-          </div>
-          <div className="group flex min-w-0 max-w-full w-full flex-col items-start">
-            <div className={containsActionCard
-              ? 'w-full min-w-0 max-w-full overflow-hidden text-md leading-[1.62] break-words text-[#2a3832]'
-              : 'buddy-agent-bubble min-w-0 max-w-full overflow-hidden rounded-[16px] rounded-tl-[5px] px-4 py-3 text-md leading-[1.62] break-words text-[#2a3832]'}>
-              <AssistantContent
-                blocks={
-                  message.content?.length
-                    ? message.content
-                    : [{ type: 'markdown', text: message.text ?? '' }]
-                }
-              />
-              {message.streaming ? (
-                <span
-                  aria-label="正在生成"
-                  className="ml-1 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-[#87947b] align-middle"
-                />
-              ) : null}
-            </div>
-            {!containsActionCard && message.text?.trim() && !message.streaming ? (
-              <AssistantMessageFooter text={message.text} />
-            ) : null}
-          </div>
+      <div className="group flex min-w-0 max-w-full flex-col items-start">
+        <div className="mb-1.5 flex items-center gap-2">
+          {isRouter ? (
+            <span className="inline-flex origin-left scale-[0.82] items-center">
+              <BuddyMark size="xs" animated={isStreaming} />
+            </span>
+          ) : (
+            <Avatar
+              name={displayName}
+              src={avatarUrl}
+              size="sm"
+              className="size-6"
+            />
+          )}
+          <span className="text-[12.5px] font-medium text-ink-secondary">{displayName}</span>
+          {displayRole ? (
+            <span className="rounded bg-surface-muted px-1.5 py-px text-2xs text-ink-tertiary">
+              {displayRole}
+            </span>
+          ) : null}
+          <span className="text-[11px] text-ink-quaternary">{message.timestamp}</span>
         </div>
+        <div
+          className={
+            containsActionCard
+              ? 'w-full min-w-0 max-w-full overflow-hidden text-[15px] leading-[1.72] break-words text-ink'
+              : 'buddy-agent-bubble w-full min-w-0 max-w-full overflow-hidden text-[15px] leading-[1.72] break-words text-ink'
+          }
+        >
+          <AssistantContent
+            blocks={
+              message.content?.length
+                ? message.content
+                : [{ type: 'markdown', text: message.text ?? '' }]
+            }
+            streaming={isStreaming}
+          />
+          {isStreaming ? (
+            <span
+              aria-label="正在生成"
+              className="ml-1 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-accent/80 align-middle"
+            />
+          ) : null}
+        </div>
+        {!containsActionCard && message.text?.trim() && !isStreaming ? (
+          <AssistantMessageFooter text={message.text} />
+        ) : null}
       </div>
     </div>
   );
+});
+
+function hasLikelyLongUserText(text: string): boolean {
+  return text.length > 260 || text.split('\n').length >= 8;
 }
 
-function UserMessageText({ text }: { text: string }) {
+const UserMessageText = memo(function UserMessageText({ text }: { text: string }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
-  const [isLong, setIsLong] = useState(false);
+  const [isLong, setIsLong] = useState(() => hasLikelyLongUserText(text));
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -309,11 +430,19 @@ function UserMessageText({ text }: { text: string }) {
 
   return (
     <>
-      <div
-        ref={contentRef}
-        className={`min-w-0 w-full max-w-[42em] whitespace-pre-wrap [overflow-wrap:anywhere] ${isLong && !expanded ? 'max-h-48 overflow-hidden' : ''}`}
-      >
-        <RichText text={text} />
+      <div className="relative">
+        <div
+          ref={contentRef}
+          className={`min-w-0 w-full max-w-[42em] whitespace-pre-wrap [overflow-wrap:anywhere] ${isLong && !expanded ? 'max-h-48 overflow-hidden' : ''}`}
+        >
+          <RichText text={text} />
+        </div>
+        {isLong && !expanded ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bubble-user)] to-transparent"
+          />
+        ) : null}
       </div>
       {isLong ? (
         <button
@@ -327,9 +456,9 @@ function UserMessageText({ text }: { text: string }) {
       ) : null}
     </>
   );
-}
+});
 
-function AttachmentList({ attachments }: { attachments?: readonly ChatAttachmentRef[] }) {
+const AttachmentList = memo(function AttachmentList({ attachments }: { attachments?: readonly ChatAttachmentRef[] }) {
   if (!attachments?.length) return null;
   return (
     <div className="buddy-sent-attachments" aria-label={`已发送 ${attachments.length} 个附件`}>
@@ -347,7 +476,7 @@ function AttachmentList({ attachments }: { attachments?: readonly ChatAttachment
       })}
     </div>
   );
-}
+});
 
 function formatMessageAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -356,7 +485,7 @@ function formatMessageAttachmentSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-function AssistantMessageFooter({ text }: { text: string }) {
+const AssistantMessageFooter = memo(function AssistantMessageFooter({ text }: { text: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
@@ -384,21 +513,21 @@ function AssistantMessageFooter({ text }: { text: string }) {
   };
 
   return (
-    <div className="pointer-events-none mt-1 flex w-full items-center justify-start gap-0.5 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+    <div className="pointer-events-none mt-1.5 flex h-6 w-full items-center justify-start gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
       <button
         type="button"
         onClick={() => void copy()}
         aria-label={t(copied ? 'chat.responseCopied' : 'chat.copyResponse')}
         title={t(copied ? 'chat.responseCopied' : 'chat.copyResponse')}
-        className="inline-flex size-7 items-center justify-center rounded-md text-[#8a938b] transition-colors hover:bg-[#f2f5f1] hover:text-[#43564a] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#87947b]"
+        className="inline-flex size-6 items-center justify-center rounded-md text-ink-quaternary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
       </button>
       <SpeakButton text={text} />
     </div>
   );
-}
+});
 
-function TimeHeader({ value }: { value: string }) {
-  return <div className="py-2 text-center text-sm text-ink-quaternary select-none">{value}</div>;
-}
+const TimeHeader = memo(function TimeHeader({ value }: { value: string }) {
+  return <div className="py-3 text-center text-[11.5px] font-medium text-ink-quaternary select-none">{value}</div>;
+});

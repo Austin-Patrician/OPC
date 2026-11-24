@@ -75,6 +75,23 @@ export class DurableWorkRunner {
     return this.awaitOutcome(task.id, harness, durableId);
   }
 
+  /** Aborts an in-flight durable task so its abort handler commits `aborted` -> `cancelled`. */
+  async abort(taskId: string): Promise<'marked' | 'terminal' | 'missing'> {
+    const task = this.deps.repository.getTask(taskId);
+    if (!task) return 'missing';
+    const storedId = this.deps.repository.getDurableTaskId(taskId);
+    if (!storedId) return 'missing';
+    const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
+    const context = await this.deps.context();
+    const numericId = Number(storedId);
+    const durableId = (Number.isFinite(numericId) ? numericId : storedId) as TaskId<WorkTaskResult>;
+    try {
+      return await harness.abortTask(durableId, context);
+    } catch {
+      return 'missing';
+    }
+  }
+
   /**
    * Startup reconciliation: every task the previous process thought was running
    * either continues (durable task exists) or is failed with its reservation freed.

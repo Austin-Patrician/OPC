@@ -2,18 +2,18 @@ import { RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { SkillsSection } from '@/features/capabilities/ui/SkillsSection';
 import { useCapabilities } from '@/features/capabilities/model/useCapabilities';
-import { buttonClass, PageHeader } from '../kit';
 import { cn } from '@/shared/lib/cn';
+import { buttonClass, PageHeader } from '../kit';
 
-/** 技能与工具 · 技能：本机 Markdown 技能的启用与成本。 */
+/** 技能与工具 · 技能：本机 Markdown 技能的启用与提示词成本。 */
 export function CapabilitiesSkillsPage() {
   const { t } = useTranslation();
   const capabilities = useCapabilities();
 
   return (
-    <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
+    <>
       <PageHeader
-        crumbs={[t('settings.group.capabilities')]}
+        crumbs={[t('settings.group.capabilities'), t('settings.page.capabilitiesSkills')]}
         title={t('settings.page.capabilitiesSkills')}
         description={t('capabilities.skills.description')}
         actions={
@@ -30,7 +30,7 @@ export function CapabilitiesSkillsPage() {
       />
 
       {capabilities.error ? (
-        <p className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+        <p className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-2.5 text-sm text-danger">
           {t('capabilities.loadError', { message: capabilities.error })}
         </p>
       ) : null}
@@ -41,6 +41,6 @@ export function CapabilitiesSkillsPage() {
         error={capabilities.skillError}
         onToggle={(entry, next) => void capabilities.toggleSkill(entry, next)}
       />
-    </div>
+    </>
   );
 }

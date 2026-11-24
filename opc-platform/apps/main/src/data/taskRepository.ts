@@ -29,6 +29,8 @@ export interface CreateTaskDraft {
   threadId?: string;
   /** The execution body that runs it; also the harness key. */
   workerId?: string;
+  turnMode?: 'initial' | 'append' | 'pivot' | 'rework';
+  checkpointEntryId?: number | null;
   estTokens: number;
   acceptanceCommand: string[];
   acceptanceTemplate: AcceptanceTemplate;
@@ -76,6 +78,8 @@ interface TaskRow {
   project_group_id: string | null;
   thread_id: string | null;
   worker_id: string | null;
+  turn_mode?: string | null;
+  checkpoint_entry_id?: number | null;
   review_of_task_id: string | null;
   issue_key: string | null;
   priority: string | null;
@@ -112,6 +116,12 @@ interface TaskRow {
 export function taskWorkspaceRelPath(taskId: string): string {
   const safe = taskId.replace(/[^A-Za-z0-9._-]/g, '-');
   return `tasks/${safe}`;
+}
+
+/** Persistent thread-level workspace shared across follow-up turns of a Living Worker. */
+export function threadWorkspaceRelPath(threadId: string): string {
+  const safe = threadId.replace(/[^A-Za-z0-9._-]/g, '-');
+  return `threads/${safe}`;
 }
 
 /**
@@ -243,10 +253,11 @@ export class TaskRepository {
     this.statement(
       `INSERT INTO task (id, title, brief, deliverable_spec, owner_id, owner_name,
                          contract_json,
-                         parent_task_id, thread_id, worker_id, review_of_task_id, is_review, depth, est_tokens,
+                         parent_task_id, thread_id, worker_id, turn_mode, checkpoint_entry_id,
+                         review_of_task_id, is_review, depth, est_tokens,
                          acceptance_command, acceptance_template, status, workspace_rel_path,
                          attempts, tokens_used, cost_usd, issue_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'open', ?, 0, 0, 0, ?, ?, ?)`,
     ).run(
       taskId,
       draft.title,
@@ -258,6 +269,8 @@ export class TaskRepository {
       placement?.parentTaskId ?? null,
       draft.threadId ?? null,
       draft.workerId ?? null,
+      draft.turnMode ?? 'initial',
+      draft.checkpointEntryId ?? null,
       placement?.depth ?? 0,
       draft.estTokens,
       JSON.stringify(draft.acceptanceCommand),
@@ -339,6 +352,12 @@ export class TaskRepository {
       projectGroupId: row.project_group_id ?? undefined,
       threadId: row.thread_id ?? undefined,
       workerId: row.worker_id ?? undefined,
+      ...(row.turn_mode === 'initial' || row.turn_mode === 'append' || row.turn_mode === 'pivot' || row.turn_mode === 'rework'
+        ? { turnMode: row.turn_mode }
+        : {}),
+      ...(row.checkpoint_entry_id !== undefined && row.checkpoint_entry_id !== null
+        ? { checkpointEntryId: row.checkpoint_entry_id }
+        : {}),
       reviewOfTaskId: row.review_of_task_id ?? undefined,
       isReview: row.is_review === 1,
       depth: row.depth,
@@ -616,6 +635,37 @@ export class TaskRepository {
   setDurableTaskId = (taskId: string, durableTaskId: string): void => {
     this.statement('UPDATE task SET durable_task_id = ?, updated_at = ? WHERE id = ?').run(
       durableTaskId,
+      Date.now(),
+      taskId,
+    );
+  };
+
+  updateContract = (
+    taskId: string,
+    patch: { objective?: string; deliverable?: string; outputs?: TaskContract['outputs'] },
+  ): TaskContract | null => {
+    const existing = this.getTask(taskId);
+    if (!existing) return null;
+    const base: TaskContract = existing.contract ?? {
+      objective: existing.brief,
+      deliverable: existing.deliverableSpec,
+      outputs: [],
+    };
+    const next: TaskContract = {
+      ...base,
+      ...(patch.objective !== undefined ? { objective: patch.objective } : {}),
+      ...(patch.deliverable !== undefined ? { deliverable: patch.deliverable } : {}),
+      ...(patch.outputs !== undefined ? { outputs: patch.outputs } : {}),
+    };
+    this.statement(
+      'UPDATE task SET contract_json = ?, brief = ?, deliverable_spec = ?, updated_at = ? WHERE id = ?',
+    ).run(JSON.stringify(next), next.objective, next.deliverable, Date.now(), taskId);
+    return next;
+  };
+
+  setCheckpointEntryId = (taskId: string, entryId: number | null): void => {
+    this.statement('UPDATE task SET checkpoint_entry_id = ?, updated_at = ? WHERE id = ?').run(
+      entryId,
       Date.now(),
       taskId,
     );

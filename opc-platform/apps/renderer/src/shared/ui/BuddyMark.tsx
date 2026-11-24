@@ -1,66 +1,219 @@
+import { memo, useEffect, useRef, useState } from 'react';
 import type { AssistantActivityPhase } from '@opc/shared/ipc';
+import completedClip from '@/assets/buddy/completed.webp';
+import errorClip from '@/assets/buddy/error.webp';
+import idleClip from '@/assets/buddy/idle.webp';
+import staticBear from '@/assets/buddy/static.webp';
+import thinkingClip from '@/assets/buddy/thinking.webp';
+import workingClip from '@/assets/buddy/working.webp';
 
-/** Small inline Buddy robot mark, adapted from the supplied IM reference. */
-export function BuddyMark({
+export type BuddyClipKey = 'idle' | 'thinking' | 'working' | 'completed' | 'error';
+
+const CLIP_SOURCES: Record<BuddyClipKey, string> = {
+  idle: idleClip,
+  thinking: thinkingClip,
+  working: workingClip,
+  completed: completedClip,
+  error: errorClip,
+};
+
+let clipsPreloaded = false;
+
+function preloadClips() {
+  if (clipsPreloaded || typeof Image === 'undefined') return;
+  clipsPreloaded = true;
+  for (const src of Object.values(CLIP_SOURCES)) {
+    const img = new Image();
+    img.src = src;
+  }
+}
+
+function resolveClip(phase: AssistantActivityPhase, poked: boolean): BuddyClipKey {
+  if (poked) return 'completed';
+  switch (phase) {
+    case 'thinking':
+    case 'organizing':
+    case 'waiting_user':
+      return 'thinking';
+    case 'delegating':
+    case 'working':
+    case 'typing':
+      return 'working';
+    case 'delivered':
+    case 'completed':
+      return 'completed';
+    case 'error':
+      return 'error';
+    case 'idle':
+    default:
+      return 'idle';
+  }
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() =>
+    typeof window !== 'undefined' &&
+    Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches),
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReduced(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+
+  return reduced;
+}
+
+const SIZE_CLASSES: Record<'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'fill', string> = {
+  xs: 'size-7',
+  sm: 'size-9',
+  md: 'size-11',
+  lg: 'size-[72px]',
+  xl: 'size-[116px]',
+  '2xl': 'size-[180px]',
+  fill: 'size-full',
+};
+
+/**
+ * Animated 3D polar-bear desktop companion ("Buddy") backed by matted
+ * transparent WebP motion clips per activity phase, falling back to a crisp
+ * static image for compact message rows and reduced-motion preferences.
+ */
+export const BuddyMark = memo(function BuddyMark({
   size = 'md',
   phase = 'idle',
+  animated = true,
+  interactive = false,
+  lookAt,
+  clipOverride,
+  replayNonce = 0,
+  showShadow = true,
+  showAura,
 }: {
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'fill';
   phase?: AssistantActivityPhase;
+  animated?: boolean;
+  interactive?: boolean;
+  lookAt?: boolean;
+  clipOverride?: BuddyClipKey;
+  replayNonce?: number;
+  showShadow?: boolean;
+  showAura?: boolean;
 }) {
-  const dimension = size === 'xl' ? 'size-[78px]' : size === 'lg' ? 'size-[58px]' : size === 'sm' ? 'size-8' : size === 'xs' ? 'size-7' : 'size-10';
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const [poked, setPoked] = useState(false);
+  const [pokeCount, setPokeCount] = useState(0);
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const isAnimated = animated && !prefersReducedMotion;
+  const enableLookAt = (lookAt ?? interactive) && isAnimated;
+  const renderAura = showAura ?? size !== 'xs';
+
+  useEffect(() => {
+    if (isAnimated) preloadClips();
+  }, [isAnimated]);
+
+  useEffect(() => {
+    if (!enableLookAt) {
+      rootRef.current?.style.setProperty('--buddy-look-x', '0');
+      rootRef.current?.style.setProperty('--buddy-look-y', '0');
+      return undefined;
+    }
+
+    let rafId = 0;
+    let latestX = 0;
+    let latestY = 0;
+
+    const flushLook = () => {
+      rafId = 0;
+      const el = rootRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = (latestX - cx) / 260;
+      const dy = (latestY - cy) / 220;
+      const clampedX = Math.max(-1, Math.min(1, dx));
+      const clampedY = Math.max(-1, Math.min(1, dy));
+      el.style.setProperty('--buddy-look-x', clampedX.toFixed(3));
+      el.style.setProperty('--buddy-look-y', clampedY.toFixed(3));
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      latestX = event.clientX;
+      latestY = event.clientY;
+      if (!rafId) rafId = window.requestAnimationFrame(flushLook);
+    };
+
+    const onPointerLeave = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      rootRef.current?.style.setProperty('--buddy-look-x', '0');
+      rootRef.current?.style.setProperty('--buddy-look-y', '0');
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    document.addEventListener('mouseleave', onPointerLeave);
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+      window.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('mouseleave', onPointerLeave);
+    };
+  }, [enableLookAt]);
+
+  useEffect(() => {
+    if (!poked) return undefined;
+    const timer = window.setTimeout(() => setPoked(false), 3500);
+    return () => window.clearTimeout(timer);
+  }, [poked, pokeCount]);
+
+  const handlePoke = () => {
+    setPoked(true);
+    setPokeCount((count) => count + 1);
+  };
+
+  const clip = clipOverride ?? resolveClip(phase, poked);
+  const activeSrc = isAnimated ? CLIP_SOURCES[clip] : staticBear;
+  const phaseClass = isAnimated ? `buddy-mark-${phase}` : 'buddy-mark-static';
+  const imgKey = isAnimated
+    ? `${clip}-${poked ? pokeCount : 0}-${replayNonce}`
+    : 'static';
+
   return (
     <span
-      className={`buddy-mark buddy-mark-${phase} relative inline-flex shrink-0 items-center justify-center ${dimension}`}
+      ref={rootRef}
+      onClick={interactive ? handlePoke : undefined}
+      className={[
+        'buddy-mark',
+        phaseClass,
+        interactive || lookAt ? 'buddy-mark-interactive' : '',
+        interactive ? 'cursor-pointer' : '',
+        poked ? 'buddy-mark-poked' : '',
+        'relative inline-flex shrink-0 items-center justify-center select-none',
+        SIZE_CLASSES[size],
+      ]
+        .filter(Boolean)
+        .join(' ')}
       aria-hidden
     >
-      <svg viewBox="0 0 64 64" className="buddy-mark-svg size-full overflow-visible">
-        <defs>
-          <linearGradient id="buddy-mint-base" x1="0" y1="0" x2="1" y2="1">
-            <stop stopColor="#e6f7ed" />
-            <stop offset="1" stopColor="#cbead8" />
-          </linearGradient>
-          <radialGradient id="buddy-ink-head" cx="38%" cy="30%" r="70%">
-            <stop stopColor="#38424a" />
-            <stop offset=".5" stopColor="#1b2025" />
-            <stop offset="1" stopColor="#0e1114" />
-          </radialGradient>
-        </defs>
-        <circle cx="31" cy="33" r="26" fill="url(#buddy-mint-base)" />
-        <ellipse cx="31" cy="12" rx="4.5" ry="2" fill="#9bb5a8" />
-        <rect x="29.5" y="12" width="3" height="4" rx="1.5" fill="#7fa090" />
-        <path
-          d="M13 28 15 15c.4-2.2 3-2.8 4.6-1.2L26 20Zm36 0-2-13c-.4-2.2-3-2.8-4.6-1.2L36 20Z"
-          fill="url(#buddy-ink-head)"
+      {renderAura ? <span className="buddy-mark-aura" aria-hidden /> : null}
+      {showShadow ? <span className="buddy-mark-shadow" aria-hidden /> : null}
+      <span className="buddy-mark-stage relative z-10 flex size-full items-center justify-center">
+        <img
+          key={imgKey}
+          src={activeSrc}
+          alt=""
+          draggable={false}
+          decoding="async"
+          className="buddy-mark-media size-full object-contain"
         />
-        <path d="m15.8 24 1.2-7.5 5.2 4.5Zm30.4 0L45 16.5 39.8 21Z" fill="#4e7a65" opacity=".55" />
-        <rect x="8.5" y="29" width="5" height="11" rx="2.5" fill="#2a333a" />
-        <rect x="48.5" y="29" width="5" height="11" rx="2.5" fill="#2a333a" />
-        <rect x="12" y="19" width="38" height="30" rx="14" fill="url(#buddy-ink-head)" />
-        <path
-          d="M19 23.5q12-3 24 0"
-          fill="none"
-          stroke="white"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          opacity=".28"
-        />
-        <rect x="16.5" y="25" width="29" height="19" rx="9" fill="#090c0f" />
-        <rect x="22" y="30.5" width="4.2" height="6.8" rx="2.1" fill="#e8fff2" />
-        <rect x="35.8" y="30.5" width="4.2" height="6.8" rx="2.1" fill="#e8fff2" />
-        <path
-          d="M29 36.8q2 2 4 0"
-          fill="none"
-          stroke="#88e6b0"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-        />
-        <circle cx="48" cy="47" r="6.5" fill="#b8e9ca" stroke="white" strokeWidth="1.8" />
-        <path d="M45.5 47h5m-4 2.2h3" stroke="#1fa958" strokeWidth="1.3" strokeLinecap="round" />
-        <g stroke="#22b560" strokeWidth="2.2" strokeLinecap="round">
-          <path d="m52 11 2.5-4.5M56.5 15.5l4-2.5" />
-        </g>
-      </svg>
+      </span>
     </span>
   );
-}
+});

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import i18n from '@/shared/i18n';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
 import { applyTheme } from '@/shared/theme/applyTheme';
+import { ensureFontLoaded } from '@/shared/theme/fontLoader';
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
@@ -28,6 +29,7 @@ export function ThemeSync() {
   }, []);
 
   useEffect(() => {
+    void ensureFontLoaded(fontFamilyId);
     applyTheme({ themeMode, fontFamilyId, fontScale, background }, { prefersDark });
   }, [themeMode, fontFamilyId, fontScale, background, prefersDark]);
 

@@ -1,141 +1,196 @@
 /*
  * Design tokens — single source of truth for color, type and layout.
- * Values are copied 1:1 from the Figma reference; every size is expressed in
- * rem so that the "interface scale" preference (html font-size) scales the
- * whole shell instead of only the text.
- *
- * Names are semantic, never literal: components must use `text-ink`,
- * `bg-surface`, `border-line`… so a new theme is a token change, not a refactor.
+ * Values are expressed in rem so the interface scale scales the shell
+ * consistently across light and dark themes.
  */
 :root {
   color-scheme: light;
 
   /* ── Surfaces ─────────────────────────────────────────────── */
-  --app-bg: #dcdce0;
-  --chrome-bg-base: #ebebec;
-  --rail-bg-base: #f2f2f3;
-  --sidebar-bg-base: #f9f9fa;
-  --panel-bg-base: #f2f2f3;
+  --app-bg: #ececef;
+  --chrome-bg-base: #ffffff;
+  --rail-bg-base: #f6f6f7;
+  --sidebar-bg-base: #f8f8f9;
+  --panel-bg-base: #ffffff;
   /* Derivable so [data-bg] can mix them with transparent (see index.css). */
   --chrome-bg: var(--chrome-bg-base);
   --rail-bg: var(--rail-bg-base);
   --sidebar-bg: var(--sidebar-bg-base);
   --panel-bg: var(--panel-bg-base);
   --surface: #ffffff;
-  --surface-muted: #efeff1;
-  --surface-hover: #efeff1;
-  --surface-active: #e5e5e7;
+  --surface-muted: #f4f4f6;
+  --surface-hover: #eeeef1;
+  --surface-active: #e6e6ea;
 
   /* ── Lines ────────────────────────────────────────────────── */
-  --border: #e5e5e7;
-  --border-strong: #dcdce0;
+  --border: #e8e8ec;
+  --border-strong: #d8d8df;
 
   /* ── Text ─────────────────────────────────────────────────── */
-  --text-primary: #1c1c1e;
-  --text-secondary: #555558;
-  --text-tertiary: #8e8e93;
-  --text-quaternary: #9e9ea3;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #71717a;
+  --text-quaternary: #a1a1aa;
 
   /* ── Brand / state ────────────────────────────────────────── */
-  --accent: #22b560;
-  --accent-hover: #1ca354;
-  --accent-soft: rgba(34, 181, 96, 0.12);
-  --accent-text: #188349;
-  --danger: #ff4d4f;
-  --success: #27c93f;
-  --warning: #f5a623;
+  --accent: #168352;
+  --accent-hover: #126b43;
+  --accent-soft: rgba(22, 131, 82, 0.10);
+  --accent-text: #136c45;
+  --danger: #dc4c4c;
+  --success: #1a9a5c;
+  --warning: #c9821e;
+
+  /* ── Primary editorial actions & code surfaces ───────────── */
+  --primary-btn-bg: #18181b;
+  --primary-btn-hover: #2d2d33;
+  --primary-btn-text: #ffffff;
+  --code-bg: #f7f7f8;
+  --code-header-bg: #f0f0f2;
+  --inline-code-bg: #f2f2f5;
+
+  /* ── Syntax highlighting (light) ──────────────────────────── */
+  --hljs-keyword: #cf222e;
+  --hljs-string: #0a3069;
+  --hljs-number: #0550ae;
+  --hljs-title: #8250df;
+  --hljs-comment: #6e7781;
+  --hljs-attr: #116329;
+  --hljs-built-in: #953800;
+  --hljs-addition-bg: #dafbe1;
+  --hljs-addition-fg: #116329;
+  --hljs-deletion-bg: #ffebe9;
+  --hljs-deletion-fg: #82071e;
 
   /* ── Relation graph nodes ─────────────────────────────────── */
   --graph-node-top: #ffffff;
-  --graph-node-bottom: #f1f2f5;
-  --graph-node-stroke: #e0e1e5;
+  --graph-node-bottom: #f4f4f6;
+  --graph-node-stroke: #e2e2e8;
   --graph-centre-top: #ffffff;
-  --graph-centre-bottom: #e9f7ef;
+  --graph-centre-bottom: #eaf6ef;
 
   /* ── Message bubbles ──────────────────────────────────────── */
-  --bubble-user: #e3f3e9;
-  --bubble-user-text: #1e2e26;
-  --bubble-agent: #ffffff;
+  --bubble-user: #f3f3f5;
+  --bubble-user-border: #e9e9ed;
+  --bubble-user-text: #18181b;
+  --bubble-agent: transparent;
 
   /* ── Elevation ────────────────────────────────────────────── */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.14);
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --shadow-composer: 0 2px 12px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03);
+  --shadow-composer-focus: 0 6px 24px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04);
   --scrollbar-thumb: rgba(0, 0, 0, 0.14);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.26);
 
   /* ── Typography (rem = px / 16) ───────────────────────────── */
   --font-ui:
-    Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
-  --font-mono-ui: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    'Inter Variable', 'Noto Sans SC Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono-ui:
+    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
 }
 
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --app-bg: #0d0e10;
-  --chrome-bg-base: #17191c;
-  --rail-bg-base: #121417;
-  --sidebar-bg-base: #16181b;
-  --panel-bg-base: #101114;
-  --surface: #1c1f23;
-  --surface-muted: #23262b;
-  --surface-hover: #23262b;
-  --surface-active: #2b2f35;
+  --app-bg: #0e0f11;
+  --chrome-bg-base: #141518;
+  --rail-bg-base: #101114;
+  --sidebar-bg-base: #14161a;
+  --panel-bg-base: #141518;
+  --surface: #1b1d22;
+  --surface-muted: #22252b;
+  --surface-hover: #272b32;
+  --surface-active: #2f343d;
 
-  --border: #262a30;
-  --border-strong: #33383f;
+  --border: #262930;
+  --border-strong: #343842;
 
-  --text-primary: #f2f3f5;
-  --text-secondary: #c2c6cc;
-  --text-tertiary: #8f959d;
-  --text-quaternary: #767c84;
+  --text-primary: #eceef2;
+  --text-secondary: #b4b9c4;
+  --text-tertiary: #848a96;
+  --text-quaternary: #626874;
 
-  --accent: #40bd78;
-  --accent-hover: #55ce8b;
-  --accent-soft: rgba(64, 189, 120, 0.16);
-  --accent-text: #70d59b;
-  --danger: #ff6369;
-  --success: #3ecf5a;
-  --warning: #f7b955;
+  --accent: #38b679;
+  --accent-hover: #4ac78a;
+  --accent-soft: rgba(56, 182, 121, 0.14);
+  --accent-text: #67d59e;
+  --danger: #f06a6f;
+  --success: #3ecf74;
+  --warning: #e6a947;
+
+  /* ── Primary editorial actions & code surfaces ───────────── */
+  --primary-btn-bg: #eceef2;
+  --primary-btn-hover: #ffffff;
+  --primary-btn-text: #141518;
+  --code-bg: #181a1f;
+  --code-header-bg: #20232a;
+  --inline-code-bg: #252830;
+
+  /* ── Syntax highlighting (dark dimmed) ────────────────────── */
+  --hljs-keyword: #f47067;
+  --hljs-string: #96d0ff;
+  --hljs-number: #6cb6ff;
+  --hljs-title: #dcbdfb;
+  --hljs-comment: #768390;
+  --hljs-attr: #8ddb8c;
+  --hljs-built-in: #f69d50;
+  --hljs-addition-bg: rgba(70, 149, 74, 0.22);
+  --hljs-addition-fg: #b4f1b4;
+  --hljs-deletion-bg: rgba(229, 83, 75, 0.22);
+  --hljs-deletion-fg: #ffd8d3;
 
   /* ── Relation graph nodes ─────────────────────────────────── */
-  --graph-node-top: #282c32;
-  --graph-node-bottom: #1e2126;
-  --graph-node-stroke: #3a4048;
-  --graph-centre-top: #2b3831;
-  --graph-centre-bottom: #1e2a24;
+  --graph-node-top: #262a31;
+  --graph-node-bottom: #1d2025;
+  --graph-node-stroke: #363b45;
+  --graph-centre-top: #26332c;
+  --graph-centre-bottom: #1b2520;
 
-  --bubble-user: #1c392a;
-  --bubble-user-text: #e9fff1;
-  --bubble-agent: #1c1f23;
+  --bubble-user: #23262d;
+  --bubble-user-border: #2e323b;
+  --bubble-user-text: #f0f2f5;
+  --bubble-agent: transparent;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.32);
   --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.28);
+  --shadow-composer-focus: 0 8px 28px rgba(0, 0, 0, 0.42);
   --scrollbar-thumb: rgba(255, 255, 255, 0.16);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
 }
 
 /*
- * Optional font stacks. Only locally available families are referenced so the
- * app never blocks on a font CDN (desktop, offline, and Windows/Linux parity).
+ * Optional font stacks. Embedded variable fonts are bundled locally for full
+ * offline fidelity across Windows, macOS, and Linux without network fetches.
  */
+[data-font='inter'] {
+  --font-ui:
+    'Inter Variable', 'Noto Sans SC Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', system-ui, sans-serif;
+}
+[data-font='jakarta'] {
+  --font-ui:
+    'Plus Jakarta Sans Variable', 'Noto Sans SC Variable', -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+[data-font='serif'] {
+  --font-ui:
+    'Newsreader Variable', 'Noto Serif SC Variable', 'Source Han Serif SC', 'Songti SC', Georgia,
+    serif;
+}
+[data-font='noto'] {
+  --font-ui: 'Noto Sans SC Variable', 'Inter Variable', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+[data-font='mono'] {
+  --font-ui:
+    'JetBrains Mono Variable', 'Noto Sans SC Variable', ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+}
 [data-font='system'] {
   --font-ui:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
-}
-[data-font='inter'] {
-  --font-ui:
-    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
-    'Noto Sans SC', system-ui, sans-serif;
-}
-[data-font='noto'] {
-  --font-ui: 'Noto Sans SC', 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-}
-[data-font='serif'] {
-  --font-ui: 'Source Han Serif SC', 'Songti SC', 'SimSun', Georgia, 'Times New Roman', serif;
-}
-[data-font='mono'] {
-  --font-ui: var(--font-mono-ui);
+    'Microsoft YaHei', system-ui, sans-serif;
 }

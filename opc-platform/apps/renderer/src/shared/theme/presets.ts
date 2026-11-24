@@ -1,11 +1,12 @@
 import type { BackgroundKind, FontFamilyId, FontScaleId } from './types';
 
 export const FONT_FAMILIES: readonly { id: FontFamilyId; labelKey: string; sample: string }[] = [
-  { id: 'system', labelKey: 'settings.font.system', sample: 'Aa 字体' },
   { id: 'inter', labelKey: 'settings.font.inter', sample: 'Aa Inter' },
-  { id: 'noto', labelKey: 'settings.font.noto', sample: 'Aa 思源' },
+  { id: 'jakarta', labelKey: 'settings.font.jakarta', sample: 'Aa Jakarta' },
   { id: 'serif', labelKey: 'settings.font.serif', sample: 'Aa 宋体' },
+  { id: 'noto', labelKey: 'settings.font.noto', sample: 'Aa 思源' },
   { id: 'mono', labelKey: 'settings.font.mono', sample: 'Aa Mono' },
+  { id: 'system', labelKey: 'settings.font.system', sample: 'Aa 系统' },
 ];
 
 export const FONT_SCALES: readonly { id: FontScaleId; percent: number }[] = [

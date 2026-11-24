@@ -1,9 +1,10 @@
 import { RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { StatStrip } from '@/features/capabilities/ui/CapabilityPrimitives';
 import { ToolsSection } from '@/features/capabilities/ui/ToolsSection';
 import { useCapabilities } from '@/features/capabilities/model/useCapabilities';
-import { buttonClass, PageHeader } from '../kit';
 import { cn } from '@/shared/lib/cn';
+import { buttonClass, PageHeader } from '../kit';
 
 /** 技能与工具 · 工具：模型实际可调用的工具与执行体视角。 */
 export function CapabilitiesToolsPage() {
@@ -12,9 +13,9 @@ export function CapabilitiesToolsPage() {
   const total = capabilities.toolNames.size;
 
   return (
-    <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
+    <>
       <PageHeader
-        crumbs={[t('settings.group.capabilities')]}
+        crumbs={[t('settings.group.capabilities'), t('settings.page.capabilitiesTools')]}
         title={t('settings.page.capabilitiesTools')}
         description={t('capabilities.toolsTab.description', { count: total })}
         actions={
@@ -31,12 +32,32 @@ export function CapabilitiesToolsPage() {
       />
 
       {capabilities.error ? (
-        <p className="mb-4 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
+        <p className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-2.5 text-sm text-danger">
           {t('capabilities.loadError', { message: capabilities.error })}
         </p>
       ) : null}
 
-      <ToolsSection groups={capabilities.toolGroups} agents={capabilities.agents} />
-    </div>
+      <div className="space-y-5">
+        <StatStrip
+          items={[
+            {
+              label: t('capabilities.ui.statTools'),
+              value: total,
+              accent: total > 0,
+            },
+            {
+              label: t('capabilities.ui.statGroups'),
+              value: capabilities.toolGroups.length,
+            },
+            {
+              label: t('capabilities.ui.statAgents'),
+              value: capabilities.agents.length,
+            },
+          ]}
+        />
+
+        <ToolsSection groups={capabilities.toolGroups} agents={capabilities.agents} />
+      </div>
+    </>
   );
 }

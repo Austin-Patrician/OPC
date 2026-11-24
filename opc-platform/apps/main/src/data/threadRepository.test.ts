@@ -114,14 +114,6 @@ describe('worker', () => {
     expect(threads.listWorkers(thread.id)).toHaveLength(0);
     expect(threads.getWorker(worker.id)).not.toBeNull();
   });
-
-  it('includes recently retired workers only in the observatory roster window', () => {
-    const worker = threads.createWorker({ name: '小周' });
-    const retired = threads.retireWorker(worker.id);
-    expect(threads.listAllWorkers()).toHaveLength(0);
-    expect(threads.listRuntimeWorkers(retired.retiredAt! - 1).map((item) => item.id)).toEqual([worker.id]);
-    expect(threads.listRuntimeWorkers(retired.retiredAt! + 1)).toHaveLength(0);
-  });
 });
 
 describe('event', () => {

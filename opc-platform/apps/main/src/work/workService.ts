@@ -13,6 +13,8 @@ import type {
   WorkReport,
   WorkTask,
   WorkThread,
+  Worker,
+  WorkerProgressEvent,
 } from '@opc/shared/domain';
 import type { PricingMode } from '@opc/shared/domain';
 import type {
@@ -43,8 +45,10 @@ import { sharedMcpConnection } from '../mcp/connection';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
 import type { SpeechService } from '../models/speechService';
-import type { MemoryService } from '../memory/memoryService';
 import type { FactService } from '../memory/factService';
+import type { MarkdownMemoryStore } from '../memory/markdownMemoryStore';
+import type { MemoryReflector } from '../memory/memoryReflector';
+import type { MemorySearchIndex } from '../memory/memorySearchIndex';
 import { validateDecomposition } from './decomposition';
 import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
@@ -54,8 +58,6 @@ import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
 import { createTraceRecorder } from './trace';
-import { recallOwners, USER_MEMORY_OWNER } from '../memory/owners';
-import { SignalStore } from '../memory/signals';
 import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
@@ -98,7 +100,6 @@ import { RuntimeService } from '../runtime/service';
 import type { PiExtensionHost } from '../extensions/host';
 import type { PiSkillHost } from '../skills/host';
 import { createSkillsExtension } from '../skills/extension';
-import type { ContextGraphStore } from '../ontology/types';
 import type { BrowserBroker } from '../browser/broker';
 import { createBrowserToolExtension } from './browserTool';
 import type { DesktopBroker } from '../desktop/broker';
@@ -108,8 +109,8 @@ import type { AssistantToolsService } from '../assistant/assistantTools';
 
 /** How many manager rework rounds a task may take before it is parked for you. */
 
-/** Which work task each employee is executing right now (for tools that need it). */
-const runningTaskByEmployee = new Map<string, string>();
+/** Which work task each worker runtime is executing right now (keyed by runtimeKey = workerId ?? assigneeId). */
+const runningTaskByWorker = new Map<string, string>();
 
 function legacyContract(input: CreateTaskInput): TaskContract {
   const objective = input.brief?.trim() || input.deliverableSpec?.trim() || input.title;
@@ -129,8 +130,8 @@ function contractOf(task: Pick<WorkTask, 'contract' | 'brief' | 'deliverableSpec
   return task.contract ?? { objective: task.brief, deliverable: task.deliverableSpec, outputs: [] };
 }
 
-function currentTaskIdFor(ownerId: string): string | undefined {
-  return runningTaskByEmployee.get(ownerId);
+function currentTaskIdFor(runtimeKey: string, fallbackOwnerId?: string): string | undefined {
+  return runningTaskByWorker.get(runtimeKey) ?? (fallbackOwnerId ? runningTaskByWorker.get(fallbackOwnerId) : undefined);
 }
 
 interface EmployeeHarness {
@@ -182,9 +183,10 @@ export interface WorkServiceDeps {
   mcp?: () => readonly McpServerConfig[];
   /** Structured decisions (Jev / System One); absent = no `decide` tool. */
   decisions?: DecisionService;
-  memory?: MemoryService;
+  memoryStore?: MarkdownMemoryStore;
+  memoryIndex?: MemorySearchIndex;
+  memoryReflector?: MemoryReflector;
   facts?: FactService;
-  contextGraph?: ContextGraphStore;
   /** Colleague messaging (F5); absent = employees cannot talk to each other. */
   /** Proxy policy for spawned commands (acceptance scripts, git/npm). */
   network?: NetworkClient;
@@ -223,6 +225,8 @@ export class WorkService {
   private readonly repository: TaskRepository;
   private readonly runner: DurableWorkRunner;
   private readonly listeners = new Set<(task: WorkTask) => void>();
+  private readonly progressListeners = new Set<(event: WorkerProgressEvent) => void>();
+  private readonly lastProgressAt = new Map<string, number>();
   private readonly harnesses = new Map<string, EmployeeHarness>();
   /** Employees whose stack changed while a task was running; evicted when it ends. */
   private readonly dirtyHarnesses = new Set<string>();
@@ -235,14 +239,6 @@ export class WorkService {
   private readonly runtime: RuntimeService;
   /** Owned here rather than injected: nine construction sites, one dependency. */
   private readonly threads: ThreadRepository;
-  /**
-   * 偏好信号的收集箱。
-   *
-   * 返工理由和改方向的 note 是**用户表达偏好最强的两个时刻**，以前都被冲掉了：
-   * 前者被拼进下一版任务的 brief，后者只影响那一次重试。收下来是为了让后置的抽取
-   * 管线（`memory/extraction.ts`）有机会把它们变成记忆。
-   */
-  private readonly signals: SignalStore;
   /**
    * 已经交回的线。
    *
@@ -283,7 +279,6 @@ export class WorkService {
       this.repository.addArtifact(taskId, path.relative(root, resolved), resolved);
     });
     this.threads = deps.threads ?? new ThreadRepository(deps.db);
-    this.signals = new SignalStore(deps.db);
 
     // One environment for the whole company: every tool call and acceptance
     // command resolves `node` / `python` through this service.
@@ -355,8 +350,35 @@ export class WorkService {
             costSource,
             });
           },
-          // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它。
-          trace: (taskId) => createTraceRecorder({ repository: this.repository, taskId }),
+          // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它；仅向 UI 推送轻量侧带进度。
+          trace: (taskId) =>
+            createTraceRecorder({
+              repository: this.repository,
+              taskId,
+              onRecord: (entry) => this.emitTraceProgress(taskId, entry.name, entry.argsDigest, entry.ok),
+            }),
+          workerConversation: (workerId) => {
+            const worker = this.threads.getWorker(workerId);
+            if (!worker) return null;
+            return {
+              conversationId: worker.conversationId ?? null,
+              lastCleanEntryId: worker.lastCleanEntryId ?? null,
+            };
+          },
+          onWorkerConversation: (workerId, conversationId, lastCleanEntryId) => {
+            try {
+              this.threads.setWorkerConversation(workerId, conversationId, lastCleanEntryId);
+            } catch (error) {
+              console.warn('[work] 持久化 worker 会话 id 失败', error);
+            }
+          },
+          onTaskCheckpoint: (taskId, entryId) => {
+            try {
+              this.repository.setCheckpointEntryId(taskId, entryId);
+            } catch (error) {
+              console.warn('[work] 持久化任务检查点失败', error);
+            }
+          },
           // 动作级审批（M3）：MCP 的 hook 按扩展装，桥按任务挂。
           registerApproval: (conversationId, taskId) =>
             registerApprovalBridge(conversationId, {
@@ -395,21 +417,44 @@ export class WorkService {
         if (this.deps.desktop) void this.deps.desktop.disposeTask(taskId);
         // 放行条属于那条正在跑的活：活收尾了它就没有意义（下一次要重新问）。
         this.repository.clearMcpPermits(taskId);
-        const finishedEmployees: string[] = [];
-        for (const [ownerId, running] of runningTaskByEmployee) {
+        const finishedWorkers: string[] = [];
+        for (const [runtimeKey, running] of runningTaskByWorker) {
           if (running === taskId) {
-            runningTaskByEmployee.delete(ownerId);
-            finishedEmployees.push(ownerId);
+            runningTaskByWorker.delete(runtimeKey);
+            finishedWorkers.push(runtimeKey);
           }
         }
         // A stack change made while this task was running is applied now: the next
         // task must open a harness with the new registry, not keep the old one.
-        for (const ownerId of finishedEmployees) {
-          if (this.dirtyHarnesses.delete(ownerId)) void this.evictRuntime(ownerId);
+        for (const runtimeKey of finishedWorkers) {
+          if (this.dirtyHarnesses.delete(runtimeKey)) void this.evictRuntime(runtimeKey);
         }
         const task = this.repository.getTask(taskId);
         if (task && ['delivered', 'accepted', 'rejected', 'cancelled', 'failed'].includes(task.status)) {
           this.setWorkerRuntimeStatus(task, 'idle');
+          if (task.threadId) {
+            this.emitProgress({
+              threadId: task.threadId,
+              taskId: task.id,
+              ...(task.workerId ? { workerId: task.workerId } : {}),
+              title: task.title,
+              toolName: 'lifecycle',
+              summary:
+                task.status === 'cancelled'
+                  ? '已中止'
+                  : task.status === 'accepted' || task.status === 'delivered'
+                    ? '已完成'
+                    : '执行结束',
+              ok: task.status === 'accepted' || task.status === 'delivered',
+              state:
+                task.status === 'cancelled'
+                  ? 'aborted'
+                  : task.status === 'accepted' || task.status === 'delivered'
+                    ? 'completed'
+                    : 'failed',
+              at: Date.now(),
+            });
+          }
         }
         // A session that failed at the storage layer is closed for good; keeping it
         // cached would make every later run of this employee fail with "Harness is closed".
@@ -418,17 +463,30 @@ export class WorkService {
         }
         const passed = outcome === 'completed' && result?.verdict === 'pass';
 
-        /*
-         * 这里本来有一次 `memory.remember`：每通过一次验收就写一条
-         * 「任务《X》通过验收。交付物：… 要求：…」，挂在线上，kind = experience。
-         *
-         * 它被删掉了，因为它是**日志冒充记忆**：内容与 `report` 表里那条一模一样，而
-         * 它读起来是"发生过什么"，不是"下次该怎么做"。真实库上这一类攒了 185 条，把
-         * 真正的偏好淹在下面——用户看一眼的结论是"脏数据"。
-         *
-         * 判据回到公理 A1：**记忆的单位不是事实，是被替代掉的决策**。这条记录替代不了
-         * 任何决策，它只是一份副本。
-         */
+        if (task && this.deps.memoryReflector && task.status !== 'cancelled') {
+          const traceSteps = this.repository
+            .listTrace(taskId, 15)
+            .filter((entry) => !entry.ok)
+            .map((entry) => `${entry.name}: ${entry.argsDigest}`.slice(0, 120));
+          if (passed && (result?.attempts ?? 1) > 1) {
+            const detail = traceSteps.length > 0 ? `；曾遇错误：${traceSteps.slice(-2).join(' | ')}` : '';
+            this.deps.memoryReflector.recordSignal({
+              origin: 'task_recovery',
+              threadId: task.threadId,
+              taskId: task.id,
+              text: `任务「${task.title}」重试 ${result?.attempts} 次后通过验收（${task.brief.slice(0, 100)}）${detail}`,
+            });
+          } else if (!passed && (task.error || result?.reason)) {
+            const errMsg = task.error || result?.reason || outcome;
+            const detail = traceSteps.length > 0 ? `；失败轨迹：${traceSteps.slice(-2).join(' | ')}` : '';
+            this.deps.memoryReflector.recordSignal({
+              origin: 'task_failure',
+              threadId: task.threadId,
+              taskId: task.id,
+              text: `任务「${task.title}」执行失败：${String(errMsg).slice(0, 180)}${detail}`,
+            });
+          }
+        }
 
         if (!passed && task?.isReview && task.reviewOfTaskId) {
           // The reviewer never produced a verdict: surface it instead of leaving the
@@ -449,73 +507,24 @@ export class WorkService {
     });
 
     setWorkTaskServices({
-      recallMemories: this.deps.memory
-        ? async (task) => {
-            // 两个作用域就够了：这条线自己的经验，和这个执行体自己的习惯。
-            // 中间那一层（部门）早就没了，也不该再有。
-            // 三个域并列：这个人的偏好、这条线的经验、这个执行体自己的习惯。
-            // 以前只查「这个执行体自己的」，于是 Router 记下的用户偏好，干活的人永远看不到。
-            const scopes = [
-              { type: 'personal' as const },
-              ...(task.threadId ? [{ type: 'thread' as const, id: task.threadId }] : []),
-            ];
-            const snippets = await this.deps.memory!.retrieve({
-              owners: recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
-              query: `${task.title} ${task.brief}`,
-              scopes,
-              limit: 5,
-            });
-            // 做事规矩走自己那条通道（`recallProcedural`），这里滤掉——同一条要求
-            // 在提示词里出现两遍，模型会当成两条。
-            return snippets
-              .filter((snippet) => snippet.kind !== 'format' && snippet.kind !== 'workflow')
-              .map((snippet) => ({
-                kind: snippet.kind,
-                content: snippet.content,
-                scopeType: snippet.scopeType,
-              }));
-          }
-        : undefined,
-      recallOntology: this.deps.contextGraph
-        ? (task) => {
-            const graph = this.deps.contextGraph!;
-            // Materialize stable business ids as graph entities at read time;
-            // task/worker tables remain authoritative and this projection is
-            // idempotent, bounded, and evidence-backed.
-            const user = graph.resolveEntity('ontology-user')!;
-            const taskEntity = graph.ensureEntity({ id: `ontology-task-${task.workTaskId}`, entityType: 'Task', canonicalName: task.title, description: task.brief });
-            const workerEntity = graph.ensureEntity({ id: `ontology-worker-${task.assigneeId}`, entityType: 'Worker', canonicalName: task.assigneeId });
-            const episode = graph.appendEpisode({ sourceType: 'runtime.context', sourceId: task.workTaskId, actor: 'system', content: `${task.title}\n${task.brief}` });
-            graph.assertFact({ subjectEntityId: user.id, predicate: 'has_task', objectEntityId: taskEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
-            graph.assertFact({ subjectEntityId: user.id, predicate: 'has_worker', objectEntityId: workerEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
-            graph.assertFact({ subjectEntityId: taskEntity.id, predicate: 'assigned_to', objectEntityId: workerEntity.id, valueType: 'entity', sourceEpisodeId: episode.id });
-            return graph.contextPack('ontology-user', {
-              query: `${task.title} ${task.brief}`,
-              maxHops: 2,
-              maxAssertions: 16,
-              maxTokens: 1800,
-            }).prompt;
-          }
-        : undefined,
-      /**
-       * 做事规矩：`format` / `workflow` 那两类记忆。
-       *
-       * 这条通道不看相关度、不看衰减——**约束不应该按相关度筛**。「结论放前面」在任何
-       * 一次产出里都成立，而它和任务标题字面上几乎不重叠，靠检索基本捞不到。学习回路
-       * 断的就是这一跳：记忆存下来了，执行体的提示词里没有它，于是第四次还在犯。
-       */
-      recallProcedural: this.deps.memory
-        ? async (task) =>
-            this.deps.memory!
-              .procedural(
-                recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
-              )
-              .map((item) => ({ kind: item.kind, content: item.content }))
-        : undefined,
-      // 常驻约束：和谁在干活无关，它讲的是"这个人要求过什么"。
-      recallStanding: this.deps.memory
-        ? async () => this.deps.memory!.standing(USER_MEMORY_OWNER).map((item) => ({ content: item.content }))
-        : undefined,
+      recallMemoryPack:
+        this.deps.memoryStore || this.deps.memoryIndex
+          ? async (task) => {
+              const core = this.deps.memoryStore?.renderWorkerCoreBlock();
+              const matched = this.deps.memoryIndex?.recallForWorker(
+                `${task.title} ${task.brief}`,
+              );
+              return {
+                ...(core ? { core } : {}),
+                playbook: (matched?.playbook ?? []).map(
+                  (hit) => `[${hit.sectionTitle}] ${hit.snippet}`,
+                ),
+                topics: (matched?.topics ?? []).map(
+                  (hit) => `[${hit.docTitle} / ${hit.sectionTitle}] ${hit.snippet}`,
+                ),
+              };
+            }
+          : undefined,
       /**
        * 原始记录：这条线上的事件、之前的汇报、之前跑过的任务。
        *
@@ -582,7 +591,22 @@ export class WorkService {
       run: (taskId) => {
         if (this.refuseToStart(taskId)) return Promise.resolve();
         const task = this.repository.getTask(taskId);
-        if (task) runningTaskByEmployee.set(task.assigneeId, taskId);
+        if (task) {
+          runningTaskByWorker.set(runtimeIdentityFor(task).runtimeKey, taskId);
+          if (task.threadId) {
+            this.emitProgress({
+              threadId: task.threadId,
+              taskId: task.id,
+              ...(task.workerId ? { workerId: task.workerId } : {}),
+              title: task.title,
+              toolName: 'lifecycle',
+              summary: task.turnMode === 'append' ? '正在基于现有成果追加修改…' : task.turnMode === 'pivot' ? '已转向，正在重新执行…' : '开始执行…',
+              ok: null,
+              state: 'running',
+              at: Date.now(),
+            });
+          }
+        }
         return this.runner.run(taskId);
       },
       onError: (taskId, error) => {
@@ -718,7 +742,8 @@ export class WorkService {
   steerThread = async (
     threadId: string,
     note: string,
-  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number }> => {
+    options?: { updatedObjective?: string; updatedOutputs?: TaskContract['outputs'] },
+  ): Promise<{ ok: boolean; reason?: string; live: number; queued: number; continuedTaskId?: string }> => {
     const text = note.trim();
     if (!text) return { ok: false, reason: '改方向总得说清楚改什么', live: 0, queued: 0 };
 
@@ -727,23 +752,42 @@ export class WorkService {
 
     const open = this.repository.listPending().filter((task) => task.threadId === threadId);
     if (open.length === 0) {
-      // 说清楚"为什么改不了"，而不是一句通用的拒绝：你下一步该做什么，取决于
-      // 这条活停在哪——还在排队、在等验收、还是已经收尾了。
       const latest = this.repository.latestForThread(threadId);
+      if (latest && latest.status !== 'review') {
+        // Living Worker: steering a recently finished/warm thread seamlessly continues in the same workspace & context.
+        const continued = await this.continueThread({
+          threadId,
+          instruction: options?.updatedObjective?.trim() || text,
+          mode: 'append',
+          ...(options?.updatedOutputs ? { updatedOutputs: options.updatedOutputs } : {}),
+        });
+        if (continued.ok) {
+          return { ok: true, live: 0, queued: 1, ...(continued.taskId ? { continuedTaskId: continued.taskId } : {}) };
+        }
+        return { ok: false, reason: continued.reason, live: 0, queued: 0 };
+      }
       const reason =
-        latest && (latest.status === 'review' || latest.status === 'delivered')
+        latest && latest.status === 'review'
           ? `这条线上的活正在等验收（${latest.status}）：要改方向就让它重做，别在验收里改`
-          : latest
-            ? `这条线上的活已经收尾了（${latest.status}），改方向要从新的一条线开始`
-            : '这条线上还没有任务：先开一条线，再改它的方向';
+          : '这条线上还没有任务：先开一条线，再改它的方向';
       return { ok: false, reason, live: 0, queued: 0 };
     }
 
-    // 中途改方向同样是"原来的方向错了"的直接证据——和返工理由一起进收集箱。
-    this.signals.record({ origin: 'steering', threadId, text });
+    // 中途改方向同样是"原来的方向错了"的直接证据——交由 MemoryReflector 异步去重消化。
+    this.deps.memoryReflector?.recordSignal({ origin: 'steering', threadId, text });
+    const nextGoal = options?.updatedObjective?.trim()
+      ? options.updatedObjective.trim()
+      : `${thread.livingGoal || thread.goal}\n[追加/改方向] ${text}`;
+    this.threads.updateGoal(threadId, nextGoal);
 
     let live = 0;
     for (const task of open) {
+      if (options?.updatedObjective || options?.updatedOutputs) {
+        this.repository.updateContract(task.id, {
+          ...(options.updatedObjective ? { objective: options.updatedObjective } : {}),
+          ...(options.updatedOutputs ? { outputs: options.updatedOutputs } : {}),
+        });
+      }
       this.repository.addSteering(task.id, text);
       // 时间线上留一行：你会想知道这句话到底有没有被带到。
       this.repository.addStep(task.id, `你改方向：${text}`);
@@ -751,6 +795,239 @@ export class WorkService {
     }
     this.threads.touch(threadId);
     return { ok: true, live, queued: open.length - live };
+  };
+
+  /**
+   * Immediately aborts all running or queued tasks on a thread.
+   * When `pruneFailedTurn` is true, non-destructively removes the aborted turn's entries
+   * from the Living Worker's persistent conversation via pi-durable ContextEdit.
+   */
+  abortThread = async (
+    threadId: string,
+    reason = '用户中止',
+    options: { closeThread?: boolean; pruneFailedTurn?: boolean } = {},
+  ): Promise<{ ok: boolean; abortedTasks: number; reason?: string }> => {
+    const thread = this.threads.getThread(threadId);
+    if (!thread) return { ok: false, abortedTasks: 0, reason: `未知工作线：${threadId}` };
+
+    const pending = this.repository.listPending().filter((task) => task.threadId === threadId);
+    let abortedTasks = 0;
+
+    for (const task of pending) {
+      const identity = runtimeIdentityFor(task);
+      const removedFromQueue = this.queue.cancelQueued(identity.runtimeKey, task.id);
+      if (removedFromQueue) {
+        this.repository.addStep(task.id, `已取消排队：${reason}`);
+        this.repository.setStatus(task.id, 'cancelled', {
+          finishedAt: Date.now(),
+          error: reason,
+          errorKind: 'cancelled',
+        });
+        const cancelled = this.repository.getTask(task.id);
+        if (cancelled) {
+          this.setWorkerRuntimeStatus(cancelled, 'idle');
+          this.emit(cancelled);
+        }
+        this.emitProgress({
+          threadId,
+          taskId: task.id,
+          ...(task.workerId ? { workerId: task.workerId } : {}),
+          title: task.title,
+          toolName: 'lifecycle',
+          summary: `已中止：${reason}`,
+          ok: null,
+          state: 'aborted',
+          at: Date.now(),
+        });
+        abortedTasks += 1;
+        continue;
+      }
+
+      // Live running task: mark cancelled first so produce() never falls back to fallbackBrain.
+      this.repository.addStep(task.id, `正在中止：${reason}`);
+      this.repository.setStatus(task.id, 'cancelled', {
+        finishedAt: Date.now(),
+        error: reason,
+        errorKind: 'cancelled',
+      });
+      await this.modelBrain?.abortLive(task.id).catch(() => undefined);
+      await this.runner.abort(task.id).catch(() => undefined);
+      if (this.queue.isRunning(task.id)) {
+        await Promise.race([
+          this.queue.whenDone(task.id),
+          new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
+        ]);
+      }
+
+      if (options.pruneFailedTurn && task.workerId && this.modelBrain) {
+        const worker = this.threads.getWorker(task.workerId);
+        if (worker?.conversationId) {
+          const checkpoint = task.checkpointEntryId ?? worker.lastCleanEntryId ?? null;
+          await this.modelBrain
+            .pruneAfterCheckpoint(identity, worker.conversationId, checkpoint, reason)
+            .catch(() => undefined);
+        }
+      }
+
+      const updated = this.repository.getTask(task.id);
+      if (updated) {
+        this.setWorkerRuntimeStatus(updated, 'idle');
+        this.emit(updated);
+      }
+      this.emitProgress({
+        threadId,
+        taskId: task.id,
+        ...(task.workerId ? { workerId: task.workerId } : {}),
+        title: task.title,
+        toolName: 'lifecycle',
+        summary: `已中止：${reason}`,
+        ok: null,
+        state: 'aborted',
+        at: Date.now(),
+      });
+      abortedTasks += 1;
+    }
+
+    if (options.closeThread) {
+      this.threads.setState(threadId, 'done');
+    } else if (thread.state === 'running' || thread.state === 'waiting') {
+      this.threads.setState(threadId, 'open');
+    }
+
+    if (reason.trim() && !['用户中止', '用户点击停止'].includes(reason.trim()) && !reason.startsWith('转向：')) {
+      this.deps.memoryReflector?.recordSignal({ origin: 'abort', threadId, text: reason.trim() });
+    }
+
+    return { ok: true, abortedTasks };
+  };
+
+  /** Aborts every currently running/queued thread (wired to the UI Stop button). */
+  abortActiveThreads = async (reason = '用户点击停止'): Promise<{ abortedThreads: number; abortedTasks: number }> => {
+    const threadIds = new Set<string>();
+    for (const task of this.repository.listPending()) {
+      if (task.threadId) threadIds.add(task.threadId);
+    }
+    let abortedTasks = 0;
+    for (const threadId of threadIds) {
+      const result = await this.abortThread(threadId, reason, { closeThread: false, pruneFailedTurn: true });
+      abortedTasks += result.abortedTasks;
+    }
+    return { abortedThreads: threadIds.size, abortedTasks };
+  };
+
+  /**
+   * Continues work on an existing thread in the SAME workspace and persistent Living Worker
+   * conversation (`mode: 'append'` for incremental additions; `mode: 'pivot'` to abort the
+   * wrong direction, prune the dead turn, and continue cleanly).
+   */
+  continueThread = async (input: {
+    threadId: string;
+    instruction: string;
+    mode: 'append' | 'pivot';
+    updatedOutputs?: TaskContract['outputs'];
+    acceptance?: TaskContract['acceptance'];
+  }): Promise<
+    | { ok: true; threadId: string; taskId: string | null; workerId?: string; mode: 'append' | 'pivot' | 'steered' }
+    | { ok: false; reason: string }
+  > => {
+    const instruction = input.instruction.trim();
+    if (!instruction) return { ok: false, reason: '追加/转向指令不能为空' };
+
+    const thread = this.threads.getThread(input.threadId);
+    if (!thread) return { ok: false, reason: `未知工作线：${input.threadId}` };
+
+    const pending = this.repository.listPending().filter((task) => task.threadId === input.threadId);
+    if (pending.length > 0 && input.mode === 'append') {
+      const steered = await this.steerThread(input.threadId, instruction, {
+        updatedObjective: instruction,
+        ...(input.updatedOutputs ? { updatedOutputs: input.updatedOutputs } : {}),
+      });
+      if (!steered.ok) return { ok: false, reason: steered.reason ?? '注入增量要求失败' };
+      return {
+        ok: true,
+        threadId: input.threadId,
+        taskId: pending[0]?.id ?? null,
+        workerId: pending[0]?.workerId,
+        mode: 'steered',
+      };
+    }
+
+    if (pending.length > 0 && input.mode === 'pivot') {
+      await this.abortThread(input.threadId, `转向：${instruction.slice(0, 80)}`, {
+        closeThread: false,
+        pruneFailedTurn: true,
+      });
+    }
+
+    if (input.mode === 'pivot') {
+      this.deps.memoryReflector?.recordSignal({
+        origin: 'pivot',
+        threadId: input.threadId,
+        text: instruction,
+      });
+    }
+
+    const latest = this.repository.latestForThread(input.threadId);
+    let worker =
+      this.threads.listWorkers(input.threadId)[0] ??
+      this.threads.listWorkersIncludingRetired(input.threadId)[0] ??
+      null;
+    if (worker && worker.status === 'retired') {
+      worker = this.threads.reviveWorker(worker.id);
+    }
+    if (!worker) {
+      const fallbackOwner =
+        latest?.assigneeId ??
+        this.threads.listTemplateWorkers()[0]?.id ??
+        this.threads.listAllWorkers()[0]?.id;
+      if (!fallbackOwner) return { ok: false, reason: '没有可用的执行体可以续跑这条线' };
+      worker = this.ensureWorker(input.threadId, fallbackOwner);
+    }
+
+    this.threads.subscribe(input.threadId, worker.id);
+    const evolvedGoal =
+      input.mode === 'pivot'
+        ? instruction
+        : `${thread.livingGoal || thread.goal}\n[追加] ${instruction}`;
+    this.threads.updateGoal(input.threadId, evolvedGoal);
+
+    const baseContract = latest ? contractOf(latest) : { objective: thread.goal, deliverable: thread.title, outputs: [] };
+    const nextOutputs =
+      input.updatedOutputs && input.updatedOutputs.length > 0
+        ? input.updatedOutputs
+        : baseContract.outputs.length > 0
+          ? baseContract.outputs
+          : [{ kind: 'text' as const, description: '完成增量改动后的简短结论' }];
+    const nextContract: TaskContract = {
+      ...baseContract,
+      objective: instruction,
+      deliverable: input.mode === 'pivot' ? instruction : baseContract.deliverable || instruction,
+      outputs: nextOutputs,
+      ...(input.acceptance ? { acceptance: input.acceptance } : {}),
+    };
+
+    const created = this.createTask({
+      title: thread.title,
+      contract: nextContract,
+      assigneeId: worker.ownerId ?? worker.id,
+      workerId: worker.id,
+      threadId: input.threadId,
+      turnMode: input.mode,
+      estTokens: latest?.estTokens ?? 20_000,
+      acceptanceCommand: input.acceptance?.command ?? latest?.acceptanceCommand ?? [],
+      acceptanceTemplate: input.acceptance?.template ?? latest?.acceptanceTemplate ?? 'http-ok',
+    });
+    if (!created.ok) return { ok: false, reason: created.error.message };
+
+    this.threads.setState(input.threadId, 'running');
+    this.runTask(created.task.id);
+    return {
+      ok: true,
+      threadId: input.threadId,
+      taskId: created.task.id,
+      workerId: worker.id,
+      mode: input.mode,
+    };
   };
 
   /**
@@ -1009,9 +1286,8 @@ export class WorkService {
       if (report) this.threads.markReportRead(reportId);
     }
 
-    // 收集器要立刻收下，不能等：这句话就是"这版不对，应该是 X"，是整条链路上最干净的
-    // 偏好证据。处理是后置的（抽取管线），收是同步的。
-    this.signals.record({ origin: 'rework', threadId, text });
+    // 立刻记入纠偏信号，交由 MemoryReflector 提炼成规则或避坑。
+    if (text) this.deps.memoryReflector?.recordSignal({ origin: 'rework', threadId, text });
 
     this.threads.setState(threadId, 'running');
     this.runTask(created.task.id);
@@ -1112,7 +1388,6 @@ export class WorkService {
 
   createTask = (input: CreateTaskInput): CreateTaskResult => {
     const taskId = `task-${crypto.randomUUID()}`;
-    const workspaceRelPath = taskWorkspaceRelPath(taskId);
     const contract = input.contract ?? legacyContract(input);
     const draft: CreateTaskDraft = {
       ...input,
@@ -1126,12 +1401,13 @@ export class WorkService {
     const normalizedContract = draft.contract ?? legacyContract(input);
 
     // Every task belongs to a line of work, so a finished task always has somewhere
-    // to report to. Today that is one thread per task; a goal that decomposes into
-    // several tasks keeps them together because children inherit the parent's id.
-    const threadId =
-      draft.threadId ??
-      this.threads.createThread({ title: draft.title, goal: normalizedContract.objective }).id;
+    // to report to. Living Worker threads share a persistent thread-level workspace.
+    const thread =
+      (draft.threadId ? this.threads.getThread(draft.threadId) : null) ??
+      this.threads.createThread({ title: draft.title, goal: normalizedContract.objective });
+    const threadId = thread.id;
     draft.threadId = threadId;
+    const workspaceRelPath = thread.workspaceRelPath || taskWorkspaceRelPath(taskId);
     // The dispatcher may already have chosen an execution body (workerPool); it
     // wins over the default "one worker per person per thread". A worker from a
     // different line of work is ignored rather than trusted.
@@ -1215,24 +1491,30 @@ export class WorkService {
     };
   }
 
-  /** Fire-and-forget: the UI follows `subscribe()`. */
+  /** Fire-and-forget: the UI follows `subscribe()`. Keyed by worker runtimeKey for true cross-thread parallelism. */
   runTask = (taskId: string): void => {
     const task = this.repository.getTask(taskId);
     if (!task) return;
     if (this.isRunning(taskId)) return;
-    this.queue.enqueue(task.assigneeId, taskId);
+    this.queue.enqueue(runtimeIdentityFor(task).runtimeKey, taskId);
   };
 
   runTaskAndWait = async (taskId: string): Promise<WorkTask> => {
     const task = this.repository.getTask(taskId) as WorkTask;
     if (this.isRunning(taskId)) return task;
-    await this.queue.enqueueAndWait(task.assigneeId, taskId);
+    await this.queue.enqueueAndWait(runtimeIdentityFor(task).runtimeKey, taskId);
     return this.repository.getTask(taskId) as WorkTask;
   };
 
   subscribe = (listener: (task: WorkTask) => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  /** Subscribes to live sideband Worker progress events (UI-only; never enters Router). */
+  subscribeProgress = (listener: (event: WorkerProgressEvent) => void): (() => void) => {
+    this.progressListeners.add(listener);
+    return () => this.progressListeners.delete(listener);
   };
 
   /**
@@ -1302,9 +1584,10 @@ export class WorkService {
    * subordinates) cannot appear here. `skills` rides along as metadata: it is an
    * archive tag and is never injected into the prompt.
    */
-  capabilities = async (): Promise<CapabilityCatalog> => {
+  capabilities = async (workersOverride?: readonly Worker[]): Promise<CapabilityCatalog> => {
     const agents: AgentCapability[] = [];
-    for (const worker of this.threads.listAllWorkers()) {
+    const targetWorkers = workersOverride ?? this.threads.listAllWorkers();
+    for (const worker of targetWorkers) {
       const snapshot = (await this.buildRegistry(subjectOfWorker(worker))).snapshot();
       const model = resolveWorkerModelRef({ worker, modelConfig: this.deps.modelConfig });
       agents.push({
@@ -1339,7 +1622,9 @@ export class WorkService {
    * Worker registry remains private and is never installed in Router.
    */
   routerCapabilities = async (): Promise<RouterWorkerCapability[]> => {
-    const catalog = await this.capabilities();
+    const templates = this.threads.listTemplateWorkers();
+    const targetWorkers = templates.length > 0 ? templates : this.threads.listAllWorkers();
+    const catalog = await this.capabilities(targetWorkers);
     return catalog.agents
       .filter((agent) => agent.status !== 'retired')
       .map((agent) => ({
@@ -1416,6 +1701,8 @@ export class WorkService {
 
   private async toolSlots(subject: RegistrySubject): Promise<ToolSlot[]> {
     const personId = subject.ownerId ?? subject.id;
+    const workerKey = subject.id;
+    const currentTask = () => currentTaskIdFor(workerKey, personId);
     // §2.2：工具集是执行体自己的属性。`employee` 那一路只是迁移期兜底。
     const policy = subject.policy ?? EMPTY_TOOL_POLICY;
 
@@ -1511,30 +1798,27 @@ export class WorkService {
       slots.push({ name: 'opc.ocr', essential: false, available: false, reason });
     }
 
-    // Every employee can keep a lesson for its future self.
-    const memory = this.deps.memory;
-    if (memory) {
+    // Every employee can save concrete reusable lessons into PLAYBOOK.md or topics/.
+    const memoryStore = this.deps.memoryStore;
+    if (memoryStore) {
       slots.push({
         name: 'opc.memory',
         essential: false,
         available: true,
         extension: createRememberToolExtension({
           ownerId: personId,
-          taskId: () => currentTaskIdFor(personId),
-          remember: async ({ content, kind }) => {
-            // 记在**当前这条工作线**上：同一条线索的下一个执行体能读到，
-            // 换一条线就看不到——这正是"记忆跟着事走"的意思。
-            const taskId = currentTaskIdFor(personId);
-            const threadId = taskId ? this.repository.getTask(taskId)?.threadId : undefined;
-            return memory.remember({
-              // 同上：线级的记忆属于那条线，不属于此刻干活的这个执行体。
-              ownerId: threadId ?? personId,
-              kind,
-              content,
-              scope: threadId ? { type: 'thread', id: threadId } : { type: 'personal' },
-              sourceType: 'task',
-              sourceId: taskId,
-            });
+          taskId: currentTask,
+          remember: async ({ content, scope, section }) => {
+            if (scope === 'topic') {
+              const title = section || '工作线经验';
+              const detail = memoryStore.upsertTopicDoc(title, title, `- ${content}`, {
+                mode: 'append',
+                reason: 'worker:remember',
+              });
+              return `memory:${detail.relPath}`;
+            }
+            const res = memoryStore.upsertPlaybookEntry(section || '执行经验', content, 'worker:remember');
+            return res.ok ? `memory:PLAYBOOK.md#${res.section}` : 'PLAYBOOK.md';
           },
         }),
       });
@@ -1549,7 +1833,7 @@ export class WorkService {
       essential: false,
       available: true,
       extension: createRecallToolExtension({
-        taskId: () => currentTaskIdFor(personId),
+        taskId: currentTask,
         recall: (input) => this.recallRecord(input),
       }),
     });
@@ -1563,7 +1847,7 @@ export class WorkService {
             essential: false,
             available: true,
             extension: createInvestigateToolExtension({
-              taskId: () => currentTaskIdFor(personId),
+              taskId: currentTask,
               run: (input, api, context) => this.runSubagent(input, api, context),
               log: (taskId, text) => {
                 this.repository.addStep(taskId, text);
@@ -1581,7 +1865,7 @@ export class WorkService {
       essential: false,
       available: true,
       extension: createEscalateToolExtension({
-        taskId: () => currentTaskIdFor(personId),
+        taskId: currentTask,
         escalate: (input) => this.escalateFor(input),
       }),
     });
@@ -1590,7 +1874,7 @@ export class WorkService {
       essential: false,
       available: true,
       extension: createHandBackToolExtension({
-        taskId: () => currentTaskIdFor(personId),
+        taskId: currentTask,
         handBack: (input) => this.handBackFor(input),
       }),
     });
@@ -1605,7 +1889,7 @@ export class WorkService {
         available: true,
         extension: createDecomposeToolExtension({
           requesterId: personId,
-          parentTaskId: () => currentTaskIdFor(personId),
+          parentTaskId: currentTask,
           decompose: (parentId, requesterId, subtasks) =>
             this.decompose(parentId, requesterId, subtasks),
         }),
@@ -1670,16 +1954,20 @@ export class WorkService {
             available: true,
             extension: createBrowserToolExtension({
               broker: browser,
-              taskId: () => currentTaskIdFor(personId),
+              taskId: currentTask,
+              threadId: () => {
+                const taskId = currentTask();
+                return taskId ? this.repository.getTask(taskId)?.threadId : undefined;
+              },
               workerId: subject.id,
               userId: personId,
               workspace: () => {
-                const taskId = currentTaskIdFor(personId);
+                const taskId = currentTask();
                 const task = taskId ? this.repository.getTask(taskId) : undefined;
                 return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
               },
               authorize: (tool, title, metadata) => {
-                const taskId = currentTaskIdFor(personId);
+                const taskId = currentTask();
                 if (!taskId) return false;
                 if (this.repository.hasMcpPermit(taskId, tool)) return true;
                 this.askForApproval({ taskId, tool, title, ...(metadata ? { browser: metadata } : {}) });
@@ -1909,6 +2197,37 @@ export class WorkService {
     this.listeners.forEach((listener) => listener(task));
   }
 
+  private emitProgress(event: WorkerProgressEvent): void {
+    this.progressListeners.forEach((listener) => {
+      try {
+        listener(event);
+      } catch {
+        // Best-effort sideband UI telemetry.
+      }
+    });
+  }
+
+  private emitTraceProgress(taskId: string, toolName: string, argsDigest: string, ok: boolean | null): void {
+    if (this.progressListeners.size === 0) return;
+    const now = Date.now();
+    const last = this.lastProgressAt.get(taskId) ?? 0;
+    if (now - last < 350) return;
+    this.lastProgressAt.set(taskId, now);
+    const task = this.repository.getTask(taskId);
+    if (!task?.threadId) return;
+    this.emitProgress({
+      threadId: task.threadId,
+      taskId: task.id,
+      ...(task.workerId ? { workerId: task.workerId } : {}),
+      title: task.title,
+      toolName,
+      summary: argsDigest ? `${toolName} · ${argsDigest}` : toolName,
+      ok,
+      state: 'running',
+      at: now,
+    });
+  }
+
   /** Keep the worker roster truthful while the task ledger remains authoritative. */
   private setWorkerRuntimeStatus(task: WorkTask, status: 'idle' | 'running'): void {
     const workerId = task.workerId;
@@ -2135,15 +2454,9 @@ export class WorkService {
    * 父的对话历史一概不给——隔离正是它有价值的原因。
    */
   private constraintsFor(task: WorkTask): string[] {
-    const memory = this.deps.memory;
     const rules: string[] = [];
-    if (memory) {
-      for (const rule of memory.standing(USER_MEMORY_OWNER)) rules.push(rule.content);
-      for (const rule of memory.procedural(
-        recallOwners({ threadId: task.threadId, workerId: task.assigneeId }),
-      )) {
-        rules.push(rule.content);
-      }
+    if (this.deps.memoryStore) {
+      for (const rule of this.deps.memoryStore.listRules()) rules.push(rule);
     }
     if (this.deps.facts) {
       const scopes = [

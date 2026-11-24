@@ -174,11 +174,15 @@ export class DesktopInstallService {
   private packageBytes?: number;
   private diskCache: { at: number; bytes: number } = { at: 0, bytes: 0 };
   private readonly runtimeDir: string;
+  private readonly userDataDir: string;
 
   constructor(private readonly db: CompanyDatabase, userDataDir: string) {
+    this.userDataDir = userDataDir;
     this.runtimeDir = path.join(userDataDir, 'desktop', 'runtime', AGENT_DESKTOP_VERSION);
     this.refresh();
   }
+
+  privateHomeDir = (): string => path.join(this.userDataDir, 'desktop', 'home');
 
   settings = (): DesktopSettings => {
     const raw = migrateLegacySettings(this.db);

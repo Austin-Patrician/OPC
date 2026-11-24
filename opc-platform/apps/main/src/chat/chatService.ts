@@ -7,7 +7,6 @@ import type {
   WorkTask,
 } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
-import { USER_MEMORY_OWNER } from '../memory/owners';
 import type {
   AssistantActivity,
   AssistantActivityPhase,
@@ -40,7 +39,8 @@ function formatClock(date: Date = new Date()): string {
  */
 export const ROUTER_ID = 'router';
 export const CHAT_MESSAGE_PAGE_SIZE = 100;
-type StoredActionCard = Extract<ChatContentBlock, { type: 'approval' | 'workflow' | 'ontologyApproval' }>;
+const STREAM_BROADCAST_INTERVAL_MS = 40;
+type StoredActionCard = Extract<ChatContentBlock, { type: 'approval' | 'workflow' }>;
 
 /** 聊天里说话的一方。`Agent` 结构上满足它；Router 不是 agent，也满足它。 */
 interface Speaker {
@@ -51,13 +51,12 @@ interface Speaker {
   avatarUrl?: string;
 }
 
-function isActionCard(block: ChatContentBlock, type: 'approval' | 'workflow' | 'ontologyApproval', id: string): boolean {
-  if (type === 'ontologyApproval') return block.type === 'ontologyApproval' && block.commandId === id;
+function isActionCard(block: ChatContentBlock, type: 'approval' | 'workflow', id: string): boolean {
   return (block.type === 'approval' || block.type === 'workflow') && block.type === type && block.reportId === id;
 }
 
 function isStoredActionCard(block: ChatContentBlock): block is StoredActionCard {
-  return block.type === 'approval' || block.type === 'workflow' || block.type === 'ontologyApproval';
+  return block.type === 'approval' || block.type === 'workflow';
 }
 
 const ROUTER_FACE: Speaker = { id: ROUTER_ID, name: '助手', role: '调度' };
@@ -87,15 +86,6 @@ export class ChatService {
   private readonly routerStreams = new Map<string, { messageId: string; started: boolean; generation?: number }>();
   private readonly activityGenerations = new Map<string, number>();
   private readonly activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /**
-   * Injected by bootstrap: turns a settled conversation into long-term memory.
-   * Absent (or model-less) means nothing is written — never invented lessons.
-   */
-  consolidate?: (input: {
-    conversationId: string;
-    ownerId: string;
-    messages: { senderId: string; text: string }[];
-  }) => Promise<{ written: number; skipped?: string }>;
 
   /**
    * Injected by bootstrap: 你说的话，交给调度层当成一条 Trigger（§3）。
@@ -106,6 +96,8 @@ export class ChatService {
   onUserMessage?: (input: { conversationId: string; text: string; attachments?: ChatAttachmentRef[] }) => void;
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
   private activeConversationId: string | null = null;
+  private lastBroadcastAt = 0;
+  private streamBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(seed: ChatServiceSeed & { db?: CompanyDatabase }) {
     this.db = seed.db;
@@ -282,7 +274,7 @@ export class ChatService {
         `SELECT conversation_id, payload FROM message AS m
           WHERE EXISTS (
             SELECT 1 FROM json_each(m.payload, '$.content') AS block
-            WHERE json_extract(block.value, '$.type') IN ('approval', 'workflow', 'ontologyApproval')
+            WHERE json_extract(block.value, '$.type') IN ('approval', 'workflow')
           )`,
       )
       .all() as { conversation_id: string; payload: string }[];
@@ -564,29 +556,7 @@ export class ChatService {
       .filter((message) => message.kind !== 'task' && message.kind !== 'deliverable').slice() ?? [];
   };
 
-  /** Runs consolidation for one conversation (no-op without a summariser). */
-  consolidateConversation = async (conversationId: string): Promise<{ written: number; skipped?: string }> => {
-    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
-    if (!conversation || !this.consolidate) return { written: 0, skipped: '未启用巩固' };
-    // 这条会话的对面是**这个人**，不是 Router。巩固出来的教训是关于他的，所以挂在
-    // 用户身上——挂在 Router 名下的话，只有 Router 读得到，干活的人永远看不到。
-    const counterpart = conversation.memberIds[0];
-    const ownerId = counterpart === ROUTER_ID ? USER_MEMORY_OWNER : counterpart;
-    if (!ownerId) return { written: 0, skipped: '这条会话还没有归属' };
-    return this.consolidate({
-      conversationId,
-      ownerId,
-      messages: this.readTranscript(conversationId)
-        .filter((message) => message.kind === 'text' && message.text)
-        .map((message) => ({ senderId: message.senderId, text: message.text ?? '' })),
-    });
-  };
-
-  /**
-   * Archives one conversation and consolidates it exactly once. Archiving is the
-   * trigger the design calls "会话归档 → 巩固"; a second call is a no-op, so a
-   * sweep that runs twice cannot duplicate memories.
-   */
+  /** Archives one conversation once. */
   archiveConversation = async (conversationId: string): Promise<{ archived: boolean; written: number }> => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return { archived: false, written: 0 };
@@ -601,18 +571,7 @@ export class ChatService {
       ?.prepare('UPDATE conversation SET archived_at = ? WHERE id = ?')
       .run(Date.now(), conversationId);
 
-    let written = 0;
-    try {
-      const result = await this.consolidateConversation(conversationId);
-      written = result.written;
-      this.db
-        ?.prepare('UPDATE conversation SET consolidated_at = ? WHERE id = ?')
-        .run(Date.now(), conversationId);
-    } catch (error) {
-      // Consolidation failing must not resurrect the conversation.
-      console.warn('consolidate failed', conversationId, error);
-    }
-    return { archived: true, written };
+    return { archived: true, written: 0 };
   };
 
   /**
@@ -762,7 +721,7 @@ export class ChatService {
       text,
       content,
       streaming: true,
-    }), false);
+    }), false, true);
   };
 
   /** Commit the final answer, or remove the transient message on a tool reply/error. */
@@ -801,11 +760,6 @@ export class ChatService {
   };
 
   appendWorkflowCard = (conversationId: string, input: Extract<ChatContentBlock, { type: 'workflow' }>): void => {
-    this.appendRouterMessage(conversationId, input.body, [input]);
-    this.setActivity(conversationId, 'waiting_user');
-  };
-
-  appendOntologyApprovalCard = (conversationId: string, input: Extract<ChatContentBlock, { type: 'ontologyApproval' }>): void => {
     this.appendRouterMessage(conversationId, input.body, [input]);
     this.setActivity(conversationId, 'waiting_user');
   };
@@ -865,14 +819,8 @@ export class ChatService {
     });
   };
 
-  updateOntologyApprovalCard = (commandId: string, state: Extract<ChatContentBlock, { type: 'ontologyApproval' }>['state']): void => {
-    if (state === 'approved' || state === 'rejected') {
-      this.removeActionCard('ontologyApproval', commandId);
-    }
-  };
-
   private removeActionCard(
-    type: 'approval' | 'workflow' | 'ontologyApproval',
+    type: 'approval' | 'workflow',
     reportId: string,
   ): void {
     if (this.db) {
@@ -960,15 +908,14 @@ export class ChatService {
     this.commit({ conversations });
   }
 
-  private actionCardRows(type: 'approval' | 'workflow' | 'ontologyApproval', id: string): { conversation_id: string; payload: string }[] {
+  private actionCardRows(type: 'approval' | 'workflow', id: string): { conversation_id: string; payload: string }[] {
     if (!this.db) return [];
-    const idField = type === 'ontologyApproval' ? 'commandId' : 'reportId';
     return this.db.prepare(
       `SELECT conversation_id, payload FROM message AS m
         WHERE EXISTS (
           SELECT 1 FROM json_each(m.payload, '$.content') AS block
           WHERE json_extract(block.value, '$.type') = ?
-            AND json_extract(block.value, '$.${idField}') = ?
+            AND json_extract(block.value, '$.reportId') = ?
         )`,
     ).all(type, id) as { conversation_id: string; payload: string }[];
   }
@@ -993,6 +940,12 @@ export class ChatService {
   };
 
   dispose = (): void => {
+    if (this.streamBroadcastTimer) {
+      clearTimeout(this.streamBroadcastTimer);
+      this.streamBroadcastTimer = null;
+    }
+    for (const timer of this.activityTimers.values()) clearTimeout(timer);
+    this.activityTimers.clear();
     this.listeners.clear();
   };
 
@@ -1048,6 +1001,7 @@ export class ChatService {
     messageId: string,
     update: (message: Message) => Message,
     persist: boolean,
+    throttleBroadcast = false,
   ): void {
     const current = this.snapshot.conversations
       .find((conversation) => conversation.id === conversationId)
@@ -1066,7 +1020,7 @@ export class ChatService {
               lastMessage: previewOf(next),
             },
       ),
-    }, { persist });
+    }, { persist, throttleBroadcast });
   }
 
   private removeStreamMessage(conversationId: string, messageId: string, persist: boolean): void {
@@ -1098,7 +1052,12 @@ export class ChatService {
     });
   }
 
-  private commit(patch: Partial<ChatSnapshot>, options: { persist?: boolean } = {}): void {
+  private broadcastSnapshot(): void {
+    this.lastBroadcastAt = Date.now();
+    this.listeners.forEach((listener) => listener(this.snapshot));
+  }
+
+  private commit(patch: Partial<ChatSnapshot>, options: { persist?: boolean; throttleBroadcast?: boolean } = {}): void {
     const previous = this.snapshot;
     this.snapshot = { ...this.snapshot, ...patch };
     if (patch.conversations && options.persist !== false) {
@@ -1117,7 +1076,29 @@ export class ChatService {
       }
       for (const id of touched) this.persist(id);
     }
-    this.listeners.forEach((listener) => listener(this.snapshot));
+    if (options.throttleBroadcast) {
+      const elapsed = Date.now() - this.lastBroadcastAt;
+      if (elapsed >= STREAM_BROADCAST_INTERVAL_MS) {
+        if (this.streamBroadcastTimer) {
+          clearTimeout(this.streamBroadcastTimer);
+          this.streamBroadcastTimer = null;
+        }
+        this.broadcastSnapshot();
+      } else if (!this.streamBroadcastTimer) {
+        const timer = setTimeout(() => {
+          this.streamBroadcastTimer = null;
+          this.broadcastSnapshot();
+        }, Math.max(0, STREAM_BROADCAST_INTERVAL_MS - elapsed));
+        (timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+        this.streamBroadcastTimer = timer;
+      }
+      return;
+    }
+    if (this.streamBroadcastTimer) {
+      clearTimeout(this.streamBroadcastTimer);
+      this.streamBroadcastTimer = null;
+    }
+    this.broadcastSnapshot();
   }
 }
 

@@ -66,44 +66,38 @@ describe('执行体看到的提示词', () => {
     expect(prompt).toContain('以这里为准');
   });
 
-  /**
-   * 做事规矩（P5）：用户要求过的格式与流程。
-   *
-   * 它和"相关经验"必须分两段写——经验是**建议**（"可直接使用"），规矩是**约束**
-   * （"必须遵守"）。当初就是因为混在一起、语气是建议，模型执行起来打了折。
-   */
-  it('做事规矩单独一段，口气是"必须遵守"，不是"可以参考"', () => {
+  it('核心画像与长期铁律单独一段，口吻是"必须遵守"', () => {
     const prompt = buildPrompt(
-      task({ procedural: [{ kind: 'format', content: '代码里不要写注释' }] }),
+      task({ memoryCore: '- [铁律] 代码里不要写注释' }),
     );
 
-    expect(prompt).toContain('用户要求过的做事规矩（必须遵守）');
-    expect(prompt).toContain('- 代码里不要写注释');
-    // 不能混进"相关经验"那一段。
-    const ruleAt = prompt.indexOf('用户要求过的做事规矩');
-    const memoryAt = prompt.indexOf('你想起的相关经验');
-    expect(memoryAt).toBe(-1);
-    expect(ruleAt).toBeGreaterThan(-1);
+    expect(prompt).toContain('用户环境、习惯与长期铁律（必须遵守）');
+    expect(prompt).toContain('- [铁律] 代码里不要写注释');
+    expect(prompt).not.toContain('历史避坑提醒');
   });
 
-  it('顺序：改过的方向 > 常驻约束 > 做事规矩 > 工作台的规定', () => {
+  it('顺序：改过的方向 > 核心画像与铁律 > 历史避坑 > 工作台的规定 > 相关专题', () => {
     const prompt = buildPrompt(
       task({
         steering: [{ note: '改成 8080', at: 1 }],
-        standing: [{ content: '称呼用「你」' }],
-        procedural: [{ kind: 'format', content: '结论放最前面' }],
+        memoryCore: '- [铁律] 结论放最前面',
+        memoryPlaybook: ['[端口] 避免：直接占用 3000 → 正确做法：先检查端口'],
         facts: [{ statement: '交付必须带 README', scopeType: 'global' }],
+        memoryTopics: ['[项目架构 / 接口] 使用强类型 IPC'],
       }),
     );
 
     const at = (needle: string) => prompt.indexOf(needle);
-    expect(at('用户在做这件事的过程中改了方向')).toBeLessThan(at('用户要求过、一直有效'));
-    expect(at('用户要求过、一直有效')).toBeLessThan(at('用户要求过的做事规矩'));
-    expect(at('用户要求过的做事规矩')).toBeLessThan(at('工作台的规定'));
+    expect(at('用户在做这件事的过程中改了方向')).toBeLessThan(at('用户环境、习惯与长期铁律'));
+    expect(at('用户环境、习惯与长期铁律')).toBeLessThan(at('历史避坑提醒'));
+    expect(at('历史避坑提醒')).toBeLessThan(at('工作台的规定'));
+    expect(at('工作台的规定')).toBeLessThan(at('相关专题与背景知识'));
   });
 
-  it('没有做事规矩时不留空标题', () => {
-    expect(buildPrompt(task())).not.toContain('做事规矩');
+  it('没有避坑与核心记忆时不留空标题', () => {
+    const prompt = buildPrompt(task());
+    expect(prompt).not.toContain('历史避坑提醒');
+    expect(prompt).not.toContain('长期铁律');
   });
 
   /**

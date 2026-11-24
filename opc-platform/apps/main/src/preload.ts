@@ -3,9 +3,6 @@ import {
   type AuthPromptRequest,
   type ChatSnapshot,
   type OpcBridge,
-  type RuntimeObservatorySnapshot,
-  type RuntimeObservatoryRequest,
-  type RuntimeEventView,
   type SendMessageInput,
   type BrowserStatus,
   type BrowserInstallProgress,
@@ -49,6 +46,8 @@ import type {
   DecisionClassifyResult,
   TaskTrace,
   WorkTask,
+  WorkerProgressEvent,
+  RouterContextStats,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
@@ -90,13 +89,6 @@ const bridge: OpcBridge = {
   runtime: {
     snapshot: () =>
       ipcRenderer.invoke(IPC.runtime.snapshot) as Promise<RuntimeSnapshot>,
-    observatory: (request?: RuntimeObservatoryRequest) =>
-      ipcRenderer.invoke(IPC.runtime.observatory, request) as Promise<RuntimeObservatorySnapshot>,
-    onChanged: (listener: (event: RuntimeEventView) => void) => {
-      const handler = (_event: IpcRendererEvent, payload: RuntimeEventView) => listener(payload);
-      ipcRenderer.on(IPC.runtime.changedEvent, handler);
-      return () => ipcRenderer.off(IPC.runtime.changedEvent, handler);
-    },
     probe: () =>
       ipcRenderer.invoke(IPC.runtime.probe) as Promise<RuntimeSnapshot>,
     setActive: (kind: RuntimeKind, profileId: string | null) =>
@@ -164,6 +156,14 @@ const bridge: OpcBridge = {
       }>,
     restore: (conversationId: string) =>
       ipcRenderer.invoke(IPC.chat.restore, conversationId) as Promise<void>,
+    interrupt: (reason?: string) =>
+      ipcRenderer.invoke(IPC.chat.interrupt, reason) as Promise<{ ok: boolean; abortedThreads: number }>,
+    getContextStats: () =>
+      ipcRenderer.invoke(IPC.chat.getContextStats) as Promise<RouterContextStats>,
+    compactContext: () =>
+      ipcRenderer.invoke(IPC.chat.compactContext) as Promise<{ ok: boolean; reason?: string }>,
+    resetContext: (handoff?: string) =>
+      ipcRenderer.invoke(IPC.chat.resetContext, handoff) as Promise<{ ok: boolean; reason?: string }>,
     onSnapshot: (listener: (snapshot: ChatSnapshot) => void) => {
       const handler = (_event: IpcRendererEvent, snapshot: ChatSnapshot) =>
         listener(snapshot);
@@ -267,29 +267,25 @@ const bridge: OpcBridge = {
     },
   },
   memory: {
-    consolidationRuns: (ownerId?: string) =>
-      ipcRenderer.invoke(IPC.memory.consolidationRuns, ownerId),
-    list: () => ipcRenderer.invoke(IPC.memory.list),
-    update: (id: string, content: string) =>
-      ipcRenderer.invoke(IPC.memory.update, id, content),
-    forget: (id: string) => ipcRenderer.invoke(IPC.memory.forget, id),
-    orphans: () => ipcRenderer.invoke(IPC.memory.orphans),
-    claim: (ownerId: string) => ipcRenderer.invoke(IPC.memory.claim, ownerId),
-    discard: (ownerId: string) =>
-      ipcRenderer.invoke(IPC.memory.discard, ownerId),
+    listDocs: () => ipcRenderer.invoke(IPC.memory.listDocs),
+    readDoc: (relPath: string) => ipcRenderer.invoke(IPC.memory.readDoc, relPath),
+    writeDoc: (relPath: string, content: string) =>
+      ipcRenderer.invoke(IPC.memory.writeDoc, relPath, content),
+    deleteDoc: (relPath: string) =>
+      ipcRenderer.invoke(IPC.memory.deleteDoc, relPath),
+    search: (query: string, limit?: number) =>
+      ipcRenderer.invoke(IPC.memory.search, query, limit),
+    reflectNow: () => ipcRenderer.invoke(IPC.memory.reflectNow),
+    listSnapshots: () => ipcRenderer.invoke(IPC.memory.listSnapshots),
+    rollbackSnapshot: (snapshotId: string) =>
+      ipcRenderer.invoke(IPC.memory.rollbackSnapshot, snapshotId),
+    openFolder: () => ipcRenderer.invoke(IPC.memory.openFolder),
+    status: () => ipcRenderer.invoke(IPC.memory.status),
   },
   facts: {
     list: (filter?: { threadId?: string }) =>
       ipcRenderer.invoke(IPC.facts.list, filter),
     write: (input: unknown) => ipcRenderer.invoke(IPC.facts.write, input),
-  },
-  ontology: {
-    context: (input?: unknown) => ipcRenderer.invoke(IPC.ontology.context, input),
-    history: (input: unknown) => ipcRenderer.invoke(IPC.ontology.history, input),
-    command: (input: unknown) => ipcRenderer.invoke(IPC.ontology.command, input),
-    commandStatus: (commandId: string, status: 'approved' | 'rejected', result?: unknown, error?: string) =>
-      ipcRenderer.invoke(IPC.ontology.commandStatus, { commandId, status, result, error }),
-    outbox: (limit?: number) => ipcRenderer.invoke(IPC.ontology.outbox, limit),
   },
   router: {
     getTriage: () => ipcRenderer.invoke(IPC.router.getTriage),
@@ -503,6 +499,20 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.work.taskEvent, handler);
       return () => {
         ipcRenderer.off(IPC.work.taskEvent, handler);
+      };
+    },
+    abortThread: (threadId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC.work.abortThread, threadId, reason) as Promise<{
+        ok: boolean;
+        abortedTasks?: number;
+        reason?: string;
+      }>,
+    onProgress: (listener: (event: WorkerProgressEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, progress: WorkerProgressEvent) =>
+        listener(progress);
+      ipcRenderer.on(IPC.work.progressEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.work.progressEvent, handler);
       };
     },
   },

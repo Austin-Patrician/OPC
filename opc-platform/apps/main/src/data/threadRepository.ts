@@ -16,6 +16,7 @@ import type {
 import crypto from 'node:crypto';
 import { parseThreadKey } from '../router/threadKey';
 import type { CompanyDatabase } from './companyDatabase';
+import { threadWorkspaceRelPath } from './taskRepository';
 
 /**
  * v2 core persistence: `thread` / `worker` / `event` / `report`
@@ -39,6 +40,8 @@ interface PreparedStatement {
 export interface CreateThreadInput {
   title: string;
   goal?: string;
+  livingGoal?: string | null;
+  workspaceRelPath?: string | null;
   /** 环境身份；同一个 key 的后续事件会并到这条线上。 */
   threadKey?: string | null;
   /** 来源。不给就从 `threadKey` 的前缀反解，再不给就是 `manual`。 */
@@ -107,6 +110,8 @@ interface ThreadRow {
   id: string;
   title: string;
   goal: string;
+  living_goal?: string | null;
+  workspace_rel_path?: string | null;
   source: TriggerSource;
   external_id: string | null;
   thread_key: string | null;
@@ -132,6 +137,8 @@ interface WorkerRow {
   model_id: string | null;
   tool_policy: string;
   status: WorkerStatus;
+  conversation_id?: string | null;
+  last_clean_entry_id?: number | null;
   spent_tokens: number;
   created_at: number;
   retired_at: number | null;
@@ -194,11 +201,15 @@ export class ThreadRepository {
 
   createThread(input: CreateThreadInput): WorkThread {
     const at = this.now();
+    const id = this.id();
     const identity = input.threadKey ? parseThreadKey(input.threadKey) : null;
+    const goal = input.goal ?? '';
     const row = {
-      id: this.id(),
+      id,
       title: input.title,
-      goal: input.goal ?? '',
+      goal,
+      living_goal: input.livingGoal ?? goal,
+      workspace_rel_path: input.workspaceRelPath ?? threadWorkspaceRelPath(id),
       source: input.source ?? (identity?.source as TriggerSource | undefined) ?? 'manual',
       external_id: input.externalId ?? identity?.externalId ?? null,
       thread_key: input.threadKey ?? null,
@@ -213,8 +224,8 @@ export class ThreadRepository {
       closed_at: null,
     };
     this.statement(
-      `INSERT INTO thread (id, title, goal, source, external_id, thread_key, reply_target, state, attention, speculative, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
-       VALUES (@id, @title, @goal, @source, @external_id, @thread_key, @reply_target, @state, @attention, @speculative, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
+      `INSERT INTO thread (id, title, goal, living_goal, workspace_rel_path, source, external_id, thread_key, reply_target, state, attention, speculative, budget_tokens, spent_tokens, created_at, last_activity_at, closed_at)
+       VALUES (@id, @title, @goal, @living_goal, @workspace_rel_path, @source, @external_id, @thread_key, @reply_target, @state, @attention, @speculative, @budget_tokens, @spent_tokens, @created_at, @last_activity_at, @closed_at)`,
     ).run(row);
     return toThread(row as ThreadRow);
   }
@@ -301,6 +312,24 @@ export class ThreadRepository {
   /** Any touch of a thread keeps it at the top of "what moved last". */
   touch(id: string): void {
     this.statement('UPDATE thread SET last_activity_at = ? WHERE id = ?').run(this.now(), id);
+  }
+
+  /** Evolves the living goal of a thread when steered or continued. */
+  updateGoal(id: string, livingGoal: string): WorkThread {
+    this.statement('UPDATE thread SET living_goal = ?, last_activity_at = ? WHERE id = ?').run(
+      livingGoal,
+      this.now(),
+      id,
+    );
+    return this.mustGetThread(id);
+  }
+
+  setWorkspaceRelPath(id: string, relPath: string): void {
+    this.statement('UPDATE thread SET workspace_rel_path = ?, last_activity_at = ? WHERE id = ?').run(
+      relPath,
+      this.now(),
+      id,
+    );
   }
 
   /**
@@ -391,6 +420,42 @@ export class ThreadRepository {
     return rows.map(toWorker);
   }
 
+  /** Every worker ever attached to a thread (including retired), newest first, for revival. */
+  listWorkersIncludingRetired(threadId: string): Worker[] {
+    const rows = this.statement(
+      'SELECT * FROM worker WHERE thread_id = ? ORDER BY created_at DESC',
+    ).all(threadId) as WorkerRow[];
+    return rows.map(toWorker);
+  }
+
+  /** Reusable template workers (not bound to a specific thread). */
+  listTemplateWorkers(): Worker[] {
+    const rows = this.statement(
+      "SELECT * FROM worker WHERE thread_id IS NULL AND status != 'retired' ORDER BY created_at DESC",
+    ).all() as WorkerRow[];
+    return rows.map(toWorker);
+  }
+
+  setWorkerConversation(workerId: string, conversationId: string | null, lastCleanEntryId?: number | null): void {
+    if (lastCleanEntryId === undefined) {
+      this.statement('UPDATE worker SET conversation_id = ? WHERE id = ?').run(conversationId, workerId);
+    } else {
+      this.statement('UPDATE worker SET conversation_id = ?, last_clean_entry_id = ? WHERE id = ?').run(
+        conversationId,
+        lastCleanEntryId,
+        workerId,
+      );
+    }
+  }
+
+  setWorkerCleanCheckpoint(workerId: string, entryId: number | null): void {
+    this.statement('UPDATE worker SET last_clean_entry_id = ? WHERE id = ?').run(entryId, workerId);
+  }
+
+  reviveWorker(workerId: string): Worker {
+    return this.setWorkerStatus(workerId, 'idle');
+  }
+
   /**
    * Every live execution body, newest first.
    *
@@ -401,14 +466,6 @@ export class ThreadRepository {
     const rows = this.statement(
       "SELECT * FROM worker WHERE status != 'retired' ORDER BY created_at DESC",
     ).all() as WorkerRow[];
-    return rows.map(toWorker);
-  }
-
-  /** Runtime observatory roster: include recently retired workers for its exit animation. */
-  listRuntimeWorkers(retiredSince: number): Worker[] {
-    const rows = this.statement(
-      "SELECT * FROM worker WHERE status != 'retired' OR retired_at >= ? ORDER BY created_at DESC",
-    ).all(retiredSince) as WorkerRow[];
     return rows.map(toWorker);
   }
 
@@ -807,6 +864,8 @@ function toThread(row: ThreadRow): WorkThread {
     id: row.id,
     title: row.title,
     goal: row.goal,
+    livingGoal: row.living_goal ?? row.goal,
+    workspaceRelPath: row.workspace_rel_path ?? null,
     threadKey: row.thread_key ?? null,
     source: row.source ?? 'manual',
     externalId: row.external_id ?? null,
@@ -856,6 +915,8 @@ function toWorker(row: WorkerRow): Worker {
     modelId: row.model_id,
     policyJson: row.tool_policy ?? '{}',
     status: row.status,
+    conversationId: row.conversation_id ?? null,
+    lastCleanEntryId: row.last_clean_entry_id ?? null,
     spentTokens: row.spent_tokens,
     createdAt: row.created_at,
     retiredAt: row.retired_at,
