@@ -23,7 +23,6 @@ import { DesktopPage } from './pages/DesktopPage';
 import { AssistantToolsPage } from './pages/AssistantToolsPage';
 import { CapabilitiesExtensionsPage } from './pages/CapabilitiesExtensionsPage';
 import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
-import { CapabilitiesToolsPage } from './pages/CapabilitiesToolsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
 import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
@@ -41,9 +40,8 @@ const PAGE_IDS = [
   'workspaceRules',
   'consolidation',
   'runtime',
-  'capabilitiesExtensions',
-  'capabilitiesTools',
   'capabilitiesSkills',
+  'capabilitiesExtensions',
   'llm',
   'image',
   'voice',
@@ -135,17 +133,15 @@ export function SettingsShell() {
       pages: [{ id: 'runtime', label: t('settings.page.runtime') }],
     },
     {
-      // 技能、工具与扩展是同一份运行时能力清单的三种切面，和 MCP 一起
-      // 收进设置，避免导航栏再多一个一级入口。
+      // 技能、MCP 与扩展各司其职，收进设置，避免导航栏再多一个一级入口。
       id: 'capabilities',
       label: t('settings.group.capabilities'),
       icon: Boxes,
       color: '#22B560',
       pages: [
-        { id: 'capabilitiesExtensions', label: t('settings.page.capabilitiesExtensions') },
-        { id: 'capabilitiesTools', label: t('settings.page.capabilitiesTools') },
         { id: 'capabilitiesSkills', label: t('settings.page.capabilitiesSkills') },
         { id: 'mcp', label: 'MCP' },
+        { id: 'capabilitiesExtensions', label: t('settings.page.capabilitiesExtensions') },
       ],
     },
     {
@@ -220,8 +216,6 @@ export function SettingsShell() {
         return <RuntimePage />;
       case 'capabilitiesExtensions':
         return <CapabilitiesExtensionsPage />;
-      case 'capabilitiesTools':
-        return <CapabilitiesToolsPage />;
       case 'capabilitiesSkills':
         return <CapabilitiesSkillsPage />;
       case 'llm':

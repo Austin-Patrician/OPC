@@ -100,6 +100,7 @@ import { RuntimeService } from '../runtime/service';
 import type { PiExtensionHost } from '../extensions/host';
 import type { PiSkillHost } from '../skills/host';
 import { createSkillsExtension } from '../skills/extension';
+import type { SkillPackService } from '../skills/packs';
 import type { BrowserBroker } from '../browser/broker';
 import { createBrowserToolExtension } from './browserTool';
 import type { DesktopBroker } from '../desktop/broker';
@@ -201,6 +202,8 @@ export interface WorkServiceDeps {
   piExtensions?: PiExtensionHost;
   /** `SKILL.md` folders found on disk; same optionality as above. */
   piSkills?: PiSkillHost;
+  /** Built-in managed office skill packs and isolated Python environment. */
+  skillPacks?: SkillPackService;
   /** Wakes the Router after a worker report is committed. */
   wakeRouter?: () => void;
   /** Optional native browser capability. It is deliberately not an MCP server. */
@@ -1625,6 +1628,10 @@ export class WorkService {
     const templates = this.threads.listTemplateWorkers();
     const targetWorkers = templates.length > 0 ? templates : this.threads.listAllWorkers();
     const catalog = await this.capabilities(targetWorkers);
+    const activeSkills = this.deps.skillPacks?.enabledSummaries().map((pack) => ({
+      name: pack.title,
+      summary: pack.summary,
+    }));
     return catalog.agents
       .filter((agent) => agent.status !== 'retired')
       .map((agent) => ({
@@ -1632,6 +1639,7 @@ export class WorkService {
         template: agent.template,
         ...summarizeWorkerTools(agent.tools.map((tool) => tool.name)),
         desktop: agent.tools.some((tool) => tool.name.startsWith('mcp__agent_desktop_')),
+        ...(activeSkills && activeSkills.length > 0 ? { skills: activeSkills } : {}),
       }));
   };
 
@@ -1904,9 +1912,10 @@ export class WorkService {
     const skills = this.deps.piSkills;
     if (skills) {
       const enabled = skills.enabled();
+      const hasManagedPacks = (this.deps.skillPacks?.enabledSummaries().length ?? 0) > 0;
       // Advertising a skill the model cannot open would be a trap: the section
       // and the tool have to be on or off together.
-      const canRead = isToolEnabled(policy, 'read_skill');
+      const canRead = hasManagedPacks || isToolEnabled(policy, 'read_skill');
       slots.push(
         enabled.length > 0 && canRead
           ? {
@@ -2012,10 +2021,12 @@ export class WorkService {
       mcp.refreshTarget = (extension) => registry.install(filterExtensionTools(extension, policy));
     }
 
+    const hasManagedPacks = (this.deps.skillPacks?.enabledSummaries().length ?? 0) > 0;
     const install = (slot: ToolSlot) => {
       if (!slot.available || !slot.extension) return;
-      if (!slot.essential && !isExtensionEnabled(policy, slot.name)) return;
-      registry.install(filterExtensionTools(slot.extension, policy));
+      const forceGlobalSkills = slot.name === 'opc.skills' && hasManagedPacks;
+      if (!slot.essential && !forceGlobalSkills && !isExtensionEnabled(policy, slot.name)) return;
+      registry.install(forceGlobalSkills ? slot.extension : filterExtensionTools(slot.extension, policy));
     };
 
     // Coding tools first; the sandbox is installed after them so it sees every

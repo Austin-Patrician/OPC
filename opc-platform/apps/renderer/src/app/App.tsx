@@ -28,7 +28,7 @@ export function App() {
           <Route path="chat" element={<ChatPage />} />
           <Route path="chat/:conversationId" element={<ChatPage />} />
           {/* 技能与工具已并入设置：旧深链接重定向到对应的设置子页。 */}
-          <Route path="skills" element={<Navigate to="/settings?page=capabilitiesExtensions" replace />} />
+          <Route path="skills" element={<Navigate to="/settings?page=capabilitiesSkills" replace />} />
           <Route path="schedules" element={<SchedulesPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

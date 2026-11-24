@@ -52,6 +52,12 @@ export interface RuntimeServiceOptions {
   probeVersion?: (binary: string, kind: RuntimeKind) => Promise<VersionProbe>;
 }
 
+/** Optional overlay contributed by managed skill environments (e.g. office Python venv). */
+export interface SkillEnvProvider {
+  envOverlay(): Record<string, string>;
+  sandboxRoots(): readonly string[];
+}
+
 function pathKeyOf(env: NodeJS.ProcessEnv): string {
   return Object.keys(env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
 }
@@ -85,6 +91,7 @@ export class RuntimeService {
   private readonly versions = new Map<string, { probe: VersionProbe; at: number }>();
   /** Profile + binary → shim dir. Rewriting symlinks on every tool call would race. */
   private readonly shims = new Map<string, string>();
+  private readonly skillEnvProviders: SkillEnvProvider[] = [];
 
   constructor(
     private readonly db: CompanyDatabase,
@@ -92,6 +99,10 @@ export class RuntimeService {
   ) {
     this.searchDirs = options.searchDirs ?? runtimeSearchDirs();
     this.probeVersion = options.probeVersion ?? defaultProbeVersion;
+  }
+
+  registerSkillEnvProvider(provider: SkillEnvProvider): void {
+    this.skillEnvProviders.push(provider);
   }
 
   // ── persistence ────────────────────────────────────────────────────────
@@ -441,6 +452,17 @@ export class RuntimeService {
     }
 
     Object.assign(env, overlay);
+    for (const provider of this.skillEnvProviders) {
+      const extra = provider.envOverlay();
+      for (const [extraKey, extraValue] of Object.entries(extra)) {
+        if (!extraValue) continue;
+        if (extraKey === 'PYTHONPATH' && env.PYTHONPATH) {
+          env.PYTHONPATH = uniquePaths([extraValue, ...env.PYTHONPATH.split(path.delimiter)]).join(path.delimiter);
+        } else {
+          env[extraKey] = extraValue;
+        }
+      }
+    }
     const key = pathKeyOf(env);
     const merged = uniquePaths([...dirs, env[key] ?? '']);
     if (merged.length > 0) env[key] = merged.join(path.delimiter);
@@ -463,6 +485,9 @@ export class RuntimeService {
         roots.push(shimDirFor(this.options.userDataDir, resolved.profile.id));
       }
       roots.push(...resolved.sandboxRoots);
+    }
+    for (const provider of this.skillEnvProviders) {
+      roots.push(...provider.sandboxRoots());
     }
     return uniquePaths(roots);
   };

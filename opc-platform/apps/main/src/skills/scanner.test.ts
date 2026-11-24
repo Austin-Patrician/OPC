@@ -84,8 +84,8 @@ const projectRoot = `${project}/.agents/skills`;
 const skill = (body: string, frontmatter?: string) =>
   frontmatter === undefined ? body : `---\n${frontmatter}\n---\n\n${body}`;
 
-const scan = (entries: Record<string, FakeEntry>) =>
-  scanSkills({ homeDir: home, projectDir: project, ...fakeIo(entries) });
+const scan = (entries: Record<string, FakeEntry>, managedDir?: string) =>
+  scanSkills({ homeDir: home, projectDir: project, ...(managedDir ? { managedDir } : {}), ...fakeIo(entries) });
 
 describe('splitFrontmatter', () => {
   it('reads name and description and keeps the body', () => {
@@ -186,5 +186,33 @@ describe('scanSkills', () => {
     });
 
     expect(result.entries[0]!.mtime).toBe(11);
+  });
+
+  it('scans managedDir first and lets global or project skills override it', () => {
+    const managedRoot = 'C:/userData/skills-managed';
+    const result = scan(
+      {
+        [`${managedRoot}/office-pdf/SKILL.md`]: {
+          kind: 'file',
+          text: skill('managed.', 'name: office-pdf\ndescription: managed desc'),
+        },
+        [`${managedRoot}/office-excel/SKILL.md`]: {
+          kind: 'file',
+          text: skill('managed excel.', 'name: office-excel\ndescription: excel desc'),
+        },
+        [`${globalRoot}/office-pdf/SKILL.md`]: {
+          kind: 'file',
+          text: skill('global.', 'name: office-pdf\ndescription: global override'),
+        },
+      },
+      managedRoot,
+    );
+
+    expect(result.roots.map(posix)).toEqual([managedRoot, globalRoot, projectRoot]);
+    expect(result.entries.find((e) => e.name === 'office-excel')).toMatchObject({ scope: 'managed' });
+    expect(result.entries.find((e) => e.name === 'office-pdf')).toMatchObject({
+      scope: 'global',
+      description: 'global override',
+    });
   });
 });

@@ -76,4 +76,21 @@ describe('Router Worker capability directory', () => {
     expect(text).toContain('agent-desktop 桌面 CLI 能力');
     expect(text).toContain(tool);
   });
+
+  it('renders enabled office productivity skills in the directory', () => {
+    const text = renderRouterWorkerCapabilities([
+      {
+        name: '小助手',
+        template: 'research',
+        tools: ['read', 'write', 'bash'],
+        skills: [
+          { name: 'PDF 工具箱', summary: 'PDF 处理' },
+          { name: '表格工具箱', summary: 'Excel 处理' },
+        ],
+      },
+    ]);
+
+    expect(text).toContain('已启用办公技能');
+    expect(text).toContain('PDF 工具箱、表格工具箱');
+  });
 });

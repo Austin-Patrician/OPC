@@ -529,6 +529,31 @@ const bridge: OpcBridge = {
     setEnabled: (id: string, enabled: boolean) =>
       ipcRenderer.invoke(IPC.skills.setEnabled, id, enabled),
   },
+  skillPacks: {
+    list: () => ipcRenderer.invoke(IPC.skillPacks.list),
+    prepareEnv: () => ipcRenderer.invoke(IPC.skillPacks.prepareEnv),
+    setEnabled: (packId: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.skillPacks.setEnabled, packId, enabled),
+    enableAll: () => ipcRenderer.invoke(IPC.skillPacks.enableAll),
+    upgradeEnv: () => ipcRenderer.invoke(IPC.skillPacks.upgradeEnv),
+    uninstallEnv: () => ipcRenderer.invoke(IPC.skillPacks.uninstallEnv),
+    onChanged: (listener) => {
+      const handler = (_event: IpcRendererEvent, catalog: unknown) =>
+        listener(catalog as never);
+      ipcRenderer.on(IPC.skillPacks.changedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.skillPacks.changedEvent, handler);
+      };
+    },
+    onProgress: (listener) => {
+      const handler = (_event: IpcRendererEvent, progress: unknown) =>
+        listener(progress as never);
+      ipcRenderer.on(IPC.skillPacks.progressEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.skillPacks.progressEvent, handler);
+      };
+    },
+  },
   diagnostics: {
     report: () => ipcRenderer.invoke(IPC.diagnostics.report),
   },

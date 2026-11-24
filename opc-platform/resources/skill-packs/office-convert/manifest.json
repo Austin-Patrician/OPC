@@ -1,0 +1,16 @@
+{
+  "id": "office-convert",
+  "name": "office-convert",
+  "title": "文档格式转换",
+  "description": "Markdown、Word、PDF 与 Excel 之间一键互转并保持中文排版。",
+  "category": "office",
+  "version": "1.0.0",
+  "envId": "office-py",
+  "commands": [
+    "md-to-docx",
+    "md-to-pdf",
+    "docx-to-md",
+    "pdf-to-md",
+    "xlsx-to-md"
+  ]
+}

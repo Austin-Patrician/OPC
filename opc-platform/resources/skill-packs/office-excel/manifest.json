@@ -1,0 +1,17 @@
+{
+  "id": "office-excel",
+  "name": "office-excel",
+  "title": "表格工具箱",
+  "description": "读写 Excel 和 CSV 表格，支持公式计算、筛选排序与统计汇总。",
+  "category": "office",
+  "version": "1.0.0",
+  "envId": "office-py",
+  "commands": [
+    "inspect",
+    "read",
+    "write",
+    "query",
+    "csv-to-xlsx",
+    "xlsx-to-csv"
+  ]
+}

@@ -270,3 +270,26 @@ describe('shim symlinks', () => {
     );
   });
 });
+
+describe('skill env providers', () => {
+  it('applies envOverlay after PYTHONPATH cleanup and exposes extra sandboxRoots', () => {
+    const service = createService();
+    const extraRoot = path.join(dir, 'skills-managed');
+    const extraSite = path.join(dir, 'skill-envs', 'office-py', 'site-packages');
+    mkdirSync(extraRoot, { recursive: true });
+    mkdirSync(extraSite, { recursive: true });
+
+    service.registerSkillEnvProvider({
+      envOverlay: () => ({
+        OPC_OFFICE_PYTHON: '/tmp/office-py/bin/python',
+        PYTHONPATH: extraSite,
+      }),
+      sandboxRoots: () => [extraRoot],
+    });
+
+    const env = service.envFor();
+    expect(env.OPC_OFFICE_PYTHON).toBe('/tmp/office-py/bin/python');
+    expect(env.PYTHONPATH).toBe(extraSite);
+    expect(service.sandboxRoots()).toContain(extraRoot);
+  });
+});

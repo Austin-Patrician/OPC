@@ -1,0 +1,21 @@
+{
+  "id": "office-pdf",
+  "name": "office-pdf",
+  "title": "PDF 工具箱",
+  "description": "提取 PDF 文字与表格，支持合并拆分、页面转图、加水印与填表。",
+  "category": "office",
+  "version": "1.0.0",
+  "envId": "office-py",
+  "commands": [
+    "inspect",
+    "extract-text",
+    "extract-tables",
+    "merge",
+    "split",
+    "rotate",
+    "delete-pages",
+    "render",
+    "watermark",
+    "fill-form"
+  ]
+}

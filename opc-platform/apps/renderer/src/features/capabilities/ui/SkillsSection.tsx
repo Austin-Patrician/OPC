@@ -1,232 +1,331 @@
 import { useMemo, useState } from 'react';
-import { BookOpen, Braces, FileCode2, FolderOpen, Gem, Terminal } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { PiSkillCatalog, PiSkillView } from '@opc/shared/ipc';
-import { Section, Toggle } from '@/features/settings/ui/kit';
+import type {
+  PiSkillCatalog,
+  PiSkillView,
+  SkillPackCatalogView,
+  SkillPackProgress,
+  SkillPackView,
+} from '@opc/shared/ipc';
+import { buttonClass, Note, Toggle } from '@/features/settings/ui/kit';
 import { cn } from '@/shared/lib/cn';
-import { FilterPills, FilterToolbar, StatStrip } from './CapabilityPrimitives';
+import { FilterPills, FilterToolbar } from './CapabilityPrimitives';
+import { SkillIconTile } from './SkillIcon';
 
-type SkillStatusFilter = 'all' | 'enabled' | 'disabled';
+type SkillFilterTab = 'all' | 'enabled' | 'builtin' | 'local';
+
+type UnifiedSkillItem =
+  | {
+      kind: 'builtin';
+      id: string;
+      iconKey: string;
+      title: string;
+      description: string;
+      enabled: boolean;
+      busy: boolean;
+      sourceLabel: string;
+      tooltip?: string;
+      pack: SkillPackView;
+    }
+  | {
+      kind: 'local';
+      id: string;
+      iconKey: string;
+      title: string;
+      description: string;
+      enabled: boolean;
+      busy: boolean;
+      sourceLabel: string;
+      tooltip?: string;
+      entry: PiSkillView;
+    };
 
 export function SkillsSection({
-  catalog,
-  busyId,
-  error,
-  onToggle,
+  skillPacks,
+  skillPackProgress,
+  busySkillPack,
+  skillPackEnvBusy,
+  skillPackError,
+  skills,
+  busySkill,
+  skillError,
+  onTogglePack,
+  onToggleSkill,
 }: {
-  catalog: PiSkillCatalog | null;
-  busyId: string;
-  error: string;
-  onToggle: (entry: PiSkillView, next: boolean) => void;
+  skillPacks: SkillPackCatalogView | null;
+  skillPackProgress: SkillPackProgress | null;
+  busySkillPack: string;
+  skillPackEnvBusy: boolean;
+  skillPackError: string;
+  skills: PiSkillCatalog | null;
+  busySkill: string;
+  skillError: string;
+  onTogglePack: (pack: SkillPackView, next: boolean) => void;
+  onToggleSkill: (entry: PiSkillView, next: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<SkillStatusFilter>('all');
+  const [tab, setTab] = useState<SkillFilterTab>('all');
 
-  const entries = useMemo(() => catalog?.entries ?? [], [catalog]);
-  const enabled = useMemo(() => entries.filter((entry) => entry.enabled), [entries]);
-  const disabledCount = entries.length - enabled.length;
-  const tokens = useMemo(
-    () => enabled.reduce((sum, entry) => sum + entry.promptTokens, 0),
-    [enabled],
-  );
+  const isInstalling = skillPacks?.env.state === 'installing' || skillPackEnvBusy;
+  const displayError = skillPackError || skillPacks?.env.error || skillError;
+  const localRoots = useMemo(() => skills?.roots ?? [], [skills]);
+
+  const items = useMemo<UnifiedSkillItem[]>(() => {
+    const builtinItems: UnifiedSkillItem[] = (skillPacks?.packs ?? []).map((pack) => ({
+      kind: 'builtin',
+      id: pack.id,
+      iconKey: pack.id,
+      title: pack.title,
+      description: pack.description,
+      enabled: pack.enabled,
+      busy: isInstalling || busySkillPack === pack.id,
+      sourceLabel: t('capabilities.skills.sourceBuiltin'),
+      pack,
+    }));
+
+    const localItems: UnifiedSkillItem[] = (skills?.entries ?? [])
+      .filter((entry) => entry.scope !== 'managed')
+      .map((entry) => ({
+        kind: 'local',
+        id: entry.id,
+        iconKey: entry.name,
+        title: entry.name,
+        description: entry.description,
+        enabled: entry.enabled,
+        busy: busySkill === entry.id,
+        sourceLabel:
+          entry.scope === 'project'
+            ? t('capabilities.external.scope.project')
+            : t('capabilities.skills.sourceLocal'),
+        tooltip: entry.dir,
+        entry,
+      }));
+
+    return [...builtinItems, ...localItems];
+  }, [busySkill, busySkillPack, isInstalling, skillPacks, skills, t]);
+
+  const { allCount, enabledCount, builtinCount, localCount } = useMemo(() => {
+    let enabled = 0;
+    let builtin = 0;
+    let local = 0;
+    for (const item of items) {
+      if (item.enabled) enabled += 1;
+      if (item.kind === 'builtin') builtin += 1;
+      else local += 1;
+    }
+    return {
+      allCount: items.length,
+      enabledCount: enabled,
+      builtinCount: builtin,
+      localCount: local,
+    };
+  }, [items]);
+
   const q = query.trim().toLowerCase();
 
   const filtered = useMemo(() => {
-    return entries.filter((entry) => {
-      if (statusFilter === 'enabled' && !entry.enabled) return false;
-      if (statusFilter === 'disabled' && entry.enabled) return false;
+    return items.filter((item) => {
+      if (tab === 'enabled' && !item.enabled) return false;
+      if (tab === 'builtin' && item.kind !== 'builtin') return false;
+      if (tab === 'local' && item.kind !== 'local') return false;
       if (!q) return true;
       return (
-        entry.name.toLowerCase().includes(q) ||
-        entry.description.toLowerCase().includes(q) ||
-        entry.dir.toLowerCase().includes(q)
+        item.title.toLowerCase().includes(q) ||
+        item.description.toLowerCase().includes(q)
       );
     });
-  }, [entries, q, statusFilter]);
+  }, [items, q, tab]);
+
+  const handleToggleItem = (item: UnifiedSkillItem, next: boolean) => {
+    if (item.kind === 'builtin') {
+      onTogglePack(item.pack, next);
+      return;
+    }
+    onToggleSkill(item.entry, next);
+  };
 
   return (
     <div className="space-y-5">
-      <StatStrip
-        items={[
-          {
-            label: t('capabilities.ui.statEnabledSkills'),
-            value: `${enabled.length}/${entries.length}`,
-            accent: enabled.length > 0,
-          },
-          {
-            label: t('capabilities.ui.statPromptBudget'),
-            value: `~${tokens}`,
-            hint: 'tokens',
-          },
-          {
-            label: t('capabilities.ui.statScanDirs'),
-            value: catalog?.roots.length ?? 0,
-          },
-        ]}
-      />
-
-      {entries.length > 0 ? (
-        <FilterToolbar
-          query={query}
-          onQueryChange={setQuery}
-          placeholder={t('capabilities.ui.searchSkills')}
-          rightSlot={
-            <FilterPills<SkillStatusFilter>
-              label={t('capabilities.skills.title')}
-              value={statusFilter}
-              onChange={setStatusFilter}
-              options={[
-                { value: 'all', label: t('capabilities.ui.filterAll'), count: entries.length },
-                { value: 'enabled', label: t('capabilities.ui.filterEnabled'), count: enabled.length },
-                { value: 'disabled', label: t('capabilities.ui.filterDisabled'), count: disabledCount },
-              ]}
-            />
-          }
-        />
+      {displayError ? (
+        <p className="rounded-2xl border border-danger/30 bg-danger/5 px-4 py-2.5 text-xs text-danger">
+          {displayError}
+        </p>
       ) : null}
 
-      <Section
-        title={t('capabilities.skills.title')}
-        description={
-          entries.length > 0
-            ? t('capabilities.skills.summary', {
-                enabled: enabled.length,
-                total: entries.length,
-                tokens,
-              })
-            : t('capabilities.skills.description')
-        }
-        action={
-          <span className="rounded-full border border-line bg-surface-muted px-2.5 py-0.5 text-xs font-medium text-ink-secondary tabular-nums">
-            {filtered.length}
-          </span>
-        }
-      >
-        {error ? (
-          <p className="border-b border-line bg-danger/5 px-4 py-2 text-xs text-danger">{error}</p>
-        ) : null}
+      {skillPackProgress ? (
+        <div className="rounded-2xl border border-line bg-surface px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-ink">{skillPackProgress.message}</span>
+            <span className="font-mono text-2xs text-ink-tertiary tabular-nums">
+              {skillPackProgress.percent}%
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-muted">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-300"
+              style={{ width: `${Math.max(4, Math.min(100, skillPackProgress.percent))}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
 
-        {filtered.length > 0 ? (
-          <div className="grid gap-3 p-4 md:grid-cols-2">
-            {filtered.map((entry) => (
-              <SkillCard
-                key={entry.id}
-                entry={entry}
-                busy={busyId === entry.id}
-                onToggle={onToggle}
-              />
-            ))}
+      {skillPacks?.env.sandboxBackend === 'none' ? (
+        <Note tone="warn">
+          {t('capabilities.skillPacks.sandboxUnavailable', {
+            detail: skillPacks.env.sandboxDetail,
+          })}
+        </Note>
+      ) : null}
+
+      <FilterToolbar
+        query={query}
+        onQueryChange={setQuery}
+        placeholder={t('capabilities.ui.searchSkills')}
+        rightSlot={
+          <FilterPills<SkillFilterTab>
+            label={t('capabilities.ui.filterScopeLabel')}
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'all', label: t('capabilities.ui.filterAll'), count: allCount },
+              { value: 'enabled', label: t('capabilities.ui.filterEnabled'), count: enabledCount },
+              {
+                value: 'builtin',
+                label: t('capabilities.ui.filterBuiltinSkills'),
+                count: builtinCount,
+              },
+              {
+                value: 'local',
+                label: t('capabilities.ui.filterLocalSkills'),
+                count: localCount,
+              },
+            ]}
+          />
+        }
+      />
+
+      {filtered.length > 0 ? (
+        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
+          {filtered.map((item) => (
+            <UnifiedSkillCard
+              key={`${item.kind}:${item.id}`}
+              item={item}
+              onToggle={handleToggleItem}
+            />
+          ))}
+        </div>
+      ) : tab === 'local' && localCount === 0 && !q ? (
+        <div className="rounded-2xl border border-dashed border-line bg-surface/50 px-6 py-9 text-center">
+          <div className="mx-auto mb-3 grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-tertiary">
+            <FolderOpen className="size-4.5" />
           </div>
-        ) : entries.length > 0 ? (
-          <p className="px-4 py-8 text-center text-sm text-ink-tertiary">
-            {t('capabilities.ui.noMatches')}
+          <p className="text-sm font-medium text-ink">{t('capabilities.skills.emptyLocalTitle')}</p>
+          <p className="mx-auto mt-1.5 max-w-[30rem] text-xs leading-relaxed text-ink-tertiary">
+            {t('capabilities.skills.emptyLocalHint')}
           </p>
-        ) : (
-          <div className="px-4 py-5">
-            <div className="rounded-xl border border-dashed border-line bg-surface-muted/30 px-4 py-4">
-              <p className="text-sm font-medium text-ink-secondary">{t('capabilities.skills.empty')}</p>
-              <ul className="mt-2.5 flex flex-wrap gap-1.5">
-                {(catalog?.roots ?? []).map((root) => (
-                  <li
-                    key={root}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-3xs text-ink-tertiary"
-                  >
-                    <FolderOpen className="size-3 shrink-0 text-ink-quaternary" />
-                    <code className="truncate font-mono">{root}</code>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-2.5 max-w-[44rem] text-xs leading-relaxed text-ink-quaternary">
-                {t('capabilities.skills.emptyHint')}
-              </p>
-            </div>
-          </div>
-        )}
-      </Section>
+          {localRoots.length > 0 ? (
+            <ul className="mt-4 flex flex-wrap justify-center gap-1.5">
+              {localRoots.map((root) => (
+                <li
+                  key={root}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-3xs text-ink-tertiary"
+                >
+                  <FolderOpen className="size-3 shrink-0 text-ink-quaternary" />
+                  <code className="truncate font-mono">{root}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-line/80 bg-surface/50 px-6 py-10 text-center">
+          <p className="text-sm text-ink-tertiary">{t('capabilities.ui.noMatches')}</p>
+          {q || tab !== 'all' ? (
+            <button
+              type="button"
+              className={cn(buttonClass.secondary, 'mt-3')}
+              onClick={() => {
+                setQuery('');
+                setTab('all');
+              }}
+            >
+              {t('capabilities.ui.clearFilters')}
+            </button>
+          ) : null}
+        </div>
+      )}
+
+      {allCount > 0 ? (
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-3.5 text-xs text-ink-quaternary">
+          <span className="tabular-nums">
+            {t('capabilities.skills.enabledSummary', {
+              enabled: enabledCount,
+              total: allCount,
+            })}
+          </span>
+          {localRoots.length > 0 ? (
+            <span
+              className="inline-flex max-w-full items-center gap-1.5"
+              title={localRoots.join('\n')}
+            >
+              <FolderOpen className="size-3 shrink-0" />
+              <span>{t('capabilities.skills.localDirHint')}</span>
+              <code className="truncate font-mono text-ink-tertiary">{localRoots[0]}</code>
+            </span>
+          ) : null}
+        </footer>
+      ) : null}
     </div>
   );
 }
 
-function SkillCard({
-  entry,
-  busy,
+function UnifiedSkillCard({
+  item,
   onToggle,
 }: {
-  entry: PiSkillView;
-  busy: boolean;
-  onToggle: (entry: PiSkillView, next: boolean) => void;
+  item: UnifiedSkillItem;
+  onToggle: (item: UnifiedSkillItem, next: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const Icon = skillIcon(entry.name);
 
   return (
     <article
+      data-testid={item.kind === 'builtin' ? `skill-pack-${item.id}` : `skill-local-${item.id}`}
+      title={item.tooltip}
       className={cn(
-        'flex flex-col justify-between rounded-xl border p-3.5 transition-colors',
-        entry.enabled
-          ? 'border-line bg-surface hover:border-line-strong'
-          : 'border-line/75 bg-surface-muted/25 opacity-85 hover:border-line-strong hover:opacity-100',
+        'group flex items-start gap-3.5 rounded-2xl border p-4 transition-all duration-150',
+        item.enabled
+          ? 'border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)] hover:border-line-strong hover:shadow-[0_6px_18px_-6px_rgba(0,0,0,0.08)]'
+          : 'border-line/75 bg-surface/65 hover:border-line-strong hover:bg-surface',
       )}
     >
-      <div>
-        <div className="flex items-start gap-3">
-          <span
-            className={cn(
-              'grid size-9 shrink-0 place-items-center rounded-lg border',
-              entry.enabled
-                ? 'border-accent/20 bg-accent-soft text-accent-ink'
-                : 'border-line bg-surface-muted text-ink-tertiary',
-            )}
-          >
-            <Icon className="size-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h4 className="truncate text-sm font-semibold text-ink">{entry.name}</h4>
-                <span className="mt-0.5 inline-flex rounded-full bg-surface-muted px-2 py-px text-3xs font-medium text-ink-tertiary">
-                  {t(`capabilities.external.scope.${entry.scope}`)}
-                </span>
-              </div>
-              <Toggle
-                checked={entry.enabled}
-                disabled={busy}
-                onChange={(next) => onToggle(entry, next)}
-                label={entry.name}
-                title={busy ? t('capabilities.external.working') : undefined}
-              />
-            </div>
+      <SkillIconTile name={item.iconKey} active={item.enabled} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <h4 className="truncate text-[14px] font-semibold tracking-[-0.01em] text-ink">
+              {item.title}
+            </h4>
+            <span className="shrink-0 rounded-md bg-surface-muted px-1.5 py-0.5 text-[10px] leading-none font-medium text-ink-tertiary">
+              {item.sourceLabel}
+            </span>
           </div>
+          <Toggle
+            checked={item.enabled}
+            disabled={item.busy}
+            onChange={(next) => onToggle(item, next)}
+            label={item.title}
+            title={item.busy ? t('capabilities.external.working') : undefined}
+          />
         </div>
-
-        {entry.description ? (
-          <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-ink-tertiary">
-            {entry.description}
+        {item.description ? (
+          <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.55] text-ink-tertiary">
+            {item.description}
           </p>
         ) : null}
       </div>
-
-      <div className="mt-3 flex items-center justify-between gap-2 border-t border-line/60 pt-2.5 text-3xs text-ink-quaternary">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Terminal className="size-3 shrink-0" />
-          <code className="truncate font-mono" title={entry.file}>
-            {entry.dir}
-          </code>
-        </div>
-        <span className="shrink-0 tabular-nums">
-          {entry.files} · {t('capabilities.skills.promptTokens', { tokens: entry.promptTokens })}
-        </span>
-      </div>
     </article>
   );
-}
-
-function skillIcon(name: string): LucideIcon {
-  const normalized = name.toLowerCase();
-  if (normalized.includes('code') || normalized.includes('dev')) return FileCode2;
-  if (normalized.includes('json') || normalized.includes('schema')) return Braces;
-  if (normalized.includes('design') || normalized.includes('creative')) return Gem;
-  return BookOpen;
 }

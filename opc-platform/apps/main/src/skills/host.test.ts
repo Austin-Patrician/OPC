@@ -103,6 +103,22 @@ describe('PiSkillHost', () => {
     expect(skill!.body).toContain('Instructions for pdf.');
     expect(skill!.files).toEqual(['scripts/run.py']);
   });
+
+  it('includes managedDir skills and picks up newly synced packs after invalidateCache()', () => {
+    const managedDir = path.join(root, 'skills-managed');
+    mkdirSync(managedDir, { recursive: true });
+    const instance = new PiSkillHost({ userDataDir: userData, homeDir: home, projectDir: project, managedDir });
+
+    expect(instance.enabled()).toEqual([]);
+    const packDir = path.join(managedDir, 'office-pdf');
+    mkdirSync(path.join(packDir, 'scripts'), { recursive: true });
+    writeFileSync(path.join(packDir, 'SKILL.md'), '---\nname: office-pdf\ndescription: PDF\n---\n\nBody', 'utf8');
+    writeFileSync(path.join(packDir, 'scripts', 'pdf_tool.py'), 'print(1)', 'utf8');
+
+    instance.invalidateCache();
+    expect(instance.enabled()).toHaveLength(1);
+    expect(instance.enabled()[0]).toMatchObject({ name: 'office-pdf', scope: 'managed' });
+  });
 });
 
 describe('skillSummary / promptTokens', () => {

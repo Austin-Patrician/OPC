@@ -286,6 +286,16 @@ export const IPC = {
     list: "skills:list",
     setEnabled: "skills:setEnabled",
   },
+  skillPacks: {
+    list: "skillPacks:list",
+    prepareEnv: "skillPacks:prepareEnv",
+    setEnabled: "skillPacks:setEnabled",
+    enableAll: "skillPacks:enableAll",
+    upgradeEnv: "skillPacks:upgradeEnv",
+    uninstallEnv: "skillPacks:uninstallEnv",
+    changedEvent: "skillPacks:changed",
+    progressEvent: "skillPacks:progress",
+  },
 } as const;
 
 export interface ChatSnapshot {
@@ -685,13 +695,16 @@ export interface ExtensionsBridge {
   ): Promise<PiExtensionCatalog>;
 }
 
+/** Where a skill folder was discovered: app-managed, the user's home, or this project. */
+export type PiSkillScope = "managed" | "global" | "project";
+
 /** One `SKILL.md` folder found on disk. */
 export interface PiSkillView {
   /** Absolute path of the SKILL.md, POSIX-normalized. */
   id: string;
   name: string;
   description: string;
-  scope: PiExtensionScope;
+  scope: PiSkillScope;
   /** Folder holding the skill; its scripts and references live here. */
   dir: string;
   file: string;
@@ -713,6 +726,61 @@ export interface SkillsBridge {
   list(): Promise<PiSkillCatalog>;
   /** Turns one skill on or off for every agent; no trust gate, a skill is text. */
   setEnabled(id: string, enabled: boolean): Promise<PiSkillCatalog>;
+}
+
+export type SkillPackEnvState = "uninstalled" | "installing" | "ready" | "error";
+
+export interface SkillPackEnvStatus {
+  id: string;
+  state: SkillPackEnvState;
+  pythonBinary?: string;
+  pythonVersion?: string;
+  venvDir: string;
+  packages: string[];
+  installedPackages: Record<string, string>;
+  diskUsageBytes?: number;
+  sandboxBackend: "seatbelt" | "bwrap" | "none";
+  sandboxDetail: string;
+  error?: string;
+}
+
+export interface SkillPackView {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  category: "office";
+  version: string;
+  envId: string;
+  enabled: boolean;
+  ready: boolean;
+  commands: string[];
+  dir: string;
+  files: number;
+  promptTokens: number;
+}
+
+export interface SkillPackCatalogView {
+  generatedAt: number;
+  env: SkillPackEnvStatus;
+  packs: SkillPackView[];
+}
+
+export interface SkillPackProgress {
+  phase: "venv" | "packages" | "verify" | "sync";
+  percent: number;
+  message: string;
+}
+
+export interface SkillPacksBridge {
+  list(): Promise<SkillPackCatalogView>;
+  prepareEnv(): Promise<SkillPackCatalogView>;
+  setEnabled(packId: string, enabled: boolean): Promise<SkillPackCatalogView>;
+  enableAll(): Promise<SkillPackCatalogView>;
+  upgradeEnv(): Promise<SkillPackCatalogView>;
+  uninstallEnv(): Promise<SkillPackCatalogView>;
+  onChanged(listener: (catalog: SkillPackCatalogView) => void): () => void;
+  onProgress(listener: (progress: SkillPackProgress | null) => void): () => void;
 }
 
 export type MemoryDocCategory = "user" | "rules" | "playbook" | "topic" | "daily";
@@ -1123,6 +1191,7 @@ export interface OpcBridge {
   capabilities: CapabilitiesBridge;
   extensions: ExtensionsBridge;
   skills: SkillsBridge;
+  skillPacks: SkillPacksBridge;
   facts: FactsBridge;
   memory: MemoryBridge;
   router: RouterBridge;

@@ -27,6 +27,8 @@ export interface PiSkillHostOptions {
   userDataDir: string;
   homeDir?: string;
   projectDir?: string;
+  /** Optional app-managed skill packs directory (`<userData>/skills-managed`). */
+  managedDir?: string;
   scan?: typeof scanSkills;
 }
 
@@ -40,6 +42,7 @@ export class PiSkillHost {
   private readonly storeFile: string;
   private readonly homeDir: string;
   private readonly projectDir: string;
+  private readonly managedDir?: string;
   private readonly scanFn: typeof scanSkills;
 
   private store: Store;
@@ -49,8 +52,14 @@ export class PiSkillHost {
     this.storeFile = path.join(options.userDataDir, 'pi-skills.json');
     this.homeDir = options.homeDir ?? os.homedir();
     this.projectDir = options.projectDir ?? process.cwd();
+    this.managedDir = options.managedDir;
     this.scanFn = options.scan ?? scanSkills;
     this.store = this.readStore();
+  }
+
+  /** Clears the short scan cache after managed skill packs are synced. */
+  invalidateCache(): void {
+    this.lastScan = undefined;
   }
 
   /** Every discovered skill, including the disabled ones (the UI shows both). */
@@ -86,7 +95,11 @@ export class PiSkillHost {
   }
 
   private scan(): ScanSkillsResult {
-    const result = this.scanFn({ homeDir: this.homeDir, projectDir: this.projectDir });
+    const result = this.scanFn({
+      homeDir: this.homeDir,
+      projectDir: this.projectDir,
+      ...(this.managedDir ? { managedDir: this.managedDir } : {}),
+    });
     this.lastScan = { at: Date.now(), result };
     return result;
   }

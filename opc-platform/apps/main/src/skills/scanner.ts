@@ -22,7 +22,7 @@ const SKILL_FILE = 'SKILL.md';
 const MAX_FILES = 200;
 const MAX_DEPTH = 4;
 
-export type SkillScope = 'global' | 'project';
+export type SkillScope = 'managed' | 'global' | 'project';
 
 export interface ScannedSkill {
   /** Absolute path of the SKILL.md, POSIX-normalized: stable across scans. */
@@ -45,6 +45,8 @@ export interface ScannedSkill {
 export interface ScanSkillsOptions {
   homeDir: string;
   projectDir: string;
+  /** Optional app-managed skills directory, scanned first so global/project skills can override it. */
+  managedDir?: string;
   readDir?: (dir: string) => fs.Dirent[];
   readText?: (file: string) => string | undefined;
   stat?: (target: string) => { isFile(): boolean; isDirectory(): boolean; mtimeMs: number } | undefined;
@@ -57,8 +59,13 @@ export interface ScanSkillsResult {
 
 const toPosix = (value: string) => value.replace(/\\/g, '/');
 
-export function skillRoots(homeDir: string, projectDir: string): { scope: SkillScope; dir: string }[] {
+export function skillRoots(
+  homeDir: string,
+  projectDir: string,
+  managedDir?: string,
+): { scope: SkillScope; dir: string }[] {
   return [
+    ...(managedDir ? [{ scope: 'managed' as const, dir: managedDir }] : []),
     { scope: 'global', dir: path.join(homeDir, '.agents', 'skills') },
     { scope: 'project', dir: path.join(projectDir, '.agents', 'skills') },
   ];
@@ -70,7 +77,7 @@ export function scanSkills(options: ScanSkillsOptions): ScanSkillsResult {
     readText: options.readText ?? defaultReadText,
     stat: options.stat ?? defaultStat,
   };
-  const roots = skillRoots(options.homeDir, options.projectDir);
+  const roots = skillRoots(options.homeDir, options.projectDir, options.managedDir);
 
   // Keyed by name: a project skill replaces the global one of the same name,
   // which is the same precedence Pi and Claude Code use.

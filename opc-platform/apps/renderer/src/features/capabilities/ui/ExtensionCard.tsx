@@ -1,21 +1,24 @@
-import { Fragment, useEffect } from 'react';
+import { useEffect } from 'react';
 import {
+  AppWindow,
+  ArrowUpRight,
   Boxes,
   Briefcase,
   CalendarDays,
   ChevronRight,
   FileCode2,
   GitFork,
+  Globe,
   Image as ImageIcon,
-  Layers,
   MessagesSquare,
   Network,
   RefreshCw,
   ScanText,
+  Search,
   Share2,
   ShieldCheck,
   Sparkles,
-  Users,
+  Undo2,
   Wrench,
   X,
 } from 'lucide-react';
@@ -60,17 +63,19 @@ const BY_KEY: Record<string, ExtensionVisual> = {
   decompose: { icon: GitFork, tone: 'violet' },
   skills: { icon: Sparkles, tone: 'emerald' },
   comm: { icon: MessagesSquare, tone: 'teal' },
-};
-
-const BY_NAME: Record<string, ExtensionVisual> = {
-  'opc.trace': { icon: Share2, tone: 'teal' },
-  'opc.assistant-tools': { icon: Wrench, tone: 'emerald' },
-  'opc.recall': { icon: RefreshCw, tone: 'emerald' },
+  browser: { icon: Globe, tone: 'sky' },
+  desktop: { icon: AppWindow, tone: 'violet' },
+  assistantTools: { icon: Wrench, tone: 'emerald' },
+  recall: { icon: RefreshCw, tone: 'emerald' },
+  trace: { icon: Share2, tone: 'teal' },
+  escalate: { icon: ArrowUpRight, tone: 'amber' },
+  handback: { icon: Undo2, tone: 'amber' },
+  investigate: { icon: Search, tone: 'teal' },
 };
 
 export function extensionVisual(name: string): ExtensionVisual {
   const key = EXTENSION_KEY[name];
-  return (key ? BY_KEY[key] : undefined) ?? BY_NAME[name] ?? { icon: Boxes, tone: 'sky' };
+  return (key ? BY_KEY[key] : undefined) ?? { icon: Boxes, tone: 'sky' };
 }
 
 export function ExtensionTile({ name, size = 'md' }: { name: string; size?: 'md' | 'sm' }) {
@@ -112,75 +117,37 @@ export function ExtensionCard({
       ? t('capabilities.external.groupDescription')
       : t('capabilities.unknownExtension');
 
-  const extraParts = [
-    group.tasks > 0 ? t('capabilities.counts.tasks', { count: group.tasks }) : '',
-    group.hooks > 0 ? t('capabilities.counts.hooks', { count: group.hooks }) : '',
-    group.sections > 0 ? t('capabilities.counts.sections', { count: group.sections }) : '',
-  ].filter(Boolean);
-
   return (
-    <article className="h-full rounded-xl border border-line bg-surface transition-colors hover:border-line-strong hover:bg-surface-muted/20">
+    <article className="h-full rounded-2xl border border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.03)] transition-all duration-150 hover:border-line-strong hover:bg-surface-muted/20">
       <button
         type="button"
         onClick={() => onSelect?.(group)}
-        className="group/card flex h-full w-full flex-col justify-between p-3.5 text-left"
+        className="group/card flex h-full w-full items-start gap-3 p-4 text-left"
       >
-        <div className="w-full">
-          <div className="flex items-start gap-3">
-            <ExtensionTile name={group.name} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="min-w-0 truncate text-sm font-semibold text-ink">{title}</h4>
-                <div className="flex shrink-0 items-center gap-1">
-                  <span
-                    className="inline-flex min-w-[1.375rem] items-center justify-center rounded-full bg-surface-muted px-1.5 py-0.5 text-3xs font-medium text-ink-secondary tabular-nums"
-                    title={t('capabilities.builtin.badgeLabel', { count: group.tools.length })}
-                  >
-                    {group.tools.length}
-                  </span>
-                  <ChevronRight className="size-4 text-ink-quaternary transition-transform duration-150 group-hover/card:translate-x-0.5 group-hover/card:text-ink-secondary" />
-                </div>
-              </div>
-              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-tertiary">
-                {description}
-              </p>
+        <ExtensionTile name={group.name} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="min-w-0 truncate text-sm font-semibold text-ink">{title}</h4>
+            <div className="flex shrink-0 items-center gap-1">
+              {group.tools.length > 0 ? (
+                <span
+                  className="inline-flex min-w-[1.375rem] items-center justify-center rounded-full bg-surface-muted px-1.5 py-0.5 text-3xs font-medium text-ink-secondary tabular-nums"
+                  title={t('capabilities.builtin.badgeLabel', { count: group.tools.length })}
+                >
+                  {group.tools.length}
+                </span>
+              ) : null}
+              <ChevronRight className="size-4 text-ink-quaternary transition-transform duration-150 group-hover/card:translate-x-0.5 group-hover/card:text-ink-secondary" />
             </div>
           </div>
-        </div>
-
-        <div className="mt-3 flex w-full flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/60 pt-2.5 text-3xs text-ink-quaternary">
-          <Meta icon={Users} label={t('capabilities.extensionAgents', { count: group.agents })} />
-          <MetaDivider />
-          <Meta
-            icon={Wrench}
-            label={
-              group.tools.length > 0
-                ? t('capabilities.extensionToolCount', { count: group.tools.length })
-                : t('capabilities.extensionNoTools')
-            }
-          />
-          {extraParts.map((part) => (
-            <Fragment key={part}>
-              <MetaDivider />
-              <Meta icon={Layers} label={part} />
-            </Fragment>
-          ))}
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-tertiary">
+            {description}
+          </p>
         </div>
       </button>
     </article>
   );
 }
-
-function Meta({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <span className="inline-flex min-w-0 items-center gap-1">
-      <Icon className="size-3 shrink-0" strokeWidth={1.8} />
-      <span className="truncate">{label}</span>
-    </span>
-  );
-}
-
-const MetaDivider = () => <span aria-hidden="true" className="h-2.5 w-px shrink-0 bg-line" />;
 
 /** Opened by a card's chevron: the tools behind the summary, without a page jump. */
 export function ExtensionDetailsDialog({
@@ -199,12 +166,6 @@ export function ExtensionDetailsDialog({
     : isExternalExtension(group.name)
       ? t('capabilities.external.groupDescription')
       : t('capabilities.unknownExtension');
-
-  const extraParts = [
-    group.tasks > 0 ? t('capabilities.counts.tasks', { count: group.tasks }) : '',
-    group.hooks > 0 ? t('capabilities.counts.hooks', { count: group.hooks }) : '',
-    group.sections > 0 ? t('capabilities.counts.sections', { count: group.sections }) : '',
-  ].filter(Boolean);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -247,25 +208,6 @@ export function ExtensionDetailsDialog({
 
         <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4">
           <p className="text-sm leading-relaxed text-ink-secondary">{description}</p>
-
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-3xs text-ink-quaternary">
-            <Meta icon={Users} label={t('capabilities.extensionAgents', { count: group.agents })} />
-            <MetaDivider />
-            <Meta
-              icon={Wrench}
-              label={
-                group.tools.length > 0
-                  ? t('capabilities.extensionToolCount', { count: group.tools.length })
-                  : t('capabilities.extensionNoTools')
-              }
-            />
-            {extraParts.map((part) => (
-              <Fragment key={part}>
-                <MetaDivider />
-                <Meta icon={Layers} label={part} />
-              </Fragment>
-            ))}
-          </div>
 
           <section>
             <h3 className="text-3xs font-semibold tracking-[0.08em] text-ink-quaternary uppercase">

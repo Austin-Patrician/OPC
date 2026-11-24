@@ -1,16 +1,14 @@
 import type { AgentCapability, CapabilityTool } from '@opc/shared/ipc';
 
 /**
- * Pure aggregation for the 技能与工具 page.
+ * Pure aggregation for the 扩展 settings page.
  *
- * The page has two questions to answer and they need different shapes:
- *   - the 扩展 tab asks "what is installed", so it wants one row per extension;
- *   - the 工具 tab asks "what can the model call", so it wants one row per tool.
- *
- * Both are derived from the same per-agent snapshot, which is why this lives
- * outside the components: the two tabs can never disagree about a tool name or
- * an install count.
+ * Groups built-in capability modules across executors while keeping MCP
+ * (`opc.mcp`) and local Pi extensions (`pi.*`) isolated to their dedicated
+ * management views.
  */
+
+const EXCLUDED_BUILTIN_EXTENSIONS = new Set(['opc.mcp']);
 
 export interface ExtensionGroup {
   name: string;
@@ -22,19 +20,15 @@ export interface ExtensionGroup {
   sections: number;
 }
 
-export interface ToolGroup {
-  /** Extension that provides the tools, used as the section header. */
-  name: string;
-  tools: CapabilityTool[];
-  agents: number;
-}
-
-/** Union of what every execution body installed, in the order the first one had them. */
+/** Union of built-in modules every execution body installed, in first-seen order. */
 export function groupExtensions(agents: readonly AgentCapability[]): ExtensionGroup[] {
   const groups = new Map<string, ExtensionGroup>();
 
   for (const agent of agents) {
     for (const extension of agent.extensions) {
+      if (EXCLUDED_BUILTIN_EXTENSIONS.has(extension.name) || extension.name.startsWith('pi.')) {
+        continue;
+      }
       const group = groups.get(extension.name) ?? {
         name: extension.name,
         tools: [],
@@ -59,21 +53,7 @@ export function groupExtensions(agents: readonly AgentCapability[]): ExtensionGr
   return [...groups.values()];
 }
 
-/** The 工具 tab's view: the same data, with the extension fields dropped. */
-export function toToolGroups(groups: readonly ExtensionGroup[]): ToolGroup[] {
-  return groups.map(({ name, tools, agents }) => ({ name, tools, agents }));
-}
-
-/** tool name → how many agents can call it. */
-export function toolAgentCounts(agents: readonly AgentCapability[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const agent of agents) {
-    for (const tool of agent.tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/** Distinct tool names across every agent — the headline number. */
+/** Distinct non-MCP built-in tool names across every agent. */
 export function distinctToolNames(groups: readonly ExtensionGroup[]): Set<string> {
   return new Set(groups.flatMap((group) => group.tools.map((tool) => tool.name)));
 }

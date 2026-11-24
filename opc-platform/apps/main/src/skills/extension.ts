@@ -36,9 +36,15 @@ export function createSkillsExtension(options: SkillsExtensionOptions) {
       section('skills', () => {
         const skills = options.skills();
         if (skills.length === 0) return undefined;
+        const hasManaged = skills.some((skill) => skill.scope === 'managed');
         return [
           '这台机器上装了下面这些技能。技能是一份说明书，不是工具：',
           '需要时先用 read_skill 读出全文，再按里面的步骤做；不要凭名字猜步骤。',
+          ...(hasManaged
+            ? [
+                '执行内置办公技能脚本时优先使用 "$OPC_OFFICE_PYTHON" 运行其 scripts/ 下的脚本；产物请写入当前任务工作区的相对路径（如 ./output/），任务结束会自动登记为交付文件。',
+              ]
+            : []),
           '',
           ...skills.map((skill) => `- ${skill.name} — ${skillSummary(skill)}`),
         ].join('\n');

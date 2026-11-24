@@ -68,6 +68,7 @@ import { isRuntimeKind } from "../runtime/profiles";
 import type { RuntimeService } from "../runtime/service";
 import type { PiExtensionHost } from "../extensions/host";
 import type { PiSkillHost } from "../skills/host";
+import type { SkillPackService } from "../skills/packs";
 import type { WorkService } from "../work/workService";
 import type { BillingSettingsService } from "../work/billingSettings";
 import type { BrowserBroker } from "../browser/broker";
@@ -138,6 +139,8 @@ interface RegisterOptions {
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
   piSkills: PiSkillHost;
+  /** 内置托管办公技能包与隔离 Python 环境。 */
+  skillPacks?: SkillPackService;
   browser?: BrowserBroker;
   desktop?: DesktopBroker;
   /** Interrupt and context hygiene controls for the live Router session. */
@@ -174,6 +177,7 @@ export function registerIpc({
   usage,
   piExtensions,
   piSkills,
+  skillPacks,
   triage,
   schedules,
   triggers,
@@ -748,6 +752,57 @@ export function registerIpc({
       return catalog;
     },
   );
+  if (skillPacks) {
+    const syncAndBroadcastSkillPacks = async (catalog: ReturnType<SkillPackService["list"]>) => {
+      piSkills.invalidateCache();
+      await work.invalidateAllHarnesses();
+      broadcast(IPC.skillPacks.changedEvent, catalog);
+      return catalog;
+    };
+    const emitSkillPackProgress = (progress: { phase: string; percent: number; message: string }) => {
+      broadcast(IPC.skillPacks.progressEvent, progress);
+    };
+    ipcMain.handle(IPC.skillPacks.list, () => skillPacks.list());
+    ipcMain.handle(IPC.skillPacks.prepareEnv, async () => {
+      try {
+        const catalog = await skillPacks.prepareEnv(emitSkillPackProgress);
+        return await syncAndBroadcastSkillPacks(catalog);
+      } finally {
+        broadcast(IPC.skillPacks.progressEvent, null);
+      }
+    });
+    ipcMain.handle(IPC.skillPacks.setEnabled, async (_event, packId: unknown, enabled: unknown) => {
+      if (typeof packId !== "string" || !packId.trim() || typeof enabled !== "boolean") {
+        throw new Error("skillPacks:setEnabled 参数非法");
+      }
+      try {
+        const catalog = await skillPacks.setEnabled(packId.trim(), enabled, emitSkillPackProgress);
+        return await syncAndBroadcastSkillPacks(catalog);
+      } finally {
+        broadcast(IPC.skillPacks.progressEvent, null);
+      }
+    });
+    ipcMain.handle(IPC.skillPacks.enableAll, async () => {
+      try {
+        const catalog = await skillPacks.enableAll(emitSkillPackProgress);
+        return await syncAndBroadcastSkillPacks(catalog);
+      } finally {
+        broadcast(IPC.skillPacks.progressEvent, null);
+      }
+    });
+    ipcMain.handle(IPC.skillPacks.upgradeEnv, async () => {
+      try {
+        const catalog = await skillPacks.upgradeEnv(emitSkillPackProgress);
+        return await syncAndBroadcastSkillPacks(catalog);
+      } finally {
+        broadcast(IPC.skillPacks.progressEvent, null);
+      }
+    });
+    ipcMain.handle(IPC.skillPacks.uninstallEnv, async () => {
+      const catalog = skillPacks.uninstallEnv();
+      return await syncAndBroadcastSkillPacks(catalog);
+    });
+  }
   ipcMain.handle(IPC.memory.listDocs, () => memoryStore.listDocs());
   ipcMain.handle(IPC.memory.readDoc, (_event, relPath: unknown) => {
     if (typeof relPath !== "string" || !relPath.trim()) {

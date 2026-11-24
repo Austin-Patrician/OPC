@@ -269,7 +269,6 @@
       "desktop": "桌面控制",
       "runtime": "运行时",
       "capabilitiesExtensions": "扩展",
-      "capabilitiesTools": "工具",
       "capabilitiesSkills": "技能",
       "triage": "事件调度",
       "watchdog": "进展监督",
@@ -1322,18 +1321,22 @@
   },
   "capabilities": {
     "refresh": "刷新",
-    "extensionsPageDescription": "本机 Pi 扩展与内置扩展；启停会改变每个执行体实际装载的能力。",
+    "extensionsPageDescription": "管理本机 Pi 扩展，并按模块或执行体查看已装载的内置能力。",
     "unknownExtension": "未登记的扩展，能力以工具清单为准。",
     "ui": {
       "searchExtensions": "搜索扩展名称、描述或工具…",
       "searchTools": "搜索工具名、扩展或执行体…",
-      "searchSkills": "搜索技能名称或目录…",
+      "searchSkills": "搜索技能名称或描述…",
       "filterScopeLabel": "按来源筛选",
       "filterAll": "全部",
       "filterExternal": "本机扩展",
       "filterBuiltin": "内置模块",
+      "filterByAgent": "按执行体",
+      "filterBuiltinSkills": "内置",
+      "filterLocalSkills": "本地",
       "filterEnabled": "已启用",
       "filterDisabled": "未启用",
+      "clearFilters": "清空筛选",
       "viewByGroup": "按能力分组",
       "viewByAgent": "按执行体视角",
       "noMatches": "没有匹配的项，换个关键词试试。",
@@ -1373,6 +1376,7 @@
       "empty": "没有发现 Pi 扩展。",
       "emptyHint": "把 .ts 文件或带 index.ts 的目录放进上面的任一目录，然后刷新。用 `pi install` 安装的包会从 Pi 自己的 npm 目录自动读取。",
       "scope": {
+        "managed": "内置托管",
         "global": "全局",
         "project": "当前项目"
       },
@@ -1395,15 +1399,31 @@
     },
     "skills": {
       "title": "本机技能",
-      "description": "按需为执行体加载工作方法与领域知识。",
+      "description": "为执行体提供文档处理与专业工作方法，开启后自动生效。",
+      "sourceBuiltin": "内置",
+      "sourceLocal": "本地",
+      "enabledSummary": "已开启 {{enabled}} / {{total}} 项技能",
+      "localDirHint": "本地技能目录",
+      "emptyLocalTitle": "还没有本地技能",
+      "emptyLocalHint": "将包含 SKILL.md 的目录放入以下任一路径，点击刷新即可自动识别。",
       "summary": "{{enabled}} / {{total}} 个已启用，系统提示约多 {{tokens}} tokens / 次请求",
       "empty": "没有发现技能。",
       "emptyHint": "把带 SKILL.md 的目录放进上面的任一位置即可，刷新后出现。技能自带的脚本仍然通过 bash 工具运行，照样受沙箱策略约束。",
       "promptTokens": "≈{{tokens}} tokens",
       "files": "{{count}} 个文件"
     },
+    "skillPacks": {
+      "title": "内置办公技能",
+      "description": "本地离线处理 PDF、表格、Word 与格式转换，开启后全局生效。",
+      "enableAll": "全部开启",
+      "moreActions": "更多操作",
+      "upgradeEnv": "更新内置组件",
+      "uninstallEnv": "清理内置组件",
+      "confirmUninstall": "确认关闭并清理内置办公技能的本地组件吗？之后可随时重新开启。",
+      "sandboxUnavailable": "当前系统未启用 bash 沙箱（{{detail}}），执行体在沙箱不可用时将无法运行技能脚本。"
+    },
     "extensionsTitle": "内置扩展",
-    "extensionsHint": "按扩展分组，同一扩展只列一次；右上角的数字是这个扩展提供的工具数。具体工具在「工具」页。",
+    "extensionsHint": "按内置模块分组，点击任意卡片可查看包含的工具明细。MCP 外部工具请在「MCP」页管理。",
     "extensionsHintSecondary": "有条件的能力按运行环境安装：未配置图像 / 语音模型，或没有其他执行体时，对应工具不会出现。",
     "builtin": {
       "badgeLabel": "{{count}} 个工具",
@@ -1438,6 +1458,7 @@
     "agentExtensionsLabel": "扩展",
     "agentSkillsLabel": "技能（仅展示）",
     "agentToolsLabel": "可调用工具",
+    "agentMcpSummary": "MCP（{{count}} 个工具，见 MCP 页）",
     "tools": {
       "read": "读取工作区里的文件。",
       "write": "新建或覆盖工作区里的文件。",
@@ -1498,6 +1519,38 @@
       "skills": {
         "title": "本机技能",
         "description": "把 ~/.agents/skills 里的技能列进系统提示，并给 Agent 一个 read_skill 工具按需读全文。"
+      },
+      "browser": {
+        "title": "浏览器控制",
+        "description": "在受控会话中打开网页、点击交互并抓取页面内容。"
+      },
+      "desktop": {
+        "title": "桌面控制",
+        "description": "按权限执行桌面窗口、屏幕与系统级交互操作。"
+      },
+      "assistantTools": {
+        "title": "常用联网工具",
+        "description": "提供时间、天气、联网检索与基础计算等通用能力。"
+      },
+      "recall": {
+        "title": "历史召回",
+        "description": "按需检索过往工作线与历史对话记录，补充任务上下文。"
+      },
+      "trace": {
+        "title": "动作追踪",
+        "description": "旁路记录执行体工具调用轨迹，用于过程审计与排查。"
+      },
+      "escalate": {
+        "title": "异常上报",
+        "description": "在执行体遇到阻塞或需确认事项时，向调度器升级汇报。"
+      },
+      "handback": {
+        "title": "任务交回",
+        "description": "当任务超出当前执行体边界时，将控制权交回调度器。"
+      },
+      "investigate": {
+        "title": "状态排查",
+        "description": "排查子任务进度、异常日志与环境状态的诊断能力。"
       }
     }
   },

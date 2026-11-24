@@ -14,6 +14,15 @@ export const EXTENSION_KEY: Record<string, string> = {
   'opc.memory': 'memory',
   'opc.decompose': 'decompose',
   'opc.skills': 'skills',
+  'opc.comm': 'comm',
+  'opc.browser': 'browser',
+  'opc.desktop': 'desktop',
+  'opc.assistant-tools': 'assistantTools',
+  'opc.recall': 'recall',
+  'opc.trace': 'trace',
+  'opc.escalate': 'escalate',
+  'opc.handback': 'handback',
+  'opc.investigate': 'investigate',
 };
 
 /** Translation key for an extension's title, or `null` when it is unregistered. */
@@ -22,7 +31,7 @@ export function extensionTitleKey(name: string): string | null {
   return key ? `capabilities.extensions.${key}.title` : null;
 }
 
-/** Translation key for an extension's description, or `null` when unregistered. */
+/** Translation key for an extension's description, or `null` when it is unregistered. */
 export function extensionDescriptionKey(name: string): string | null {
   const key = EXTENSION_KEY[name];
   return key ? `capabilities.extensions.${key}.description` : null;

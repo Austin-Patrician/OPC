@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentCapability, CapabilityExtension, CapabilityTool } from '@opc/shared/ipc';
-import { distinctToolNames, groupExtensions, toToolGroups, toolAgentCounts } from './grouping';
-
-/**
- * The two tabs read the same snapshot through these helpers, so a bug here shows
- * up as "the Extensions tab says 7 agents, the Tools tab says 6".
- */
+import { distinctToolNames, groupExtensions } from './grouping';
 
 const tool = (name: string, extension: string, deferred = false): CapabilityTool => ({
   name,
@@ -71,31 +66,25 @@ describe('groupExtensions', () => {
     ]);
   });
 
+  it('excludes opc.mcp and local pi.* extensions from built-in groups', () => {
+    const groups = groupExtensions([
+      agent(
+        'a',
+        [extension('coding-tools'), extension('opc.mcp'), extension('pi.custom-ext')],
+        [
+          tool('read', 'coding-tools'),
+          tool('github__search', 'opc.mcp', true),
+          tool('custom_op', 'pi.custom-ext'),
+        ],
+      ),
+    ]);
+
+    expect(groups.map((group) => group.name)).toEqual(['coding-tools']);
+    expect(distinctToolNames(groups)).toEqual(new Set(['read']));
+  });
+
   it('returns nothing for a company with no agents', () => {
     expect(groupExtensions([])).toEqual([]);
-  });
-});
-
-describe('toToolGroups', () => {
-  it('drops the extension-only fields and keeps tools and agent count', () => {
-    const groups = groupExtensions([
-      agent('a', [extension('opc.work', { tasks: 1 })], []),
-    ]);
-
-    expect(toToolGroups(groups)).toEqual([{ name: 'opc.work', tools: [], agents: 1 }]);
-  });
-});
-
-describe('toolAgentCounts', () => {
-  it('counts how many agents can call each tool', () => {
-    const counts = toolAgentCounts([
-      agent('a', [], [tool('read', 'coding-tools'), tool('decide', 'opc.decision')]),
-      agent('b', [], [tool('read', 'coding-tools')]),
-    ]);
-
-    expect(counts.get('read')).toBe(2);
-    expect(counts.get('decide')).toBe(1);
-    expect(counts.get('bash')).toBeUndefined();
   });
 });
 

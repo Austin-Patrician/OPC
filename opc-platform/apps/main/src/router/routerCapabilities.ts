@@ -7,6 +7,7 @@ export interface RouterWorkerCapability {
   tools: string[];
   desktop?: boolean;
   omittedTools?: number;
+  skills?: Array<{ name: string; summary: string }>;
 }
 
 /** Keep the Router's directory useful without copying every internal tool. */
@@ -91,6 +92,10 @@ export function renderRouterWorkerCapabilities(capabilities: readonly RouterWork
     const suffix = capability.omittedTools ? `（另有 ${capability.omittedTools} 个工具未列出）` : '';
     const desktop = capability.desktop || capability.tools.some((tool) => tool.startsWith('mcp__agent_desktop_'));
     lines.push(`- ${capability.name} · ${capability.template}${desktop ? '（含 agent-desktop 桌面 CLI 能力）' : ''}：${tools}${suffix}`);
+    if (capability.skills && capability.skills.length > 0) {
+      const skillLabels = capability.skills.map((skill) => skill.name).join('、');
+      lines.push(`  已启用办公技能（可通过 read_skill 读取说明书并用内置 Python 离线执行）：${skillLabels}`);
+    }
   }
   lines.push(
     '用户请求匹配这些能力时，应调用 open_line_of_work 交给 Worker；能力目录不授予 Router 本身执行权限。',

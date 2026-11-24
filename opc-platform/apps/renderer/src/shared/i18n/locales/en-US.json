@@ -268,7 +268,6 @@
       "desktop": "Desktop control",
       "runtime": "Runtimes",
       "capabilitiesExtensions": "Extensions",
-      "capabilitiesTools": "Tools",
       "capabilitiesSkills": "Skills",
       "triage": "Event routing",
       "watchdog": "Progress watchdog",
@@ -1321,18 +1320,22 @@
   },
   "capabilities": {
     "refresh": "Refresh",
-    "extensionsPageDescription": "Pi extensions on this machine plus built-in extensions; toggling changes what every executor actually installs.",
+    "extensionsPageDescription": "Manage local Pi extensions and inspect loaded built-in capabilities by module or executor.",
     "unknownExtension": "Unregistered extension; trust the tool list below.",
     "ui": {
       "searchExtensions": "Search extensions, descriptions or tools…",
       "searchTools": "Search tool names, groups or agents…",
-      "searchSkills": "Search skills or folders…",
+      "searchSkills": "Search skills by name or description…",
       "filterScopeLabel": "Filter by source",
       "filterAll": "All",
       "filterExternal": "Local Pi",
       "filterBuiltin": "Built-in",
+      "filterByAgent": "By executor",
+      "filterBuiltinSkills": "Built-in",
+      "filterLocalSkills": "Local",
       "filterEnabled": "Enabled",
       "filterDisabled": "Disabled",
+      "clearFilters": "Clear filters",
       "viewByGroup": "By capability",
       "viewByAgent": "By executor",
       "noMatches": "No matching items.",
@@ -1372,6 +1375,7 @@
       "empty": "No Pi extensions found.",
       "emptyHint": "Drop a .ts file or a folder with index.ts into one of the directories above, then refresh. Packages installed with `pi install` are read from Pi's own npm folder automatically.",
       "scope": {
+        "managed": "Managed",
         "global": "Global",
         "project": "This project"
       },
@@ -1394,15 +1398,31 @@
     },
     "skills": {
       "title": "Local skills",
-      "description": "Give executors reusable methods and domain knowledge on demand.",
+      "description": "Document tools and reusable domain workflows for executors, active automatically when turned on.",
+      "sourceBuiltin": "Built-in",
+      "sourceLocal": "Local",
+      "enabledSummary": "{{enabled}} of {{total}} skills active",
+      "localDirHint": "Local folder",
+      "emptyLocalTitle": "No local skills yet",
+      "emptyLocalHint": "Place a folder containing SKILL.md into any directory below, then refresh.",
       "summary": "{{enabled}} of {{total}} enabled — about {{tokens}} extra prompt tokens per request",
       "empty": "No skills found.",
       "emptyHint": "Drop a folder with a SKILL.md into one of the locations above, then refresh. Scripts a skill ships with still run through the bash tool and remain subject to sandbox policy.",
       "promptTokens": "≈{{tokens}} tokens",
       "files": "{{count}} files"
     },
+    "skillPacks": {
+      "title": "Built-in office skills",
+      "description": "Offline PDF, spreadsheet, Word and document conversion for all tasks.",
+      "enableAll": "Enable all",
+      "moreActions": "More actions",
+      "upgradeEnv": "Update built-in runtime",
+      "uninstallEnv": "Remove built-in runtime",
+      "confirmUninstall": "Disable built-in office skills and remove their local components? You can re-enable them anytime.",
+      "sandboxUnavailable": "Sandbox backend unavailable ({{detail}}): executors cannot run bash skill scripts on this platform."
+    },
     "extensionsTitle": "Built-in extensions",
-    "extensionsHint": "Grouped by extension, each one appears once; the number on the right is how many tools it provides. The Tools page lists every tool.",
+    "extensionsHint": "Grouped by built-in module. Click any card to inspect its tools. External MCP tools are managed on the MCP page.",
     "extensionsHintSecondary": "Conditional capabilities install per runtime: without a configured image/voice model, or with no other executor, the related tools do not appear.",
     "builtin": {
       "badgeLabel": "{{count}} tools",
@@ -1437,6 +1457,7 @@
     "agentExtensionsLabel": "Extensions",
     "agentSkillsLabel": "Skills (display only)",
     "agentToolsLabel": "Callable tools",
+    "agentMcpSummary": "MCP ({{count}} tools, see MCP page)",
     "tools": {
       "read": "Read a file in the workspace.",
       "write": "Create or overwrite a workspace file.",
@@ -1497,6 +1518,38 @@
       "skills": {
         "title": "Local skills",
         "description": "Lists the skills in ~/.agents/skills in the system prompt and gives the agent a read_skill tool to load one in full on demand."
+      },
+      "browser": {
+        "title": "Browser control",
+        "description": "Opens pages, interacts with elements, and reads web content inside a managed browser session."
+      },
+      "desktop": {
+        "title": "Desktop control",
+        "description": "Performs permission-gated desktop window, screen, and OS-level interactions."
+      },
+      "assistantTools": {
+        "title": "Common web & utility tools",
+        "description": "Provides time, weather, web lookup, and everyday calculation helpers."
+      },
+      "recall": {
+        "title": "History recall",
+        "description": "Searches past work lines and conversation logs on demand to restore task context."
+      },
+      "trace": {
+        "title": "Execution trace",
+        "description": "Passively records tool calls made by executors for auditing and debugging."
+      },
+      "escalate": {
+        "title": "Escalation",
+        "description": "Escalates blockers or decisions up to the coordinator when an executor needs intervention."
+      },
+      "handback": {
+        "title": "Task handback",
+        "description": "Hands control back to the coordinator when work falls outside the executor's boundary."
+      },
+      "investigate": {
+        "title": "Status investigation",
+        "description": "Inspects subtask progress, failure logs, and environment state for diagnostics."
       }
     }
   },

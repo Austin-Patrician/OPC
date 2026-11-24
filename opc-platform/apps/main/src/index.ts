@@ -39,6 +39,7 @@ import { WorkService } from './work/workService';
 import { shouldPromoteManualCompletion, shouldWakeRouterForReport } from './work/reportPolicy';
 import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
+import { resolveSkillPacksSourceDir, SkillPackService } from './skills/packs';
 import { BillingSettingsService } from './work/billingSettings';
 import { TaskRepository } from './data/taskRepository';
 import { SystemEventRepository } from './data/systemEventRepository';
@@ -541,6 +542,22 @@ async function bootstrap(): Promise<void> {
     userDataDir: appPaths.userData,
     network: networkClient,
   });
+  const skillPacks = new SkillPackService({
+    db,
+    userDataDir: appPaths.userData,
+    sourceDir: resolveSkillPacksSourceDir({
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    }),
+    runtime: runtimeService,
+    network: networkClient,
+  });
+  await skillPacks.initialize();
+  runtimeService.registerSkillEnvProvider({
+    envOverlay: () => skillPacks.envOverlay(),
+    sandboxRoots: () => skillPacks.sandboxReadOnlyRoots(),
+  });
   const browserInstall = new BrowserInstallService(db, appPaths.userData);
   browserBroker = new BrowserBroker(browserInstall, appPaths.artifactsDir);
   const desktopInstall = new DesktopInstallService(db, appPaths.userData);
@@ -555,7 +572,11 @@ async function bootstrap(): Promise<void> {
   const piExtensions = new PiExtensionHost({ userDataDir: appPaths.userData });
   // Skills are Markdown, so there is nothing to trust: they are discovered and
   // available unless you switches them off.
-  const piSkills = new PiSkillHost({ userDataDir: appPaths.userData });
+  const piSkills = new PiSkillHost({
+    userDataDir: appPaths.userData,
+    managedDir: skillPacks.managedSkillsDir,
+  });
+  skillPacks.onSkillsChanged = () => piSkills.invalidateCache();
   // 外部能力（MCP）：读 `<userData>/mcp.json`，再读 pi 的 `~/.pi/agent/mcp.json`。
   // 一个服务器连不上只会让它的工具不在，不影响别的、也不影响这个应用能不能开。
   // OAuth 的 token 存在 userData 下（加密）：和模型的凭据分开放，两件事生命周期不一样。
@@ -610,6 +631,7 @@ async function bootstrap(): Promise<void> {
     ocr,
     piExtensions,
     piSkills,
+    skillPacks,
     wakeRouter: () => wakeRouter(),
     browser: browserBroker,
     desktop: desktopBroker,
@@ -908,6 +930,7 @@ async function bootstrap(): Promise<void> {
     startGoal,
     piExtensions,
     piSkills,
+    skillPacks,
     routerControls: {
       interrupt: async (reason = '用户点击停止') => {
         await goalRouter.interrupt(reason, { requeue: false }).catch(() => undefined);

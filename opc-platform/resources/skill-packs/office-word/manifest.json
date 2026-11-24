@@ -1,0 +1,16 @@
+{
+  "id": "office-word",
+  "name": "office-word",
+  "title": "Word 文档工具箱",
+  "description": "读取和生成排版规范的 Word 文档，支持模板内容批量替换。",
+  "category": "office",
+  "version": "1.0.0",
+  "envId": "office-py",
+  "commands": [
+    "inspect",
+    "read",
+    "create",
+    "replace",
+    "extract-tables"
+  ]
+}
