@@ -39,6 +39,9 @@ import type {
   RuntimeProfileDraft,
   RuntimeSnapshot,
   RuntimeState,
+  ShellExecutionSettings,
+  ShellExecutionStatus,
+  ApprovalPermitScope,
   SpeechSynthesizeInput,
   SpeechSynthesizeResult,
   SpeechTranscribeInput,
@@ -269,6 +272,8 @@ export const IPC = {
     bundled: "runtime:bundled",
     ocr: "runtime:ocr",
     setOcr: "runtime:setOcr",
+    shellExecution: "runtime:shellExecution",
+    setShellExecution: "runtime:setShellExecution",
   },
   company: {
     get: "company:get",
@@ -426,8 +431,23 @@ export interface ChatBridge {
   getContextStats(): Promise<RouterContextStats>;
   /** Manually compacts the Router context window. */
   compactContext(): Promise<{ ok: boolean; reason?: string }>;
-  /** Starts a fresh Router focus with a concise handoff. */
-  resetContext(handoff?: string): Promise<{ ok: boolean; reason?: string }>;
+  /** Starts a fresh Router focus and optionally clears visible chat history. */
+  resetContext(options?: ResetChatOptions | string): Promise<ResetChatResult>;
+}
+
+export interface ResetChatOptions {
+  handoff?: string;
+  clearHistory?: boolean;
+  reflectMemory?: boolean;
+  abortRunningTasks?: boolean;
+}
+
+export interface ResetChatResult {
+  ok: boolean;
+  reason?: string;
+  clearedMessages?: number;
+  abortedThreads?: number;
+  archivedThreads?: number;
 }
 
 export interface WorkBridge {
@@ -482,7 +502,10 @@ export interface ModelsBridge {
   /** The decrypted key, only so the settings page can show it masked with a reveal toggle. */
   getKey(providerId: string): Promise<string>;
   test(providerId: string): Promise<ProviderTestResult>;
-  refreshModels(providerId: string): Promise<{
+  refreshModels(
+    providerId: string,
+    scope?: "llm" | "video",
+  ): Promise<{
     providers: ProviderConfig[];
     ok: boolean;
     message: string;
@@ -496,13 +519,14 @@ export interface ModelsBridge {
       name?: string;
       contextWindow?: number;
       api?: string;
-      /** Defaults to `chat`; the Image/Voice pages add their models explicitly. */
-      capability?: "chat" | "image" | "classifier" | "asr" | "tts";
+      /** Defaults to `chat`; the Image/Video/Voice pages add their models explicitly. */
+      capability?: "chat" | "image" | "video" | "classifier" | "asr" | "tts";
       /** USD per 1M tokens; omitted/0 means "unknown". */
       inputUsdPerM?: number;
       outputUsdPerM?: number;
       cacheReadUsdPerM?: number;
       cacheWriteUsdPerM?: number;
+      usdPerSecond?: number;
     },
   ): Promise<ProviderConfig[]>;
   /** True only for providers pi can log into with OAuth; the rest use an API key. */
@@ -695,8 +719,8 @@ export interface ExtensionsBridge {
   ): Promise<PiExtensionCatalog>;
 }
 
-/** Where a skill folder was discovered: app-managed, the user's home, or this project. */
-export type PiSkillScope = "managed" | "global" | "project";
+/** Where a skill folder was discovered: bundled with app, app-managed, user's home, or project. */
+export type PiSkillScope = "bundled" | "managed" | "global" | "project";
 
 /** One `SKILL.md` folder found on disk. */
 export interface PiSkillView {
@@ -739,7 +763,7 @@ export interface SkillPackEnvStatus {
   packages: string[];
   installedPackages: Record<string, string>;
   diskUsageBytes?: number;
-  sandboxBackend: "seatbelt" | "bwrap" | "none";
+  sandboxBackend: "seatbelt" | "bwrap" | "windows-guarded" | "none";
   sandboxDetail: string;
   error?: string;
 }
@@ -1071,6 +1095,9 @@ export interface RuntimeBridge {
   /** On/off and output shape for `ocr_image`; applies to the next call. */
   ocr(): Promise<OcrSettings>;
   setOcr(next: OcrSettings): Promise<OcrSettings>;
+  /** Command execution policy (Windows approval/auto/disabled + host sandbox status). */
+  shellExecution(): Promise<ShellExecutionStatus>;
+  setShellExecution(next: ShellExecutionSettings): Promise<ShellExecutionStatus>;
 }
 
 /**
@@ -1209,13 +1236,13 @@ export interface OpcBridge {
 }
 
 export type UsageCapability =
-  "chat" | "classifier" | "image" | "asr" | "tts" | "embedding";
+  "chat" | "classifier" | "image" | "video" | "asr" | "tts" | "embedding";
 export type UsageStatus =
   "ok" | "error" | "aborted" | "interrupted" | "unknown";
 export type UsageCostSource =
   "provider" | "configured" | "builtin" | "unpriced" | "legacy";
 export type UsageBillingUnit =
-  "token" | "character" | "second" | "image" | "megapixel";
+  "token" | "character" | "second" | "image" | "video" | "megapixel";
 export interface UsageFilter {
   startAt: number;
   endAt: number;
@@ -1592,6 +1619,8 @@ export interface ThreadsBridge {
     text: string;
     /** 审批行才有意义：允不允许。请示行不看它。 */
     allow?: boolean;
+    /** 审批放行范围：单次（once）、本任务内（task）、后续自动执行（always）。 */
+    scope?: ApprovalPermitScope;
   }): Promise<"live" | "next-attempt" | "new-task">;
   /** 关掉一条工作线（你手动收尾）。 */
   close(threadId: string): Promise<WorkThread>;

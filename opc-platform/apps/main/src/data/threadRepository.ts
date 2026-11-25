@@ -583,6 +583,24 @@ export class ThreadRepository {
     return toEvent(row);
   }
 
+  /** Marks all untriaged pending events as dropped when starting a fresh chat. */
+  discardPendingEvents(): number {
+    const info = this.statement(
+      "UPDATE event SET triage = 'dropped', triaged_at = ? WHERE triage = 'pending'",
+    ).run(this.now()) as { changes?: number } | undefined;
+    return info?.changes ?? 0;
+  }
+
+  /** Archives non-archived threads (optionally including running ones) without deleting workspace files. */
+  archiveThreads(options: { includeRunning?: boolean } = {}): number {
+    const at = this.now();
+    const sql = options.includeRunning
+      ? "UPDATE thread SET state = 'archived', closed_at = COALESCE(closed_at, ?), last_activity_at = ? WHERE state != 'archived'"
+      : "UPDATE thread SET state = 'archived', closed_at = COALESCE(closed_at, ?), last_activity_at = ? WHERE state NOT IN ('archived', 'running')";
+    const info = this.statement(sql).run(at, at) as { changes?: number } | undefined;
+    return info?.changes ?? 0;
+  }
+
   // ── durable reports and conversation cards ─────────────────────────────
 
   addReport(input: AddReportInput): WorkReport {

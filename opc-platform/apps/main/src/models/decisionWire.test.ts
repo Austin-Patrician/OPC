@@ -43,6 +43,7 @@ const defaults = (): ModelDefaults => ({
   llm: null,
   router: null,
   image: null,
+  video: null,
   asr: null,
   tts: null,
   decision: { providerId: 'typesafe', modelId: 'jev-latest' },

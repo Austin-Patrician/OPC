@@ -215,4 +215,35 @@ describe('scanSkills', () => {
       description: 'global override',
     });
   });
+
+  it('scans bundledDir first and lets global or project skills override it', () => {
+    const bundledRoot = 'C:/app/resources/skills';
+    const result = scanSkills({
+      homeDir: home,
+      projectDir: project,
+      bundledDir: bundledRoot,
+      ...fakeIo({
+        [`${bundledRoot}/video-production/SKILL.md`]: {
+          kind: 'file',
+          text: skill('bundled.', 'name: video-production\ndescription: bundled video workflow'),
+        },
+        [`${bundledRoot}/video-production/references/model-prompting.md`]: {
+          kind: 'file',
+          text: '# prompts',
+        },
+        [`${projectRoot}/video-production/SKILL.md`]: {
+          kind: 'file',
+          text: skill('project.', 'name: video-production\ndescription: custom override'),
+        },
+      }),
+    });
+
+    expect(result.roots.map(posix)).toEqual([bundledRoot, globalRoot, projectRoot]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({
+      name: 'video-production',
+      scope: 'project',
+      description: 'custom override',
+    });
+  });
 });

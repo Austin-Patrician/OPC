@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { ChatSearchInput, ChatSearchResult } from '@opc/shared/ipc';
 import { Avatar } from '@/entities/agent/ui/Avatar';
+import { assistantName } from '@/entities/company/model/options';
+import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
 import { formatAppDate, formatAppTime } from '@/shared/lib/appTime';
 
@@ -11,6 +13,8 @@ const PAGE_SIZE = 4;
 
 export function ChatSearchModal({ onClose }: { onClose: () => void }) {
   const { t, i18n } = useTranslation();
+  const profile = useCompanyProfile();
+  const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -113,7 +117,11 @@ export function ChatSearchModal({ onClose }: { onClose: () => void }) {
               {result.message.senderId === 'router' ? <BuddyMark size="sm" /> : <Avatar name={result.message.senderName} src={result.message.senderAvatarUrl} size="sm" className="size-9" />}
               <span className="min-w-0 flex-1 pt-0.5">
                 <span className="flex min-w-0 items-center gap-2 text-[11px] leading-4 text-ink-tertiary">
-                  <span className="truncate font-medium text-ink-secondary">{result.message.senderName}</span>
+                  <span className="truncate font-medium text-ink-secondary">
+                    {result.message.senderId === 'router'
+                      ? currentAssistantName
+                      : result.message.senderName}
+                  </span>
                   <span className="truncate">{result.conversationTitle}</span>
                   <time className="ml-auto shrink-0 tabular-nums">{result.createdAt ? `${formatAppDate(result.createdAt, i18n.language)} ${formatAppTime(result.createdAt, i18n.language)}` : result.message.timestamp}</time>
                 </span>

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { detectBackend } from './detect';
 import { buildSeatbeltProfile, isInside, resolveToolPath, wrapCommand } from './policy';
 import { sandboxedShellCommand } from './workspaces';
 
@@ -99,17 +100,15 @@ describe('sandboxedShellCommand', () => {
 
     expect(command).toContain('--ro-bind-try /Users/someone/.venv /Users/someone/.venv');
   });
+});
 
-  it('maps an authorized attachment out from a denied parent on bwrap', () => {
-    const command = sandboxedShellCommand(
-      'bwrap',
-      policy,
-      'file /Users/someone/Library/Application Support/OPC/photo.png',
-      [{ source: '/Users/someone/Library/Application Support/OPC/photo.png', target: '/opc-attachments/01-photo.png' }],
-    );
+describe('Windows execution backend & path matching', () => {
+  it.skipIf(process.platform !== 'win32')('reports windows-guarded backend on Windows', () => {
+    expect(detectBackend()).toMatchObject({ backend: 'windows-guarded', supported: true });
+  });
 
-    expect(command).toContain('--dir /opc-attachments');
-    expect(command).toContain('--ro-bind-try \'/Users/someone/Library/Application Support/OPC/photo.png\' /opc-attachments/01-photo.png');
-    expect(command).toContain('file /opc-attachments/01-photo.png');
+  it.skipIf(process.platform !== 'win32')('matches Windows drive letters case-insensitively in isInside', () => {
+    expect(isInside('D:\\Workspaces\\task-1', 'd:\\workspaces\\task-1\\out.pdf')).toBe(true);
+    expect(isInside('D:\\', 'd:\\temp\\a.txt')).toBe(true);
   });
 });

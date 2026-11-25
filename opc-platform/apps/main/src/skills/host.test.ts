@@ -119,6 +119,22 @@ describe('PiSkillHost', () => {
     expect(instance.enabled()).toHaveLength(1);
     expect(instance.enabled()[0]).toMatchObject({ name: 'office-pdf', scope: 'managed' });
   });
+
+  it('discovers bundledDir skills like resources/skills/video-production', () => {
+    const bundledDir = path.resolve(process.cwd(), 'resources', 'skills');
+    const instance = new PiSkillHost({
+      userDataDir: userData,
+      homeDir: home,
+      projectDir: project,
+      bundledDir,
+    });
+
+    const videoSkill = instance.enabled().find((entry) => entry.name === 'video-production');
+    expect(videoSkill).toBeDefined();
+    expect(videoSkill?.scope).toBe('bundled');
+    expect(videoSkill?.files).toContain('references/model-prompting.md');
+    expect(videoSkill?.files).toContain('references/ffmpeg-postproduction.md');
+  });
 });
 
 describe('skillSummary / promptTokens', () => {

@@ -8,6 +8,7 @@ export const EXTENSION_KEY: Record<string, string> = {
   'coding-tools': 'coding',
   'opc.sandbox': 'sandbox',
   'opc.image': 'image',
+  'opc.video': 'video',
   'opc.speech': 'speech',
   'opc.decision': 'decision',
   'opc.ocr': 'ocr',

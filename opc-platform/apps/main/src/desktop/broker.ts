@@ -312,6 +312,150 @@ export function desktopCommandOptions(command: string, appId?: string, windowId?
   return [];
 }
 
+function isMcpDisconnectError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return name === 'McpConnectionClosedError' ||
+    /connection closed|not connected|broken pipe|epipe|eof/i.test(message);
+}
+
+/**
+ * Wraps an `agent-desktop` MCP session with automatic single-flight reconnect
+ * so an unexpected stdio pipe drop or native session timeout mid-task does not
+ * permanently wedge the worker's desktop tools.
+ */
+export function createReconnectingDesktopMcpConnection(options: {
+  open: () => Promise<McpConnection>;
+  onDisconnect?: () => void;
+  onReconnect?: (connection: McpConnection) => void;
+}): Promise<McpConnection> {
+  return options.open().then((initial) => {
+    let active: McpConnection | null = initial;
+    let opening: Promise<McpConnection> | undefined;
+    let closed = false;
+    const toolChangedListeners = new Set<() => void>();
+    let unsubscribeActiveTools: (() => void) | undefined;
+    let unsubscribeActiveClose: (() => void) | undefined;
+
+    const bind = (connection: McpConnection) => {
+      unsubscribeActiveTools?.();
+      unsubscribeActiveClose?.();
+      unsubscribeActiveTools = connection.onToolsChanged(() => {
+        for (const listener of toolChangedListeners) listener();
+      });
+      unsubscribeActiveClose = connection.onClose?.(() => {
+        if (closed || active !== connection) return;
+        active = null;
+        options.onDisconnect?.();
+      });
+    };
+
+    bind(initial);
+
+    const ensureConnection = async (): Promise<McpConnection> => {
+      if (closed) throw new Error('agent-desktop MCP 连接已关闭');
+      if (active) return active;
+      if (!opening) {
+        opening = options.open()
+          .then((fresh) => {
+            if (closed) {
+              void fresh.close().catch(() => undefined);
+              throw new Error('agent-desktop MCP 连接已关闭');
+            }
+            active = fresh;
+            bind(fresh);
+            options.onReconnect?.(fresh);
+            return fresh;
+          })
+          .finally(() => {
+            opening = undefined;
+          });
+      }
+      return opening;
+    };
+
+    const reconnectFrom = async (stale: McpConnection): Promise<McpConnection> => {
+      if (closed) throw new Error('agent-desktop MCP 连接已关闭');
+      if (active === stale) {
+        active = null;
+        unsubscribeActiveTools?.();
+        unsubscribeActiveClose?.();
+        unsubscribeActiveTools = undefined;
+        unsubscribeActiveClose = undefined;
+        await stale.close().catch(() => undefined);
+      }
+      return ensureConnection();
+    };
+
+    const runWithReconnect = async <T>(work: (connection: McpConnection) => Promise<T>): Promise<T> => {
+      const current = await ensureConnection();
+      try {
+        return await work(current);
+      } catch (error) {
+        if (closed || !isMcpDisconnectError(error)) throw error;
+        const fresh = await reconnectFrom(current);
+        return work(fresh);
+      }
+    };
+
+    let currentConfig = initial.config;
+    let currentServerInfo = initial.serverInfo;
+    let currentTools = initial.tools;
+    let currentResources = initial.resources;
+
+    const syncSnapshot = (connection: McpConnection) => {
+      currentConfig = connection.config;
+      currentServerInfo = connection.serverInfo;
+      currentTools = connection.tools;
+      currentResources = connection.resources;
+    };
+
+    return {
+      get config() { return active?.config ?? currentConfig; },
+      get serverInfo() { return active?.serverInfo ?? currentServerInfo; },
+      get tools() { return active?.tools ?? currentTools; },
+      get resources() { return active?.resources ?? currentResources; },
+      refreshTools: () => runWithReconnect(async (conn) => {
+        const next = await conn.refreshTools();
+        syncSnapshot(conn);
+        return next;
+      }),
+      onToolsChanged: (listener) => {
+        toolChangedListeners.add(listener);
+        return () => { toolChangedListeners.delete(listener); };
+      },
+      onClose: (listener) => {
+        // Expose manual closure only; unexpected disconnects are recovered transparently.
+        void listener;
+        return () => undefined;
+      },
+      callTool: (name, args) => runWithReconnect(async (conn) => {
+        syncSnapshot(conn);
+        return conn.callTool(name, args);
+      }),
+      readResource: (uri) => runWithReconnect(async (conn) => {
+        syncSnapshot(conn);
+        return conn.readResource(uri);
+      }),
+      listResourceTemplates: () => runWithReconnect(async (conn) => {
+        syncSnapshot(conn);
+        return conn.listResourceTemplates();
+      }),
+      close: async () => {
+        closed = true;
+        unsubscribeActiveTools?.();
+        unsubscribeActiveClose?.();
+        unsubscribeActiveTools = undefined;
+        unsubscribeActiveClose = undefined;
+        toolChangedListeners.clear();
+        const closing = active ?? (opening ? await opening.catch(() => null) : null);
+        active = null;
+        if (closing) await closing.close();
+      },
+    };
+  });
+}
+
 export class DesktopBroker {
   private readonly sessions = new Map<string, Session>();
   /** The exact tree that minted refs. Never validate a ref against a newer tree. */
@@ -378,17 +522,17 @@ export class DesktopBroker {
     this.mcpError = input.error;
   }
 
-  async connectMcp(workerId: string): Promise<McpConnection> {
+  private async openMcpSession(workerId: string): Promise<McpConnection> {
     const binary = this.install.binaryPath();
     if (!binary || !this.install.status().healthy || !this.settings().enabled) throw new Error('桌面运行时未安装、未启用或权限不足');
-    const name = desktopSessionName(workerId);
+    const name = desktopSessionName(`${workerId}-${crypto.randomBytes(4).toString('hex')}`);
     const desktopEnv = await this.ensureDesktopEnv();
     const mcpEnv = toStringEnv(desktopEnv);
     const started = await this.raw(['session', 'start', '--name', name, '--no-trace']);
     const sessionId = desktopSessionId(started);
     if (!sessionId) throw new Error(started.text || 'agent-desktop 未能创建 MCP session');
     const config: McpServerConfig = {
-      name: `agent_desktop_${name.replace(/-/g, '_')}`,
+      name: `agent_desktop_${desktopSessionName(workerId).replace(/-/g, '_')}`,
       command: binary,
       args: ['--session', sessionId, 'mcp'],
       ...(mcpEnv ? { env: mcpEnv } : {}),
@@ -401,7 +545,7 @@ export class DesktopBroker {
       return {
         ...connection,
         close: async () => {
-          await connection.close();
+          await connection.close().catch(() => undefined);
           await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true, ...(desktopEnv ? { env: desktopEnv } : {}) }).catch(() => undefined);
         },
       };
@@ -410,6 +554,18 @@ export class DesktopBroker {
       await execFilePlatform(binary, ['session', 'end', sessionId], { timeout: 10_000, maxBuffer: 64_000, windowsHide: true, ...(desktopEnv ? { env: desktopEnv } : {}) }).catch(() => undefined);
       throw error;
     }
+  }
+
+  async connectMcp(workerId: string): Promise<McpConnection> {
+    return createReconnectingDesktopMcpConnection({
+      open: () => this.openMcpSession(workerId),
+      onDisconnect: () => {
+        this.setMcpStatus({ healthy: false, error: 'agent-desktop MCP 连接已断开，将在下次调用时自动重连' });
+      },
+      onReconnect: (fresh) => {
+        this.setMcpStatus({ healthy: true, toolCount: fresh.tools.length });
+      },
+    });
   }
 
   async listApps(): Promise<DesktopAppView[]> {
@@ -551,6 +707,7 @@ export class DesktopBroker {
         }
         return { ...process.env, USERPROFILE: homeDir, HOME: homeDir };
       } catch {
+        this.desktopEnvPromise = undefined;
         return undefined;
       }
     })();

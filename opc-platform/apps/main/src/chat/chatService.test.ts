@@ -428,4 +428,36 @@ describe('ChatService：Router 是聊天的对面', () => {
     expect(conversation.messages[0]!.senderId).toBe('user');
     expect(triggers).toEqual([{ conversationId: 'dm-worker-1', text: '那个报表呢' }]);
   });
+
+  it('clearConversation 会清空消息库表、重置流态与活动状态并在重载后保持空白', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-chat-clear-'));
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    try {
+      const chat = new ChatService({ agents: [], conversations: [], db });
+      const id = chat.ensureAssistant();
+      chat.sendMessage({ conversationId: id, text: '上一轮的问题' });
+      chat.appendRouterMessage(id, '上一轮的回答');
+      chat.setActivity(id, 'thinking');
+
+      const cleared = chat.clearConversation(id);
+      expect(cleared).toBe(2);
+
+      const snapshot = chat.getSnapshot();
+      const conversation = snapshot.conversations.find((item) => item.id === id)!;
+      expect(conversation.messages).toEqual([]);
+      expect(conversation.lastMessage).toBe('还没有对话');
+      expect(snapshot.activityByConversation[id]?.phase).toBe('idle');
+      expect(snapshot.hasOlderMessagesByConversation[id]).toBe(false);
+      expect(
+        (db.prepare('SELECT COUNT(*) AS count FROM message WHERE conversation_id = ?').get(id) as { count: number })
+          .count,
+      ).toBe(0);
+
+      const reloaded = new ChatService({ agents: [], conversations: [], db });
+      expect(reloaded.getSnapshot().conversations.find((item) => item.id === id)?.messages).toEqual([]);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

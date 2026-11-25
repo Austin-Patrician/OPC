@@ -13,18 +13,30 @@ export function CompanyPage() {
   const profile = useCompanyProfile();
   const update = useCompany((state) => state.update);
   const [name, setName] = useState(profile.userName);
+  const [assistant, setAssistant] = useState(profile.assistantName);
   const [instructions, setInstructions] = useState(profile.replyInstructions);
   const [avatar, setAvatar] = useState(profile.userAvatar ?? '');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => setName(profile.userName), [profile.userName]);
+  useEffect(() => setAssistant(profile.assistantName), [profile.assistantName]);
   useEffect(() => setInstructions(profile.replyInstructions), [profile.replyInstructions]);
   useEffect(() => setAvatar(profile.userAvatar ?? ''), [profile.userAvatar]);
 
-  const dirty = name !== profile.userName || instructions !== profile.replyInstructions || avatar !== (profile.userAvatar ?? '');
+  const dirty =
+    name !== profile.userName ||
+    assistant !== profile.assistantName ||
+    instructions !== profile.replyInstructions ||
+    avatar !== (profile.userAvatar ?? '');
   const save = async (extra: CompanyProfilePatch = {}) => {
-    await update({ userName: name.trim(), replyInstructions: instructions, userAvatar: avatar, ...extra });
+    await update({
+      userName: name.trim(),
+      assistantName: assistant.trim(),
+      replyInstructions: instructions,
+      userAvatar: avatar,
+      ...extra,
+    });
     setSaved(true);
   };
 
@@ -51,6 +63,9 @@ export function CompanyPage() {
         <Section title={t('settings.company.userTitle')} description={t('settings.company.userDesc')}>
           <Row label={t('settings.company.user')} hint={t('settings.company.userHint')}>
             <TextField ariaLabel={t('settings.company.user')} value={name} onChange={(value) => { setName(value.slice(0, 20)); setSaved(false); }} placeholder={t('settings.company.userPlaceholder')} className="w-56" />
+          </Row>
+          <Row label={t('settings.company.assistant')} hint={t('settings.company.assistantHint')}>
+            <TextField ariaLabel={t('settings.company.assistant')} value={assistant} onChange={(value) => { setAssistant(value.slice(0, 20)); setSaved(false); }} placeholder={t('settings.company.assistantPlaceholder')} className="w-56" />
           </Row>
           <Row label={t('settings.company.userAvatar')} hint={t('settings.company.userAvatarHint')}>
             <div className="flex items-center gap-3">

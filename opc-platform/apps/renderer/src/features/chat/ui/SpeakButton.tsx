@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2, Square, Volume2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/shared/lib/cn';
+import { emitBuddySignal } from '@/shared/ui/buddyEvents';
 
 /** Guard against reading a whole long report on one click. */
 const MAX_SPEECH_CHARS = 4_000;
@@ -21,8 +22,13 @@ export function SpeakButton({ text }: { text: string }) {
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
+  const isSpeakingRef = useRef(false);
 
   const cleanup = () => {
+    if (isSpeakingRef.current) {
+      isSpeakingRef.current = false;
+      emitBuddySignal({ kind: 'tts', speaking: false });
+    }
     audioRef.current?.pause();
     audioRef.current = null;
     if (urlRef.current) {
@@ -33,6 +39,10 @@ export function SpeakButton({ text }: { text: string }) {
 
   useEffect(
     () => () => {
+      if (isSpeakingRef.current) {
+        isSpeakingRef.current = false;
+        emitBuddySignal({ kind: 'tts', speaking: false });
+      }
       audioRef.current?.pause();
       audioRef.current = null;
       if (urlRef.current) {
@@ -83,6 +93,8 @@ export function SpeakButton({ text }: { text: string }) {
         setState('idle');
       };
       await audio.play();
+      isSpeakingRef.current = true;
+      emitBuddySignal({ kind: 'tts', speaking: true });
       setState('playing');
     } catch (caught) {
       cleanup();

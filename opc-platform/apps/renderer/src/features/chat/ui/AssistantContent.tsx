@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import mermaid from 'mermaid';
 import embed from 'vega-embed';
-import type { ChatContentBlock } from '@opc/shared/domain';
+import type { ApprovalPermitScope, ChatContentBlock } from '@opc/shared/domain';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { imageAspectCache, mediaUrlCache, mermaidSvgCache } from '../lib/renderCache';
 import { containsExternalVegaDataUrl } from '../lib/vegaSpec';
@@ -68,9 +68,11 @@ function getMediaCacheKey(block: ChatContentBlock): string | null {
 export const AssistantContent = memo(function AssistantContent({
   blocks,
   streaming = false,
+  onActionCardResolved,
 }: {
   blocks: readonly ChatContentBlock[];
   streaming?: boolean;
+  onActionCardResolved?: (reportId: string) => void;
 }) {
   return (
     <div className="opc-assistant-content min-w-0 max-w-full overflow-hidden break-words space-y-3">
@@ -82,7 +84,14 @@ export const AssistantContent = memo(function AssistantContent({
           ? `${block.type}:${block.reportId}`
           : `${block.type}:${index}`;
         const isTailStreaming = streaming && index === blocks.length - 1;
-        return <ContentBlock key={key} block={block} streaming={isTailStreaming} />;
+        return (
+          <ContentBlock
+            key={key}
+            block={block}
+            streaming={isTailStreaming}
+            onActionCardResolved={onActionCardResolved}
+          />
+        );
       })}
     </div>
   );
@@ -91,9 +100,11 @@ export const AssistantContent = memo(function AssistantContent({
 const ContentBlock = memo(function ContentBlock({
   block,
   streaming = false,
+  onActionCardResolved,
 }: {
   block: ChatContentBlock;
   streaming?: boolean;
+  onActionCardResolved?: (reportId: string) => void;
 }) {
   const mediaCacheKey = getMediaCacheKey(block);
   const [src, setSrc] = useState<string | null>(() => mediaCacheKey ? (mediaUrlCache.get(mediaCacheKey) ?? null) : null);
@@ -104,6 +115,7 @@ const ContentBlock = memo(function ContentBlock({
   );
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+  const [taskAutoAllow, setTaskAutoAllow] = useState(true);
   const approvalBlockState = block.type === 'approval' ? block.state : undefined;
   useEffect(() => {
     // A stale pending snapshot may arrive after the click has already been
@@ -141,17 +153,21 @@ const ContentBlock = memo(function ContentBlock({
     return () => { active = false; };
   }, [block, mediaCacheKey]);
   if (block.type === 'approval') {
-    const answer = async (allow: boolean) => {
+    const answer = async (allow: boolean, explicitScope?: ApprovalPermitScope) => {
       if (approvalState !== 'pending' || approvalSubmitting) return;
       setApprovalError(null);
       setApprovalSubmitting(true);
       try {
         const bridge = window.opc;
         if (!bridge) throw new Error('桌面桥接不可用');
+        const resolvedScope: ApprovalPermitScope | undefined = allow
+          ? (block.shell ? (explicitScope ?? (taskAutoAllow ? 'task' : 'once')) : 'task')
+          : undefined;
         await bridge.threads.answer({
           reportId: block.reportId,
           text: allow ? '允许' : '不允许，请换一种方案',
           allow,
+          ...(resolvedScope ? { scope: resolvedScope } : {}),
         });
         // The main process normally pushes a snapshot that removes the card.
         // Hide it immediately as well: an old card can still be mounted while
@@ -159,6 +175,7 @@ const ContentBlock = memo(function ContentBlock({
         // restart. Keeping the local state tied only to the push made a valid
         // click look like it did nothing.
         setApprovalState(allow ? 'allowed' : 'denied');
+        onActionCardResolved?.(block.reportId);
       } catch (error) {
         setApprovalError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -179,20 +196,49 @@ const ContentBlock = memo(function ContentBlock({
               <span className="font-mono font-normal tracking-normal text-ink-tertiary normal-case">{block.tool}</span>
             </div>
             <h3 className="text-[14px] leading-5 font-semibold tracking-[-.01em] text-ink">{block.title.replace(/^要你点头：/, '')}</h3>
-            <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-[1.65] text-ink-secondary">{block.body.split('\n').slice(0, 2).join('\n')}</p>
+            {block.shell ? (
+              <div className="mt-2 space-y-1.5">
+                <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] leading-relaxed text-ink">
+                  {block.shell.command}
+                </pre>
+                {block.shell.cwd ? (
+                  <p className="break-all font-mono text-[11px] text-ink-tertiary">
+                    工作区：{block.shell.cwd}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-[1.65] text-ink-secondary">{block.body.split('\n').slice(0, 2).join('\n')}</p>
+            )}
             {block.browser?.url ? <p className="mt-2 break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] text-ink-secondary">{block.browser.url}</p> : null}
             {block.browser?.preview ? <p className="mt-2 break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] text-ink-secondary">{block.browser.preview}</p> : null}
             {block.desktop?.appId ? <p className="mt-2 break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] text-ink-secondary">{block.desktop.appId}{block.desktop.windowId ? ` · ${block.desktop.windowId}` : ''}{block.desktop.preview ? `\n${block.desktop.preview}` : ''}</p> : null}
           </div>
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-line bg-surface-muted/35 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface-muted/35 px-4 py-3 sm:px-5">
           <div className="flex items-center gap-3">
-            <span className="text-[11px] text-ink-tertiary">仅对当前任务生效</span>
+            {block.shell ? (
+              <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-secondary select-none">
+                <input
+                  type="checkbox"
+                  checked={taskAutoAllow}
+                  disabled={approvalSubmitting}
+                  onChange={(event) => setTaskAutoAllow(event.target.checked)}
+                  className="size-3.5 accent-accent"
+                />
+                <span>本任务内自动放行</span>
+              </label>
+            ) : (
+              <span className="text-[11px] text-ink-tertiary">仅对当前任务生效</span>
+            )}
             {block.browser?.sessionId ? <button type="button" disabled={approvalSubmitting} onClick={() => { void window.opc?.browser.show(block.taskId); }} className="text-[11px] font-medium text-accent-ink underline decoration-accent/40 underline-offset-2 hover:text-accent">查看浏览器</button> : null}
             {block.desktop?.appId ? <button type="button" disabled={approvalSubmitting} onClick={() => { void window.opc?.desktop.show(block.taskId); }} className="text-[11px] font-medium text-accent-ink underline decoration-accent/40 underline-offset-2 hover:text-accent">查看桌面</button> : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <button type="button" disabled={approvalSubmitting} onClick={() => void answer(false)} className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50">拒绝</button>
+            {block.shell ? (
+              <button type="button" disabled={approvalSubmitting} onClick={() => void answer(true, 'always')} className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50">允许并设为自动执行</button>
+            ) : null}
             <button type="button" disabled={approvalSubmitting} onClick={() => void answer(true)} className="inline-flex items-center rounded-lg bg-[var(--primary-btn-bg)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--primary-btn-text)] transition-[background,transform] hover:bg-[var(--primary-btn-hover)] active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50">允许</button>
           </div>
         </div>
@@ -200,7 +246,7 @@ const ContentBlock = memo(function ContentBlock({
       </section>
     );
   }
-  if (block.type === 'workflow') return <WorkflowCard block={block} />;
+  if (block.type === 'workflow') return <WorkflowCard block={block} onActionCardResolved={onActionCardResolved} />;
   if (block.type === 'markdown') return <Markdown text={block.text} streaming={streaming} />;
   if (block.type === 'file') return <FileBlock block={block} />;
   if (error) return <div className="text-sm text-ink-tertiary">媒体加载失败{block.alt ? `：${block.alt}` : ''}</div>;
@@ -290,7 +336,13 @@ const FileBlock = memo(function FileBlock({ block }: { block: Extract<ChatConten
   );
 });
 
-function WorkflowCard({ block }: { block: Extract<ChatContentBlock, { type: 'workflow' }> }) {
+function WorkflowCard({
+  block,
+  onActionCardResolved,
+}: {
+  block: Extract<ChatContentBlock, { type: 'workflow' }>;
+  onActionCardResolved?: (reportId: string) => void;
+}) {
   const [text, setText] = useState('');
   const [otherSelected, setOtherSelected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -330,6 +382,7 @@ function WorkflowCard({ block }: { block: Extract<ChatContentBlock, { type: 'wor
       // transcript whose report was already settled.
       setResolved(true);
       setText('');
+      onActionCardResolved?.(block.reportId);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {

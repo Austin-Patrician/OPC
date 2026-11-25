@@ -11,6 +11,40 @@ export function isVisibleChatMessage(message: Message): boolean {
   return message.kind !== 'task' && message.kind !== 'deliverable';
 }
 
+export function isActionCardBlock(
+  block: ChatContentBlock,
+): block is Extract<ChatContentBlock, { type: 'approval' | 'workflow' }> {
+  return block.type === 'approval' || block.type === 'workflow';
+}
+
+export function hasActionCard(message: Message): boolean {
+  return message.content?.some(isActionCardBlock) ?? false;
+}
+
+/** Filters out action cards already resolved locally so UI hides them before snapshot catch-up. */
+export function filterResolvedActionBlocks(
+  blocks: readonly ChatContentBlock[],
+  resolvedReportIds: ReadonlySet<string>,
+): ChatContentBlock[] {
+  if (resolvedReportIds.size === 0) return [...blocks];
+  return blocks.filter((block) => {
+    if (!isActionCardBlock(block)) return true;
+    return !resolvedReportIds.has(block.reportId);
+  });
+}
+
+/** True when a non-streaming message only contained action cards and all of them were locally resolved. */
+export function isLocallyResolvedEmptyActionMessage(
+  message: Message,
+  resolvedReportIds: ReadonlySet<string>,
+): boolean {
+  if (resolvedReportIds.size === 0 || message.streaming) return false;
+  const content = message.content;
+  if (!content || content.length === 0) return false;
+  if (!content.some(isActionCardBlock)) return false;
+  return filterResolvedActionBlocks(content, resolvedReportIds).length === 0;
+}
+
 function areAttachmentsEqual(
   a?: readonly ChatAttachmentRef[],
   b?: readonly ChatAttachmentRef[],
@@ -75,16 +109,28 @@ export function areMessagesEqual(a: Message, b: Message): boolean {
 /**
  * Merges incoming snapshot messages into the loaded message list while
  * preserving object references for unchanged items (structural sharing),
- * keeping older paginated history, and removing cancelled transient stream items.
+ * keeping older paginated history before the live snapshot window, and dropping
+ * messages removed on the main process (cancelled streams or resolved action cards).
  */
 export function mergeSnapshotMessages(current: Message[], incoming: readonly Message[]): Message[] {
   const incomingIds = new Set(incoming.map((message) => message.id));
+  const windowStart = current.findIndex((message) => incomingIds.has(message.id));
   const merged: Message[] = [];
   const indexById = new Map<string, number>();
 
-  for (const existing of current) {
-    if (existing.streaming === true && !incomingIds.has(existing.id)) {
-      continue;
+  for (let index = 0; index < current.length; index += 1) {
+    const existing = current[index]!;
+    if (!incomingIds.has(existing.id)) {
+      const removedFromLiveWindow = windowStart !== -1 && index >= windowStart;
+      const serverClearedWindow = windowStart === -1 && incoming.length === 0;
+      if (
+        existing.streaming === true ||
+        hasActionCard(existing) ||
+        removedFromLiveWindow ||
+        serverClearedWindow
+      ) {
+        continue;
+      }
     }
     indexById.set(existing.id, merged.length);
     merged.push(existing);

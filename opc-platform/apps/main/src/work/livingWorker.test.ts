@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { EntryId, ToolExecutionResult } from '@earendil-works/pi-durable';
@@ -305,5 +305,87 @@ describe('联动修复 #2：浏览器截图多模态图像块与线程级会话�
     expect(result.output?.[1]).toMatchObject({ type: 'text' });
 
     await broker.dispose();
+  });
+
+  it('continueThread 与 steerThread 会合并并把新附件复制到工作区 inputs/ 目录', async () => {
+    const template = threads.createWorker({ name: '文档助手', template: 'research', skills: ['file'] });
+    const work = new WorkService({
+      db,
+      threads,
+      paths: makePaths() as never,
+      upsertTaskCard: () => undefined,
+    });
+
+    const thread = threads.createThread({ title: '简历翻译', goal: '翻译英文简历' });
+    const externalDir = path.join(dir, 'external-d-drive');
+    const resumeV1 = path.join(externalDir, 'resume-v1.pdf');
+    const resumeV2 = path.join(externalDir, 'resume-v2.pdf');
+    mkdirSync(externalDir, { recursive: true });
+    writeFileSync(resumeV1, 'PDF-V1');
+    writeFileSync(resumeV2, 'PDF-V2');
+
+    const first = work.createTask({
+      title: thread.title,
+      contract: {
+        objective: '先创建一个空白简历模板',
+        deliverable: 'resume.docx',
+        outputs: [{ kind: 'file', path: 'resume.docx', description: '中文简历' }],
+      },
+      assigneeId: template.id,
+      threadId: thread.id,
+      estTokens: 5_000,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Case 1: Active pending task receives steerThread with an attachment -> immediately staged to inputs/
+    const steered = await work.steerThread(thread.id, '参考这份刚上传的简历', {
+      attachments: [
+        {
+          id: 'att-v1',
+          name: 'resume-v1.pdf',
+          path: resumeV1,
+          size: 6,
+          source: 'file',
+          availability: 'available',
+        },
+      ],
+    });
+    expect(steered.ok).toBe(true);
+    const workspaceDir = path.join(makePaths().workspaceDir, first.task.workspaceRelPath);
+    const stagedV1 = path.join(workspaceDir, 'inputs', 'resume-v1.pdf');
+    expect(existsSync(stagedV1)).toBe(true);
+    expect(readFileSync(stagedV1, 'utf8')).toBe('PDF-V1');
+    expect(work.getTask(first.task.id)?.contract?.attachments?.some((a) => a.name === 'resume-v1.pdf')).toBe(true);
+
+    // Case 2: Mark task accepted and continueThread with another attachment -> merges prior & new attachments
+    tasks.setStatus(first.task.id, 'accepted', { finishedAt: Date.now() });
+    threads.setState(thread.id, 'done');
+
+    const continued = await work.continueThread({
+      threadId: thread.id,
+      instruction: '用第二版简历翻译',
+      mode: 'append',
+      attachments: [
+        {
+          id: 'att-v2',
+          name: 'resume-v2.pdf',
+          path: resumeV2,
+          size: 6,
+          source: 'file',
+          availability: 'available',
+        },
+      ],
+    });
+    expect(continued.ok).toBe(true);
+    if (!continued.ok) return;
+    expect(continued.taskId).toBeTruthy();
+    const nextTask = work.getTask(continued.taskId!);
+    const names = (nextTask?.contract?.attachments ?? []).map((a) => a.name);
+    expect(names).toContain('resume-v1.pdf');
+    expect(names).toContain('resume-v2.pdf');
+
+    await work.abortThread(thread.id, '测试清理');
+    await work.dispose();
   });
 });

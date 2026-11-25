@@ -24,14 +24,16 @@ const KEY_LOGO = 'profile.logo';
 const KEY_REPLY_TONE = 'profile.replyTone';
 const KEY_REPLY_DETAIL = 'profile.replyDetail';
 const KEY_REPLY_INSTRUCTIONS = 'profile.replyInstructions';
+const KEY_ASSISTANT_NAME = 'profile.assistantName';
 // `profile.bossName` / `profile.bossAvatar` 这里不再读写：v18 已经把值搬进 `app_user`，
 // 旧的两行留着，回滚一个版本仍能渲染出称呼。
 
 export const DEFAULT_COMPANY_NAME = '我的工作台';
 export const DEFAULT_USER_NAME = '我';
+export const DEFAULT_ASSISTANT_NAME = 'Buddy';
 export const DEFAULT_COMPANY_COLOR = 'ocean';
 
-const LIMITS = { name: 40, domain: 40, goal: 60, colorId: 24, userName: 20, replyInstructions: 500 } as const;
+const LIMITS = { name: 40, domain: 40, goal: 60, colorId: 24, userName: 20, assistantName: 20, replyInstructions: 500 } as const;
 
 /**
  * Uploaded logos travel through the same `app_setting` row as the other profile
@@ -64,6 +66,7 @@ export class CompanyService {
       goal: this.setting(KEY_GOAL) ?? '',
       colorId: this.setting(KEY_COLOR) ?? DEFAULT_COMPANY_COLOR,
       userName: user.name,
+      assistantName: this.setting(KEY_ASSISTANT_NAME) ?? '',
       logo: this.setting(KEY_LOGO) || undefined,
       userAvatar: user.avatar || undefined,
       replyTone: (['friendly', 'balanced', 'professional'].includes(this.setting(KEY_REPLY_TONE) ?? '')
@@ -108,6 +111,7 @@ export class CompanyService {
       if (patch.replyTone !== undefined && ['friendly', 'balanced', 'professional'].includes(patch.replyTone)) this.setSetting(KEY_REPLY_TONE, patch.replyTone, now);
       if (patch.replyDetail !== undefined && ['concise', 'balanced', 'detailed'].includes(patch.replyDetail)) this.setSetting(KEY_REPLY_DETAIL, patch.replyDetail, now);
       if (patch.replyInstructions !== undefined) this.setSetting(KEY_REPLY_INSTRUCTIONS, clamp(patch.replyInstructions, LIMITS.replyInstructions), now);
+      if (patch.assistantName !== undefined) this.setSetting(KEY_ASSISTANT_NAME, clamp(patch.assistantName, LIMITS.assistantName), now);
 
       // 你就是那一行：upsert 而不是 insert —— 迁移会种下它，手工删掉之后必须能长回来，
       // 而不是让这次写入失败。

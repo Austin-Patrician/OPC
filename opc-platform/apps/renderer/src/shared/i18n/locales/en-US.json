@@ -82,6 +82,22 @@
       "cooling": "Cooling",
       "escalated": "Escalated"
     },
+    "newChat": {
+      "action": "New conversation",
+      "actionHint": "New conversation (Ctrl+Shift+N)",
+      "title": "Start a new conversation?",
+      "description": "Clears current message history and resets the assistant context back to a clean slate.",
+      "memoryKeptTitle": "Long-term memory/ & workspace files stay intact",
+      "memoryKeptNote": "Your profile, rules, and topic notes remain preserved so the new conversation keeps your preferences without old baggage.",
+      "contextSummary": "Current context: {{entries}} entries · {{percent}}% used",
+      "reflectMemoryLabel": "Consolidate useful facts into memory/ before clearing",
+      "reflectMemoryHint": "Uncheck if this session went off-track and you want a clean reset without writing memories.",
+      "abortRunningLabel": "Stop {{count}} active background task(s)",
+      "abortRunningHint": "Old threads will be archived from the active board; generated workspace files remain untouched.",
+      "confirm": "Start new chat",
+      "confirming": "Resetting…",
+      "failed": "Failed to start new conversation"
+    },
     "activity": {
       "idle": "Online",
       "delivered": "Delivered",
@@ -92,7 +108,10 @@
       "typing": "Typing",
       "waiting_user": "Waiting for you",
       "completed": "Done",
-      "error": "Something went wrong"
+      "error": "Something went wrong",
+      "listening": "Listening",
+      "transcribing": "Transcribing",
+      "speaking": "Speaking"
     },
     "sender": {
       "routerName": "Assistant",
@@ -110,14 +129,14 @@
     "mentionHint": "@ an agent in this conversation to assign work",
     "quickPrompts": "Saved instructions",
     "quickPromptsHint": "Quick instructions",
-    "inputPlaceholder": "Say something to Buddy…",
+    "inputPlaceholder": "Say something to {{name}}…",
     "copyCode": "Copy code",
     "codeCopied": "Code copied",
     "copyResponse": "Copy response",
     "responseCopied": "Response copied",
     "welcome": {
       "online": "Online · ready when you are",
-      "title": "Hi, I'm Buddy",
+      "title": "Hi, I'm {{name}}",
       "description": "Untangle an idea, draft something, explore new directions, or plan your next steps. Just tell me like you would in a chat.",
       "tryOne": "A few ways to get started",
       "tryIt": "Try it",
@@ -223,17 +242,22 @@
     "preview": "Preview",
     "previewText": "3 deliverables passed acceptance today.",
     "about": {
-      "runtime": "Runtime",
+      "appTitle": "Buddy",
+      "tagline": "Local-first personal AI assistant · instant chat, background execution, memory & tools",
+      "replayGuide": "Replay getting-started guide",
+      "versions": "Application & runtime",
       "appVersion": "App version",
-      "piCatalog": "pi model catalog",
-      "platform": "Platform",
+      "platform": "Operating system",
+      "runtime": "Runtime stack",
       "dataDir": "Data directory",
-      "tagline": "AI agent IM workspace · runtime built on pi",
-      "versions": "Version info",
-      "piProject": "pi project",
-      "piDesc": "Providers, model catalog and auth follow pi's official implementation.",
-      "footnote": "pi is MIT licensed.",
-      "replayGuide": "Replay the getting-started guide"
+      "copyPath": "Copy path",
+      "copied": "Copied",
+      "envCheck": "Runtime environment check",
+      "envCheckHint": "Expand only when troubleshooting startup or local dependency issues.",
+      "envCheckCount": "{{count}} local runtime checks",
+      "envCheckRun": "Re-run check",
+      "envCheckRunning": "Checking…",
+      "privacyFootnote": "Workspace history and encrypted credentials stay strictly local to this machine."
     },
     "aboutDesc": "A local-first agent workspace. The daemon owns the data; this shell only renders it.",
     "tab": {
@@ -580,6 +604,30 @@
       "noneEnabled": "No image model enabled yet",
       "enabledOf": "{{enabled}} of {{total}} enabled"
     },
+    "video": {
+      "title": "Video models",
+      "descProvider": "Includes 6 popular built-in video providers plus OpenAI-compatible gateways, with customizable Base URL, API Key, and custom models.",
+      "defaultTitle": "Default video model",
+      "noDefault": "No default video model",
+      "noneEnabled": "No video model enabled yet",
+      "providersTitle": "Video providers",
+      "providersDesc": "Built-in video generation providers and compatible gateways.",
+      "search": "Search models or vendors",
+      "emptyProvider": "No video models available yet — add one below.",
+      "models": "video models",
+      "modelsTitle": "Video models",
+      "addModel": "Add video model",
+      "addModelPlaceholder": "video model id, e.g. kling-3.0",
+      "enableAll": "Enable all",
+      "enabled": "Enabled",
+      "enableNeedsKey": "Add an API key before enabling models",
+      "keyPlaceholder": "Paste API key",
+      "klingKeyHint": "Accepts a relay Bearer Token or official Kling AccessKey:SecretKey (JWT is signed automatically).",
+      "currentBaseUrl": "In effect now: {{url}}",
+      "protocol": "Protocol",
+      "pricePerSecond": "Rate ($/s)",
+      "fetching": "Fetching…"
+    },
     "voice": {
       "title": "Voice models",
       "desc": "ASR turns recordings into text; TTS reads text aloud. Voice models reuse the provider's base URL and API key.",
@@ -754,6 +802,9 @@
       "openBudget": "Open budget centre",
       "loading": "Reading the workspace profile…",
       "user": "What to call you",
+      "assistant": "Assistant name",
+      "assistantHint": "Shown in chat welcome, assistant messages and input placeholder (defaults to Buddy).",
+      "assistantPlaceholder": "Default: Buddy",
       "goalPlaceholder": "e.g. Hand the content work to my assistant",
       "goal": "One-line goal",
       "domain": "What you do"
@@ -864,13 +915,25 @@
       "coveragePending": "Legacy task totals have not been imported",
       "coverageComplete": "Legacy task totals imported (without per-call input/output breakdown)",
       "noPrice": "Usage recorded, not priced",
+      "noPriceHint": "Provider returned no billed cost and no unit rate was matched; configure rates under Models & Pricing.",
       "rateHint": "Costs follow the existing pricing policy and currency settings.",
       "timeZone": "Time zone: {{zone}}",
       "ok": "Success",
       "error": "Failed",
       "aborted": "Cancelled",
       "interrupted": "Interrupted",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "avgPerCall": "Avg {{value}} / call",
+      "avgTokensPerCall": "Avg {{value}} / call",
+      "peakBucket": "Peak {{value}} / bucket",
+      "actorTabConsumption": "By actor",
+      "actorTabLifecycle": "Worker changes",
+      "actorBreakdown": "Usage attribution",
+      "otherOrigin": "Other calls",
+      "shareView": "Share",
+      "rankingView": "Ranking",
+      "switchToTokens": "No priced costs yet — switch to token view",
+      "noChartData": "No usage data in this range"
     },
     "network": {
       "description": "Configure it once and model calls, image generation and workspace child processes all take this route. Saving applies immediately and survives restarts.",
@@ -967,7 +1030,17 @@
       "ocrDetailHint": "Text joins every line in reading order, which is what you want for meaning. Lines keeps each line's position and confidence, which is what you want for tables and forms.",
       "ocrDetailText": "Text",
       "ocrDetailLines": "Lines",
-      "bundledEmpty": "No bundled engines"
+      "bundledEmpty": "No bundled engines",
+      "shellTitle": "Command Execution Policy",
+      "shellDesc": "Controls how workers authorize terminal commands (bash, PowerShell, Python scripts) inside the task workspace.",
+      "shellWindowsNote": "Windows has no OS-level container sandbox. File read/write tools remain confined to the task workspace, and uploaded attachments are copied into workspace inputs/ automatically.",
+      "shellModeLabel": "Windows command execution",
+      "shellModeHint": "Ask per task shows an approval card before running commands; Auto runs workspace commands without prompts; Disabled blocks shell commands.",
+      "shellModeAsk": "Ask per task",
+      "shellModeAuto": "Auto-run",
+      "shellModeDisabled": "Disabled",
+      "shellSandboxLabel": "OS Sandbox",
+      "shellSandboxActive": "Active"
     },
     "watchdog": {
       "desc": "It runs in its own process outside the app: reads the same data, records what looks wrong, and uses a model to tell whether the work is still heading somewhere. It reports; it does not act — the only repair is reconnecting a broken external connection, and that leaves a record.",
@@ -1243,7 +1316,7 @@
       "image": "Image",
       "imageHint": "pi's image model type; the default is used for visual deliverables.",
       "video": "Video",
-      "videoHint": "pi has no video model type or generation API today (chat / image / classifier only), so this is not a fake entry."
+      "videoHint": "Multi-protocol video generation (Seedance / Kling / MiniMax H3 / Veo 3.1 / fal / compatible gateways) for delivering video assets."
     },
     "picker": {
       "search": "Search models",
@@ -1464,6 +1537,7 @@
       "edit": "Apply exact text edits to a workspace file.",
       "bash": "Run a shell command inside the sandboxed workspace.",
       "generate_image": "Generate an image from a prompt into the workspace.",
+      "generate_video": "Generate a video clip from a prompt and optional reference images into the workspace.",
       "transcribe_audio": "Turn a workspace audio file into text.",
       "text_to_speech": "Synthesize text into an audio file.",
       "ocr_image": "Extract text from an image.",
@@ -1490,6 +1564,10 @@
       "image": {
         "title": "Image generation",
         "description": "Calls the configured image model and writes the resulting picture into the workspace."
+      },
+      "video": {
+        "title": "Video generation",
+        "description": "Calls the configured video model (text-to-video / image-to-video) and saves the clip into the workspace."
       },
       "speech": {
         "title": "Speech",
@@ -1554,86 +1632,95 @@
     }
   },
   "onboarding": {
-    "ariaLabel": "OPC getting-started guide",
+    "ariaLabel": "OPC Personal Assistant guide",
     "skip": "Skip guide",
     "skipStep": "Skip",
     "laterConfig": "Later",
     "next": "Next",
-    "finish": "Enter workspace",
-    "backHome": "Back to start",
+    "finish": "Start using OPC",
+    "backHome": "Back to welcome",
     "back": "Back",
     "backToEdit": "Back to edit",
-    "stepNav": "Setup pages",
+    "stepNav": "Guide steps",
     "step": {
-      "general": "Preferences",
-      "model": "Model engine",
-      "company": "Workspace card",
-      "done": "Done"
+      "profile": "About you",
+      "model": "AI model",
+      "general": "Look & Buddy",
+      "done": "Ready"
     },
     "welcome": {
-      "brandTagline": "AI agent collaboration workspace",
-      "badgeTitle": "OPC Workspace",
-      "badgeSub": "A resident assistant for your own AI workspace",
-      "titleLead": "You just say it,",
-      "titleAccent": "it does the rest.",
-      "subtitleLead": "Drop in a goal and an executor picks it up; acceptance, reports and memory all stay on the same line of work",
-      "subtitleTail": " A few settings and it starts working for you.",
-      "start": "Start setup",
-      "skipToWorkspace": "Go to the workspace",
+      "brandName": "OPC",
+      "brandTagline": "Local-first personal AI assistant",
+      "badge": "Redesigned · Personal AI Workspace",
+      "titleLead": "Your desktop ",
+      "titleAccent": "AI partner.",
+      "subtitle": "Instant chat, background execution, long-term memory, browser & MCP tools, and your desktop companion Buddy — all ready in one workspace.",
+      "start": "Quick setup",
+      "skipToWorkspace": "Enter workspace",
       "pressPrefix": "Press",
-      "pressSuffix": "to start · everything stays adjustable in Settings",
-      "windowWorkspace": "Workspace",
-      "windowOnDuty": "{{count}} executors on duty",
-      "founderMsg": "Follow the latest",
-      "founderMsgTail": " spec and ship this week’s first deliverable.",
-      "agentReady": "On station, waiting for a goal",
-      "waitingDispatch": "{{name}} · {{template}} · waiting for a brief",
-      "engineTitle": "pi multi-model engine",
-      "engineAvailable": "{{count}} reachable",
-      "template": {
-        "research": "Research",
-        "code": "Code",
-        "ops": "Ops"
-      },
-      "statWorkers": "Executors",
-      "statSkills": "Skills",
-      "statConfigured": "Configured",
-      "capIm": "One-to-one IM dispatch",
-      "capBrief": "Full context kept on the line of work",
-      "capModel": "Pick a model per executor"
+      "pressSuffix": "to start · everything stays editable in Settings",
+      "capChatTitle": "Chat & background work",
+      "capChatDesc": "Fast replies in chat, steady background execution for complex goals.",
+      "capMemoryTitle": "Memory & preferences",
+      "capMemoryDesc": "Remembers your name, tone, rules and ongoing context over time.",
+      "capToolsTitle": "Tools, skills & MCP",
+      "capToolsDesc": "Web search, browser, desktop control, skills and scheduled runs.",
+      "capLocalTitle": "Local-first & approvals",
+      "capLocalDesc": "Data and API keys stay encrypted locally; external actions ask first."
     },
-    "general": {
-      "eyebrow": "Preferences",
-      "title": "Make the workspace feel right",
-      "description": "Appearance and language apply and save immediately; adjust them any time in Settings › Appearance.",
-      "theme": "Theme",
-      "themeHint": "System follows the OS light/dark switch",
-      "scale": "Interface scale",
-      "scaleHint": "Scales the whole shell, not just the text",
-      "background": "Background",
-      "backgroundHint": "Solid is the lightest; the aurora is the loudest",
-      "language": "Language",
-      "languageHint": "Copy updates as soon as you switch"
+    "profile": {
+      "eyebrow": "Step 1 · About you",
+      "title": "What should I call you, and how should I reply?",
+      "description": "Your name, language and reply style apply right away and can be adjusted any time in Settings.",
+      "previewLabel": "Live reply style preview",
+      "previewSample": {
+        "friendly": "Hey {{name}}! Let me know what you'd like to tackle today and I'll help line up the key steps.",
+        "balanced": "Hi {{name}}, got the direction — once key details are clear, I'll handle the next steps cleanly.",
+        "professional": "Hello {{name}}. Share the objective and constraints, and I will execute and report back systematically."
+      },
+      "nameLabel": "Your name",
+      "nameHint": "Optional · shown in the title bar and used naturally by the assistant",
+      "namePlaceholder": "e.g. Austin, Alex",
+      "assistantLabel": "Assistant name",
+      "assistantHint": "Optional · your assistant's name in chat",
+      "assistantPlaceholder": "Buddy",
+      "languageLabel": "Language",
+      "toneLabel": "Reply tone",
+      "toneHint": "Sets the assistant's everyday voice",
+      "toneDesc": {
+        "friendly": "Warm and approachable, like a helpful partner",
+        "balanced": "Clear and thoughtful, balancing warmth and speed",
+        "professional": "Crisp and formal, focused directly on results"
+      },
+      "detailLabel": "Level of detail",
+      "detailHint": "Controls how thorough standard answers are",
+      "detailDesc": {
+        "concise": "Direct conclusions and actionable steps",
+        "balanced": "Structured key points with brief reasoning",
+        "detailed": "Full context, rationale and trade-offs"
+      }
     },
     "model": {
-      "eyebrow": "Model engine",
-      "title": "Plug in an AI brain",
-      "description": "Agents call models through the pi engine. Pick a provider, add a credential and choose a default model — a missing key can wait.",
+      "eyebrow": "Step 2 · AI model",
+      "title": "Connect an AI provider",
+      "description": "Pick a model provider, enter your API key or sign in, and choose a default chat model — you can also set this up later.",
       "currentDefault": "Current default",
       "autoPick": "Not set",
+      "notSelected": "No provider selected",
       "providers": "Providers",
       "showAll": "Show all {{count}}",
       "collapse": "Collapse",
+      "searchProviderPlaceholder": "Search provider name or ID…",
       "keyLabel": "{{provider}} API key",
       "keyPlaceholderSaved": "•••••••• (saved — leave blank to keep)",
       "keySave": "Save key",
-      "keySaved": "Key saved — the model is usable now.",
-      "keyHint": "Keys are encrypted in the local credential file and never travel back to the UI.",
+      "keySaved": "Key saved — ready to use.",
+      "keyHint": "Keys are encrypted locally on disk and never sent back to the UI.",
       "defaultModel": "Default model",
       "modelCount": "{{count}} available",
-      "noModels": "This provider exposes no models yet — pick another, or refresh the list later in Settings.",
+      "noModels": "No built-in models listed for this provider yet — pick another or refresh models later in Settings.",
       "thinking": "Thinking effort",
-      "thinkingHint": "Only affects models that support reasoning",
+      "thinkingHint": "Applies to models that support reasoning",
       "reasoning": "Reasoning",
       "vision": "Image input",
       "status": {
@@ -1643,53 +1730,45 @@
         "unconfigured": "Not configured"
       }
     },
-    "company": {
-      "eyebrow": "Workspace card",
-      "title": "Give this workspace a name",
-      "description": "The name and brand colour appear in the title bar and on the card. Executors do the actual work: hand one a goal and it starts.",
-      "nameLabel": "Workspace name",
-      "namePlaceholder": "e.g. Starlight Content Studio",
-      "optional": "optional",
-      "colorTitle": "Brand colour",
-      "budgetTitle": "Monthly workspace limit",
-      "budgetHint": "Exceeding it hard-stops every new dispatch",
-      "budgetLabel": "Tokens per month",
-      "budgetSave": "Save",
-      "budgetSaved": "Limit saved.",
-      "budgetInvalid": "The limit must be a whole number above 0.",
-      "budgetUsage": "{{used}} of {{limit}} used",
-      "budgetScope": "Workspace budget · resets monthly",
-      "cardWorkers": "{{count}} executors",
-      "cardHint": "Live preview · move the pointer to feel the texture",
-      "budgetMissing": "The workspace budget row is created on the first hire or dispatch.",
-      "userLabel": "What to call you",
-      "userPlaceholder": "e.g. Austin",
-      "userHint": "Shown in the title bar; agents read you by this name",
-      "goalLabel": "One-line vision",
-      "goalPlaceholder": "e.g. Hand the content work to my assistant",
-      "cardGoalPlaceholder": "One line about what you do",
-      "domainTitle": "What you do",
-      "cardDomainEmpty": "No industry yet"
+    "general": {
+      "eyebrow": "Step 3 · Look & Buddy",
+      "title": "Tune typography and your desktop companion",
+      "description": "Theme, embedded fonts, interface scale and Buddy update live and save automatically.",
+      "theme": "Theme",
+      "themeHint": "System follows your OS appearance automatically",
+      "font": "Typography",
+      "fontHint": "Embedded offline variable fonts crafted for Markdown reading",
+      "fontPreviewSample": "Your daily briefing and key tasks are ready — Clean UI & Markdown Typography.",
+      "scale": "Scale",
+      "scaleHint": "Proportional UI zoom",
+      "buddyTitle": "Desktop companion Buddy",
+      "buddyHint": "Stays in the corner and reacts to thinking, working and completion states",
+      "buddyEnable": "Show desktop companion Buddy",
+      "buddyEnableHint": "Draggable or edge-dockable with gentle interactive reactions",
+      "buddyBubbles": "Show status bubbles",
+      "buddyBubblesHint": "Briefly surfaces on state changes, completions or pokes"
     },
     "done": {
-      "title": "“{{name}}” is ready",
-      "subtitle": "Everything is written to this machine — head into the workspace and hand your first goal to an executor.",
-      "company": "Workspace",
-      "model": "Default model",
-      "team": "Executors",
-      "autoPick": "Chosen by pi",
+      "title": "All set, {{name}}",
+      "subtitle": "Your preferences are saved locally. Start a conversation whenever you're ready.",
+      "profileCard": "Personal style",
+      "modelCard": "Default model",
+      "appearanceCard": "Look & Buddy",
+      "noModel": "No model set yet",
       "modelLine": "{{provider}} · thinking {{thinking}}",
-      "modelFallback": "Set it any time in Settings",
-      "workersTotal": "{{count}} executors",
-      "actionChat": "Dispatch the first task",
-      "actionChatSub": "Hand a goal to an executor; it opens the line, works and reports back",
-      "actionSettings": "Finish model setup",
-      "actionSettingsSub": "More providers, image models and self-check"
+      "modelFallback": "Configure any time in Settings",
+      "buddyOn": "Buddy companion enabled",
+      "buddyOff": "Buddy companion hidden",
+      "actionChat": "Start your first chat",
+      "actionChatSub": "Ask anything or hand over a multi-step goal directly in chat",
+      "actionSettings": "Open model & tool settings",
+      "actionSettingsSub": "Configure additional providers, tools, skills and schedules"
     }
   },
   "company": {
     "fallbackName": "My workspace",
     "userFallback": "Me",
+    "assistantFallback": "Buddy",
     "color": {
       "ocean": "Ocean",
       "violet": "Nebula",
@@ -1787,6 +1866,129 @@
       "ambient1": "Ping me anytime~",
       "ambient2": "Keeping you company",
       "ambient3": "Drop an idea whenever you're ready"
+    }
+  },
+  "schedules": {
+    "title": "Schedules",
+    "subtitle": "{{assistant}} runs reminders, check-ins and recurring tasks on time automatically.",
+    "refresh": "Refresh",
+    "newPlan": "New schedule",
+    "spotlight": {
+      "label": "Up next",
+      "noneTitle": "No active schedules",
+      "noneHint": "Create a one-time reminder or recurring routine to run automatically."
+    },
+    "metrics": {
+      "active": "Active",
+      "activeDetail": "{{recurring}} recurring · {{once}} one-time",
+      "pausedAndDone": "Paused / Ended",
+      "pausedCount": "Paused",
+      "doneCount": "Ended"
+    },
+    "filters": {
+      "all": "All",
+      "active": "Active",
+      "paused": "Paused",
+      "finished": "Ended"
+    },
+    "searchPlaceholder": "Search title, prompt or timezone…",
+    "clearSearch": "Clear search",
+    "status": {
+      "active": "Active",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "completed": "Completed"
+    },
+    "ruleKinds": {
+      "once": "Once",
+      "daily": "Daily",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly",
+      "monthly": "Monthly"
+    },
+    "ruleSummary": {
+      "once": "Once · {{time}}",
+      "daily": "Daily · {{time}}",
+      "weekdays": "Weekdays · {{time}}",
+      "weekly": "Weekly ({{days}}) · {{time}}",
+      "monthly": "Monthly (Day {{day}}) · {{time}}"
+    },
+    "weekdaysShort": {
+      "1": "Mon",
+      "2": "Tue",
+      "3": "Wed",
+      "4": "Thu",
+      "5": "Fri",
+      "6": "Sat",
+      "7": "Sun"
+    },
+    "triage": {
+      "pending": "Pending",
+      "routed": "Triggered",
+      "accepted": "Accepted",
+      "dropped": "Skipped",
+      "merged": "Merged"
+    },
+    "lastRunAt": "Last {{time}}",
+    "historyToggle": "Runs ({{count}})",
+    "missedMerged": "Coalesced {{count}} missed",
+    "actions": {
+      "edit": "Edit schedule",
+      "pause": "Pause schedule",
+      "resume": "Resume schedule",
+      "duplicate": "Duplicate",
+      "reuse": "Reuse",
+      "cancel": "Cancel schedule",
+      "confirmCancel": "Confirm cancel"
+    },
+    "empty": {
+      "title": "No schedules yet",
+      "subtitle": "Set up a reminder or recurring routine and {{assistant}} will handle it right on schedule.",
+      "quickStart": "Quick-start templates",
+      "noMatchTitle": "No schedules match your filter",
+      "noMatchSubtitle": "Try switching the status tab or clearing your search query.",
+      "resetFilters": "Show all schedules"
+    },
+    "dialog": {
+      "createTitle": "New schedule",
+      "editTitle": "Edit schedule",
+      "subtitle": "Triggers according to wall-clock time in the chosen timezone",
+      "quickTemplates": "Quick templates",
+      "name": "Title",
+      "namePlaceholder": "e.g. Daily morning briefing, Friday wrap-up",
+      "instruction": "What should happen when due",
+      "instructionPlaceholder": "Describe the check-in, summary or reminder the assistant should perform…",
+      "frequency": "Repeat",
+      "date": "Date",
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "time": "Time",
+      "dayOfMonth": "Day of month (1–31)",
+      "weekdays": "Days of week",
+      "timezone": "Timezone",
+      "nextPreview": "Next trigger",
+      "pastWarning": "Selected date & time is in the past; pick a future time.",
+      "invalidRule": "Complete the schedule date, time and repeat rule.",
+      "saveEdit": "Save changes",
+      "createSubmit": "Create schedule"
+    },
+    "templates": {
+      "morningBrief": {
+        "title": "Daily morning briefing",
+        "instruction": "Help me review today's key priorities, pending tasks and suggest a steady plan for the day."
+      },
+      "weekdayWrap": {
+        "title": "Weekday wrap-up",
+        "instruction": "Summarize what got done today, what stays open, and what to pick up first tomorrow."
+      },
+      "weeklyDigest": {
+        "title": "Weekly review",
+        "instruction": "Compile this week's main outputs, key decisions and top priorities for next week."
+      },
+      "oneTimeReminder": {
+        "title": "One-time reminder",
+        "instruction": "Remind me to handle this scheduled task and surface any helpful context."
+      }
     }
   }
 }

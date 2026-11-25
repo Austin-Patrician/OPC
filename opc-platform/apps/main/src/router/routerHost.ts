@@ -11,7 +11,6 @@ import type {
   TaskContract,
   TriagePolicy,
   TriggerEvent,
-  WorkReport,
 } from "@opc/shared/domain";
 import type { CompanyDatabase } from "../data/companyDatabase";
 import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
@@ -38,10 +37,16 @@ import {
   type SemanticScreener,
 } from "./semanticGate";
 import { bodyOf, createFastPath } from "./triage";
+import { calculateTokenCost, resolveChargedCost } from "../work/usage";
 import { unfinishedReason, unfinishedTasksOf } from "./threadBusy";
 import type { OpenLineInput, OpenLineResult } from "./workDispatch";
 import type { TriggerReplyTarget } from "../trigger/types";
 import { renderTrace } from "../work/trace";
+import {
+  formatReportLine,
+  formatReportStatusTag,
+  summarizeThreadLatestActivity,
+} from "./routerRecallFormat";
 import type { RouterWorkerCapability } from "./routerCapabilities";
 
 /**
@@ -104,7 +109,11 @@ export interface RouterHostDeps {
   steer?: (
     threadId: string,
     note: string,
-    options?: { updatedObjective?: string; updatedOutputs?: TaskContract["outputs"] },
+    options?: {
+      updatedObjective?: string;
+      updatedOutputs?: TaskContract["outputs"];
+      attachments?: ChatAttachmentRef[];
+    },
   ) => Promise<{ ok: boolean; reason?: string; live: number; queued: number; continuedTaskId?: string }>;
   /** 在已有工作线上追加改动或转向（Living Worker）。 */
   continueLine?: (input: {
@@ -113,6 +122,7 @@ export interface RouterHostDeps {
     mode: "append" | "pivot";
     updatedOutputs?: TaskContract["outputs"];
     acceptance?: TaskContract["acceptance"];
+    attachments?: ChatAttachmentRef[];
   }) => Promise<
     | { ok: true; threadId: string; taskId: string | null; workerId?: string; mode: "append" | "pivot" | "steered" }
     | { ok: false; reason: string }
@@ -140,6 +150,7 @@ export interface RouterHostDeps {
     tone: string;
     detail: string;
     instructions: string;
+    assistantName?: string;
   };
   /** Dynamic metadata-only Worker tool directory; Router never receives the tools. */
   workerCapabilities?: () =>
@@ -160,7 +171,9 @@ export interface RouterHost {
   interrupt: (reason?: string, options?: { requeue?: boolean }) => Promise<boolean>;
   contextStats: () => Promise<RouterContextStats>;
   compactContext: () => Promise<{ ok: boolean; reason?: string }>;
-  resetContext: (handoff?: string) => Promise<{ ok: boolean; reason?: string }>;
+  resetContext: (
+    options?: string | { handoff?: string; reflectMemory?: boolean },
+  ) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 export function shouldRepairMissingReply(
@@ -234,8 +247,30 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       if (!ok) deps.onActivity?.("error");
     },
     onUsage: (usage) => {
-      const configuredCost = usage.configuredCostUsd;
-      const chargedCost = deps.pricingMode?.() === "provider_only" ? undefined : configuredCost;
+      const providerCost = usage.providerCostUsd;
+      let configuredCost = usage.configuredCostUsd;
+      if (configuredCost === undefined && deps.modelConfig) {
+        const provider = deps.modelConfig.listProviders().find((p) => p.id === usage.providerId);
+        const entry = provider?.models.find((m) => m.id === usage.modelId);
+        const fallback = calculateTokenCost(
+          {
+            input: usage.input,
+            output: usage.output,
+            cacheRead: usage.cacheRead ?? 0,
+            cacheWrite: usage.cacheWrite ?? 0,
+          },
+          entry,
+        );
+        if (fallback > 0) configuredCost = fallback;
+      }
+      const { chargedCostUsd: chargedCost, costSource } = resolveChargedCost(
+        deps.pricingMode?.() ?? "provider_first",
+        providerCost,
+        configuredCost,
+      );
+      const totalTokens =
+        usage.total ??
+        usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
       deps.usageRepository?.recordSafely({
         idempotencyKey: `router:${usage.conversationId}:${usage.startedAt}`,
         startedAt: usage.startedAt,
@@ -250,12 +285,16 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         status: usage.status,
         inputTokens: usage.input,
         outputTokens: usage.output,
-        totalTokens: usage.input + usage.output,
+        cacheReadTokens: usage.cacheRead ?? 0,
+        cacheWriteTokens: usage.cacheWrite ?? 0,
+        ...(usage.reasoning && usage.reasoning > 0 ? { reasoningTokens: usage.reasoning } : {}),
+        totalTokens,
         tokenSource: "pi.session-delta",
         billingUnit: "token",
+        ...(providerCost !== undefined ? { providerCostUsd: providerCost } : {}),
         ...(configuredCost !== undefined ? { configuredCostUsd: configuredCost } : {}),
         ...(chargedCost !== undefined ? { chargedCostUsd: chargedCost } : {}),
-        costSource: chargedCost === undefined ? "unpriced" : "configured",
+        costSource,
       });
     },
   });
@@ -335,19 +374,24 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         ? threads.listActiveThreads(30)
         : threads.listThreads({ limit: 30 });
     return rows.map((thread) => {
-      const [latest] = threads
-        .listReportsOf(thread.id, 1)
-        .map(
-          (report: WorkReport) =>
-            `${report.title}${report.body ? `：${report.body}` : ""}`,
-        );
+      const recentReports = threads.listReportsOf(thread.id, 5);
+      const latestTask = tasks.latestForThread(thread.id);
+      const recentTrace =
+        latestTask && (latestTask.status === "running" || latestTask.status === "open")
+          ? tasks.listTrace(latestTask.id, 3)
+          : [];
       return {
         threadId: thread.id,
         title: thread.title,
         state: thread.state,
         attention: thread.attention,
         lastActivityAt: thread.lastActivityAt,
-        latestReport: latest ?? null,
+        latestReport: summarizeThreadLatestActivity({
+          reports: recentReports,
+          latestTask,
+          recentTrace,
+          renderTraceLines: renderTrace,
+        }),
       };
     });
   };
@@ -358,10 +402,19 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       const workers = threads.listWorkers(thread.id);
       const reports = threads.listReportsOf(thread.id, 5);
       const threadTasks = tasks.listByThread(thread.id, 5);
+      const activeTask = threadTasks[0];
+      const liveTrace =
+        activeTask && (activeTask.status === "running" || activeTask.status === "open")
+          ? tasks.listTrace(activeTask.id, 6)
+          : [];
+      const hasPendingApproval = reports.some(
+        (report) => report.kind === "approval" && report.readAt === null,
+      );
       return [
         `thread ${thread.id}「${thread.title}」`,
         `状态 ${thread.state} · 注意力 ${thread.attention} · 并线键 ${thread.threadKey ?? "（无）"}`,
         `目标：${thread.goal || "（空）"}`,
+        `当前待用户审批：${hasPendingApproval ? "是" : "否（均已处理或无）"}`,
         workers.length > 0
           ? `执行体：${workers.map((worker) => `${worker.id}(${worker.name}, ${worker.template}, ${worker.status})`).join("、")}`
           : "执行体：无",
@@ -370,12 +423,18 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
               .map((task) => `  - ${task.id} · ${task.status} · ${task.title}`)
               .join("\n")}`
           : "任务：无",
+        ...(liveTrace.length > 0 && activeTask
+          ? [
+              `最近动作（${activeTask.id}，最后 ${liveTrace.length} 步）：\n${renderTrace(
+                liveTrace,
+              )
+                .map((line) => `  - ${line}`)
+                .join("\n")}`,
+            ]
+          : []),
         reports.length > 0
           ? `最近汇报：\n${reports
-              .map(
-                (report) =>
-                  `  - ${report.id} · ${report.level} · ${report.title}：${report.body}`,
-              )
+              .map((report) => `  - ${formatReportLine(report)}`)
               .join("\n")}`
           : "最近汇报：无",
       ].join("\n");
@@ -397,9 +456,20 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     );
     if (task) {
       const trace = tasks.listTrace(task.id, 12);
+      const pendingApproval = task.threadId
+        ? threads
+            .listReportsOf(task.threadId, 20)
+            .find(
+              (report) =>
+                report.taskId === task.id &&
+                report.kind === "approval" &&
+                report.readAt === null,
+            )
+        : undefined;
       return [
         `task ${task.id}「${task.title}」`,
         `状态 ${task.status} · 线 ${task.threadId ?? "（无）"} · 执行体 ${task.workerId ?? task.assigneeId}`,
+        `当前待用户审批：${pendingApproval ? `是（${pendingApproval.id} · ${pendingApproval.title}）` : "否"}`,
         `目标：${task.contract?.objective ?? task.brief}`,
         `交付：${task.contract?.deliverable ?? task.deliverableSpec}`,
         task.answer ? `执行体回答：${task.answer}` : "执行体回答：无",
@@ -425,6 +495,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     if (report) {
       return [
         `report ${report.id}（${report.level}）`,
+        `类型与状态：${report.kind} · ${formatReportStatusTag(report)}`,
         `线：${report.threadId}`,
         `标题：${report.title}`,
         `内容：${report.body || "（空）"}`,
@@ -606,8 +677,12 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         lines,
         steerLine: async (threadId, note, options) => {
           session.noteThreadTouched(threadId);
+          const mergedOptions =
+            activeInputAttachments.length > 0
+              ? { ...options, attachments: [...activeInputAttachments] }
+              : options;
           const result = await (
-            deps.steer?.(threadId, note, options) ??
+            deps.steer?.(threadId, note, mergedOptions) ??
             Promise.resolve({
               ok: false,
               reason: "这个环境不支持中途改方向",
@@ -625,7 +700,11 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           ? async (input) => {
               session.noteThreadTouched(input.threadId);
               deps.onActivity?.("delegating");
-              const result = await deps.continueLine!(input);
+              const result = await deps.continueLine!(
+                activeInputAttachments.length > 0
+                  ? { ...input, attachments: [...activeInputAttachments] }
+                  : input,
+              );
               if (result.ok) {
                 handledAsyncActionThisTurn = true;
                 deps.onActivity?.("working");
@@ -660,11 +739,13 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           if (recent.length === 0) return undefined;
           const rows = recent.map((thread) => {
             const latest = tasks.latestForThread(thread.id);
+            const lastStep = latest?.status === "running" ? tasks.listTrace(latest.id, 1)[0] : undefined;
             const artifacts = latest?.artifacts.slice(0, 4).map((a) => a.relPath).join(", ");
             const goal = (thread.livingGoal || thread.goal || "").replace(/\s+/g, " ").slice(0, 90);
             return (
               `- ${thread.id} · 「${thread.title}」 · 状态=${thread.state}` +
               (latest ? ` · 最新任务=${latest.id}(${latest.status})` : "") +
+              (lastStep ? ` · 最新动作=${lastStep.name}(${lastStep.ok === false ? "✗" : "✓"})` : "") +
               (artifacts ? ` · 产物=[${artifacts}]` : "") +
               (goal ? ` · 目标=${goal}` : "")
             );
@@ -745,6 +826,9 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
     };
     const lines = [
       `## 回复偏好（设置）`,
+      ...(preferences.assistantName?.trim()
+        ? [`- 你的名称/自称：${preferences.assistantName.trim()}。`]
+        : []),
       `- 回复偏好：语气${tone[preferences.tone] ?? tone.balanced}；详略${detail[preferences.detail] ?? detail.balanced}。`,
     ];
     if (preferences.instructions.trim()) {
@@ -915,9 +999,18 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       await deps.memoryReflector?.flushBeforeCompact();
       return session.compactNow();
     },
-    resetContext: async (handoff) => {
-      await deps.memoryReflector?.flushBeforeCompact();
-      return session.resetTopic(handoff);
+    resetContext: async (options) => {
+      const normalized =
+        typeof options === "string"
+          ? { handoff: options, reflectMemory: true }
+          : {
+              handoff: options?.handoff,
+              reflectMemory: options?.reflectMemory !== false,
+            };
+      if (normalized.reflectMemory) {
+        await deps.memoryReflector?.flushBeforeCompact();
+      }
+      return session.resetTopic(normalized.handoff);
     },
   };
 }

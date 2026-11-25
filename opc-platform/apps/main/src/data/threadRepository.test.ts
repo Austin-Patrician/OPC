@@ -285,4 +285,21 @@ describe('thread identity', () => {
     expect(thread.source).toBe('manual');
     expect(thread.externalId).toBeNull();
   });
+
+  it('开启新对话时丢弃未分诊事件并按选项归档工作线', () => {
+    const idleThread = threads.createThread({ title: '旧话题' });
+    const runningThread = threads.createThread({ title: '运行中话题' });
+    threads.setState(runningThread.id, 'running');
+    threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text: '未读消息' } });
+
+    expect(threads.discardPendingEvents()).toBe(1);
+    expect(threads.listPendingEvents()).toHaveLength(0);
+
+    expect(threads.archiveThreads({ includeRunning: false })).toBe(1);
+    expect(threads.getThread(idleThread.id)?.state).toBe('archived');
+    expect(threads.getThread(runningThread.id)?.state).toBe('running');
+
+    expect(threads.archiveThreads({ includeRunning: true })).toBe(1);
+    expect(threads.getThread(runningThread.id)?.state).toBe('archived');
+  });
 });

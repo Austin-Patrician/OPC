@@ -34,6 +34,7 @@ describe('CompanyService', () => {
     expect(profile.name).toBe('我的工作台');
     expect(profile.domain).toBe('');
     expect(profile.userName).toBe(DEFAULT_USER_NAME);
+    expect(profile.assistantName).toBe('');
     expect(profile.colorId).toBe(DEFAULT_COMPANY_COLOR);
   });
 
@@ -135,5 +136,22 @@ describe('CompanyService', () => {
     expect(company.get().logo).toBeUndefined();
     company.update({ logo: `data:image/png;base64,${'A'.repeat(700_000)}` });
     expect(company.get().logo).toBeUndefined();
+  });
+
+  it('persists custom assistant name under profile.assistantName and clamps blanks cleanly', () => {
+    expect(company.get().assistantName).toBe('');
+
+    const updated = company.update({ assistantName: '  Friday \n' });
+    expect(updated.assistantName).toBe('Friday');
+
+    const file = path.join(dir, 'company.db');
+    db.close();
+    db = openCompanyDatabase(file);
+
+    const reopened = new CompanyService(db);
+    expect(reopened.get().assistantName).toBe('Friday');
+
+    const cleared = reopened.update({ assistantName: '   ' });
+    expect(cleared.assistantName).toBe('');
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Brain, ChevronDown, Eye, KeyRound } from 'lucide-react';
+import { Brain, ChevronDown, Eye, KeyRound, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ModelOption } from '@opc/shared/domain';
 import { isChatModelEnabled, isLlmProvider } from '@opc/shared/domain';
@@ -7,12 +7,18 @@ import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { AuthLoginPanel } from '@/features/settings/ui/pages/AuthLoginPanel';
 import { Segmented, StatusBadge } from '@/features/settings/ui/kit';
-import { AUTH_MODE_LABEL, LLM_PROVIDERS, PROVIDER_GROUPS, THINKING_LEVELS, type ThinkingLevel } from '@/shared/providers/catalog';
+import {
+  AUTH_MODE_LABEL,
+  LLM_PROVIDERS,
+  PROVIDER_GROUPS,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from '@/shared/providers/catalog';
 import { ProviderMark } from '@/shared/ui/ProviderMark';
 import { cn } from '@/shared/lib/cn';
 import { Block, ChoiceCard, StepHeader } from './onboardingUi';
 
-/** Providers shown before "查看全部": the ones a first company realistically starts with. */
+/** Popular providers shown before "查看全部". */
 const FEATURED = ['anthropic', 'openai', 'google', 'deepseek', 'openrouter', 'moonshotai', 'zai', 'groq'];
 
 const DESIGN = new Map(LLM_PROVIDERS.map((provider) => [provider.id, provider]));
@@ -44,11 +50,8 @@ const toModelOption = (model: CatalogModel): ModelOption => ({
 });
 
 /**
- * Model engine setup over pi's real catalog.
- *
- * Picking a provider materialises it in SQLite (provider + its models) exactly
- * like Settings → LLM does, so "默认模型" and "思考强度" here write the same rows
- * the runtime reads — the guide cannot leave behind a half-configured provider.
+ * Step 2: AI provider, credential / OAuth login, default model and thinking level.
+ * Uses the exact same IPC store as Settings → LLM.
  */
 export function StepModel() {
   const { t } = useTranslation();
@@ -56,6 +59,7 @@ export function StepModel() {
   const { catalog } = useCatalog();
   const [selectedId, setSelectedId] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [providerQuery, setProviderQuery] = useState('');
   const [keyDraft, setKeyDraft] = useState('');
   const [oauthSupport, setOauthSupport] = useState<Record<string, boolean>>({});
   const [loggedIn, setLoggedIn] = useState<Set<string>>(new Set());
@@ -68,8 +72,6 @@ export function StepModel() {
   );
 
   const providers: DisplayProvider[] = useMemo(() => {
-    // Onboarding picks the company's chat model, so classifier-only (TypeSafe) and
-    // image-only providers stay out — they are configured on their own pages.
     const fromCatalog = catalog.flatMap<DisplayProvider>((entry) => {
       if (entry.counts.chat === 0) return [];
       const design = DESIGN.get(entry.id);
@@ -88,7 +90,6 @@ export function StepModel() {
       ];
     });
 
-    // Custom providers only exist in our database, never in pi's catalog.
     const custom = models.providers
       .filter(
         (provider) =>
@@ -117,7 +118,6 @@ export function StepModel() {
     providers.find((provider) => provider.id === models.defaults.llm?.providerId) ??
     providers[0];
 
-  // Default selection: the model already in use, otherwise the first featured provider.
   useEffect(() => {
     if (selectedId || providers.length === 0) return;
     const current = models.defaults.llm?.providerId;
@@ -130,7 +130,6 @@ export function StepModel() {
 
   const selectedConfig = selected ? configured.get(selected.id) : undefined;
 
-  // OAuth is provider-owned in pi; ask the main process instead of guessing.
   useEffect(() => {
     const providerId = selected?.id;
     if (!providerId || oauthSupport[providerId] !== undefined) return;
@@ -159,8 +158,6 @@ export function StepModel() {
     setNotice(null);
   }, [selected?.id]);
 
-  // Catalog metadata (reasoning / vision / context) is richer than the stored row,
-  // so display prefers it and only custom providers fall back to the database list.
   const chatModels = useMemo<CatalogModel[]>(() => {
     const fromCatalog = (selected?.models ?? []).filter((model) => model.type === 'chat');
     if (fromCatalog.length > 0) return fromCatalog;
@@ -176,7 +173,6 @@ export function StepModel() {
       }));
   }, [selected, selectedConfig]);
 
-  /** Writes provider + models into SQLite the first time you touches it. */
   const ensureProvider = async (provider: DisplayProvider) => {
     if (configured.has(provider.id)) return;
     await models.saveProvider({
@@ -189,9 +185,6 @@ export function StepModel() {
     if (provider.models.length > 0) {
       await models.setModels(
         provider.id,
-        // Classifier ids (Jev) are not chat models: they belong to Settings →
-        // Decision and would otherwise be registered as chat with an API that
-        // has no stream implementation.
         provider.models.filter((model) => model.type !== 'classifier').map(toModelOption),
       );
     }
@@ -212,7 +205,8 @@ export function StepModel() {
 
   const pickModel = async (modelId: string) => {
     if (!selected) return;
-    const active = models.defaults.llm?.providerId === selected.id && models.defaults.llm?.modelId === modelId;
+    const active =
+      models.defaults.llm?.providerId === selected.id && models.defaults.llm?.modelId === modelId;
     setBusy(true);
     try {
       if (active) {
@@ -227,7 +221,20 @@ export function StepModel() {
     }
   };
 
-  const visible = showAll ? providers : providers.filter((provider) => FEATURED.includes(provider.id) || provider.id === selected?.id);
+  const normalizedQuery = providerQuery.trim().toLowerCase();
+  const visible = useMemo(() => {
+    if (showAll) {
+      if (!normalizedQuery) return providers;
+      return providers.filter(
+        (provider) =>
+          provider.name.toLowerCase().includes(normalizedQuery) ||
+          provider.id.toLowerCase().includes(normalizedQuery),
+      );
+    }
+    return providers.filter(
+      (provider) => FEATURED.includes(provider.id) || provider.id === selected?.id,
+    );
+  }, [normalizedQuery, providers, selected?.id, showAll]);
 
   const status = (() => {
     if (!selected) return { tone: 'gray' as const, label: t('onboarding.model.status.unconfigured') };
@@ -254,19 +261,22 @@ export function StepModel() {
               {defaultModel?.name ?? t('onboarding.model.autoPick')}
             </div>
             <div className="mt-0.5 max-w-[12rem] truncate text-2xs text-ink-quaternary">
-              {defaultProvider?.name ?? 'pi'}
+              {defaultProvider?.name ?? t('onboarding.model.notSelected')}
             </div>
           </div>
         }
       />
 
-      <div className="space-y-6">
+      <div className="space-y-5">
         <Block
           title={t('onboarding.model.providers')}
           hint={
             <button
               type="button"
-              onClick={() => setShowAll((value) => !value)}
+              onClick={() => {
+                setShowAll((value) => !value);
+                setProviderQuery('');
+              }}
               className="inline-flex cursor-pointer items-center gap-0.5 text-sm text-accent-ink hover:text-accent"
             >
               {showAll
@@ -276,7 +286,20 @@ export function StepModel() {
             </button>
           }
         >
-          <div className="grid max-h-[13.5rem] grid-cols-4 gap-2.5 overflow-y-auto pr-0.5">
+          {showAll ? (
+            <label className="relative mb-2.5 block">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-ink-quaternary" />
+              <input
+                type="search"
+                value={providerQuery}
+                onChange={(event) => setProviderQuery(event.target.value)}
+                placeholder={t('onboarding.model.searchProviderPlaceholder')}
+                className="h-9 w-full rounded-lg border border-line bg-surface pr-3 pl-8 text-sm text-ink outline-none placeholder:text-ink-quaternary focus:border-accent"
+              />
+            </label>
+          ) : null}
+
+          <div className="grid max-h-[12.5rem] grid-cols-2 gap-2.5 overflow-y-auto pr-0.5 sm:grid-cols-4">
             {visible.map((provider) => (
               <ChoiceCard
                 key={provider.id}
@@ -300,7 +323,7 @@ export function StepModel() {
         </Block>
 
         {selected ? (
-          <div key={selected.id} className="onb-slide-next rounded-2xl border border-line bg-surface-muted/50 p-5">
+          <div key={selected.id} className="onb-slide-next rounded-2xl border border-line bg-surface-muted/45 p-5">
             <div className="flex items-start gap-3">
               <ProviderMark providerId={selected.id} size="md" />
               <div className="min-w-0 flex-1">
@@ -366,7 +389,7 @@ export function StepModel() {
                   {t('onboarding.model.noModels')}
                 </p>
               ) : (
-                <div className="grid max-h-[10.5rem] grid-cols-2 gap-2 overflow-y-auto pr-0.5">
+                <div className="grid max-h-[10rem] grid-cols-2 gap-2 overflow-y-auto pr-0.5">
                   {chatModels.map((model) => {
                     const active =
                       models.defaults.llm?.providerId === selected.id && models.defaults.llm?.modelId === model.id;

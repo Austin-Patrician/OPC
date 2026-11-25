@@ -22,7 +22,7 @@ const catalogProvider = (over: Partial<CatalogProvider> = {}): CatalogProvider =
   id: 'openai',
   baseUrl: 'https://api.openai.com/v1',
   apis: ['openai-completions'],
-  counts: { chat: 1, image: 0, classifier: 0, asr: 0, tts: 0 },
+  counts: { chat: 1, image: 0, video: 0, classifier: 0, asr: 0, tts: 0 },
   models: [chatModel()],
   ...over,
 });
@@ -32,7 +32,7 @@ const typesafe = (): CatalogProvider => ({
   id: 'typesafe',
   baseUrl: 'https://api.typesafe.ai/v1',
   apis: ['typesafe-system-one'],
-  counts: { chat: 0, image: 0, classifier: 1, asr: 0, tts: 0 },
+  counts: { chat: 0, image: 0, video: 0, classifier: 1, asr: 0, tts: 0 },
   models: [classifierModel()],
 });
 
@@ -90,7 +90,7 @@ describe('buildLlmProviders', () => {
   it('keeps a catalog provider that serves chat and decisions at once', () => {
     const openrouter = catalogProvider({
       id: 'openrouter',
-      counts: { chat: 1, image: 0, classifier: 1, asr: 0, tts: 0 },
+      counts: { chat: 1, image: 0, video: 0, classifier: 1, asr: 0, tts: 0 },
       models: [chatModel({ id: 'gpt-5.5' }), classifierModel({ id: 'typesafe/jev-1.14' })],
     });
 

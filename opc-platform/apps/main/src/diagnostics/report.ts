@@ -121,11 +121,14 @@ const PROBES: Probe[] = [
   },
   {
     id: 'sandbox',
-    title: '沙箱（macOS sandbox-exec / Linux bwrap）',
+    title: '沙箱 / 命令执行隔离',
     async run() {
       const status = detectBackend();
-      if (!status.supported) {
+      if (status.backend === 'none') {
         return { status: 'skipped', detail: `${status.detail} · 工具执行会被拒绝` };
+      }
+      if (status.backend === 'windows-guarded') {
+        return { status: 'ok', detail: status.detail };
       }
       const result = await selfTest(path.join(appPaths.workspaceDir, '_sandbox_probe'));
       return {

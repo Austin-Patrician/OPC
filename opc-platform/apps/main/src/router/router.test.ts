@@ -489,6 +489,7 @@ describe('上下文打包（Inline & Spill）', () => {
       threads,
       deliver: (text, _targets, input) => {
         expect(text).toContain('zhihu_home.png');
+        expect(text).toContain('inputs/');
         context = input;
       },
     });

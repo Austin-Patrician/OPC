@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, CornerDownLeft, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, CornerDownLeft, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { companyName } from '@/entities/company/model/options';
-import { useCompanyProfile } from '@/entities/company/model/useCompany';
-import { CompanyMark } from '@/entities/company/ui/CompanyMark';
+import { cn } from '@/shared/lib/cn';
+import { BuddyMark } from '@/shared/ui/BuddyMark';
 import { useOnboarding, useOnboardingOpen } from '../model/onboardingStore';
 import { useOnboardingData } from '../model/useOnboardingData';
 import { AuroraBackdrop, Kbd } from './onboardingUi';
 import { StepDone, type DoneTarget } from './StepDone';
 import { StepGeneral } from './StepGeneral';
 import { StepModel } from './StepModel';
+import { StepProfile } from './StepProfile';
 import { WelcomeHero } from './WelcomeHero';
 
-const VIEWS = ['general', 'model', 'done'] as const;
+const VIEWS = ['profile', 'model', 'general', 'done'] as const;
 type ViewId = (typeof VIEWS)[number];
 
-const ROUTES: Record<DoneTarget, string> = { chat: '/chat', settings: '/settings' };
+const ROUTES: Record<DoneTarget, string> = { chat: '/chat', settings: '/settings?page=llm' };
 
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -28,10 +28,8 @@ export function OnboardingGuide() {
 }
 
 /**
- * The first-run guide.
- *
- * 三步：偏好 → 模型引擎 → 完成。所有写入都走设置页用的同一套 IPC，
- * 所以关掉向导不会留下一个假的配置。
+ * First-run personal assistant guide:
+ * 1. Profile & reply tone → 2. AI Model → 3. Appearance & Buddy → 4. Ready.
  */
 function OnboardingDialog() {
   const { t } = useTranslation();
@@ -39,7 +37,6 @@ function OnboardingDialog() {
   const finish = useOnboarding((state) => state.finish);
   const dismiss = useOnboarding((state) => state.dismiss);
   const status = useOnboarding((state) => state.status);
-  const profile = useCompanyProfile();
   const data = useOnboardingData();
 
   const [phase, setPhase] = useState<'welcome' | 'leaving' | 'wizard'>('welcome');
@@ -50,11 +47,17 @@ function OnboardingDialog() {
 
   const currentId = VIEWS[step] as ViewId;
 
-  const go = useCallback((next: number) => {
-    setDirection(next > step ? 'next' : 'prev');
-    setStep(next);
-    setMaxStep((current) => Math.max(current, next));
-  }, [step]);
+  const go = useCallback(
+    (next: number) => {
+      setDirection(next > step ? 'next' : 'prev');
+      setStep(next);
+      setMaxStep((current) => Math.max(current, next));
+      if (VIEWS[next] === 'done') {
+        void data.reload();
+      }
+    },
+    [data, step],
+  );
 
   const start = () => {
     setPhase('leaving');
@@ -70,13 +73,6 @@ function OnboardingDialog() {
 
   const back = () => (step === 0 ? setPhase('welcome') : go(step - 1));
 
-  /**
-   * Moves the guide forward.
-   *
-   * The hiring step used to commit its selection here through `market.hireCandidate`.
-   * It is gone (docs/v2/00-audit.md §5.4), so nothing on the path to the end of the
-   * guide writes to the database any more — each step writes on its own.
-   */
   const advance = async () => {
     if (currentId === 'done') {
       complete('chat');
@@ -85,14 +81,14 @@ function OnboardingDialog() {
     go(step + 1);
   };
 
-  // Reset scroll and hand focus to the content on every step change.
   useEffect(() => {
     if (phase !== 'wizard') return;
     scrollRef.current?.scrollTo({ top: 0 });
-    if (!scrollRef.current?.contains(document.activeElement)) scrollRef.current?.focus({ preventScroll: true });
+    if (!scrollRef.current?.contains(document.activeElement)) {
+      scrollRef.current?.focus({ preventScroll: true });
+    }
   }, [step, phase]);
 
-  // Enter advances (ignoring IME composition and controls that own Enter); Escape goes back.
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
   const backRef = useRef(back);
@@ -103,7 +99,13 @@ function OnboardingDialog() {
       if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
-      if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
         if (
           tag === 'BUTTON' ||
           tag === 'SELECT' ||
@@ -116,7 +118,12 @@ function OnboardingDialog() {
         event.preventDefault();
         if (phase === 'welcome') start();
         else if (phase === 'wizard') void advanceRef.current();
-      } else if (event.key === 'Escape' && phase === 'wizard' && tag !== 'INPUT' && tag !== 'SELECT') {
+      } else if (
+        event.key === 'Escape' &&
+        phase === 'wizard' &&
+        tag !== 'INPUT' &&
+        tag !== 'SELECT'
+      ) {
         backRef.current();
       }
     };
@@ -131,14 +138,15 @@ function OnboardingDialog() {
 
   const content = (() => {
     switch (currentId) {
-      case 'general':
-        return <StepGeneral />;
+      case 'profile':
+        return <StepProfile />;
       case 'model':
         return <StepModel />;
+      case 'general':
+        return <StepGeneral />;
       case 'done':
         return (
           <StepDone
-            workers={data.workers}
             providers={data.providers}
             defaults={data.defaults}
             thinking={data.thinking}
@@ -158,22 +166,59 @@ function OnboardingDialog() {
       <AuroraBackdrop dimmed={phase === 'wizard'} />
 
       {phase !== 'wizard' ? (
-        <WelcomeHero
-          workers={data.workers}
-          providers={data.providers}
-          leaving={phase === 'leaving'}
-          onStart={start}
-          onSkip={skipAll}
-        />
+        <WelcomeHero leaving={phase === 'leaving'} onStart={start} onSkip={skipAll} />
       ) : (
         <div className="absolute inset-0 flex flex-col">
-          <header className="onb-fade flex h-16 shrink-0 items-center justify-between px-8 lg:px-12">
+          <header className="onb-fade flex h-16 shrink-0 items-center justify-between gap-4 px-8 lg:px-12">
             <div className="flex min-w-0 items-center gap-2.5">
-              <CompanyMark name={companyName(profile, t('company.fallbackName'))} colorId={profile.colorId} src={profile.logo} size={28} />
+              <BuddyMark size="xs" animated={false} showAura={false} showShadow={false} />
               <span className="truncate text-md font-semibold tracking-tight text-ink">
-                {companyName(profile, t('company.fallbackName'))}
+                {t('onboarding.welcome.brandName')}
               </span>
             </div>
+
+            {/* Labeled horizontal stepper */}
+            <nav
+              aria-label={t('onboarding.stepNav')}
+              className="hidden items-center gap-1 rounded-full border border-line bg-surface/80 p-1 md:flex"
+            >
+              {VIEWS.map((id, index) => {
+                const active = index === step;
+                const completed = index < step;
+                const reachable = index <= maxStep && index !== step;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={!reachable}
+                    onClick={() => go(index)}
+                    className={cn(
+                      'inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs transition-all',
+                      active
+                        ? 'bg-accent font-semibold text-white'
+                        : reachable
+                          ? 'cursor-pointer text-ink-secondary hover:bg-surface-muted hover:text-ink'
+                          : 'text-ink-quaternary',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'inline-flex size-4 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums',
+                        active
+                          ? 'bg-white/20 text-white'
+                          : completed
+                            ? 'bg-success/15 text-success'
+                            : 'bg-surface-muted text-ink-tertiary',
+                      )}
+                    >
+                      {completed ? <Check className="size-2.5" strokeWidth={3} /> : index + 1}
+                    </span>
+                    <span>{t(`onboarding.step.${id}`)}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
             <button
               type="button"
               onClick={() => (status === 'pending' ? skipAll() : dismiss())}
@@ -185,17 +230,21 @@ function OnboardingDialog() {
           </header>
 
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 pb-8">
-            <section className="onb-panel-in flex max-h-full w-full max-w-[52.5rem] flex-col overflow-hidden rounded-[1.75rem] border border-line bg-surface/95 shadow-[0_32px_90px_-24px_rgba(15,23,42,0.14),0_2px_8px_rgba(15,23,42,0.04)] backdrop-blur-2xl">
-              <div ref={scrollRef} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto outline-none select-text">
+            <section className="onb-panel-in flex max-h-full w-full max-w-[54rem] flex-col overflow-hidden rounded-[1.75rem] border border-line bg-surface/95 shadow-[0_32px_90px_-24px_rgba(15,23,42,0.14),0_2px_8px_rgba(15,23,42,0.04)] backdrop-blur-2xl">
+              <div
+                ref={scrollRef}
+                tabIndex={-1}
+                className="min-h-0 flex-1 overflow-y-auto outline-none select-text"
+              >
                 <div
                   key={step}
-                  className={`px-9 pt-9 pb-8 sm:px-12 ${direction === 'next' ? 'onb-slide-next' : 'onb-slide-prev'}`}
+                  className={`px-8 pt-8 pb-7 sm:px-11 ${direction === 'next' ? 'onb-slide-next' : 'onb-slide-prev'}`}
                 >
                   {content}
                 </div>
               </div>
 
-              <footer className="grid h-[4.25rem] shrink-0 grid-cols-3 items-center border-t border-line bg-surface/80 px-9 sm:px-12">
+              <footer className="grid h-[4.25rem] shrink-0 grid-cols-3 items-center border-t border-line bg-surface/80 px-8 sm:px-11">
                 <div className="flex items-center">
                   <button
                     type="button"
@@ -211,7 +260,11 @@ function OnboardingDialog() {
                   </button>
                 </div>
 
-                <div className="flex items-center justify-center gap-2" role="tablist" aria-label={t('onboarding.stepNav')}>
+                <div
+                  className="flex items-center justify-center gap-2"
+                  role="tablist"
+                  aria-label={t('onboarding.stepNav')}
+                >
                   {VIEWS.map((id, index) => {
                     const active = index === step;
                     const reachable = index <= maxStep && index !== step;

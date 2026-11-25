@@ -53,6 +53,10 @@ export interface Conversation {
   messages: Message[];
 }
 
+export const MAX_CHAT_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 20;
+export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 250 * 1024 * 1024;
+
 /** A user-provided file reference. The bytes stay on disk; the runtime carries this path. */
 export interface ChatAttachmentRef {
   id: string;
@@ -96,6 +100,7 @@ export type ChatContentBlock =
       tool: string;
       browser?: { action: string; url?: string; preview?: string; sessionId?: string };
       desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+      shell?: { command: string; cwd?: string };
       title: string;
       body: string;
       state: 'pending' | 'allowed' | 'denied';
@@ -447,6 +452,8 @@ export interface CompanyProfile {
   colorId: string;
   /** What you are called in the UI ("我" by default). */
   userName: string;
+  /** Custom display name for the chat assistant ("Buddy" by default). */
+  assistantName: string;
   /** Uploaded logo as a base64 data URL; absent = monogram. */
   logo?: string;
   /** Uploaded avatar as a base64 data URL; absent = initials. */
@@ -464,6 +471,7 @@ export interface CompanyProfilePatch {
   goal?: string;
   colorId?: string;
   userName?: string;
+  assistantName?: string;
   /** Data URL; `''` removes the uploaded image. */
   logo?: string;
   userAvatar?: string;
@@ -591,7 +599,7 @@ export interface ImageModelCapabilities {
 export interface ModelOption {
   id: string;
   name: string;
-  capability: Exclude<ModelCapability, 'video'>;
+  capability: ModelCapability;
   /** Context window in tokens; compaction thresholds are derived from it. */
   contextWindow?: number;
   /** API kind of this model (`openai-completions`, `anthropic-messages`, ...). */
@@ -605,6 +613,8 @@ export interface ModelOption {
   outputUsdPerM?: number;
   cacheReadUsdPerM?: number;
   cacheWriteUsdPerM?: number;
+  /** USD per generated second for video models (Settings → Video). */
+  usdPerSecond?: number;
   /** Context-bucket pricing: rates above `inputTokensAbove` input tokens. */
   tiers?: PriceTier[];
   /**
@@ -617,6 +627,8 @@ export interface ModelOption {
   imageEnabled?: boolean;
   /** Parameters the model accepts when used by `generate_image`. */
   imageParameters?: ImageModelCapabilities;
+  /** Switched on for video generation (Settings → Video). */
+  videoEnabled?: boolean;
   /**
    * Switched on for speech (Settings → Voice). Separate from `capability`
    * because the LLM page materialises a provider's whole catalog, voice models
@@ -663,17 +675,20 @@ export function isLlmProvider(provider: {
   scope?: ProviderScope;
   models?: readonly { capability?: string }[];
 }): boolean {
-  if (provider.scope === 'decision') return false;
+  if (provider.scope === 'decision' || provider.scope === 'video') return false;
   const models = provider.models ?? [];
   // Empty means "just created, no models yet" — that row is still being set up,
   // so it stays where it was created instead of vanishing from both pages.
-  return !(models.length > 0 && models.every((model) => model.capability === 'classifier'));
+  return !(
+    models.length > 0 &&
+    models.every((model) => model.capability === 'classifier' || model.capability === 'video')
+  );
 }
 
 export interface CatalogModel {
   id: string;
   name: string;
-  type: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
+  type: 'chat' | 'image' | 'video' | 'classifier' | 'asr' | 'tts';
   api: string;
   contextWindow?: number;
   reasoning?: boolean;
@@ -689,6 +704,8 @@ export interface CatalogModel {
   vision?: boolean;
   /** Parameters the model accepts when used by `generate_image`. */
   imageParameters?: ImageModelCapabilities;
+  /** USD per generated second for video models. */
+  usdPerSecond?: number;
   price?: {
     input: number;
     output: number;
@@ -708,7 +725,7 @@ export interface CatalogProvider {
   id: string;
   baseUrl: string;
   apis: string[];
-  counts: { chat: number; image: number; classifier: number; asr: number; tts: number };
+  counts: { chat: number; image: number; video: number; classifier: number; asr: number; tts: number };
   models: CatalogModel[];
 }
 
@@ -739,7 +756,7 @@ export interface CompactionSettings {
  * `llm`: they ship with the app and one row may serve chat and decisions at once
  * (OpenRouter is both). The field only decides *visibility*, never capability.
  */
-export type ProviderScope = 'llm' | 'decision';
+export type ProviderScope = 'llm' | 'decision' | 'video';
 
 export interface ProviderConfig {
   id: string;
@@ -770,12 +787,13 @@ export interface ProviderConfig {
  * write from the renderer — the kind of bug nobody notices until a setting
  * refuses to stick.
  */
-export type ModelRole = 'llm' | 'router' | 'image' | 'asr' | 'tts' | 'decision';
+export type ModelRole = 'llm' | 'router' | 'image' | 'video' | 'asr' | 'tts' | 'decision';
 
 export const MODEL_ROLES: readonly ModelRole[] = [
   'llm',
   'router',
   'image',
+  'video',
   'asr',
   'tts',
   'decision',
@@ -795,6 +813,7 @@ export interface ModelDefaults {
    */
   router: ModelRef | null;
   image: ModelRef | null;
+  video: ModelRef | null;
   /** Speech recognition (microphone input). */
   asr: ModelRef | null;
   /** Speech synthesis (read aloud). */
@@ -1471,3 +1490,18 @@ export interface RouterContextStats {
   busy: boolean;
   compacting: boolean;
 }
+
+export type WindowsShellMode = 'ask' | 'auto' | 'disabled';
+
+export interface ShellExecutionSettings {
+  windowsMode: WindowsShellMode;
+}
+
+export interface ShellExecutionStatus {
+  settings: ShellExecutionSettings;
+  platform: string;
+  sandboxBackend: 'seatbelt' | 'bwrap' | 'windows-guarded' | 'none';
+  sandboxDetail: string;
+}
+
+export type ApprovalPermitScope = 'once' | 'task' | 'always';

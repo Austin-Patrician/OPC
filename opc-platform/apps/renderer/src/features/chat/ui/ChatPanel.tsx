@@ -11,6 +11,8 @@ import {
   prependOlderMessages,
   type MessageStreamState,
 } from '../lib/messageList';
+import { assistantName } from '@/entities/company/model/options';
+import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
 import type { ChatAttachmentRef } from '@opc/shared/domain';
 import type { AssistantActivityPhase, ChatMessagePage } from '@opc/shared/ipc';
@@ -86,6 +88,17 @@ export function ChatPanel({
 
   useEffect(() => {
     setStreamState((current) => {
+      if (conversation.messages.length === 0) {
+        if (current.messages.length === 0 && current.firstItemIndex === INITIAL_FIRST_ITEM_INDEX) {
+          return current;
+        }
+        const emptyState: MessageStreamState = {
+          messages: [],
+          firstItemIndex: INITIAL_FIRST_ITEM_INDEX,
+        };
+        streamStateRef.current = emptyState;
+        return emptyState;
+      }
       const merged = mergeSnapshotMessages(current.messages, conversation.messages);
       if (merged === current.messages) return current;
       const next = { ...current, messages: merged };
@@ -169,6 +182,8 @@ export function ChatPanel({
 
 function WelcomeCanvas({ onSend }: { onSend: (text: string) => void }) {
   const { t } = useTranslation();
+  const profile = useCompanyProfile();
+  const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
   return (
     <div className="buddy-welcome min-h-0 flex-1 overflow-y-auto px-6">
       <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col items-center justify-center py-6 text-center">
@@ -181,7 +196,7 @@ function WelcomeCanvas({ onSend }: { onSend: (text: string) => void }) {
           {t('chat.welcome.online')}
         </div>
         <h1 className="buddy-welcome-title mt-3 text-[22px] font-bold tracking-tight">
-          {t('chat.welcome.title')}
+          {t('chat.welcome.title', { name: currentAssistantName })}
         </h1>
         <p className="buddy-welcome-copy mt-1.5 max-w-[440px] text-[13.5px] leading-relaxed">
           {t('chat.welcome.description')}

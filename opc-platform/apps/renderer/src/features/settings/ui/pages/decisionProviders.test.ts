@@ -20,7 +20,7 @@ const catalogProvider = (over: Partial<CatalogProvider> = {}): CatalogProvider =
   id: 'typesafe',
   baseUrl: 'https://api.typesafe.ai/v1',
   apis: ['typesafe-system-one'],
-  counts: { chat: 0, image: 0, classifier: 1, asr: 0, tts: 0 },
+  counts: { chat: 0, image: 0, video: 0, classifier: 1, asr: 0, tts: 0 },
   models: [classifier()],
   ...over,
 });

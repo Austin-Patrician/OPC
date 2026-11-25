@@ -1,4 +1,5 @@
-import type { WorkTask } from '@opc/shared/domain';
+import path from 'node:path';
+import type { ChatAttachmentRef, WorkTask } from '@opc/shared/domain';
 import type { Context } from '@earendil-works/chord/context';
 import type { ModelRef } from '@opc/shared/domain';
 import type { ContextEdit, Conversation, ConversationId, Harness } from '@earendil-works/pi-durable';
@@ -7,7 +8,8 @@ import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { registerTraceRecorder, type TraceRecorder } from './trace';
 import { childStatusLabel } from './children';
-import { diffCost, diffUsage, priceUsage } from './usage';
+import { calculateTokenCost, diffCostBreakdown, diffTokenDetails } from './usage';
+import { stageAttachmentsToWorkspace } from './workspace';
 
 export interface HarnessBrainDeps {
   /** The runtime this task runs in (keyed by worker, not by person). */
@@ -20,7 +22,12 @@ export interface HarnessBrainDeps {
   model: (identity: RuntimeIdentity) => ModelRef | null;
   thinking: () => string;
   /** USD per 1M tokens for the selected model. */
-  price: (model: ModelRef) => { inputUsdPerM: number; outputUsdPerM: number };
+  price: (model: ModelRef) => {
+    inputUsdPerM: number;
+    outputUsdPerM: number;
+    cacheReadUsdPerM?: number;
+    cacheWriteUsdPerM?: number;
+  };
   onTokens: (taskId: string, tokens: number) => void;
   recordUsage?: (usage: {
     taskId: string;
@@ -29,6 +36,9 @@ export interface HarnessBrainDeps {
     modelId: string;
     input: number;
     output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    reasoning?: number;
     total: number;
     costUsd?: number;
     providerCostUsd?: number;
@@ -294,9 +304,32 @@ export class HarnessBrain implements TaskBrain {
       this.deps.onTaskCheckpoint?.(task.id, checkpointId);
     }
 
+    const sourceAttachments = task.contract?.attachments ?? [];
+    const { staged, missing } = stageAttachmentsToWorkspace(workspaceDir, sourceAttachments);
+    if (staged.length > 0) {
+      log(`已将 ${staged.length} 个附件复制到工作区 inputs/`);
+    }
+    if (missing.length > 0) {
+      log(`部分附件未复制：${missing.map((item) => `${item.name}（${item.reason}）`).join('；')}`);
+    }
+
+    const promptAttachments: ChatAttachmentRef[] = staged.map((attachment) => ({
+      ...attachment,
+      path: path.relative(workspaceDir, attachment.path).replaceAll('\\', '/'),
+    }));
+    const promptTask: WorkTask = task.contract
+      ? {
+          ...task,
+          contract: {
+            ...task.contract,
+            attachments: promptAttachments,
+          },
+        }
+      : task;
+
     // The sandbox hook needs to know which directory this conversation may touch.
     registerSandboxWorkspace(conversation.id, workspaceDir);
-    registerSandboxAttachments(conversation.id, task.contract?.attachments ?? []);
+    registerSandboxAttachments(conversation.id, staged);
 
     // 动作流：从这一刻起，模型每调一个工具都会落一行（`opc.trace` 那个 hook 负责写）。
     // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
@@ -313,8 +346,8 @@ export class HarnessBrain implements TaskBrain {
 
     const promptContent =
       reusedWarmConversation && (task.turnMode === 'append' || task.turnMode === 'pivot') && !feedback
-        ? buildDeltaPrompt(task)
-        : buildPrompt(task, feedback);
+        ? buildDeltaPrompt(promptTask, missing)
+        : buildPrompt(promptTask, feedback, missing);
 
     this.live.set(task.id, conversation);
     try {
@@ -325,19 +358,30 @@ export class HarnessBrain implements TaskBrain {
       const settled = await submission.wait(ctx);
 
       const after = await harness.usage(ctx);
-      // pi 报过钱就用它的（它知道缓存价与分档价），没报才按配置的单价算——所以没有
-      // 价目表的 provider 也能得到一个可预期的 0。
-      const { tokens: spent, costUsd } = priceUsage(before, after, this.deps.price(model));
-      // pi usage cost is calculated from its local model price table; it is not
-      // evidence of an amount reported by the upstream provider.
-      const configuredCostUsd = Math.max(diffCost(before, after), costUsd) || undefined;
-      const costSource: 'configured' | 'unpriced' = configuredCostUsd ? 'configured' : 'unpriced';
+      const delta = diffTokenDetails(before, after);
+      const costDelta = diffCostBreakdown(before, after);
+      const fallbackCost = calculateTokenCost(delta, this.deps.price(model));
+      const providerCostUsd =
+        costDelta.providerCostUsd > 0 ? costDelta.providerCostUsd : undefined;
+      const configuredCostUsd =
+        Math.max(costDelta.configuredCostUsd, fallbackCost) || undefined;
+      const effectiveCost = providerCostUsd ?? configuredCostUsd ?? 0;
+      const costSource: 'provider' | 'configured' | 'unpriced' = providerCostUsd
+        ? 'provider'
+        : configuredCostUsd
+          ? 'configured'
+          : 'unpriced';
+      const spent = delta.total;
       const finishedAt = Date.now();
-      const delta = diffUsage(before, after);
       const usageRecord = {
-        ...delta,
+        input: delta.input,
+        output: delta.output,
+        cacheRead: delta.cacheRead,
+        cacheWrite: delta.cacheWrite,
+        ...(delta.reasoning > 0 ? { reasoning: delta.reasoning } : {}),
         total: spent,
-        ...(costUsd > 0 ? { costUsd } : {}),
+        ...(effectiveCost > 0 ? { costUsd: effectiveCost } : {}),
+        ...(providerCostUsd ? { providerCostUsd } : {}),
         ...(configuredCostUsd ? { configuredCostUsd } : {}),
         costSource,
         providerId: model.providerId,
@@ -346,14 +390,18 @@ export class HarnessBrain implements TaskBrain {
         finishedAt,
         durationMs: finishedAt - callStartedAt,
         conversationId: String(conversation.id),
-        status: settled.status === 'done' ? 'ok' as const : 'interrupted' as const,
+        status: settled.status === 'done' ? ('ok' as const) : ('interrupted' as const),
       };
-      this.deps.recordUsage?.({ taskId: task.id, ...(task.workerId ? { workerId: task.workerId } : {}), ...usageRecord });
-      if (spent > 0 || costUsd > 0) {
+      this.deps.recordUsage?.({
+        taskId: task.id,
+        ...(task.workerId ? { workerId: task.workerId } : {}),
+        ...usageRecord,
+      });
+      if (spent > 0 || effectiveCost > 0) {
         reportUsage?.(usageRecord);
         log(
-          costUsd > 0
-            ? `模型用量：${spent} tokens · $${costUsd.toFixed(4)}`
+          effectiveCost > 0
+            ? `模型用量：${spent} tokens · $${effectiveCost.toFixed(4)}`
             : `模型用量：${spent} tokens（未配置价格）`,
         );
         recorder?.record({
@@ -361,7 +409,7 @@ export class HarnessBrain implements TaskBrain {
           name: '模型用量',
           ok: true,
           tokens: spent,
-          argsDigest: costUsd > 0 ? `$${costUsd.toFixed(4)}` : '',
+          argsDigest: effectiveCost > 0 ? `$${effectiveCost.toFixed(4)}` : '',
         });
       }
 
@@ -405,7 +453,11 @@ export class HarnessBrain implements TaskBrain {
  * 一次尝试的提示词。导出是因为它是**契约**：你改的方向、工作台规定、验收反馈各自
  * 以什么顺序、什么口吻进到执行体眼前，是这套系统对外承诺的一部分，值得单独测。
  */
-export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): string {
+export function buildPrompt(
+  task: WorkTask,
+  feedback?: AcceptanceFeedback,
+  missingAttachments: ReadonlyArray<{ name: string; path: string; reason: string }> = [],
+): string {
   const contract = task.contract ?? {
     objective: task.brief,
     deliverable: task.deliverableSpec,
@@ -430,11 +482,17 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
   }
 
   if (contract.attachments?.length) {
-    lines.push('', '本次输入可读取的文件（只读，可能是用户附件或本会话里先前生成并展示过的产物）：');
+    lines.push('', '本次任务已由系统复制到你工作区 inputs/ 目录的附件（请直接用工作区相对路径读取，不要去访问用户原始外部路径或让用户手动拖拽）：');
     for (const attachment of contract.attachments) {
       lines.push(`- ${attachment.name} · ${attachment.size} bytes · ${attachment.path}`);
     }
-    lines.push('附件可能已被移动或删除；读取失败时如实汇报，不要猜测内容。');
+    lines.push('如读取或处理失败请如实汇报具体原因，不要猜测内容。');
+  }
+  if (missingAttachments.length > 0) {
+    lines.push('', '注意：以下附件未能复制到工作区（请如实向用户说明具体原因，不要猜测内容）：');
+    for (const item of missingAttachments) {
+      lines.push(`- ${item.name}：${item.reason}`);
+    }
   }
 
   // 原始记录（§3.3）：给 ID + 摘要，全文用 recall 取。排在"要求"之前、说明之后——
@@ -531,7 +589,10 @@ export function buildPrompt(task: WorkTask, feedback?: AcceptanceFeedback): stri
  * Concise delta prompt used when a Living Worker resumes an existing warm conversation
  * (`turnMode: 'append' | 'pivot'`). Avoids repeating full cold-start boilerplate.
  */
-export function buildDeltaPrompt(task: WorkTask): string {
+export function buildDeltaPrompt(
+  task: WorkTask,
+  missingAttachments: ReadonlyArray<{ name: string; path: string; reason: string }> = [],
+): string {
   const contract = task.contract ?? {
     objective: task.brief,
     deliverable: task.deliverableSpec,
@@ -558,9 +619,15 @@ export function buildDeltaPrompt(task: WorkTask): string {
     }
   }
   if (contract.attachments?.length) {
-    lines.push('', '本次新增可读取附件（只读）：');
+    lines.push('', '本次任务工作区 inputs/ 目录中已就绪的附件（请直接用工作区相对路径读取，不要访问外部路径或让用户手动拖拽）：');
     for (const attachment of contract.attachments) {
       lines.push(`- ${attachment.name} · ${attachment.size} bytes · ${attachment.path}`);
+    }
+  }
+  if (missingAttachments.length > 0) {
+    lines.push('', '注意：以下附件未能复制到工作区（请如实向用户说明具体原因）：');
+    for (const item of missingAttachments) {
+      lines.push(`- ${item.name}：${item.reason}`);
     }
   }
   if (task.memoryPlaybook && task.memoryPlaybook.length > 0) {

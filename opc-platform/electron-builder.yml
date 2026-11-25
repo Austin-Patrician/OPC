@@ -18,6 +18,10 @@ extraResources:
     to: skill-packs
     filter:
       - '**/*'
+  - from: resources/skills
+    to: skills
+    filter:
+      - '**/*'
 # Native addons and the loadable SQLite extension cannot run from inside asar.
 asarUnpack:
   - '**/*.node'

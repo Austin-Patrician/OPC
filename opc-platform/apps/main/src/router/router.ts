@@ -404,7 +404,11 @@ export function composeInput(
       if (body) lines.push(indent(spillText(body, `recall ${event.id}`, perItem)));
       const attachments = attachmentsOfPayload(event.payload);
       if (attachments.length > 0) {
-        lines.push(indent(`已授权附件（只读）：${attachments.map((attachment) => `${attachment.name} · ${attachment.path}`).join('；')}`));
+        lines.push(
+          indent(
+            `已上传附件（派发 open_line_of_work / continue_line / steer_line 时系统会自动把文件本体复制到目标工作区的 inputs/ 目录，执行体可直接读取 inputs/<文件名>，切勿说“只收到路径”或要求用户手动拖入工作区）：${attachments.map((attachment) => `${attachment.name} · ${attachment.path}`).join('；')}`,
+          ),
+        );
       }
     }
   }

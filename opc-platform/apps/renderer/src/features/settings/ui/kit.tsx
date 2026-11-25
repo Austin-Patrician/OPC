@@ -57,9 +57,14 @@ export function Section({
 }) {
   return (
     <section className={cn('overflow-hidden rounded-xl border border-line bg-surface', className)}>
-      <div className="flex items-start justify-between gap-3 border-b border-line px-4 pt-3.5 pb-3">
+      <div
+        className={cn(
+          'flex justify-between gap-3 border-b border-line px-4 py-3',
+          description ? 'items-start' : 'items-center',
+        )}
+      >
         <div className="min-w-0">
-          <h3 className="text-base-plus font-semibold text-ink">{title}</h3>
+          <h3 className="text-base-plus leading-snug font-semibold text-ink">{title}</h3>
           {description ? (
             <p className="mt-0.5 text-xs-plus leading-relaxed text-ink-tertiary">{description}</p>
           ) : null}

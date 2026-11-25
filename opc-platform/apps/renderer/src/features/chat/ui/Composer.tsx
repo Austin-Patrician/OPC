@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowUp, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react';
-import type { ChatAttachmentRef } from '@opc/shared/domain';
+import {
+  MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE,
+  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
+  type ChatAttachmentRef,
+} from '@opc/shared/domain';
 import { useTranslation } from 'react-i18next';
 import { useModels } from '@/features/models/model/useModels';
 import { useVoiceRecorder } from '../model/useVoiceRecorder';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
+import { assistantName } from '@/entities/company/model/options';
+import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { emitBuddySignal } from '@/shared/ui/buddyEvents';
 
 /** Maximum visible rows before the composer starts scrolling. */
@@ -23,6 +30,9 @@ interface ComposerProps {
 /** Floating editorial two-row composer card aligned with the 760px message column. */
 export function Composer({ onSend, history, busy = false, onStop }: ComposerProps) {
   const { t } = useTranslation();
+  const profile = useCompanyProfile();
+  const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
+  const inputPlaceholder = t('chat.inputPlaceholder', { name: currentAssistantName });
   const [text, setText] = useState('');
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [historyDraft, setHistoryDraft] = useState('');
@@ -103,17 +113,41 @@ export function Composer({ onSend, history, busy = false, onStop }: ComposerProp
   const voice = useVoiceRecorder({ onTranscript: handleTranscript, onError: handleVoiceError });
   const canSend = text.trim().length > 0 || attachments.length > 0;
 
+  const appendAttachments = useCallback((incoming: readonly ChatAttachmentRef[]) => {
+    setAttachments((current) => {
+      const merged = [...current];
+      let totalBytes = merged.reduce((sum, item) => sum + item.size, 0);
+      for (const item of incoming) {
+        if (item.size > MAX_CHAT_ATTACHMENT_BYTES) {
+          setAttachmentError('单个附件不能超过 100MB');
+          continue;
+        }
+        if (merged.length >= MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
+          setAttachmentError(`单条消息最多添加 ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} 个附件`);
+          break;
+        }
+        if (totalBytes + item.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+          setAttachmentError('单条消息附件总大小不能超过 250MB');
+          continue;
+        }
+        merged.push(item);
+        totalBytes += item.size;
+      }
+      return merged;
+    });
+  }, []);
+
   const addFiles = useCallback(async (files: File[]) => {
     setAttachmentError(null);
     const refs: ChatAttachmentRef[] = [];
     for (const file of files) {
       const filePath = (file as File & { path?: string }).path;
       if (!filePath) { setAttachmentError('无法读取该文件路径'); continue; }
-      if (file.size > 500 * 1024 * 1024) { setAttachmentError('单个附件不能超过 500MB'); continue; }
+      if (file.size > MAX_CHAT_ATTACHMENT_BYTES) { setAttachmentError('单个附件不能超过 100MB'); continue; }
       refs.push({ id: `${filePath}:${file.size}`, name: file.name, path: filePath, size: file.size, ...(file.type ? { mimeType: file.type } : {}), source: 'file', availability: 'available' });
     }
-    setAttachments((current) => [...current, ...refs].slice(0, 20));
-  }, []);
+    if (refs.length > 0) appendAttachments(refs);
+  }, [appendAttachments]);
 
   const submit = () => {
     const value = text.trim();
@@ -233,17 +267,17 @@ export function Composer({ onSend, history, busy = false, onStop }: ComposerProp
             }
           }}
           onKeyDown={onKeyDown}
-          onPaste={(event) => { const files = [...event.clipboardData.files]; const withPath = files.filter((file) => Boolean((file as File & { path?: string }).path)); if (withPath.length) { event.preventDefault(); void addFiles(withPath); } else { const item = [...event.clipboardData.items].find((entry) => entry.kind === 'file'); if (item) { event.preventDefault(); const blob = item.getAsFile(); if (blob) void blob.arrayBuffer().then((bytes) => window.opc!.chat.materializeClipboardAttachment({ name: blob.name || `pasted-${Date.now()}`, mimeType: blob.type, bytes })).then((ref) => setAttachments((current) => [...current, ref].slice(0, 20))).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error))); } } }}
+          onPaste={(event) => { const files = [...event.clipboardData.files]; const withPath = files.filter((file) => Boolean((file as File & { path?: string }).path)); if (withPath.length) { event.preventDefault(); void addFiles(withPath); } else { const item = [...event.clipboardData.items].find((entry) => entry.kind === 'file'); if (item) { event.preventDefault(); const blob = item.getAsFile(); if (blob) { if (blob.size > MAX_CHAT_ATTACHMENT_BYTES) { setAttachmentError('单个附件不能超过 100MB'); return; } setAttachmentError(null); void blob.arrayBuffer().then((bytes) => window.opc!.chat.materializeClipboardAttachment({ name: blob.name || `pasted-${Date.now()}`, mimeType: blob.type, bytes })).then((ref) => appendAttachments([ref])).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error))); } } } }}
           autoFocus
-          placeholder={t('chat.inputPlaceholder')}
-          aria-label={t('chat.inputPlaceholder')}
+          placeholder={inputPlaceholder}
+          aria-label={inputPlaceholder}
           className="buddy-composer-input chat-scrollbar-reveal w-full min-w-0 resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-[14.5px] leading-[1.55] outline-none"
         />
         <div className="flex items-center justify-between gap-2 px-2.5 pt-1 pb-2.5">
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => void window.opc!.chat.chooseAttachments().then((chosen) => setAttachments((current) => [...current, ...chosen].slice(0, 20))).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error)))}
+              onClick={() => { setAttachmentError(null); void window.opc!.chat.chooseAttachments().then((chosen) => appendAttachments(chosen)).catch((error) => setAttachmentError(error instanceof Error ? error.message : String(error))); }}
               title={t('chat.action.attach')}
               aria-label={t('chat.action.attach')}
               className="buddy-composer-icon size-8 rounded-lg text-ink-tertiary hover:bg-surface-hover hover:text-ink"

@@ -1,5 +1,7 @@
 import type {
+  ApprovalPermitScope,
   AttentionLevel,
+  ChatAttachmentRef,
   TaskStatus,
   ToolPolicy,
   LinkType,
@@ -31,6 +33,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createSandboxExtension } from '../sandbox/extension';
+import { OpcExecutionEnv } from '../sandbox/executionEnv';
+import type { ShellExecutionSettingsStore } from '../sandbox/settings';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type { UsageRepository } from '../data/usageRepository';
 import type { FaultSink } from '../data/systemEventRepository';
@@ -44,6 +48,7 @@ import { mountMcp, type McpMount } from '../mcp/extension';
 import { sharedMcpConnection } from '../mcp/connection';
 import type { DecisionService } from '../models/decisionService';
 import type { ImageService } from '../models/imageService';
+import type { VideoService } from '../models/videoService';
 import type { SpeechService } from '../models/speechService';
 import type { FactService } from '../memory/factService';
 import type { MarkdownMemoryStore } from '../memory/markdownMemoryStore';
@@ -54,6 +59,7 @@ import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
+import { resolveChargedCost } from './usage';
 import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { threadOutcomeFor } from './threadOutcome';
@@ -62,11 +68,12 @@ import { subjectOfWorker, type RegistrySubject } from './registrySubject';
 import { createDecomposeToolExtension } from './decomposeTool';
 import { createDecisionToolExtension } from './decisionTool';
 import { createImageToolExtension } from './imageTool';
+import { createVideoToolExtension } from './videoTool';
 import { createOcrToolExtension } from './ocrTool';
 import { createSpeechToolExtension } from './speechTool';
 import { createRememberToolExtension } from '../memory/rememberTool';
 import { buildRecords, type RecordSource } from './records';
-import { ensureDir, listWorkspaceFiles } from './workspace';
+import { ensureDir, listWorkspaceFiles, stageAttachmentsToWorkspace } from './workspace';
 import { createInvestigateToolExtension } from './investigateTool';
 import { AssistantEntry, configure } from '@earendil-works/pi-durable';
 import {
@@ -131,6 +138,26 @@ function contractOf(task: Pick<WorkTask, 'contract' | 'brief' | 'deliverableSpec
   return task.contract ?? { objective: task.brief, deliverable: task.deliverableSpec, outputs: [] };
 }
 
+function mergeAttachments(
+  existing?: readonly ChatAttachmentRef[],
+  incoming?: readonly ChatAttachmentRef[],
+): ChatAttachmentRef[] {
+  const byKey = new Map<string, ChatAttachmentRef>();
+  const keyOf = (rawPath: string) => {
+    const resolved = path.resolve(rawPath);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  for (const item of existing ?? []) {
+    if (!item.path?.trim()) continue;
+    byKey.set(keyOf(item.path), item);
+  }
+  for (const item of incoming ?? []) {
+    if (!item.path?.trim()) continue;
+    byKey.set(keyOf(item.path), item);
+  }
+  return [...byKey.values()];
+}
+
 function currentTaskIdFor(runtimeKey: string, fallbackOwnerId?: string): string | undefined {
   return runningTaskByWorker.get(runtimeKey) ?? (fallbackOwnerId ? runningTaskByWorker.get(fallbackOwnerId) : undefined);
 }
@@ -170,10 +197,19 @@ export interface WorkServiceDeps {
   /** Injects / updates the task card in the conversation. */
   upsertTaskCard: (task: WorkTask) => void;
   /** Delivers an interactive approval to the Router chat. */
-  onApprovalCard?: (input: { report: WorkReport; task: WorkTask; tool: string; browser?: { action: string; url?: string; preview?: string; sessionId?: string }; desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string } }) => void;
+  onApprovalCard?: (input: {
+    report: WorkReport;
+    task: WorkTask;
+    tool: string;
+    browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+    desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+    shell?: { command: string; cwd?: string };
+  }) => void;
   onApprovalResolved?: (reportId: string, state: 'allowed' | 'denied') => void;
+  shellExecution?: ShellExecutionSettingsStore;
   modelConfig?: ModelConfigService;
   images?: ImageService;
+  videos?: VideoService;
   /** Speech recognition / synthesis; each tool is installed only when usable. */
   speech?: SpeechService;
   /**
@@ -259,6 +295,9 @@ export class WorkService {
    * 而连接本身是进程级共享的——真正要省的是"每次重新读一遍目录"。
    */
   private readonly mcpMounts = new Map<string, Promise<McpMount>>();
+  private readonly mcpMountDesktop = new Map<string, boolean>();
+  /** One-shot approval permits (`scope: 'once'`), keyed by `${taskId}:${tool}`. */
+  private readonly oneShotPermits = new Map<string, number>();
   /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
@@ -311,6 +350,8 @@ export class WorkService {
             return {
               inputUsdPerM: model?.inputUsdPerM ?? 0,
               outputUsdPerM: model?.outputUsdPerM ?? 0,
+              ...(model?.cacheReadUsdPerM !== undefined ? { cacheReadUsdPerM: model.cacheReadUsdPerM } : {}),
+              ...(model?.cacheWriteUsdPerM !== undefined ? { cacheWriteUsdPerM: model.cacheWriteUsdPerM } : {}),
             };
           },
           onTokens: (taskId, tokens) => this.repository.addTokens(taskId, tokens),
@@ -318,39 +359,37 @@ export class WorkService {
             const mode = deps.pricingMode?.() ?? 'provider_first';
             const providerCost = usage.providerCostUsd;
             const configuredCost = usage.configuredCostUsd;
-            const chargedCost = mode === 'provider_only'
-              ? providerCost
-              : mode === 'configured_only'
-                ? configuredCost
-                : providerCost ?? configuredCost;
-            const costSource = chargedCost === undefined
-              ? 'unpriced'
-              : chargedCost === providerCost
-                ? 'provider'
-                : 'configured';
+            const { chargedCostUsd: chargedCost, costSource } = resolveChargedCost(
+              mode,
+              providerCost,
+              configuredCost,
+            );
             deps.usageRepository?.recordSafely({
-            idempotencyKey: `pi:${usage.conversationId}:${usage.startedAt}`,
-            startedAt: usage.startedAt,
-            finishedAt: usage.finishedAt,
-            durationMs: usage.durationMs,
-            workerId: usage.workerId,
-            taskId: usage.taskId,
-            conversationId: usage.conversationId,
-            capability: 'chat',
-            operation: 'pi conversation usage delta',
-            origin: 'worker',
-            providerId: usage.providerId,
-            modelId: usage.modelId,
-            status: usage.status,
-            inputTokens: usage.input,
-            outputTokens: usage.output,
-            totalTokens: usage.total,
-            tokenSource: 'pi.session-delta',
-            billingUnit: 'token',
-            ...(providerCost !== undefined ? { providerCostUsd: providerCost } : {}),
-            ...(configuredCost !== undefined ? { configuredCostUsd: configuredCost } : {}),
-            ...(chargedCost !== undefined ? { chargedCostUsd: chargedCost } : {}),
-            costSource,
+              idempotencyKey: `pi:${usage.conversationId}:${usage.startedAt}`,
+              startedAt: usage.startedAt,
+              finishedAt: usage.finishedAt,
+              durationMs: usage.durationMs,
+              workerId: usage.workerId,
+              taskId: usage.taskId,
+              conversationId: usage.conversationId,
+              capability: 'chat',
+              operation: 'pi conversation usage delta',
+              origin: 'worker',
+              providerId: usage.providerId,
+              modelId: usage.modelId,
+              status: usage.status,
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+              cacheReadTokens: usage.cacheRead ?? 0,
+              cacheWriteTokens: usage.cacheWrite ?? 0,
+              ...(usage.reasoning && usage.reasoning > 0 ? { reasoningTokens: usage.reasoning } : {}),
+              totalTokens: usage.total,
+              tokenSource: 'pi.session-delta',
+              billingUnit: 'token',
+              ...(providerCost !== undefined ? { providerCostUsd: providerCost } : {}),
+              ...(configuredCost !== undefined ? { configuredCostUsd: configuredCost } : {}),
+              ...(chargedCost !== undefined ? { chargedCostUsd: chargedCost } : {}),
+              costSource,
             });
           },
           // 动作流（W6）：工具调用、失败、用量都落 `task_trace`，Router 不读它；仅向 UI 推送轻量侧带进度。
@@ -420,6 +459,9 @@ export class WorkService {
         if (this.deps.desktop) void this.deps.desktop.disposeTask(taskId);
         // 放行条属于那条正在跑的活：活收尾了它就没有意义（下一次要重新问）。
         this.repository.clearMcpPermits(taskId);
+        for (const key of this.oneShotPermits.keys()) {
+          if (key.startsWith(`${taskId}:`)) this.oneShotPermits.delete(key);
+        }
         const finishedWorkers: string[] = [];
         for (const [runtimeKey, running] of runningTaskByWorker) {
           if (running === taskId) {
@@ -745,7 +787,11 @@ export class WorkService {
   steerThread = async (
     threadId: string,
     note: string,
-    options?: { updatedObjective?: string; updatedOutputs?: TaskContract['outputs'] },
+    options?: {
+      updatedObjective?: string;
+      updatedOutputs?: TaskContract['outputs'];
+      attachments?: ChatAttachmentRef[];
+    },
   ): Promise<{ ok: boolean; reason?: string; live: number; queued: number; continuedTaskId?: string }> => {
     const text = note.trim();
     if (!text) return { ok: false, reason: '改方向总得说清楚改什么', live: 0, queued: 0 };
@@ -763,6 +809,7 @@ export class WorkService {
           instruction: options?.updatedObjective?.trim() || text,
           mode: 'append',
           ...(options?.updatedOutputs ? { updatedOutputs: options.updatedOutputs } : {}),
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
         });
         if (continued.ok) {
           return { ok: true, live: 0, queued: 1, ...(continued.taskId ? { continuedTaskId: continued.taskId } : {}) };
@@ -785,16 +832,39 @@ export class WorkService {
 
     let live = 0;
     for (const task of open) {
-      if (options?.updatedObjective || options?.updatedOutputs) {
+      let effectiveNote = text;
+      const incomingAttachments = options?.attachments ?? [];
+      let mergedAttachments: ChatAttachmentRef[] | undefined;
+
+      if (incomingAttachments.length > 0) {
+        const workspaceDir = path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath);
+        const { staged, missing } = stageAttachmentsToWorkspace(workspaceDir, incomingAttachments);
+        const relativeStaged = staged.map((attachment) => ({
+          ...attachment,
+          path: path.relative(workspaceDir, attachment.path).replaceAll('\\', '/'),
+        }));
+        mergedAttachments = mergeAttachments(contractOf(task).attachments, relativeStaged);
+        if (staged.length > 0) {
+          const listing = relativeStaged.map((a) => `${a.name} -> ${a.path}`).join('；');
+          effectiveNote += `\n[新附件已复制到工作区 inputs/，请直接用工作区相对路径读取：${listing}]`;
+        }
+        if (missing.length > 0) {
+          const failed = missing.map((m) => `${m.name}（${m.reason}）`).join('；');
+          effectiveNote += `\n[部分附件未能复制到工作区：${failed}]`;
+        }
+      }
+
+      if (options?.updatedObjective || options?.updatedOutputs || mergedAttachments) {
         this.repository.updateContract(task.id, {
-          ...(options.updatedObjective ? { objective: options.updatedObjective } : {}),
-          ...(options.updatedOutputs ? { outputs: options.updatedOutputs } : {}),
+          ...(options?.updatedObjective ? { objective: options.updatedObjective } : {}),
+          ...(options?.updatedOutputs ? { outputs: options.updatedOutputs } : {}),
+          ...(mergedAttachments ? { attachments: mergedAttachments } : {}),
         });
       }
-      this.repository.addSteering(task.id, text);
+      this.repository.addSteering(task.id, effectiveNote);
       // 时间线上留一行：你会想知道这句话到底有没有被带到。
-      this.repository.addStep(task.id, `你改方向：${text}`);
-      if (this.modelBrain && (await this.modelBrain.interject(task.id, text))) live += 1;
+      this.repository.addStep(task.id, `你改方向：${effectiveNote}`);
+      if (this.modelBrain && (await this.modelBrain.interject(task.id, effectiveNote))) live += 1;
     }
     this.threads.touch(threadId);
     return { ok: true, live, queued: open.length - live };
@@ -929,6 +999,7 @@ export class WorkService {
     mode: 'append' | 'pivot';
     updatedOutputs?: TaskContract['outputs'];
     acceptance?: TaskContract['acceptance'];
+    attachments?: ChatAttachmentRef[];
   }): Promise<
     | { ok: true; threadId: string; taskId: string | null; workerId?: string; mode: 'append' | 'pivot' | 'steered' }
     | { ok: false; reason: string }
@@ -944,6 +1015,7 @@ export class WorkService {
       const steered = await this.steerThread(input.threadId, instruction, {
         updatedObjective: instruction,
         ...(input.updatedOutputs ? { updatedOutputs: input.updatedOutputs } : {}),
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       });
       if (!steered.ok) return { ok: false, reason: steered.reason ?? '注入增量要求失败' };
       return {
@@ -1001,11 +1073,13 @@ export class WorkService {
         : baseContract.outputs.length > 0
           ? baseContract.outputs
           : [{ kind: 'text' as const, description: '完成增量改动后的简短结论' }];
+    const mergedAttachments = mergeAttachments(baseContract.attachments, input.attachments);
     const nextContract: TaskContract = {
       ...baseContract,
       objective: instruction,
       deliverable: input.mode === 'pivot' ? instruction : baseContract.deliverable || instruction,
       outputs: nextOutputs,
+      ...(mergedAttachments.length > 0 ? { attachments: mergedAttachments } : {}),
       ...(input.acceptance ? { acceptance: input.acceptance } : {}),
     };
 
@@ -1043,7 +1117,14 @@ export class WorkService {
    * 等级一律 `decide`：拦住一次已经够贵了（它得换个做法或者停在那儿），再降级就等于
    * 让人永远看不到自己被拦住过。
    */
-  askForApproval = (input: { taskId: string; tool: string; title: string; browser?: { action: string; url?: string; preview?: string; sessionId?: string }; desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string } }): void => {
+  askForApproval = (input: {
+    taskId: string;
+    tool: string;
+    title: string;
+    browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+    desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+    shell?: { command: string; cwd?: string };
+  }): void => {
     const task = this.repository.getTask(input.taskId);
     if (!task?.threadId) return;
     this.repository.addStep(task.id, `要你点头：${input.title}`);
@@ -1053,17 +1134,26 @@ export class WorkService {
     const already = this.threads.pendingApproval(task.id, input.tool);
     if (already) return;
 
+    const bodyLines = input.shell
+      ? [
+          `命令：${input.shell.command.length > 260 ? `${input.shell.command.slice(0, 260)}…` : input.shell.command}`,
+          ...(input.shell.cwd ? [`工作区：${input.shell.cwd}`] : []),
+          `（${task.title} · ${task.id}）`,
+          'Windows 暂不支持系统级容器沙箱；允许后将在工作区内本机执行（也可在「设置 → 运行时」调整策略）。',
+        ]
+      : [
+          `它要调 ${input.tool}，这类工具会改动东西或者伸到外面去。`,
+          `（${task.title} · ${task.id}）`,
+          '允许之后，这件活里这个工具不再问你；换一件活会重新问。',
+        ];
+
     const report = this.threads.addReport({
       threadId: task.threadId,
       // The report is retained for audit and card recovery, but approvals are
       // delivered through the Router chat instead of the attention queue.
       level: 'silent',
       title: `要你点头：${input.title}`,
-      body: [
-        `它要调 ${input.tool}，这类工具会改动东西或者伸到外面去。`,
-        `（${task.title} · ${task.id}）`,
-        `允许之后，这件活里这个工具不再问你；换一件活会重新问。`,
-      ].join('\n'),
+      body: bodyLines.join('\n'),
       taskId: task.id,
       // 放行要落回到**这个工具**上，所以它必须是一列，不是标题里的一段话。
       subject: input.tool,
@@ -1071,7 +1161,14 @@ export class WorkService {
     });
     this.threads.setState(task.threadId, 'waiting');
     try {
-      this.deps.onApprovalCard?.({ report, task, tool: input.tool, ...(input.browser ? { browser: input.browser } : {}), ...(input.desktop ? { desktop: input.desktop } : {}) });
+      this.deps.onApprovalCard?.({
+        report,
+        task,
+        tool: input.tool,
+        ...(input.browser ? { browser: input.browser } : {}),
+        ...(input.desktop ? { desktop: input.desktop } : {}),
+        ...(input.shell ? { shell: input.shell } : {}),
+      });
     } catch (error) {
       // A renderer/chat delivery problem must not turn a valid approval pause
       // into a failed task. The report remains available for recovery.
@@ -1098,6 +1195,8 @@ export class WorkService {
     text: string;
     /** 审批行才有意义：允不允许。`question` 行不看它。 */
     allow?: boolean;
+    /** 审批放行范围：单次（once）、本任务内（task，默认）、后续自动执行（always）。 */
+    scope?: ApprovalPermitScope;
   }): Promise<
     { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
   > => {
@@ -1117,7 +1216,14 @@ export class WorkService {
 
     if (report.kind === 'approval') {
       if (!report.subject) return { ok: false, error: '这条审批没记下是哪个工具' };
-      return this.resolveApproval({ report, task, tool: report.subject, text, allow: input.allow === true });
+      return this.resolveApproval({
+        report,
+        task,
+        tool: report.subject,
+        text,
+        allow: input.allow === true,
+        scope: input.scope ?? 'task',
+      });
     }
 
     const question = report.title.replace(/^请示：/, '');
@@ -1163,10 +1269,23 @@ export class WorkService {
     tool: string;
     text: string;
     allow: boolean;
+    scope?: ApprovalPermitScope;
   }): Promise<
     { ok: true; delivered: 'live' | 'next-attempt' | 'new-task' } | { ok: false; error: string }
   > {
-    const { report, task, tool, text, allow } = input;
+    const { report, task, tool, text, allow, scope = 'task' } = input;
+    const grantApprovalPermit = (targetTaskId: string) => {
+      if (!allow) return;
+      if (scope === 'once') {
+        const key = `${targetTaskId}:${tool}`;
+        this.oneShotPermits.set(key, (this.oneShotPermits.get(key) ?? 0) + 1);
+        return;
+      }
+      this.repository.grantMcpPermit(targetTaskId, tool);
+      if (scope === 'always' && tool === 'bash') {
+        this.deps.shellExecution?.set({ windowsMode: 'auto' });
+      }
+    };
     if (report.readAt !== null) {
       // A card can outlive the report resolution (for example after a renderer
       // reload or a duplicate click). Treat the operation as idempotent, but
@@ -1199,7 +1318,7 @@ export class WorkService {
         workerId: task.workerId,
       });
       if (!created.ok) return { ok: false, error: created.error.message };
-      if (allow) this.repository.grantMcpPermit(created.task.id, tool);
+      grantApprovalPermit(created.task.id);
       this.repository.addSteering(created.task.id, note, 'answer');
       this.repository.addStep(created.task.id, allow ? `你允许了：${tool}` : `你不允许：${tool}`);
       if (created.task.threadId) this.threads.setState(created.task.threadId, 'running');
@@ -1207,7 +1326,7 @@ export class WorkService {
       return { ok: true, delivered: 'new-task' };
     }
 
-    if (allow) this.repository.grantMcpPermit(task.id, tool);
+    grantApprovalPermit(task.id);
     this.threads.markReportRead(report.id);
     this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
 
@@ -1574,6 +1693,7 @@ export class WorkService {
     this.harnesses.clear();
     for (const [workerId, opening] of this.mcpMounts) {
       this.mcpMounts.delete(workerId);
+      this.mcpMountDesktop.delete(workerId);
       await opening.then((mount) => mount.close()).catch(() => undefined);
       this.mcpServers.delete(workerId);
     }
@@ -1628,10 +1748,20 @@ export class WorkService {
     const templates = this.threads.listTemplateWorkers();
     const targetWorkers = templates.length > 0 ? templates : this.threads.listAllWorkers();
     const catalog = await this.capabilities(targetWorkers);
-    const activeSkills = this.deps.skillPacks?.enabledSummaries().map((pack) => ({
-      name: pack.title,
-      summary: pack.summary,
-    }));
+    const packSkills =
+      this.deps.skillPacks?.enabledSummaries().map((pack) => ({
+        name: pack.title,
+        summary: pack.summary,
+      })) ?? [];
+    const bundledSkills =
+      this.deps.piSkills
+        ?.enabled()
+        .filter((skill) => skill.scope === 'bundled')
+        .map((skill) => ({
+          name: skill.name,
+          summary: skill.description,
+        })) ?? [];
+    const activeSkills = [...packSkills, ...bundledSkills];
     return catalog.agents
       .filter((agent) => agent.status !== 'retired')
       .map((agent) => ({
@@ -1663,7 +1793,14 @@ export class WorkService {
     if (servers.length === 0) return null;
 
     const cached = this.mcpMounts.get(workerId);
-    if (cached) return cached;
+    const cachedDesktop = this.mcpMountDesktop.get(workerId);
+    if (cached && cachedDesktop === desktopEnabled) return cached;
+    if (cached && cachedDesktop !== desktopEnabled) {
+      this.mcpMounts.delete(workerId);
+      this.mcpMountDesktop.delete(workerId);
+      this.mcpServers.delete(workerId);
+      void cached.then((mount) => mount.close()).catch(() => undefined);
+    }
 
     const opening = mountMcp({
       servers,
@@ -1675,6 +1812,7 @@ export class WorkService {
       autoApproveServers: servers.filter((config) => config.name.startsWith('agent_desktop_')).map((config) => config.name),
     });
     this.mcpMounts.set(workerId, opening);
+    this.mcpMountDesktop.set(workerId, desktopEnabled);
     try {
       const mount = await opening;
       for (const server of mount.servers) {
@@ -1697,11 +1835,13 @@ export class WorkService {
       // 一个都没连上就别占着一个槽：它会让界面显示"有 MCP"，而实际什么都没有。
       if (!mount.extension) {
         this.mcpMounts.delete(workerId);
+        this.mcpMountDesktop.delete(workerId);
         return null;
       }
       return mount;
     } catch (error) {
       this.mcpMounts.delete(workerId);
+      this.mcpMountDesktop.delete(workerId);
       console.warn('[mcp] 挂载失败', error);
       return null;
     }
@@ -1747,6 +1887,22 @@ export class WorkService {
             }),
           }
         : { name: 'opc.image', essential: false, available: false, reason: 'no-image-provider' },
+    );
+
+    // Video generation (T2V & I2V), enabled once a video provider has a key and model enabled.
+    const videos = this.deps.videos;
+    slots.push(
+      videos?.isAvailable()
+        ? {
+            name: 'opc.video',
+            essential: false,
+            available: true,
+            extension: createVideoToolExtension({
+              generate: videos.generateBytes,
+              defaultRoot: this.deps.paths.workspaceDir,
+            }),
+          }
+        : { name: 'opc.video', essential: false, available: false, reason: 'no-video-provider' },
     );
 
     // Speech: each half is installed only when a model is enabled, so the model
@@ -2031,9 +2187,33 @@ export class WorkService {
 
     // Coding tools first; the sandbox is installed after them so it sees every
     // call, and `beforeTool` is the single choke point for path policy.
+    const personId = subject.ownerId ?? subject.id;
+    const workerKey = subject.id;
     for (const slot of slots) if (slot.essential) install(slot);
     registry.install(
-      createSandboxExtension({ readOnlyRoots: () => this.runtime.sandboxRoots() }),
+      createSandboxExtension({
+        readOnlyRoots: () => this.runtime.sandboxRoots(),
+        windowsShellMode: () => this.deps.shellExecution?.get().windowsMode ?? 'ask',
+        authorizeShell: ({ tool, command, cwd }) => {
+          const taskId = currentTaskIdFor(workerKey, personId);
+          if (!taskId) return true;
+          if (this.repository.hasMcpPermit(taskId, tool)) return true;
+          const oneShotKey = `${taskId}:${tool}`;
+          const remaining = this.oneShotPermits.get(oneShotKey) ?? 0;
+          if (remaining > 0) {
+            if (remaining === 1) this.oneShotPermits.delete(oneShotKey);
+            else this.oneShotPermits.set(oneShotKey, remaining - 1);
+            return true;
+          }
+          this.askForApproval({
+            taskId,
+            tool,
+            title: '在工作区执行终端命令',
+            shell: { command, cwd },
+          });
+          return false;
+        },
+      }),
     );
     for (const slot of slots) if (!slot.essential) install(slot);
 
@@ -2164,6 +2344,7 @@ export class WorkService {
     // 设置页改完 `mcp.json` 之后新的服务器不会出现。
     const mountOpening = this.mcpMounts.get(workerId);
     this.mcpMounts.delete(workerId);
+    this.mcpMountDesktop.delete(workerId);
     this.mcpServers.delete(workerId);
     if (mountOpening) {
       try {
@@ -2737,7 +2918,6 @@ export class WorkService {
 
     const { Harness } = await import('@earendil-works/pi-durable');
     const { openNodeSqliteStorage } = await import('@earendil-works/pi-durable/storage/sqlite/node');
-    const { NodeExecutionEnv } = await import('@earendil-works/pi-durable/env/node');
 
     const context = await getBackgroundContext();
     const storagePath = path.join(this.deps.paths.agentsDir, `${cacheKey}.sqlite`);
@@ -2769,7 +2949,7 @@ export class WorkService {
         // Every tool call runs with the conversation's cwd as the workspace root
         // and the company base environment on its PATH.
         env: ({ cwd }) =>
-          new NodeExecutionEnv({
+          new OpcExecutionEnv({
             cwd: cwd ?? this.deps.paths.workspaceDir,
             shellEnv: this.runtime.envFor(),
           }),

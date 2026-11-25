@@ -16,6 +16,7 @@ const catalogProvider = (models: CatalogModel[]): CatalogProvider => ({
   counts: {
     chat: 0,
     image: 0,
+    video: 0,
     classifier: 0,
     asr: models.filter((model) => model.type === 'asr').length,
     tts: models.filter((model) => model.type === 'tts').length,

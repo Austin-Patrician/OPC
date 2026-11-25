@@ -6,12 +6,12 @@ import { CompanyPage } from './pages/CompanyPage';
 import { BillingPage } from './pages/BillingPage';
 import { CompactionPage } from './pages/CompactionPage';
 import { ImagePage } from './pages/ImagePage';
+import { VideoPage } from './pages/VideoPage';
 import { DecisionPage } from './pages/DecisionPage';
 import { LlmPage } from './pages/LlmPage';
 import { NetworkPage } from './pages/NetworkPage';
 import { VoicePage } from './pages/VoicePage';
 import { RuntimePage } from './pages/RuntimePage';
-import { SelfCheckPage } from './pages/SelfCheckPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { WorkspaceRulesPage } from './pages/WorkspaceRulesPage';
 import { ConsolidationPage } from './pages/ConsolidationPage';
@@ -25,7 +25,7 @@ import { CapabilitiesExtensionsPage } from './pages/CapabilitiesExtensionsPage';
 import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
-import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, ShieldCheck } from 'lucide-react';
+import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2 } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
 const PAGE_IDS = [
@@ -44,6 +44,7 @@ const PAGE_IDS = [
   'capabilitiesExtensions',
   'llm',
   'image',
+  'video',
   'voice',
   'decision',
   'mcp',
@@ -51,7 +52,6 @@ const PAGE_IDS = [
   'desktop',
   'network',
   'assistantTools',
-  'selfcheck',
   'about',
 ] as const;
 
@@ -78,7 +78,7 @@ export function SettingsShell() {
   // the sidebar keeps the address honest (no `?page=` for the default page).
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('page');
-  const page: PageId = isPageId(requested) ? requested : 'appearance';
+  const page: PageId = requested === 'selfcheck' ? 'about' : isPageId(requested) ? requested : 'appearance';
   const setPage = (next: PageId) => {
     setSearchParams(next === 'appearance' ? {} : { page: next }, { replace: true });
   };
@@ -120,6 +120,7 @@ export function SettingsShell() {
       pages: [
         { id: 'llm', label: 'LLM' },
         { id: 'image', label: 'Image' },
+        { id: 'video', label: 'Video' },
         { id: 'voice', label: 'Voice' },
         { id: 'decision', label: 'Decision' },
       ],
@@ -171,13 +172,6 @@ export function SettingsShell() {
       pages: [{ id: 'desktop', label: t('settings.page.desktop') }],
     },
     {
-      id: 'selfcheck',
-      label: t('settings.group.selfcheck'),
-      icon: ShieldCheck,
-      color: '#34C759',
-      pages: [{ id: 'selfcheck', label: t('settings.group.selfcheck') }],
-    },
-    {
       id: 'about',
       label: t('settings.group.about'),
       icon: Info,
@@ -222,6 +216,8 @@ export function SettingsShell() {
         return <LlmPage />;
       case 'image':
         return <ImagePage />;
+      case 'video':
+        return <VideoPage />;
       case 'voice':
         return <VoicePage />;
       case 'decision':
@@ -232,8 +228,6 @@ export function SettingsShell() {
         return <BrowserPage />;
       case 'desktop':
         return <DesktopPage />;
-      case 'selfcheck':
-        return <SelfCheckPage />;
       case 'network':
         return <NetworkPage />;
       case 'assistantTools':

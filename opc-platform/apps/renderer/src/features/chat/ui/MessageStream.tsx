@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { ArrowDown, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, RotateCw } from 'lucide-react';
 import { Avatar } from '@/entities/agent/ui/Avatar';
-import { userName } from '@/entities/company/model/options';
+import { assistantName, userName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
 import type { Agent } from '@/entities/agent/model/types';
@@ -11,7 +11,12 @@ import type { ChatAttachmentRef } from '@opc/shared/domain';
 import type { ChatMessagePage } from '@opc/shared/ipc';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { RichText } from '@/entities/message/ui/RichText';
-import { isVisibleChatMessage } from '../lib/messageList';
+import {
+  filterResolvedActionBlocks,
+  isActionCardBlock,
+  isLocallyResolvedEmptyActionMessage,
+  isVisibleChatMessage,
+} from '../lib/messageList';
 import { AssistantContent } from './AssistantContent';
 import { SpeakButton } from './SpeakButton';
 import { TypingIndicator } from './TypingIndicator';
@@ -94,9 +99,21 @@ export function MessageStream({
   const profile = useCompanyProfile();
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const currentUserName = userName(profile, t('company.userFallback'));
+  const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
+  const [resolvedReportIds, setResolvedReportIds] = useState<Set<string>>(() => new Set());
+  const handleActionCardResolved = useCallback((reportId: string) => {
+    setResolvedReportIds((prev) => {
+      if (prev.has(reportId)) return prev;
+      const next = new Set(prev);
+      next.add(reportId);
+      return next;
+    });
+  }, []);
   const visibleMessages = useMemo(
-    () => messages.filter(isVisibleChatMessage),
-    [messages],
+    () => messages.filter(
+      (message) => isVisibleChatMessage(message) && !isLocallyResolvedEmptyActionMessage(message, resolvedReportIds),
+    ),
+    [messages, resolvedReportIds],
   );
   const [hasMore, setHasMore] = useState(hasOlderMessages);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -247,9 +264,12 @@ export function MessageStream({
         message={message}
         agent={agentById.get(message.senderId)}
         userName={currentUserName}
+        assistantName={currentAssistantName}
+        resolvedReportIds={resolvedReportIds}
+        onActionCardResolved={handleActionCardResolved}
       />
     </div>
-  ), [agentById, currentUserName, highlightedMessageId]);
+  ), [agentById, currentAssistantName, currentUserName, handleActionCardResolved, highlightedMessageId, resolvedReportIds]);
 
   const jumpToLatest = useCallback(() => {
     userScrolledUpRef.current = false;
@@ -306,12 +326,26 @@ const MessageRow = memo(function MessageRow({
   message,
   agent,
   userName,
+  assistantName: assistantDisplayName,
+  resolvedReportIds,
+  onActionCardResolved,
 }: {
   message: Message;
   agent?: Agent;
   userName: string;
+  assistantName: string;
+  resolvedReportIds: ReadonlySet<string>;
+  onActionCardResolved: (reportId: string) => void;
 }) {
-  const { t } = useTranslation();
+  const filteredBlocks = useMemo(
+    () => (
+      message.content?.length
+        ? filterResolvedActionBlocks(message.content, resolvedReportIds)
+        : [{ type: 'markdown' as const, text: message.text ?? '' }]
+    ),
+    [message.content, message.text, resolvedReportIds],
+  );
+
   if (message.kind === 'system') {
     return (
       <div className="flex justify-center py-1">
@@ -327,14 +361,15 @@ const MessageRow = memo(function MessageRow({
     message.senderId === 'user'
       ? userName
       : isRouter
-        ? t('chat.sender.routerName')
+        ? assistantDisplayName
         : message.senderName;
   const displayRole = isRouter ? undefined : message.senderRole;
   const avatarUrl = message.senderAvatarUrl ?? agent?.avatarUrl;
-  const containsActionCard = message.content?.some((block) => block.type === 'approval' || block.type === 'workflow') ?? false;
   const isStreaming = Boolean(message.streaming);
+  const containsActionCard = filteredBlocks.some(isActionCardBlock);
 
   if (!isVisibleChatMessage(message)) return null;
+  if (isLocallyResolvedEmptyActionMessage(message, resolvedReportIds)) return null;
 
   if (message.senderId === 'user') {
     return (
@@ -383,12 +418,9 @@ const MessageRow = memo(function MessageRow({
           }
         >
           <AssistantContent
-            blocks={
-              message.content?.length
-                ? message.content
-                : [{ type: 'markdown', text: message.text ?? '' }]
-            }
+            blocks={filteredBlocks}
             streaming={isStreaming}
+            onActionCardResolved={onActionCardResolved}
           />
           {isStreaming ? (
             <span

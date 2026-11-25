@@ -2,6 +2,8 @@ import {
   IPC,
   type WatchdogActionView,
   type WatchdogIncidentView,
+  type ResetChatOptions,
+  type ResetChatResult,
   type SendMessageInput,
   type ChatSearchInput,
   type TriggerPatch,
@@ -9,6 +11,7 @@ import {
   type UsageFilter,
 } from "@opc/shared/ipc";
 import type {
+  ApprovalPermitScope,
   BundledRuntime,
   CompactionSettings,
   CompanyProfilePatch,
@@ -18,6 +21,8 @@ import type {
   ModelRef,
   ProviderDraft,
   RuntimeProfileDraft,
+  ShellExecutionSettings,
+  ShellExecutionStatus,
   BillingSettingsPatch,
   TriagePolicyPatch,
   WorkThread,
@@ -25,7 +30,13 @@ import type {
   RouterScheduleDraft,
   RouterSchedulePatch,
 } from "@opc/shared/domain";
-import { MODEL_ROLES, type ModelRole } from "@opc/shared/domain";
+import {
+  MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE,
+  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
+  MODEL_ROLES,
+  type ModelRole,
+} from "@opc/shared/domain";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
@@ -114,6 +125,11 @@ interface RegisterOptions {
     get: () => OcrSettings;
     set: (next: OcrSettings) => OcrSettings;
   };
+  /** 终端命令执行权限与沙箱状态。 */
+  shellExecution?: {
+    status: () => ShellExecutionStatus;
+    set: (next: ShellExecutionSettings) => ShellExecutionSettings;
+  };
   /** 计费口径：定价策略、展示币种、手工汇率（设置 → 通用 → 计费）。 */
   billingSettings: BillingSettingsService;
   usage: UsageRepository;
@@ -148,7 +164,7 @@ interface RegisterOptions {
     interrupt(reason?: string): Promise<{ ok: boolean; abortedThreads: number }>;
     getContextStats(): Promise<RouterContextStats>;
     compactContext(): Promise<{ ok: boolean; reason?: string }>;
-    resetContext(handoff?: string): Promise<{ ok: boolean; reason?: string }>;
+    resetContext(options?: ResetChatOptions): Promise<ResetChatResult>;
   };
 }
 
@@ -173,6 +189,7 @@ export function registerIpc({
   runtime,
   bundled,
   ocrSettings,
+  shellExecution,
   billingSettings,
   usage,
   piExtensions,
@@ -256,8 +273,17 @@ export function registerIpc({
     return stored;
   });
 
-  ipcMain.handle(IPC.usage.report, (_event, input: unknown) => {
+  ipcMain.handle(IPC.usage.report, async (_event, input: unknown) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Usage 筛选参数无效');
+    try {
+      const mode = billingSettings.get().pricingMode;
+      if (mode !== 'provider_only') {
+        const resolver = await models.createPricingResolver();
+        usage.repriceUnpricedCalls(resolver, mode);
+      }
+    } catch {
+      // Best-effort pricing backfill; never block usage reporting.
+    }
     return usage.report(input as UsageFilter);
   });
   ipcMain.handle(IPC.usage.exportCsv, async (event, input: unknown) => {
@@ -386,6 +412,23 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.runtime.shellExecution, () => {
+    if (!shellExecution) throw new Error("runtime:shellExecution 未初始化");
+    return shellExecution.status();
+  });
+
+  ipcMain.handle(IPC.runtime.setShellExecution, (_event, next: unknown) => {
+    if (!shellExecution) throw new Error("runtime:setShellExecution 未初始化");
+    if (!next || typeof next !== "object")
+      throw new Error("runtime:setShellExecution 参数非法");
+    const raw = next as { windowsMode?: unknown };
+    if (raw.windowsMode !== 'ask' && raw.windowsMode !== 'auto' && raw.windowsMode !== 'disabled') {
+      throw new Error("runtime:setShellExecution windowsMode 非法");
+    }
+    shellExecution.set({ windowsMode: raw.windowsMode });
+    return shellExecution.status();
+  });
+
   ipcMain.handle(IPC.company.get, () => company.get());
 
   ipcMain.handle(IPC.company.update, (_event, patch: unknown) => {
@@ -422,7 +465,7 @@ export function registerIpc({
     if (!input || typeof input !== 'object') throw new Error('chat:materializeClipboardAttachment 参数非法');
     const value = input as { name?: unknown; mimeType?: unknown; bytes?: unknown };
     if (typeof value.name !== 'string' || !(value.bytes instanceof ArrayBuffer)) throw new Error('剪贴板附件参数非法');
-    if (value.bytes.byteLength > 500 * 1024 * 1024) throw new Error('单个附件不能超过 500MB');
+    if (value.bytes.byteLength > MAX_CHAT_ATTACHMENT_BYTES) throw new Error('单个附件不能超过 100MB');
     const dir = path.join(app.getPath('userData'), 'chat-attachments');
     fs.mkdirSync(dir, { recursive: true });
     const id = crypto.randomUUID();
@@ -477,9 +520,23 @@ export function registerIpc({
     if (!routerControls) return { ok: false, reason: "Router 尚未就绪" };
     return routerControls.compactContext();
   });
-  ipcMain.handle(IPC.chat.resetContext, async (_event, handoff: unknown) => {
+  ipcMain.handle(IPC.chat.resetContext, async (_event, raw: unknown) => {
     if (!routerControls) return { ok: false, reason: "Router 尚未就绪" };
-    return routerControls.resetContext(typeof handoff === "string" ? handoff : undefined);
+    let options: ResetChatOptions | undefined;
+    if (typeof raw === "string") {
+      options = { handoff: raw };
+    } else if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+      const candidate = raw as Record<string, unknown>;
+      options = {
+        ...(typeof candidate.handoff === "string" ? { handoff: candidate.handoff } : {}),
+        ...(typeof candidate.clearHistory === "boolean" ? { clearHistory: candidate.clearHistory } : {}),
+        ...(typeof candidate.reflectMemory === "boolean" ? { reflectMemory: candidate.reflectMemory } : {}),
+        ...(typeof candidate.abortRunningTasks === "boolean"
+          ? { abortRunningTasks: candidate.abortRunningTasks }
+          : {}),
+      };
+    }
+    return routerControls.resetContext(options);
   });
   ipcMain.handle(IPC.work.abortThread, async (_event, threadId: unknown, reason: unknown) => {
     if (typeof threadId !== "string" || !threadId.trim()) {
@@ -550,6 +607,7 @@ export function registerIpc({
         outputUsdPerM,
         cacheReadUsdPerM,
         cacheWriteUsdPerM,
+        usdPerSecond,
       } = input as Record<string, unknown>;
       if (typeof id !== "string")
         throw new Error("models:addModel 需要模型 id");
@@ -565,6 +623,7 @@ export function registerIpc({
         api: typeof api === "string" ? api : undefined,
         capability:
           capability === "image" ||
+          capability === "video" ||
           capability === "classifier" ||
           capability === "asr" ||
           capability === "tts" ||
@@ -575,6 +634,7 @@ export function registerIpc({
         outputUsdPerM: price(outputUsdPerM),
         cacheReadUsdPerM: price(cacheReadUsdPerM),
         cacheWriteUsdPerM: price(cacheWriteUsdPerM),
+        usdPerSecond: price(usdPerSecond),
       });
     },
   );
@@ -583,10 +643,11 @@ export function registerIpc({
       throw new Error("models:supportsOauth 参数非法");
     return models.supportsOauth(providerId);
   });
-  ipcMain.handle(IPC.models.refreshModels, (_event, providerId: unknown) => {
+  ipcMain.handle(IPC.models.refreshModels, (_event, providerId: unknown, scope: unknown) => {
     if (typeof providerId !== "string")
       throw new Error("models:refreshModels 参数非法");
-    return models.refreshModels(providerId);
+    const validScope = scope === "llm" || scope === "video" ? scope : undefined;
+    return models.refreshModels(providerId, validScope);
   });
   ipcMain.handle(IPC.models.getDefaults, () => models.getDefaults());
   ipcMain.handle(
@@ -622,7 +683,7 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.models.setModelPricing,
-    (_event, providerId: unknown, modelId: unknown, price: unknown) => {
+    async (_event, providerId: unknown, modelId: unknown, price: unknown) => {
       const rates = (price ?? {}) as Record<string, unknown>;
       if (
         typeof providerId !== "string" ||
@@ -634,12 +695,22 @@ export function registerIpc({
       ) {
         throw new Error("models:setModelPricing 参数非法");
       }
-      return models.setModelPricing(providerId, modelId, {
+      const next = models.setModelPricing(providerId, modelId, {
         input: rates.input,
         output: rates.output,
         cacheRead: rates.cacheRead,
         cacheWrite: rates.cacheWrite,
       });
+      try {
+        const mode = billingSettings.get().pricingMode;
+        if (mode !== "provider_only") {
+          const resolver = await models.createPricingResolver();
+          usage.repriceUnpricedCalls(resolver, mode);
+        }
+      } catch {
+        // Best-effort repricing when unit rates change.
+      }
+      return next;
     },
   );
 
@@ -1200,10 +1271,19 @@ export function registerIpc({
     if (draft.allow !== undefined && typeof draft.allow !== "boolean") {
       throw new Error("threads:answer 的 allow 只能是 true / false");
     }
+    if (
+      draft.scope !== undefined &&
+      draft.scope !== "once" &&
+      draft.scope !== "task" &&
+      draft.scope !== "always"
+    ) {
+      throw new Error("threads:answer 的 scope 非法");
+    }
     const result = await work.answerFor({
       reportId: draft.reportId,
       text: draft.text,
       ...(typeof draft.allow === "boolean" ? { allow: draft.allow } : {}),
+      ...(draft.scope ? { scope: draft.scope as ApprovalPermitScope } : {}),
     });
     if (!result.ok) throw new Error(result.error);
     return result.delivered;
@@ -1305,10 +1385,20 @@ export function registerIpc({
   ipcMain.handle(IPC.models.getThinking, () => models.getThinking());
   ipcMain.handle(
     IPC.models.applyBuiltinPricing,
-    (_event, providerId: unknown) => {
+    async (_event, providerId: unknown) => {
       if (typeof providerId !== "string")
         throw new Error("models:applyBuiltinPricing 参数非法");
-      return models.applyBuiltinPricing(providerId);
+      const applied = await models.applyBuiltinPricing(providerId);
+      try {
+        const mode = billingSettings.get().pricingMode;
+        if (mode !== "provider_only") {
+          const resolver = await models.createPricingResolver();
+          usage.repriceUnpricedCalls(resolver, mode);
+        }
+      } catch {
+        // Best-effort repricing after applying official catalog prices.
+      }
+      return applied;
     },
   );
 
@@ -1480,6 +1570,7 @@ function isCompanyPatch(value: unknown): value is CompanyProfilePatch {
     "goal",
     "colorId",
     "userName",
+    "assistantName",
     "logo",
     "userAvatar",
     "replyTone",
@@ -1513,6 +1604,10 @@ function isProviderDraft(value: unknown): value is ProviderDraft {
     typeof candidate.baseUrl === "string" &&
     typeof candidate.api === "string" &&
     typeof candidate.isCustom === "boolean" &&
+    (candidate.scope === undefined ||
+      candidate.scope === "llm" ||
+      candidate.scope === "decision" ||
+      candidate.scope === "video") &&
     (candidate.icon === undefined || typeof candidate.icon === "string") &&
     (candidate.apiKey === undefined || typeof candidate.apiKey === "string")
   );
@@ -1572,37 +1667,61 @@ function isSendMessageInput(value: unknown): value is SendMessageInput {
 }
 
 function isAttachmentList(value: unknown): boolean {
-  return Array.isArray(value) && value.length <= 20 && value.every((item) => {
+  if (!Array.isArray(value) || value.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) return false;
+  let totalBytes = 0;
+  for (const item of value) {
     if (!item || typeof item !== 'object') return false;
     const a = item as Record<string, unknown>;
-    return typeof a.id === 'string' && typeof a.name === 'string' && typeof a.path === 'string' &&
-      typeof a.size === 'number' && a.size >= 0 && a.size <= 500 * 1024 * 1024 &&
-      (a.source === 'file' || a.source === 'clipboard');
-  });
+    if (
+      typeof a.id !== 'string' ||
+      typeof a.name !== 'string' ||
+      typeof a.path !== 'string' ||
+      typeof a.size !== 'number' ||
+      a.size < 0 ||
+      a.size > MAX_CHAT_ATTACHMENT_BYTES ||
+      (a.source !== 'file' && a.source !== 'clipboard')
+    ) {
+      return false;
+    }
+    totalBytes += a.size;
+  }
+  return totalBytes <= MAX_CHAT_ATTACHMENT_TOTAL_BYTES;
 }
 
 function validateAttachmentPaths(paths: string[]) {
-  if (paths.length > 20) throw new Error('最多选择 20 个附件');
+  if (paths.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error(`最多选择 ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} 个附件`);
+  }
   const seen = new Set<string>();
+  let totalBytes = 0;
   return paths.map((filePath) => {
     const resolved = path.resolve(filePath);
     if (seen.has(resolved)) throw new Error('附件不能重复');
     seen.add(resolved);
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) throw new Error('附件必须是普通文件');
-    if (stat.size > 500 * 1024 * 1024) throw new Error('单个附件不能超过 500MB');
+    if (stat.size > MAX_CHAT_ATTACHMENT_BYTES) throw new Error('单个附件不能超过 100MB');
+    totalBytes += stat.size;
+    if (totalBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) throw new Error('单次附件总大小不能超过 250MB');
     return { id: crypto.createHash('sha1').update(resolved).digest('hex').slice(0, 20), name: path.basename(resolved), path: resolved, size: stat.size, source: 'file' as const, availability: 'available' as const };
   });
 }
 
 function validateIncomingAttachments(attachments: NonNullable<SendMessageInput['attachments']>): void {
-  if (attachments.length > 20) throw new Error('最多发送 20 个附件');
+  if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error(`最多发送 ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} 个附件`);
+  }
+  let totalBytes = 0;
   for (const attachment of attachments) {
     const resolved = path.resolve(attachment.path);
     if (resolved !== attachment.path) throw new Error('附件路径必须是绝对规范路径');
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) throw new Error(`附件不是普通文件：${attachment.name}`);
-    if (stat.size > 500 * 1024 * 1024) throw new Error(`单个附件不能超过 500MB：${attachment.name}`);
+    if (stat.size > MAX_CHAT_ATTACHMENT_BYTES) throw new Error(`单个附件不能超过 100MB：${attachment.name}`);
+    totalBytes += stat.size;
+  }
+  if (totalBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+    throw new Error('单条消息附件总大小不能超过 250MB');
   }
 }
 

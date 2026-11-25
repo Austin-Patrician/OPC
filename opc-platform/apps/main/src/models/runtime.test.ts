@@ -160,4 +160,39 @@ describe('ModelRuntime.createModels', () => {
     expect(models.getModelOfType('classifier', 'typesafe', 'jev-latest')).toBeTruthy();
     expect(models.getModelOfType('classifier', 'typesafe', 'not-enabled')).toBeUndefined();
   });
+
+  it('falls back to built-in catalog pricing when user rates are unconfigured, while keeping explicit rates', async () => {
+    const config: ProviderConfig = {
+      id: 'openai',
+      name: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+      api: 'openai-completions',
+      isCustom: false,
+      hasKey: true,
+      models: [
+        { id: 'gpt-4o', name: 'GPT-4o', capability: 'chat', api: 'openai-completions' },
+        {
+          id: 'gpt-4o-mini',
+          name: 'GPT-4o Mini',
+          capability: 'chat',
+          api: 'openai-completions',
+          inputUsdPerM: 9.9,
+          outputUsdPerM: 19.8,
+        },
+      ],
+      updatedAt: 0,
+    };
+    const repository = {
+      listProviders: () => [config],
+    } as unknown as ModelConfigRepository;
+    const runtime = new ModelRuntime(repository, () => 'test-key');
+
+    const unpricedRow = await runtime.resolveModel('openai', 'gpt-4o');
+    const customPricedRow = await runtime.resolveModel('openai', 'gpt-4o-mini');
+
+    expect(unpricedRow?.cost.input).toBeGreaterThan(0);
+    expect(unpricedRow?.cost.output).toBeGreaterThan(0);
+    expect(customPricedRow?.cost.input).toBe(9.9);
+    expect(customPricedRow?.cost.output).toBe(19.8);
+  });
 });

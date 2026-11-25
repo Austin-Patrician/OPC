@@ -3,6 +3,8 @@ import {
   type AuthPromptRequest,
   type ChatSnapshot,
   type OpcBridge,
+  type ResetChatOptions,
+  type ResetChatResult,
   type SendMessageInput,
   type BrowserStatus,
   type BrowserInstallProgress,
@@ -38,6 +40,8 @@ import type {
   RuntimeProfileDraft,
   RuntimeSnapshot,
   RuntimeState,
+  ShellExecutionSettings,
+  ShellExecutionStatus,
   SpeechSynthesizeInput,
   SpeechSynthesizeResult,
   SpeechTranscribeInput,
@@ -120,6 +124,10 @@ const bridge: OpcBridge = {
     ocr: () => ipcRenderer.invoke(IPC.runtime.ocr) as Promise<OcrSettings>,
     setOcr: (next: OcrSettings) =>
       ipcRenderer.invoke(IPC.runtime.setOcr, next) as Promise<OcrSettings>,
+    shellExecution: () =>
+      ipcRenderer.invoke(IPC.runtime.shellExecution) as Promise<ShellExecutionStatus>,
+    setShellExecution: (next: ShellExecutionSettings) =>
+      ipcRenderer.invoke(IPC.runtime.setShellExecution, next) as Promise<ShellExecutionStatus>,
   },
   company: {
     get: () => ipcRenderer.invoke(IPC.company.get) as Promise<CompanyProfile>,
@@ -162,8 +170,8 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.chat.getContextStats) as Promise<RouterContextStats>,
     compactContext: () =>
       ipcRenderer.invoke(IPC.chat.compactContext) as Promise<{ ok: boolean; reason?: string }>,
-    resetContext: (handoff?: string) =>
-      ipcRenderer.invoke(IPC.chat.resetContext, handoff) as Promise<{ ok: boolean; reason?: string }>,
+    resetContext: (options?: ResetChatOptions | string) =>
+      ipcRenderer.invoke(IPC.chat.resetContext, options) as Promise<ResetChatResult>,
     onSnapshot: (listener: (snapshot: ChatSnapshot) => void) => {
       const handler = (_event: IpcRendererEvent, snapshot: ChatSnapshot) =>
         listener(snapshot);
@@ -373,8 +381,8 @@ const bridge: OpcBridge = {
         IPC.models.test,
         providerId,
       ) as Promise<ProviderTestResult>,
-    refreshModels: (providerId: string) =>
-      ipcRenderer.invoke(IPC.models.refreshModels, providerId),
+    refreshModels: (providerId: string, scope?: 'llm' | 'video') =>
+      ipcRenderer.invoke(IPC.models.refreshModels, providerId, scope),
     addModel: (providerId: string, input: unknown) =>
       ipcRenderer.invoke(IPC.models.addModel, providerId, input),
     supportsOauth: (providerId: string) =>

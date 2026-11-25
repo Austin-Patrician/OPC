@@ -14,12 +14,17 @@ export interface SandboxStatus {
 const CANDIDATES = ['/usr/bin/sandbox-exec', '/bin/sandbox-exec'];
 
 /**
- * macOS and Linux only, by decision: Windows has no equivalent enforcement we are
- * willing to pretend we have, so it reports `none` and tool execution is blocked.
+ * macOS uses `sandbox-exec`, Linux uses `bwrap`, and Windows runs with
+ * application-layer workspace/path guardrails (`windows-guarded`) so Python,
+ * Node, and document skills execute reliably without hard-blocking the host.
  */
 export function detectBackend(): SandboxStatus {
   if (process.platform === 'win32') {
-    return { backend: 'none', detail: 'Windows 不受支持（按产品决定）', supported: false };
+    return {
+      backend: 'windows-guarded',
+      detail: 'Windows 本机工作区执行（无内核沙箱，按设置策略审批或放行）',
+      supported: true,
+    };
   }
 
   if (process.platform === 'darwin') {
@@ -41,14 +46,33 @@ export function detectBackend(): SandboxStatus {
 
 export function defaultDeniedRoots(): string[] {
   const home = os.homedir();
-  return [
+  const roots = [
     path.join(home, '.ssh'),
     path.join(home, '.aws'),
     path.join(home, '.pi'),
+    path.join(home, '.gnupg'),
+    path.join(home, '.kube'),
     path.join(home, '.config'),
-    path.join(home, 'Library', 'Keychains'),
-    path.join(home, 'Library', 'Application Support', 'OPC Agent 工作台'),
   ];
+  if (process.platform === 'darwin') {
+    roots.push(
+      path.join(home, 'Library', 'Keychains'),
+      path.join(home, 'Library', 'Application Support', 'OPC Agent 工作台'),
+    );
+  } else if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const opcRoot = path.join(appData, 'OPC Agent 工作台');
+    // Protect database, credentials, and OAuth state while leaving managed
+    // skills, Python venvs, and task workspaces readable as authorized roots.
+    roots.push(
+      path.join(opcRoot, 'opc.sqlite'),
+      path.join(opcRoot, 'opc.sqlite-wal'),
+      path.join(opcRoot, 'opc.sqlite-shm'),
+      path.join(opcRoot, 'secrets.json'),
+      path.join(opcRoot, 'mcp-oauth'),
+    );
+  }
+  return roots;
 }
 
 export function buildPolicy(

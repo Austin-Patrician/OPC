@@ -32,6 +32,7 @@ const ROUTER_VISIBLE_TOOLS = new Set([
   'desktop_screenshot',
   'ocr_image',
   'generate_image',
+  'generate_video',
   'transcribe_audio',
   'text_to_speech',
 ]);
@@ -59,6 +60,7 @@ const ROUTER_TOOL_PRIORITY = [
   'bash',
   'ocr_image',
   'generate_image',
+  'generate_video',
   'transcribe_audio',
   'text_to_speech',
 ] as const;

@@ -26,6 +26,7 @@ const catalogProvider = (over: Partial<CatalogProvider> & { id: string }): Catal
     counts: over.counts ?? {
       chat: count('chat'),
       image: count('image'),
+      video: count('video'),
       classifier: count('classifier'),
       asr: count('asr'),
       tts: count('tts'),

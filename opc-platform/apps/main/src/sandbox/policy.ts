@@ -1,6 +1,7 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
-export type SandboxBackend = 'seatbelt' | 'bwrap' | 'none';
+export type SandboxBackend = 'seatbelt' | 'bwrap' | 'windows-guarded' | 'none';
 
 export interface SandboxPolicy {
   /** Absolute path of the task workspace: the only writable root. */
@@ -132,12 +133,44 @@ export function wrapCommand(
   }
 }
 
+function comparablePath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/** Reports whether two paths refer to the same location (case-insensitive on Windows). */
+export function isSamePath(left: string, right: string): boolean {
+  return comparablePath(left) === comparablePath(right);
+}
+
+/** Resolves symlinks/junctions along the deepest existing ancestor to prevent path escapes. */
+export function resolveRealPathOrAncestor(target: string): string {
+  const resolved = path.resolve(target);
+  const pending: string[] = [];
+  let cursor = resolved;
+  while (true) {
+    if (fs.existsSync(cursor)) {
+      try {
+        const real = fs.realpathSync(cursor);
+        return pending.length > 0 ? path.join(real, ...pending.reverse()) : real;
+      } catch {
+        return resolved;
+      }
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return resolved;
+    pending.push(path.basename(cursor));
+    cursor = parent;
+  }
+}
+
 /** Resolves `target` and reports whether it is inside `root`. */
 export function isInside(root: string, target: string): boolean {
-  const resolvedRoot = path.resolve(root);
-  const resolvedTarget = path.resolve(target);
+  const resolvedRoot = comparablePath(root);
+  const resolvedTarget = comparablePath(target);
   if (resolvedTarget === resolvedRoot) return true;
-  return resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
+  const prefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
+  return resolvedTarget.startsWith(prefix);
 }
 
 /** Absolute path of a tool argument, resolving relative paths against the workspace. */

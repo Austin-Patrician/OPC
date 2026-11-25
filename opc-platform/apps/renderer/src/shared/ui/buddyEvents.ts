@@ -3,7 +3,9 @@ export type BuddySignal =
   | { kind: 'file-drag'; active: boolean }
   | { kind: 'file-drop' }
   | { kind: 'sent' }
-  | { kind: 'brand-summon' };
+  | { kind: 'brand-summon' }
+  | { kind: 'voice'; state: 'idle' | 'recording' | 'transcribing'; level?: number }
+  | { kind: 'tts'; speaking: boolean };
 
 const bus = new EventTarget();
 const EVENT_NAME = 'buddy:signal';

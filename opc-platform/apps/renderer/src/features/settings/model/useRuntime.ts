@@ -5,6 +5,8 @@ import type {
   RuntimeKind,
   RuntimeProfileDraft,
   RuntimeSnapshot,
+  ShellExecutionSettings,
+  ShellExecutionStatus,
 } from '@opc/shared/domain';
 import type { OcrSettings } from '@opc/shared/ocr';
 
@@ -19,6 +21,9 @@ interface RuntimeViewState {
   ocr: OcrSettings | null;
   /** A switch or segmented control is being written back. */
   savingOcr: boolean;
+  /** Host sandbox and Windows shell execution policy. */
+  shellExecution: ShellExecutionStatus | null;
+  savingShellExecution: boolean;
   error: string | null;
 }
 
@@ -43,6 +48,8 @@ export function useRuntime() {
     bundled: null,
     ocr: null,
     savingOcr: false,
+    shellExecution: null,
+    savingShellExecution: false,
     error: null,
   });
 
@@ -94,8 +101,12 @@ export function useRuntime() {
   const readOcr = useCallback(async () => {
     if (!bridge?.bundled) return;
     try {
-      const [bundled, ocr] = await Promise.all([bridge.bundled(), bridge.ocr()]);
-      setState((previous) => ({ ...previous, bundled, ocr }));
+      const [bundled, ocr, shellExecution] = await Promise.all([
+        bridge.bundled(),
+        bridge.ocr(),
+        bridge.shellExecution ? bridge.shellExecution() : Promise.resolve(null),
+      ]);
+      setState((previous) => ({ ...previous, bundled, ocr, shellExecution }));
     } catch (error) {
       setState((previous) => ({ ...previous, error: reasonOf(error) }));
     }
@@ -136,6 +147,18 @@ export function useRuntime() {
           return saved;
         } finally {
           setState((previous) => ({ ...previous, savingOcr: false }));
+        }
+      }),
+    setShellExecution: (next: ShellExecutionSettings) =>
+      run(async () => {
+        if (!bridge?.setShellExecution) return undefined;
+        setState((previous) => ({ ...previous, savingShellExecution: true }));
+        try {
+          const saved = await bridge.setShellExecution(next);
+          setState((previous) => ({ ...previous, shellExecution: saved }));
+          return saved;
+        } finally {
+          setState((previous) => ({ ...previous, savingShellExecution: false }));
         }
       }),
     setActive: (kind: RuntimeKind, profileId: string | null) =>

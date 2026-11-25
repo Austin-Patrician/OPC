@@ -175,6 +175,36 @@ describe('ModelConfigService.setModels', () => {
     expect(models.find((model) => model.id === 'asr-1')).toMatchObject({ voiceEnabled: true });
   });
 
+  it('keeps the videoEnabled switch across a later save', () => {
+    service.saveProvider({
+      id: 'kling',
+      name: 'Kling',
+      baseUrl: 'https://api.klingai.com',
+      api: 'kling-video',
+      isCustom: true,
+      scope: 'video',
+    });
+    service.addModel('kling', {
+      id: 'kling-3.0',
+      name: 'Kling 3.0',
+      capability: 'video',
+      api: 'kling-video',
+      usdPerSecond: 0.112,
+    });
+    service.setModels('kling', [
+      { id: 'kling-3.0', name: 'Kling 3.0 Pro', capability: 'video', api: 'kling-video' },
+    ]);
+
+    expect(
+      service.listProviders().find((entry) => entry.id === 'kling')?.models[0],
+    ).toMatchObject({ name: 'Kling 3.0 Pro', videoEnabled: true, usdPerSecond: 0.112 });
+
+    service.setDefault('video', { providerId: 'kling', modelId: 'kling-3.0' });
+    expect(service.getDefaults().video).toEqual({ providerId: 'kling', modelId: 'kling-3.0' });
+    service.removeProvider('kling');
+    expect(service.getDefaults().video).toBeNull();
+  });
+
   it('keeps a chat model switched off across a price save', () => {
     service.saveProvider({
       id: 'custom-relay',

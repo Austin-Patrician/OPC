@@ -82,6 +82,22 @@
       "cooling": "冷却中",
       "escalated": "已升级"
     },
+    "newChat": {
+      "action": "开启新对话",
+      "actionHint": "开启新对话 (Ctrl+Shift+N)",
+      "title": "开启新对话？",
+      "description": "将清空当前对话记录并重置助手上下文，从空白画布重新开始。",
+      "memoryKeptTitle": "memory/ 长期记忆与工作区文件会完整保留",
+      "memoryKeptNote": "个人画像、长期铁律与专题经验不会丢失，新对话仍认识你的偏好，不再受历史长上下文干扰。",
+      "contextSummary": "当前上下文：{{entries}} 条记录 · 已用 {{percent}}%",
+      "reflectMemoryLabel": "清空前先将有价值的信息整理到长期记忆（memory/）",
+      "reflectMemoryHint": "如果刚才聊偏或报错不想留下记录，取消勾选可直接干净重开。",
+      "abortRunningLabel": "同时中止 {{count}} 个正在进行的后台任务",
+      "abortRunningHint": "旧工作线会归档退出活跃看板，已生成的工作区文件不受影响。",
+      "confirm": "开启新对话",
+      "confirming": "正在清理…",
+      "failed": "开启新对话失败，请稍后重试"
+    },
     "activity": {
       "idle": "在线",
       "delivered": "已送达",
@@ -92,7 +108,10 @@
       "typing": "正在输入",
       "waiting_user": "等你确认",
       "completed": "已完成",
-      "error": "处理遇到问题"
+      "error": "处理遇到问题",
+      "listening": "正在聆听",
+      "transcribing": "正在转写语音",
+      "speaking": "正在朗读"
     },
     "sender": {
       "routerName": "助手",
@@ -110,14 +129,14 @@
     "mentionHint": "@ 提及会话内的 Agent 执行体指派任务",
     "quickPrompts": "常用指令模板",
     "quickPromptsHint": "快捷指令",
-    "inputPlaceholder": "和 Buddy 说点什么…",
+    "inputPlaceholder": "和 {{name}} 说点什么…",
     "copyCode": "复制代码",
     "codeCopied": "代码已复制",
     "copyResponse": "复制回复",
     "responseCopied": "回复已复制",
     "welcome": {
       "online": "在线 · 随时听你招呼",
-      "title": "嗨，我是 Buddy",
+      "title": "嗨，我是 {{name}}",
       "description": "理清思路、起草文案、发掘新点子，或规划接下来的工作。像聊天一样告诉我就好。",
       "tryOne": "你可以从这里开始",
       "tryIt": "试一试",
@@ -223,17 +242,22 @@
     "preview": "预览",
     "previewText": "今天有 3 个交付物通过了验收。",
     "about": {
-      "runtime": "运行时",
+      "appTitle": "Buddy",
+      "tagline": "本地优先的个人 AI 助手 · 常驻对话、后台执行、长期记忆与工具扩展",
+      "replayGuide": "重新查看新手引导",
+      "versions": "应用与运行环境",
       "appVersion": "应用版本",
-      "piCatalog": "pi 模型目录",
-      "platform": "平台",
+      "platform": "操作系统",
+      "runtime": "运行内核",
       "dataDir": "数据目录",
-      "tagline": "AI Agent IM 协作平台 · Agent 运行时基于 pi",
-      "versions": "版本信息",
-      "piProject": "pi 项目",
-      "piDesc": "Provider、模型目录与认证流程均以 pi 官方实现为准。",
-      "footnote": "pi 采用 MIT 许可。",
-      "replayGuide": "重新查看新手引导"
+      "copyPath": "复制路径",
+      "copied": "已复制",
+      "envCheck": "运行环境检查",
+      "envCheckHint": "仅在遇到启动或兼容性异常时展开核验本机组件状态。",
+      "envCheckCount": "共 {{count}} 项本机运行检查",
+      "envCheckRun": "重新检查",
+      "envCheckRunning": "检查中…",
+      "privacyFootnote": "业务数据与模型凭据均加密存储在本机目录，不会上传至第三方。"
     },
     "aboutDesc": "本地优先的 Agent 工作台。业务数据由本机 daemon 持有，界面只负责呈现。",
     "tab": {
@@ -581,6 +605,30 @@
       "noneEnabled": "还没有启用的图像模型",
       "enabledOf": "已启用 {{enabled}}/{{total}}"
     },
+    "video": {
+      "title": "Video 视频模型",
+      "descProvider": "支持内置 6 家主流视频生成提供商与通用网关，可自定义 Base URL、API Key 并添加自定义模型。",
+      "defaultTitle": "默认视频模型",
+      "noDefault": "未选择默认视频模型",
+      "noneEnabled": "还没有启用的视频模型",
+      "providersTitle": "视频 Provider",
+      "providersDesc": "内置主流视频模型服务商与兼容网关。",
+      "search": "搜索模型或厂商",
+      "emptyProvider": "还没有可用的视频模型：可在下方手动添加。",
+      "models": "个视频模型",
+      "modelsTitle": "视频模型",
+      "addModel": "添加视频模型",
+      "addModelPlaceholder": "视频模型 ID，例如 kling-3.0",
+      "enableAll": "全部启用",
+      "enabled": "启用",
+      "enableNeedsKey": "先填写 API Key，模型才能启用",
+      "keyPlaceholder": "粘贴 API Key",
+      "klingKeyHint": "支持填写中转 Bearer Token，或可灵官方 AccessKey:SecretKey（系统自动签发 JWT）。",
+      "currentBaseUrl": "当前生效：{{url}}",
+      "protocol": "协议",
+      "pricePerSecond": "单价 ($/秒)",
+      "fetching": "拉取中…"
+    },
     "voice": {
       "title": "Voice 语音模型",
       "desc": "ASR 把录音转成文字，TTS 把文字读出来。语音模型与 LLM 共用 Provider 的 Base URL 和 API Key。",
@@ -755,6 +803,9 @@
       "openBudget": "前往预算中心",
       "loading": "正在读取工作台…",
       "user": "你的称呼",
+      "assistant": "助手称呼",
+      "assistantHint": "显示在对话欢迎页、助手消息与输入框提示中；留空默认使用 Buddy。",
+      "assistantPlaceholder": "默认：Buddy",
       "goalPlaceholder": "例如：把手上的内容工作交给助手",
       "goal": "一句话目标",
       "domain": "你在做什么"
@@ -865,13 +916,25 @@
       "coveragePending": "旧版累计用量尚未导入",
       "coverageComplete": "旧任务累计用量已导入（不含逐次输入/输出拆分）",
       "noPrice": "有用量，暂未计价",
+      "noPriceHint": "服务商未返回费用且未配置/匹配到该模型单价，可在「模型与定价」中配置单价。",
       "rateHint": "金额按现有计费策略计算；币种与汇率沿用计费设置。",
       "timeZone": "时区：{{zone}}",
       "ok": "成功",
       "error": "失败",
       "aborted": "已取消",
       "interrupted": "中断",
-      "unknown": "未知"
+      "unknown": "未知",
+      "avgPerCall": "均值 {{value}} / 次",
+      "avgTokensPerCall": "均耗 {{value}} / 次",
+      "peakBucket": "峰值 {{value}} / 时段",
+      "actorTabConsumption": "消耗占比",
+      "actorTabLifecycle": "Worker 变动",
+      "actorBreakdown": "消耗归因",
+      "otherOrigin": "其他调用",
+      "shareView": "占比",
+      "rankingView": "排行",
+      "switchToTokens": "当前无计价费用，点击切换查看 Token 用量",
+      "noChartData": "当前时间范围内暂无用量数据"
     },
     "network": {
       "description": "配置一次，模型请求、图片生成与工作区里的子进程都会走这条线路；保存后立即生效，下次启动自动沿用。",
@@ -968,7 +1031,17 @@
       "ocrDetailHint": "整段文本按阅读顺序拼成段落，适合理解内容；逐行会保留每行的位置和置信度，适合表格与表单。",
       "ocrDetailText": "整段文本",
       "ocrDetailLines": "逐行",
-      "bundledEmpty": "没有随应用内置的引擎"
+      "bundledEmpty": "没有随应用内置的引擎",
+      "shellTitle": "命令执行权限",
+      "shellDesc": "控制执行体在任务工作区内运行终端命令（bash / PowerShell / Python 脚本）的授权方式。",
+      "shellWindowsNote": "当前系统为 Windows，暂不具备内核级容器沙箱；文件读写仍严格限制在任务工作区内（用户上传的附件会自动复制到工作区 inputs/ 目录）。",
+      "shellModeLabel": "Windows 命令授权模式",
+      "shellModeHint": "按任务审批：首次执行命令弹出确认卡片；自动执行：免审批直接在工作区运行；禁用：阻止所有终端命令。",
+      "shellModeAsk": "按任务审批",
+      "shellModeAuto": "自动执行",
+      "shellModeDisabled": "禁用",
+      "shellSandboxLabel": "系统级执行沙箱",
+      "shellSandboxActive": "已启用系统沙箱"
     },
     "watchdog": {
       "desc": "它在主应用之外单独跑一个进程：读同一份数据，发现异常就记下来，必要时用模型判断方向是否偏离。它只报告，不动手——唯一能做的修复是重连已经失效的外部连接，而且会留下记录。",
@@ -1244,7 +1317,7 @@
       "image": "Image（图片）",
       "imageHint": "pi 的 image 模型类型；选为默认后用于交付视觉产物。",
       "video": "Video（视频）",
-      "videoHint": "pi 目前没有视频模型类型或生成接口（只有 chat / image / classifier），所以这里不放假入口。等 pi 支持后再接。"
+      "videoHint": "接入多协议视频生成模型（Seedance / Kling / MiniMax H3 / Veo 3.1 / fal / 兼容网关），用于交付视频产物。"
     },
     "picker": {
       "search": "搜索模型",
@@ -1465,6 +1538,7 @@
       "edit": "对工作区文件做精确文本替换。",
       "bash": "在沙箱工作区里执行 shell 命令。",
       "generate_image": "按提示词生成图片并存入工作区。",
+      "generate_video": "按提示词与可选首尾帧参考图生成视频并存入工作区。",
       "transcribe_audio": "把工作区里的音频转写成文字。",
       "text_to_speech": "把文本合成为音频文件。",
       "ocr_image": "识别图片里的文字。",
@@ -1491,6 +1565,10 @@
       "image": {
         "title": "图像生成",
         "description": "调用已配置的图像模型，把提示词画成文件存进工作区。"
+      },
+      "video": {
+        "title": "视频生成",
+        "description": "调用已配置的视频模型（文生视频 / 图生视频），把生成片段存进工作区。"
       },
       "speech": {
         "title": "语音",
@@ -1555,76 +1633,85 @@
     }
   },
   "onboarding": {
-    "ariaLabel": "OPC 新手引导",
+    "ariaLabel": "OPC 个人助手新手引导",
     "skip": "跳过引导",
     "skipStep": "跳过",
     "laterConfig": "稍后配置",
     "next": "下一步",
-    "finish": "进入工作台",
-    "backHome": "返回首页",
+    "finish": "开始使用",
+    "backHome": "返回欢迎页",
     "back": "上一步",
     "backToEdit": "返回修改",
-    "stepNav": "配置页切换",
+    "stepNav": "引导步骤切换",
     "step": {
-      "general": "通用偏好",
-      "model": "模型引擎",
-      "company": "工作台名片",
-      "done": "完成"
+      "profile": "认识你",
+      "model": "接入模型",
+      "general": "外观与伙伴",
+      "done": "就绪"
     },
     "welcome": {
-      "brandTagline": "AI Agent 协作工作台",
-      "badgeTitle": "OPC Workspace",
-      "badgeSub": "一个常驻的 AI 助手，接住你丢进来的每件事",
-      "titleLead": "你只管说，",
-      "titleAccent": "剩下的它来做。",
-      "subtitleLead": "丢一个目标进来，执行体自己开工；验收、汇报、记忆都留在同一条工作线上",
-      "subtitleTail": "。几步轻巧设定，它就开始替你干活。",
-      "start": "开始配置",
+      "brandName": "OPC",
+      "brandTagline": "本地优先的个人 AI 助手",
+      "badge": "全新升级 · 个人 AI 助手工作台",
+      "titleLead": "陪在你桌面的 ",
+      "titleAccent": "AI 得力伙伴。",
+      "subtitle": "日常对话、后台执行复杂任务、长期记住你的习惯、连接浏览器与 MCP 工具，以及你的北极熊桌面伙伴 Buddy，都在这里就位。",
+      "start": "开始快速配置",
       "skipToWorkspace": "直接进入工作台",
       "pressPrefix": "按",
       "pressSuffix": "开始 · 所有选项随时可在「设置」中调整",
-      "windowWorkspace": "工作台",
-      "windowOnDuty": "{{count}} 个执行体在岗",
-      "founderMsg": "按最新",
-      "founderMsgTail": "里的规范，先把本周的第一件交付物做出来。",
-      "agentReady": "已就位，等待目标",
-      "waitingDispatch": "{{name}} · {{template}} · 等待派单",
-      "engineTitle": "pi 多模型引擎",
-      "engineAvailable": "{{count}} 家可接入",
-      "template": {
-        "research": "调研",
-        "code": "编码",
-        "ops": "运维"
-      },
-      "statWorkers": "执行体",
-      "statSkills": "技能",
-      "statConfigured": "已配厂商",
-      "capIm": "一对一 IM 派单",
-      "capBrief": "工作线保留完整上下文",
-      "capModel": "每个执行体独立选模型"
+      "capChatTitle": "对话与后台执行",
+      "capChatDesc": "聊得快、干得稳，长任务静默推进并按约定交付。",
+      "capMemoryTitle": "长期记忆与偏好",
+      "capMemoryDesc": "记住你的称呼、语气偏好与常见习惯，越用越默契。",
+      "capToolsTitle": "工具、技能与 MCP",
+      "capToolsDesc": "联网检索、浏览器、桌面控制、定时任务一站打通。",
+      "capLocalTitle": "本机存储与审批",
+      "capLocalDesc": "数据与密钥加密留在本地，关键外发与操作需你拍板。"
     },
-    "general": {
-      "eyebrow": "通用偏好",
-      "title": "打造顺手的工作环境",
-      "description": "外观与语言会立即生效并保存，之后可在「设置 › 外观与语言」中随时调整。",
-      "theme": "界面主题",
-      "themeHint": "跟随系统时随操作系统明暗自动切换",
-      "scale": "界面字号",
-      "scaleHint": "整屏等比缩放，不是只放大文字",
-      "background": "界面背景",
-      "backgroundHint": "纯色最省电，动态光晕更醒目",
-      "language": "界面语言",
-      "languageHint": "切换后界面文案立即更新"
+    "profile": {
+      "eyebrow": "第一步 · 认识你",
+      "title": "怎么称呼你，以及喜欢的沟通方式？",
+      "description": "称呼、语言与回复风格会立即生效，后续可在「设置 › 个人偏好」中随时修改。",
+      "previewLabel": "助手回复风格预览",
+      "previewSample": {
+        "friendly": "{{name}}你好！今天有什么想推进的事，随时告诉我，我先帮你梳理重点。",
+        "balanced": "你好 {{name}}，已了解你的需求方向，我将在确认关键点后为你展开处理。",
+        "professional": "{{name}}您好。请提供目标与约束条件，我将按结构化步骤为您执行并交付。"
+      },
+      "nameLabel": "你的称呼",
+      "nameHint": "可选 · 助手和标题栏会按此称呼你",
+      "namePlaceholder": "例如：阿星、Alex",
+      "assistantLabel": "助手称呼",
+      "assistantHint": "可选 · 对话里助手的名字，默认 Buddy",
+      "assistantPlaceholder": "Buddy",
+      "languageLabel": "界面语言",
+      "toneLabel": "回复语气",
+      "toneHint": "决定助手日常对话的口吻",
+      "toneDesc": {
+        "friendly": "自然亲切，像熟悉的伙伴交流",
+        "balanced": "清晰得体，兼顾温度与效率",
+        "professional": "严谨简洁，直奔目标与结论"
+      },
+      "detailLabel": "回答详略",
+      "detailHint": "影响常规回复的展开程度",
+      "detailDesc": {
+        "concise": "直给结论与关键步骤",
+        "balanced": "要点清晰，适度说明原因",
+        "detailed": "充分展开背景、依据与备选"
+      }
     },
     "model": {
-      "eyebrow": "模型引擎",
-      "title": "为团队接入 AI 大脑",
-      "description": "Agent 执行体通过 pi 引擎调用模型。选一家服务商、填入凭据并指定默认模型；暂时没有密钥也可以稍后配置。",
+      "eyebrow": "第二步 · 接入模型",
+      "title": "为个人助手接入 AI 模型",
+      "description": "选择一家模型服务商、填入 API Key 或完成登录，并指定默认对话模型；暂时没有密钥也可以先跳过。",
       "currentDefault": "当前默认",
       "autoPick": "未指定",
+      "notSelected": "未选择服务商",
       "providers": "选择服务商",
       "showAll": "查看全部 {{count}} 家",
       "collapse": "收起",
+      "searchProviderPlaceholder": "搜索服务商名称或 ID…",
       "keyLabel": "{{provider}} API Key",
       "keyPlaceholderSaved": "••••••••（已保存，留空则不改动）",
       "keySave": "保存密钥",
@@ -1632,7 +1719,7 @@
       "keyHint": "密钥加密存放在本机凭据文件中，不会回传到界面。",
       "defaultModel": "默认模型",
       "modelCount": "共 {{count}} 个可用",
-      "noModels": "该服务商暂无可用模型，换一家或稍后在设置中刷新模型列表。",
+      "noModels": "该服务商暂无预设模型，换一家或稍后在「设置 › 模型」中刷新模型列表。",
       "thinking": "思考强度",
       "thinkingHint": "仅对支持推理的模型生效",
       "reasoning": "支持推理",
@@ -1644,53 +1731,45 @@
         "unconfigured": "未配置"
       }
     },
-    "company": {
-      "eyebrow": "工作台名片",
-      "title": "给这个工作台一个名字",
-      "description": "名称与品牌色会显示在标题栏和名片上；执行体是真正干活的一方，目标丢进来它就开工。",
-      "nameLabel": "工作台名称",
-      "namePlaceholder": "例如：星河内容工作室",
-      "optional": "选填",
-      "colorTitle": "品牌色",
-      "budgetTitle": "月度额度",
-      "budgetHint": "超出额度即硬停，所有派活都会被拒绝",
-      "budgetLabel": "每月 token 额度",
-      "budgetSave": "保存",
-      "budgetSaved": "额度已保存。",
-      "budgetInvalid": "额度需要是大于 0 的整数。",
-      "budgetUsage": "已用 {{used}} / {{limit}}",
-      "budgetScope": "工作台预算 · 每月自动重置",
-      "cardWorkers": "{{count}} 位执行体",
-      "cardHint": "实时预览 · 移动鼠标查看质感",
-      "budgetMissing": "工作台预算行在第一次招聘或派活时自动创建。",
-      "userLabel": "你的称呼",
-      "userPlaceholder": "例如：阿星",
-      "userHint": "显示在标题栏，Agent 也按这个称呼理解你",
-      "goalLabel": "一句话愿景",
-      "goalPlaceholder": "例如：把手上的内容工作交给助手",
-      "cardGoalPlaceholder": "一句话说说你在做什么",
-      "domainTitle": "你在做什么",
-      "cardDomainEmpty": "未选择方向"
+    "general": {
+      "eyebrow": "第三步 · 外观与伙伴",
+      "title": "调整阅读手感与桌面伙伴",
+      "description": "主题、内嵌高清字体、字号和桌面伙伴 Buddy 均可实时预览并保存。",
+      "theme": "界面主题",
+      "themeHint": "跟随系统时随操作系统明暗自动切换",
+      "font": "界面字体",
+      "fontHint": "内置字体离线加载，优化对话 Markdown 阅读质感",
+      "fontPreviewSample": "今天帮你整理好了重点与待办事项 — Clean UI & Markdown Typography.",
+      "scale": "界面字号",
+      "scaleHint": "整屏等比缩放",
+      "buddyTitle": "桌面伙伴 Buddy",
+      "buddyHint": "会随助手思考、干活、完成状态陪在右下角",
+      "buddyEnable": "开启桌面伙伴 Buddy",
+      "buddyEnableHint": "可拖拽移动或贴边收纳，点按互动会有可爱反馈",
+      "buddyBubbles": "显示轻气泡提示",
+      "buddyBubblesHint": "任务切换、后台完成或轻戳互动时短暂浮现"
     },
     "done": {
-      "title": "「{{name}}」已准备就绪",
-      "subtitle": "配置都已写入本机，进入工作台给执行体丢第一个目标吧。",
-      "company": "工作台",
-      "model": "默认模型",
-      "team": "执行体",
-      "autoPick": "由 pi 自动选择",
+      "title": "{{name}}，一切已就绪",
+      "subtitle": "你的偏好与配置已保存到本机，现在就和助手聊聊第一件事吧。",
+      "profileCard": "个人偏好",
+      "modelCard": "默认模型",
+      "appearanceCard": "外观与 Buddy",
+      "noModel": "暂未指定模型",
       "modelLine": "{{provider}} · 思考 {{thinking}}",
-      "modelFallback": "可随时在设置中指定",
-      "workersTotal": "共 {{count}} 个执行体",
-      "actionChat": "派发第一单任务",
-      "actionChatSub": "把目标丢给执行体，它会自己开线、执行并汇报",
-      "actionSettings": "完善模型与凭据",
-      "actionSettingsSub": "配置更多服务商、图像模型与自检"
+      "modelFallback": "可随时前往设置配置",
+      "buddyOn": "桌面伙伴 Buddy 已开启",
+      "buddyOff": "桌面伙伴 Buddy 已隐藏",
+      "actionChat": "开始第一次对话",
+      "actionChatSub": "直接丢出问题或目标，简单问题秒答、复杂事后台推进",
+      "actionSettings": "前往模型与能力设置",
+      "actionSettingsSub": "继续配置更多模型、工具权限、技能与定时任务"
     }
   },
   "company": {
     "fallbackName": "我的工作台",
     "userFallback": "我",
+    "assistantFallback": "Buddy",
     "color": {
       "ocean": "深海蓝",
       "violet": "星云紫",
@@ -1788,6 +1867,129 @@
       "ambient1": "随时叫我哦~",
       "ambient2": "我在这儿陪着你呢",
       "ambient3": "有什么想法都可以丢给我"
+    }
+  },
+  "schedules": {
+    "title": "定时计划",
+    "subtitle": "{{assistant}} 会在约定时间自动执行提醒、巡检或整理任务。",
+    "refresh": "刷新",
+    "newPlan": "新建计划",
+    "spotlight": {
+      "label": "即将执行",
+      "noneTitle": "暂无待执行的定时计划",
+      "noneHint": "创建周期检查或一次性提醒，到期会自动触发。"
+    },
+    "metrics": {
+      "active": "运行中",
+      "activeDetail": "周期 {{recurring}} · 单次 {{once}}",
+      "pausedAndDone": "已暂停 / 已结束",
+      "pausedCount": "已暂停",
+      "doneCount": "已结束"
+    },
+    "filters": {
+      "all": "全部",
+      "active": "运行中",
+      "paused": "已暂停",
+      "finished": "已结束"
+    },
+    "searchPlaceholder": "搜索计划名称、内容或时区…",
+    "clearSearch": "清除搜索",
+    "status": {
+      "active": "运行中",
+      "paused": "已暂停",
+      "cancelled": "已取消",
+      "completed": "已完成"
+    },
+    "ruleKinds": {
+      "once": "仅一次",
+      "daily": "每天",
+      "weekdays": "工作日",
+      "weekly": "每周",
+      "monthly": "每月"
+    },
+    "ruleSummary": {
+      "once": "单次 · {{time}}",
+      "daily": "每天 · {{time}}",
+      "weekdays": "每个工作日 · {{time}}",
+      "weekly": "每周 {{days}} · {{time}}",
+      "monthly": "每月 {{day}} 日 · {{time}}"
+    },
+    "weekdaysShort": {
+      "1": "一",
+      "2": "二",
+      "3": "三",
+      "4": "四",
+      "5": "五",
+      "6": "六",
+      "7": "日"
+    },
+    "triage": {
+      "pending": "待处理",
+      "routed": "已触发",
+      "accepted": "已接收",
+      "dropped": "已跳过",
+      "merged": "已合并"
+    },
+    "lastRunAt": "上次 {{time}}",
+    "historyToggle": "执行记录 ({{count}})",
+    "missedMerged": "合并 {{count}} 次错过触发",
+    "actions": {
+      "edit": "编辑计划",
+      "pause": "暂停计划",
+      "resume": "恢复计划",
+      "duplicate": "复制为新计划",
+      "reuse": "再次创建",
+      "cancel": "取消计划",
+      "confirmCancel": "确认取消"
+    },
+    "empty": {
+      "title": "还没有定时计划",
+      "subtitle": "创建一个定时提醒或周期巡检，{{assistant}} 到点就会自动为你处理并汇报。",
+      "quickStart": "从常用模板快速开始",
+      "noMatchTitle": "没有匹配的定时计划",
+      "noMatchSubtitle": "尝试切换状态筛选或清除搜索关键词。",
+      "resetFilters": "查看全部计划"
+    },
+    "dialog": {
+      "createTitle": "新建定时计划",
+      "editTitle": "编辑定时计划",
+      "subtitle": "将严格按照所选时区的本地时间计算触发点",
+      "quickTemplates": "快速模板",
+      "name": "计划名称",
+      "namePlaceholder": "例如：每日工作晨报、周五复盘整理",
+      "instruction": "到期时需要执行的内容",
+      "instructionPlaceholder": "告诉助手到点后需要做什么，比如总结昨天待办、检查指定项目状态或发送提醒…",
+      "frequency": "执行频率",
+      "date": "触发日期",
+      "today": "今天",
+      "tomorrow": "明天",
+      "time": "触发时间",
+      "dayOfMonth": "每月日期（1–31）",
+      "weekdays": "选择星期",
+      "timezone": "执行时区",
+      "nextPreview": "预计下次触发",
+      "pastWarning": "所选时间已早于当前时间，请调整到未来的时间点。",
+      "invalidRule": "请填写完整的日期、时间与重复规则。",
+      "saveEdit": "保存修改",
+      "createSubmit": "创建计划"
+    },
+    "templates": {
+      "morningBrief": {
+        "title": "每日工作晨报",
+        "instruction": "帮我梳理今天需要重点推进的待办事项、日程优先级，并给出简明的工作节奏建议。"
+      },
+      "weekdayWrap": {
+        "title": "工作日收尾总结",
+        "instruction": "总结今天已完成的事项、仍在推进中的任务以及明天需要优先跟进的内容。"
+      },
+      "weeklyDigest": {
+        "title": "每周复盘清单",
+        "instruction": "汇总本周重要产出、关键决策和下周计划要点，形成一份简洁可执行的周报摘要。"
+      },
+      "oneTimeReminder": {
+        "title": "单次事项提醒",
+        "instruction": "到点提醒我处理这项约定任务，并附上相关的背景提示。"
+      }
     }
   }
 }

@@ -66,6 +66,7 @@ export const PROVIDER_VISUALS: Record<string, ProviderVisual> = {
   meta: { icon: 'meta-color.svg', color: '#0082FB', initials: 'ME' },
   // TypeSafe is classifier-only, so this mark shows on Settings → Decision.
   typesafe: { icon: 'typesafeai.svg', color: '#1F2937', initials: 'TS' },
+  fal: { color: '#111827', initials: 'FA' },
 };
 
 /** Ids that appear in configs under different names than the icon files. */
@@ -89,6 +90,8 @@ const ALIASES: Record<string, string> = {
   'xiaomi-token-plan-ams': 'xiaomi',
   'xiaomi-token-plan-sgp': 'xiaomi',
   'minimax-cn': 'minimax',
+  'volcengine-ark': 'volcengine',
+  'openai-video': 'openai',
   'moonshotai-cn': 'moonshotai',
   'zai-coding-cn': 'zai',
   // Same brand, different spelling in provider rows and pi's data.

@@ -589,6 +589,7 @@ export class MarkdownMemoryStore {
     tone: string;
     detail: string;
     instructions: string;
+    assistantName?: string;
   }): string | undefined {
     this.ensureInitialized();
     const blocks: string[] = [];
@@ -605,6 +606,9 @@ export class MarkdownMemoryStore {
         detailed: '尽量充分展开并解释依据',
       };
       const prefLines = [
+        ...(personalPreferences.assistantName?.trim()
+          ? [`你的名称/自称：${personalPreferences.assistantName.trim()}。`]
+          : []),
         `回复偏好：语气${toneMap[personalPreferences.tone] ?? toneMap.balanced}；详略${detailMap[personalPreferences.detail] ?? detailMap.balanced}。`,
       ];
       if (personalPreferences.instructions.trim()) {
@@ -737,6 +741,16 @@ export class MarkdownMemoryStore {
     this.writeState({
       ...state,
       lastReflectedMessageId: messageId ?? state.lastReflectedMessageId,
+      lastReflectedAt: at,
+    });
+  }
+
+  /** Explicitly clears the reflected message cursor when starting a fresh chat. */
+  resetReflectionCursor(at = Date.now()): void {
+    const state = this.readState();
+    this.writeState({
+      ...state,
+      lastReflectedMessageId: null,
       lastReflectedAt: at,
     });
   }

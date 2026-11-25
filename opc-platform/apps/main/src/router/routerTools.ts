@@ -183,6 +183,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           '不要为此开第二条线。',
           '用户基于已有工作线的产物/代码/页面追加需求、小改或换方案时，优先用 continue_line（mode="append" 追加，mode="pivot" 放弃当前跑偏路线并在同一工作区转向），不要重新 open_line_of_work。',
           '用户明确要求停下或放弃某件正在跑的活时，立即调用 abort_line，不要等它跑完。',
+          '用户通过聊天上传的附件，在调用 open_line_of_work / continue_line / steer_line 时系统会自动复制文件本体到目标工作区的 inputs/ 目录，执行体可直接读取；不要向用户声称“只收到本地路径/无法访问 D 盘”或要求用户手动拖文件到工作区。',
           '用户明确要求未来某个时间提醒或重复检查时，用 create_schedule 建立计划；用户没有给出必要日期、时间或时区时先询问。',
           '定时请求到期后视作用户预先安排的输入，结合届时上下文决定是否 open_line_of_work；不要只因为计划到期就盲目执行过时或失去意义的请求。',
           '',
@@ -206,7 +207,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           '重试失败任务前先核对已确认的阻塞原因：只有用户提供的信息可能改变该原因时才重试；若新信息没有解决或未涉及阻塞原因，先做一次有上限的只读预检，仍未改变就询问用户或说明替代路径。',
           '同一结果已经告诉用户后，除非出现新状态、新证据或新的可执行下一步，不要重复播报。',
           '回答先给结论，通常一到三句；不复述用户原话，不使用“主人”“莉莉丝”等角色化称呼，除非用户明确要求。',
-          '用户问「怎么样了」时，只说对用户有用的状态；不要把内部工作线清单或运行日志抄给他。',
+          '用户问「怎么样了/进展到哪里/做了挺久」时，必须先用 recall 核对最新任务的实际最近动作（trace）与待审批状态；标记为「审批·已处理，不再阻塞」的历史记录说明用户早已放行。只要最近动作仍在正常推进，就如实告知正在处理哪一步，严禁臆断“卡死/看不到授权弹窗”而用 steer_line 打断正在正常工作的执行体。',
           '',
           '## 打扰的纪律',
           '大部分事情不需要他知道。后台任务刚成功派发时保持安静；只有任务完成、需要用户拍板，或需要用户补充信息时才开口。' +
@@ -296,7 +297,7 @@ export function createRouterTools(deps: RouterToolDeps) {
             attachments: Type.Optional(Type.Array(Type.Object({
               id: Type.String(), name: Type.String(), path: Type.String(), size: Type.Number(),
               mimeType: Type.Optional(Type.String()), source: Type.Union([Type.Literal('file'), Type.Literal('clipboard')]),
-            }), { description: '用户提供的附件路径引用；只读使用，不要复制到工作区。' })),
+            }), { description: '用户上传的附件引用；系统会自动将文件本体复制到执行体工作区的 inputs/ 目录供安全读取。' })),
             acceptance: Type.Optional(
               Type.Object({
                 command: Type.Array(Type.String(), { minItems: 1, description: 'argv 形式的验收命令。' }),
@@ -502,6 +503,7 @@ export function createRouterTools(deps: RouterToolDeps) {
                 '在已有工作线（无论正在运行还是刚完成/待机）的同一工作区和同一执行体上下文里继续干活。' +
                 'mode="append" 用于追加功能、顺手修改细节、继续调研；' +
                 'mode="pivot" 用于推翻当前跑偏的路线：会自动中止旧任务、清理错路上下文，再从干净检查点按新方向继续。' +
+                '用户在对话中新上传或引用过的附件会自动复制到该工作线的 inputs/ 目录供执行体读取。' +
                 '不要为了增量改动去 open_line_of_work。',
               parameters: Type.Object({
                 thread_id: Type.String({ description: '已有工作线的 id。' }),

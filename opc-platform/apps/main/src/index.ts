@@ -5,7 +5,10 @@ import path from 'node:path';
 import { app, BrowserWindow, session, shell } from 'electron';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
-import { referencedConversationArtifacts } from './chat/conversationArtifacts';
+import {
+  referencedConversationArtifacts,
+  referencedConversationUserAttachments,
+} from './chat/conversationArtifacts';
 import { readMcpConfig } from './mcp/config';
 import { closeAllMcpConnections, configureMcpAuth } from './mcp/connection';
 import { loadSmokeScript } from './smoke';
@@ -19,10 +22,11 @@ import { registerIpc } from './ipc/register';
 import { AuthService } from './models/authService';
 import { FileCredentialStore } from './models/credentialStore';
 import { ImageService } from './models/imageService';
+import { VideoService } from './models/videoService';
 import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
-import type { SubtaskDraft, Worker, WorkThread } from '@opc/shared/domain';
+import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE, type SubtaskDraft, type Worker, type WorkThread } from '@opc/shared/domain';
 import { IPC } from '@opc/shared/ipc';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
@@ -30,6 +34,7 @@ import { applyProxy, connectProxyRuntime, networkClient } from './network/proxyR
 import { RuntimeService } from './runtime/service';
 import { inspectOcrRuntime, resolveOcrAssetsDir } from './ocr/assets';
 import { OcrSettingsStore } from './ocr/settings';
+import { ShellExecutionSettingsStore } from './sandbox/settings';
 import { registerOcrScheme } from './ocr/protocol';
 import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
 import { OcrService } from './ocr/service';
@@ -39,6 +44,7 @@ import { WorkService } from './work/workService';
 import { shouldPromoteManualCompletion, shouldWakeRouterForReport } from './work/reportPolicy';
 import { PiExtensionHost } from './extensions/host';
 import { PiSkillHost } from './skills/host';
+import { resolveBundledSkillsDir } from './skills/scanner';
 import { resolveSkillPacksSourceDir, SkillPackService } from './skills/packs';
 import { BillingSettingsService } from './work/billingSettings';
 import { TaskRepository } from './data/taskRepository';
@@ -496,6 +502,7 @@ async function bootstrap(): Promise<void> {
     console.warn('[usage] 历史任务汇总回填失败', error);
   }
   const imageService = new ImageService(modelConfig, networkClient, usage);
+  const videoService = new VideoService(modelConfig, networkClient, usage, () => billingSettings.get().pricingMode);
   const speechService = new SpeechService(modelConfig, networkClient, usage);
   const decisionService = new DecisionService(modelConfig, usage, () => billingSettings.get().pricingMode);
 
@@ -566,6 +573,7 @@ async function bootstrap(): Promise<void> {
 
   const ocrSettings = new OcrSettingsStore(db);
   const ocr = ensureOcr(ocrSettings);
+  const shellExecutionSettings = new ShellExecutionSettingsStore(db);
   // 计费口径：定价策略 + 展示币种 + 手工汇率。汇率只影响渲染，不写进账本。
   // Pi extensions on this machine (`~/.pi/agent/extensions`). Scanning is free;
   // only the ones you turned on are imported.
@@ -574,6 +582,11 @@ async function bootstrap(): Promise<void> {
   // available unless you switches them off.
   const piSkills = new PiSkillHost({
     userDataDir: appPaths.userData,
+    bundledDir: resolveBundledSkillsDir({
+      packaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    }),
     managedDir: skillPacks.managedSkillsDir,
   });
   skillPacks.onSkillsChanged = () => piSkills.invalidateCache();
@@ -593,7 +606,7 @@ async function bootstrap(): Promise<void> {
     faults: systemEvents,
     paths: appPaths,
     upsertTaskCard: () => undefined,
-    onApprovalCard: ({ report, task, tool, browser, desktop }) => {
+    onApprovalCard: ({ report, task, tool, browser, desktop, shell }) => {
       const conversationId = chat?.ensureAssistant();
       if (!conversationId) return;
       chat?.appendApprovalCard(conversationId, {
@@ -604,6 +617,7 @@ async function bootstrap(): Promise<void> {
         tool,
         ...(browser ? { browser } : {}),
         ...(desktop ? { desktop } : {}),
+        ...(shell ? { shell } : {}),
         title: report.title,
         body: report.body,
         state: 'pending',
@@ -614,12 +628,14 @@ async function bootstrap(): Promise<void> {
       const conversationId = chat?.ensureAssistant();
       if (conversationId) chat?.setActivity(conversationId, 'thinking');
     },
+    shellExecution: shellExecutionSettings,
     mcp: readMcp,
     modelConfig,
     assistantTools,
     usageRepository: usage,
     pricingMode: () => billingSettings.get().pricingMode,
     images: imageService,
+    videos: videoService,
     speech: speechService,
     decisions: decisionService,
     memoryStore,
@@ -723,7 +739,12 @@ async function bootstrap(): Promise<void> {
     facts,
     personalPreferences: () => {
       const profile = new CompanyService(db).get();
-      return { tone: profile.replyTone, detail: profile.replyDetail, instructions: profile.replyInstructions };
+      return {
+        tone: profile.replyTone,
+        detail: profile.replyDetail,
+        instructions: profile.replyInstructions,
+        assistantName: profile.assistantName.trim() || 'Buddy',
+      };
     },
     workerCapabilities: () => work?.routerCapabilities() ?? [],
     schedules,
@@ -831,15 +852,32 @@ async function bootstrap(): Promise<void> {
    */
   chat.onUserMessage = ({ conversationId, text, attachments }) => {
     memoryReflector.noteUserMessage();
+    const transcript = chat!.readTranscript(conversationId);
+    const priorMessages = transcript.slice(0, -1);
+    const priorUserAttachments = referencedConversationUserAttachments({
+      text,
+      messages: priorMessages,
+      hasCurrentAttachments: Boolean(attachments?.length),
+    });
     const priorArtifacts = referencedConversationArtifacts({
       text,
-      messages: chat!.readTranscript(conversationId),
+      messages: transcript,
       workspaceRoot: appPaths.workspaceDir,
       getTask: (taskId) => work?.getTask(taskId),
     });
-    const files = [...(attachments ?? []), ...priorArtifacts].filter(
-      (attachment, index, all) => all.findIndex((candidate) => candidate.path === attachment.path) === index,
-    );
+    const comparable = (value: string) => {
+      const resolved = path.resolve(value);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    const seenPaths = new Set<string>();
+    const files = [...(attachments ?? []), ...priorUserAttachments, ...priorArtifacts]
+      .filter((attachment) => {
+        const key = comparable(attachment.path);
+        if (seenPaths.has(key)) return false;
+        seenPaths.add(key);
+        return true;
+      })
+      .slice(0, MAX_CHAT_ATTACHMENTS_PER_MESSAGE);
     threads.enqueueEvent({ source: 'im', kind: 'user_message', payload: { text, ...(files.length ? { attachments: files } : {}) } });
     // Option A: If Router is mid-generation, preemptively abort it and prune its dead turn,
     // then immediately run a fresh tick so Router can decide steer/continue/abort/open in 1-2s.
@@ -922,6 +960,7 @@ async function bootstrap(): Promise<void> {
     // rather than a stored preference.
     bundled: { inspect: async () => [await inspectOcrRuntime(ocrAssetsDir())] },
     ocrSettings,
+    shellExecution: shellExecutionSettings,
     billingSettings,
     usage,
     auth: new AuthService(() => modelConfig.runtime.createModels(), credentialStore),
@@ -943,7 +982,36 @@ async function bootstrap(): Promise<void> {
       },
       getContextStats: () => goalRouter.contextStats(),
       compactContext: () => goalRouter.compactContext(),
-      resetContext: (handoff) => goalRouter.resetContext(handoff),
+      resetContext: async (options) => {
+        await goalRouter.interrupt('开启新对话', { requeue: false }).catch(() => undefined);
+        let abortedThreads = 0;
+        if (options?.abortRunningTasks !== false) {
+          const aborted = await work!.abortActiveThreads('开启新对话');
+          abortedThreads = aborted.abortedThreads;
+        }
+        await memoryReflector.resetAfterConversationClear({
+          flush: options?.reflectMemory !== false,
+        });
+        threads.discardPendingEvents();
+        threads.clearPendingApprovals(new Set());
+        const archivedThreads = threads.archiveThreads({
+          includeRunning: options?.abortRunningTasks !== false,
+        });
+        const clearedMessages =
+          options?.clearHistory !== false && chat
+            ? chat.clearConversation(routerConversation)
+            : 0;
+        const resetResult = await goalRouter.resetContext({
+          ...(options?.handoff ? { handoff: options.handoff } : {}),
+          reflectMemory: false,
+        });
+        return {
+          ...resetResult,
+          clearedMessages,
+          abortedThreads,
+          archivedThreads,
+        };
+      },
     },
   });
 

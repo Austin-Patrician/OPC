@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { emitBuddySignal } from '@/shared/ui/buddyEvents';
 
 export type VoiceRecorderState = 'idle' | 'recording' | 'transcribing';
 
 /** Long enough for a meeting note, short enough to stay under one ASR request. */
 const MAX_RECORDING_MS = 120_000;
+const METER_INTERVAL_MS = 40;
 
 interface UseVoiceRecorderOptions {
   onTranscript: (text: string) => void;
@@ -24,18 +26,72 @@ export function useVoiceRecorder({ onTranscript, onError }: UseVoiceRecorderOpti
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
+  const meterContextRef = useRef<AudioContext | null>(null);
+  const meterRafRef = useRef<number | null>(null);
   const cancelledRef = useRef(false);
   const callbacksRef = useRef({ onTranscript, onError });
   callbacksRef.current = { onTranscript, onError };
 
+  const stopMeter = useCallback(() => {
+    if (meterRafRef.current !== null) {
+      window.cancelAnimationFrame(meterRafRef.current);
+      meterRafRef.current = null;
+    }
+    const meterContext = meterContextRef.current;
+    meterContextRef.current = null;
+    if (meterContext) {
+      void meterContext.close().catch(() => undefined);
+    }
+  }, []);
+
+  const startMeter = useCallback(
+    (stream: MediaStream) => {
+      stopMeter();
+      try {
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.72;
+        source.connect(analyser);
+        meterContextRef.current = audioContext;
+
+        const samples = new Uint8Array(analyser.fftSize);
+        let lastEmit = 0;
+
+        const tick = (now: number) => {
+          if (meterContextRef.current !== audioContext) return;
+          if (now - lastEmit >= METER_INTERVAL_MS) {
+            lastEmit = now;
+            analyser.getByteTimeDomainData(samples);
+            let sumSquares = 0;
+            for (let i = 0; i < samples.length; i += 1) {
+              const centered = ((samples[i] ?? 128) - 128) / 128;
+              sumSquares += centered * centered;
+            }
+            const rms = Math.sqrt(sumSquares / samples.length);
+            const level = Math.min(1, Math.pow(rms * 3.8, 0.75));
+            emitBuddySignal({ kind: 'voice', state: 'recording', level });
+          }
+          meterRafRef.current = window.requestAnimationFrame(tick);
+        };
+        meterRafRef.current = window.requestAnimationFrame(tick);
+      } catch {
+        emitBuddySignal({ kind: 'voice', state: 'recording', level: 0.35 });
+      }
+    },
+    [stopMeter],
+  );
+
   const releaseStream = useCallback(() => {
+    stopMeter();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-  }, []);
+  }, [stopMeter]);
 
   const stop = useCallback(() => {
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
@@ -69,8 +125,12 @@ export function useVoiceRecorder({ onTranscript, onError }: UseVoiceRecorderOpti
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         chunksRef.current = [];
         releaseStream();
-        if (cancelledRef.current) return;
+        if (cancelledRef.current) {
+          emitBuddySignal({ kind: 'voice', state: 'idle', level: 0 });
+          return;
+        }
         setState('transcribing');
+        emitBuddySignal({ kind: 'voice', state: 'transcribing', level: 0 });
         try {
           const wav = await toWav(blob);
           const result = await bridge.transcribe({ audio: wav, mimeType: 'audio/wav' });
@@ -81,27 +141,32 @@ export function useVoiceRecorder({ onTranscript, onError }: UseVoiceRecorderOpti
         } catch (error) {
           callbacksRef.current.onError(error instanceof Error ? error.message : String(error));
         } finally {
+          emitBuddySignal({ kind: 'voice', state: 'idle', level: 0 });
           setState('idle');
         }
       };
 
       recorder.start();
       setState('recording');
+      emitBuddySignal({ kind: 'voice', state: 'recording', level: 0 });
+      startMeter(stream);
       timerRef.current = window.setTimeout(stop, MAX_RECORDING_MS);
     } catch (error) {
       releaseStream();
+      emitBuddySignal({ kind: 'voice', state: 'idle', level: 0 });
       setState('idle');
       callbacksRef.current.onError(
         error instanceof Error ? `无法打开麦克风：${error.message}` : '无法打开麦克风',
       );
     }
-  }, [releaseStream, state, stop]);
+  }, [releaseStream, startMeter, state, stop]);
 
   useEffect(
     () => () => {
       cancelledRef.current = true;
       if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
       releaseStream();
+      emitBuddySignal({ kind: 'voice', state: 'idle', level: 0 });
     },
     [releaseStream],
   );

@@ -390,10 +390,10 @@ export class DesktopInstallService {
   }
 
   private findBinary(root = this.runtimeDir): string | undefined {
-    const local = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'agent-desktop.cmd' : 'agent-desktop');
-    if (fs.existsSync(local)) return local;
     const direct = path.join(root, process.platform === 'win32' ? 'agent-desktop.exe' : 'agent-desktop');
     if (fs.existsSync(direct)) return direct;
+    const local = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'agent-desktop.cmd' : 'agent-desktop');
+    if (fs.existsSync(local)) return local;
     if (root !== this.runtimeDir) {
       const wanted = process.platform === 'win32' ? 'agent-desktop.exe' : 'agent-desktop';
       const pending: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];

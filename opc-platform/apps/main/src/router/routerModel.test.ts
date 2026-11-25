@@ -13,6 +13,7 @@ const defaults = (patch: Partial<ModelDefaults> = {}): ModelDefaults => ({
   llm: { providerId: 'main', modelId: 'big' },
   router: null,
   image: null,
+  video: null,
   asr: null,
   tts: null,
   decision: null,

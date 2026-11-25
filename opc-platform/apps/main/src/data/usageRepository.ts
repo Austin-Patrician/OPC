@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { PricingMode } from "@opc/shared/domain";
 import type {
   UsageCallView,
   UsageCostSource,
@@ -6,6 +7,7 @@ import type {
   UsageReport,
 } from "@opc/shared/ipc";
 import type { CompanyDatabase } from "./companyDatabase";
+import { calculateTokenCost, type TokenPricingRates } from "../work/usage";
 
 export interface UsageCallDraft {
   idempotencyKey: string;
@@ -145,6 +147,66 @@ export class UsageRepository {
     } catch (error) {
       console.warn("[usage] 用量记录未能写入", error);
     }
+  };
+
+  /** Backfills unpriced token calls using effective configured/catalog pricing. */
+  repriceUnpricedCalls = (
+    resolvePrice: (
+      providerId: string,
+      modelId: string,
+    ) => TokenPricingRates | undefined,
+    pricingMode: PricingMode,
+  ): number => {
+    if (pricingMode === "provider_only") return 0;
+    const rows = this.db
+      .prepare(
+        `
+      SELECT id, provider_id, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+      FROM ai_call
+      WHERE charged_cost_usd IS NULL
+        AND cost_source = 'unpriced'
+        AND billing_unit = 'token'
+        AND (input_tokens > 0 OR output_tokens > 0 OR cache_read_tokens > 0 OR cache_write_tokens > 0)
+    `,
+      )
+      .all() as {
+      id: string;
+      provider_id: string;
+      model_id: string;
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_tokens: number;
+      cache_write_tokens: number;
+    }[];
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare(
+      `UPDATE ai_call SET configured_cost_usd = ?, charged_cost_usd = ?, cost_source = 'configured' WHERE id = ?`,
+    );
+    const updated = this.db.transaction(() => {
+      let count = 0;
+      for (const row of rows) {
+        const price = resolvePrice(row.provider_id, row.model_id);
+        if (!price) continue;
+        const cost = calculateTokenCost(
+          {
+            input: row.input_tokens,
+            output: row.output_tokens,
+            cacheRead: row.cache_read_tokens,
+            cacheWrite: row.cache_write_tokens,
+          },
+          price,
+        );
+        if (cost <= 0) continue;
+        update.run(cost, cost, row.id);
+        count += 1;
+      }
+      return count;
+    })();
+    if (updated > 0) {
+      for (const listener of this.listeners) listener();
+    }
+    return updated;
   };
 
   /** Import trustworthy task-level totals written before the call ledger existed. */

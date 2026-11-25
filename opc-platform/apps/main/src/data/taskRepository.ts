@@ -642,7 +642,12 @@ export class TaskRepository {
 
   updateContract = (
     taskId: string,
-    patch: { objective?: string; deliverable?: string; outputs?: TaskContract['outputs'] },
+    patch: {
+      objective?: string;
+      deliverable?: string;
+      outputs?: TaskContract['outputs'];
+      attachments?: TaskContract['attachments'];
+    },
   ): TaskContract | null => {
     const existing = this.getTask(taskId);
     if (!existing) return null;
@@ -656,6 +661,7 @@ export class TaskRepository {
       ...(patch.objective !== undefined ? { objective: patch.objective } : {}),
       ...(patch.deliverable !== undefined ? { deliverable: patch.deliverable } : {}),
       ...(patch.outputs !== undefined ? { outputs: patch.outputs } : {}),
+      ...(patch.attachments !== undefined ? { attachments: patch.attachments } : {}),
     };
     this.statement(
       'UPDATE task SET contract_json = ?, brief = ?, deliverable_spec = ?, updated_at = ? WHERE id = ?',

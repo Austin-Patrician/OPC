@@ -46,6 +46,10 @@ export const companyName = (profile: CompanyProfile, fallback: string) => profil
 /** What you is called: the stored name, or the caller's fallback. */
 export const userName = (profile: CompanyProfile, fallback: string) => profile.userName.trim() || fallback;
 
+/** What the chat assistant is called: the stored name, or the caller's fallback ("Buddy"). */
+export const assistantName = (profile: CompanyProfile, fallback = 'Buddy') =>
+  profile.assistantName?.trim() || fallback;
+
 /** Two-character monogram: CJK names use their first two characters, Latin their initials. */
 export function companyMonogram(name: string, fallback = 'OPC'): string {
   const trimmed = name.trim();

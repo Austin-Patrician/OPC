@@ -22,7 +22,7 @@ const SKILL_FILE = 'SKILL.md';
 const MAX_FILES = 200;
 const MAX_DEPTH = 4;
 
-export type SkillScope = 'managed' | 'global' | 'project';
+export type SkillScope = 'bundled' | 'managed' | 'global' | 'project';
 
 export interface ScannedSkill {
   /** Absolute path of the SKILL.md, POSIX-normalized: stable across scans. */
@@ -45,7 +45,9 @@ export interface ScannedSkill {
 export interface ScanSkillsOptions {
   homeDir: string;
   projectDir: string;
-  /** Optional app-managed skills directory, scanned first so global/project skills can override it. */
+  /** Optional app-bundled zero-dependency skills directory (`resources/skills`). */
+  bundledDir?: string;
+  /** Optional app-managed skills directory, scanned before global/project so users can override. */
   managedDir?: string;
   readDir?: (dir: string) => fs.Dirent[];
   readText?: (file: string) => string | undefined;
@@ -59,12 +61,28 @@ export interface ScanSkillsResult {
 
 const toPosix = (value: string) => value.replace(/\\/g, '/');
 
+/**
+ * Resolves the bundled `resources/skills` directory in both dev and packaged builds.
+ */
+export function resolveBundledSkillsDir(input: {
+  packaged: boolean;
+  appPath: string;
+  resourcesPath: string;
+}): string {
+  if (input.packaged) return path.join(input.resourcesPath, 'skills');
+  const candidate = path.join(input.appPath, 'resources', 'skills');
+  if (fs.existsSync(candidate)) return candidate;
+  return path.join(process.cwd(), 'resources', 'skills');
+}
+
 export function skillRoots(
   homeDir: string,
   projectDir: string,
   managedDir?: string,
+  bundledDir?: string,
 ): { scope: SkillScope; dir: string }[] {
   return [
+    ...(bundledDir ? [{ scope: 'bundled' as const, dir: bundledDir }] : []),
     ...(managedDir ? [{ scope: 'managed' as const, dir: managedDir }] : []),
     { scope: 'global', dir: path.join(homeDir, '.agents', 'skills') },
     { scope: 'project', dir: path.join(projectDir, '.agents', 'skills') },
@@ -77,7 +95,7 @@ export function scanSkills(options: ScanSkillsOptions): ScanSkillsResult {
     readText: options.readText ?? defaultReadText,
     stat: options.stat ?? defaultStat,
   };
-  const roots = skillRoots(options.homeDir, options.projectDir, options.managedDir);
+  const roots = skillRoots(options.homeDir, options.projectDir, options.managedDir, options.bundledDir);
 
   // Keyed by name: a project skill replaces the global one of the same name,
   // which is the same precedence Pi and Claude Code use.

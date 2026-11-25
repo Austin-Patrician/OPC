@@ -51,7 +51,7 @@ describe('模型选择器的分组', () => {
         id: 'p',
         baseUrl: '',
         apis: [],
-        counts: { chat: 1, image: 0, classifier: 0, asr: 0, tts: 0 },
+        counts: { chat: 1, image: 0, video: 0, classifier: 0, asr: 0, tts: 0 },
         models: [
           {
             id: 'a',

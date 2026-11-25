@@ -253,4 +253,57 @@ describe("UsageRepository", () => {
       })),
     ).toEqual([{ active: 1, created: 2, retired: 1 }]);
   });
+
+  it("reprices previously unpriced token calls using effective rates unless pricingMode is provider_only", () => {
+    const usage = repository();
+    usage.record({
+      idempotencyKey: "unpriced-1",
+      startedAt: 1_700_000_001_000,
+      capability: "chat",
+      operation: "pi conversation usage delta",
+      origin: "router",
+      providerId: "openai",
+      modelId: "gpt-4o",
+      status: "ok",
+      inputTokens: 1_000,
+      outputTokens: 500,
+      cacheReadTokens: 200,
+      totalTokens: 1_700,
+      billingUnit: "token",
+      costSource: "unpriced",
+    });
+    usage.record({
+      idempotencyKey: "unpriced-unknown",
+      startedAt: 1_700_000_002_000,
+      capability: "chat",
+      operation: "pi conversation usage delta",
+      origin: "worker",
+      providerId: "custom",
+      modelId: "unknown-model",
+      status: "ok",
+      inputTokens: 1_000,
+      outputTokens: 500,
+      totalTokens: 1_500,
+      billingUnit: "token",
+      costSource: "unpriced",
+    });
+
+    const resolvePrice = (providerId: string, modelId: string) =>
+      providerId === "openai" && modelId === "gpt-4o"
+        ? { inputUsdPerM: 2.5, outputUsdPerM: 10, cacheReadUsdPerM: 1.25 }
+        : undefined;
+
+    expect(usage.repriceUnpricedCalls(resolvePrice, "provider_only")).toBe(0);
+    expect(usage.repriceUnpricedCalls(resolvePrice, "provider_first")).toBe(1);
+    expect(usage.repriceUnpricedCalls(resolvePrice, "provider_first")).toBe(0);
+
+    const report = usage.report({
+      startAt: 1_700_000_000_000,
+      endAt: 1_700_000_010_000,
+      timezone: "UTC",
+    });
+    const expected = (1_000 * 2.5 + 500 * 10 + 200 * 1.25) / 1_000_000;
+    expect(report.summary.chargedCostUsd).toBeCloseTo(expected, 10);
+    expect(report.summary.unpricedCalls).toBe(1);
+  });
 });

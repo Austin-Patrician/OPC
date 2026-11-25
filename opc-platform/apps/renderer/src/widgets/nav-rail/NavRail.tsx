@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { userName } from '@/entities/company/model/options';
+import { assistantName, userName } from '@/entities/company/model/options';
 import { useCompany, useCompanyProfile } from '@/entities/company/model/useCompany';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { cn } from '@/shared/lib/cn';
@@ -26,6 +26,7 @@ export function NavRail() {
   const profile = useCompanyProfile();
   const updateProfile = useCompany((state) => state.update);
   const name = userName(profile, t('company.userFallback'));
+  const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
   const schedulesActive = location.pathname.startsWith('/schedules');
 
@@ -85,8 +86,8 @@ export function NavRail() {
             'buddy-brand-btn relative flex size-9 items-center justify-center rounded-xl transition hover:bg-surface-hover',
             brandBouncing && 'buddy-brand-bouncing',
           )}
-          title="Buddy"
-          aria-label="Buddy"
+          title={currentAssistantName}
+          aria-label={currentAssistantName}
         >
           {brandBouncing ? (
             <span

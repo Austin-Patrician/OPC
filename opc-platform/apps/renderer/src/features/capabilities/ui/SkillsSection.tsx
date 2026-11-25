@@ -85,8 +85,23 @@ export function SkillsSection({
       pack,
     }));
 
+    const bundledItems: UnifiedSkillItem[] = (skills?.entries ?? [])
+      .filter((entry) => entry.scope === 'bundled')
+      .map((entry) => ({
+        kind: 'local',
+        id: entry.id,
+        iconKey: entry.name,
+        title: entry.name,
+        description: entry.description,
+        enabled: entry.enabled,
+        busy: busySkill === entry.id,
+        sourceLabel: t('capabilities.skills.sourceBuiltin'),
+        tooltip: entry.dir,
+        entry,
+      }));
+
     const localItems: UnifiedSkillItem[] = (skills?.entries ?? [])
-      .filter((entry) => entry.scope !== 'managed')
+      .filter((entry) => entry.scope !== 'managed' && entry.scope !== 'bundled')
       .map((entry) => ({
         kind: 'local',
         id: entry.id,
@@ -103,7 +118,7 @@ export function SkillsSection({
         entry,
       }));
 
-    return [...builtinItems, ...localItems];
+    return [...builtinItems, ...bundledItems, ...localItems];
   }, [busySkill, busySkillPack, isInstalling, skillPacks, skills, t]);
 
   const { allCount, enabledCount, builtinCount, localCount } = useMemo(() => {
@@ -112,7 +127,8 @@ export function SkillsSection({
     let local = 0;
     for (const item of items) {
       if (item.enabled) enabled += 1;
-      if (item.kind === 'builtin') builtin += 1;
+      const isBuiltin = item.kind === 'builtin' || item.entry.scope === 'bundled';
+      if (isBuiltin) builtin += 1;
       else local += 1;
     }
     return {
@@ -127,9 +143,10 @@ export function SkillsSection({
 
   const filtered = useMemo(() => {
     return items.filter((item) => {
+      const isBuiltin = item.kind === 'builtin' || item.entry.scope === 'bundled';
       if (tab === 'enabled' && !item.enabled) return false;
-      if (tab === 'builtin' && item.kind !== 'builtin') return false;
-      if (tab === 'local' && item.kind !== 'local') return false;
+      if (tab === 'builtin' && !isBuiltin) return false;
+      if (tab === 'local' && isBuiltin) return false;
       if (!q) return true;
       return (
         item.title.toLowerCase().includes(q) ||

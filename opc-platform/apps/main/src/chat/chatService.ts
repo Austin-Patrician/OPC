@@ -623,6 +623,58 @@ export class ChatService {
     });
   };
 
+  /** Clears all messages and transient streaming/activity state for one conversation. */
+  clearConversation = (conversationId: string): number => {
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return 0;
+
+    this.routerStreams.delete(conversationId);
+    this.clearActivityTimer(conversationId);
+    this.activityGenerations.set(
+      conversationId,
+      (this.activityGenerations.get(conversationId) ?? 0) + 1,
+    );
+
+    let cleared = conversation.messages.length;
+    if (this.db) {
+      const info = this.db
+        .prepare('DELETE FROM message WHERE conversation_id = ?')
+        .run(conversationId) as { changes?: number } | undefined;
+      cleared = typeof info?.changes === 'number' ? info.changes : cleared;
+    }
+
+    const now = Date.now();
+    this.commit({
+      conversations: this.snapshot.conversations.map((item) =>
+        item.id === conversationId
+          ? {
+              ...item,
+              messages: [],
+              lastMessage: '还没有对话',
+              unreadCount: undefined,
+              turnCount: 0,
+              status: 'open',
+              statusChangedAt: now,
+            }
+          : item,
+      ),
+      hasOlderMessagesByConversation: {
+        ...this.snapshot.hasOlderMessagesByConversation,
+        [conversationId]: false,
+      },
+      typingByConversation: {
+        ...this.snapshot.typingByConversation,
+        [conversationId]: [],
+      },
+      activityByConversation: {
+        ...this.snapshot.activityByConversation,
+        [conversationId]: { phase: 'idle', updatedAt: now },
+      },
+    });
+    return cleared;
+  };
+
+  /** Stores one user-authored message, persists and notifies listeners. */
   sendMessage = ({ conversationId, text, attachments }: SendMessageInput): void => {
     const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
     if (!conversation) return;

@@ -30,10 +30,29 @@ interface ListedModel {
 }
 
 /** The subset of pi's built-in model definition we fall back to. */
+interface BuiltinCostLike {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  tiers?: {
+    inputTokensAbove: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  }[];
+}
+
 interface BuiltinChatLike {
   id: string;
   input?: readonly string[];
   reasoning?: boolean;
+  cost?: BuiltinCostLike;
+}
+
+function hasPositiveBuiltinCost(cost?: BuiltinCostLike): boolean {
+  return (cost?.input ?? 0) > 0 || (cost?.output ?? 0) > 0;
 }
 
 /**
@@ -214,6 +233,50 @@ export class ModelRuntime {
         const known = globalCapabilities?.get(normalizeModelId(model.id));
         const vision = model.vision ?? builtin?.input?.includes('image') ?? known?.vision ?? false;
         const reasoning = model.reasoning ?? builtin?.reasoning ?? known?.reasoning ?? false;
+        const hasConfiguredPrice =
+          (model.inputUsdPerM ?? 0) > 0 ||
+          (model.outputUsdPerM ?? 0) > 0 ||
+          (model.cacheReadUsdPerM ?? 0) > 0 ||
+          (model.cacheWriteUsdPerM ?? 0) > 0;
+        const fallbackCost = hasPositiveBuiltinCost(builtin?.cost)
+          ? builtin?.cost
+          : hasPositiveBuiltinCost(known?.cost)
+            ? known?.cost
+            : undefined;
+        const resolvedCost = hasConfiguredPrice
+          ? {
+              input: model.inputUsdPerM ?? 0,
+              output: model.outputUsdPerM ?? 0,
+              cacheRead: model.cacheReadUsdPerM ?? model.inputUsdPerM ?? 0,
+              cacheWrite: model.cacheWriteUsdPerM ?? model.inputUsdPerM ?? 0,
+              ...(model.tiers && model.tiers.length > 0
+                ? {
+                    tiers: model.tiers.map((tier) => ({
+                      inputTokensAbove: tier.inputTokensAbove,
+                      input: tier.inputUsdPerM,
+                      output: tier.outputUsdPerM,
+                      cacheRead: tier.cacheReadUsdPerM,
+                      cacheWrite: tier.cacheWriteUsdPerM,
+                    })),
+                  }
+                : {}),
+            }
+          : fallbackCost
+            ? {
+                input: fallbackCost.input ?? 0,
+                output: fallbackCost.output ?? 0,
+                cacheRead: fallbackCost.cacheRead ?? fallbackCost.input ?? 0,
+                cacheWrite: fallbackCost.cacheWrite ?? fallbackCost.input ?? 0,
+                ...(fallbackCost.tiers && fallbackCost.tiers.length > 0
+                  ? { tiers: fallbackCost.tiers }
+                  : {}),
+              }
+            : {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              };
         return {
           id: model.id,
           name: model.name,
@@ -223,23 +286,7 @@ export class ModelRuntime {
           input: (vision ? ['text', 'image'] : ['text']) as ('text' | 'image')[],
           // pi's ModelCost: USD per 1M tokens, cache rates included, plus optional
           // context-bucket tiers (`inputTokensAbove`).
-          cost: {
-            input: model.inputUsdPerM ?? 0,
-            output: model.outputUsdPerM ?? 0,
-            cacheRead: model.cacheReadUsdPerM ?? model.inputUsdPerM ?? 0,
-            cacheWrite: model.cacheWriteUsdPerM ?? model.inputUsdPerM ?? 0,
-            ...(model.tiers && model.tiers.length > 0
-              ? {
-                  tiers: model.tiers.map((tier) => ({
-                    inputTokensAbove: tier.inputTokensAbove,
-                    input: tier.inputUsdPerM,
-                    output: tier.outputUsdPerM,
-                    cacheRead: tier.cacheReadUsdPerM,
-                    cacheWrite: tier.cacheWriteUsdPerM,
-                  })),
-                }
-              : {}),
-          },
+          cost: resolvedCost,
           reasoning,
           contextWindow: model.contextWindow ?? 128_000,
           maxTokens: Math.min(8_192, Math.round((model.contextWindow ?? 128_000) / 8)),
@@ -399,23 +446,34 @@ function findBuiltinLike(models: readonly BuiltinChatLike[], modelId: string) {
   return normalized ? models.find((model) => normalizeModelId(model.id) === normalized) : undefined;
 }
 
-/** id → capability, across every built-in provider, built once per process. */
-let globalCapabilities: Map<string, { vision: boolean; reasoning: boolean }> | null = null;
+/** id → capability & optional catalog price, across every built-in provider, built once per process. */
+let globalCapabilities:
+  | Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>
+  | null = null;
 
-async function globalBuiltinCapabilities(): Promise<Map<string, { vision: boolean; reasoning: boolean }>> {
+async function globalBuiltinCapabilities(): Promise<
+  Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>
+> {
   if (globalCapabilities) return globalCapabilities;
-  const map = new Map<string, { vision: boolean; reasoning: boolean }>();
+  const map = new Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>();
   try {
     const { builtinProviders, getBuiltinModels } = await import('@earendil-works/pi-ai/providers/all');
     for (const provider of builtinProviders()) {
       const models = getBuiltinModels(provider.id as never) as unknown as BuiltinChatLike[];
       for (const model of models) {
         const key = normalizeModelId(model.id);
-        if (!key || map.has(key)) continue;
-        map.set(key, {
-          vision: model.input?.includes('image') === true,
-          reasoning: model.reasoning === true,
-        });
+        if (!key) continue;
+        const existing = map.get(key);
+        const cost = hasPositiveBuiltinCost(model.cost) ? model.cost : undefined;
+        if (!existing) {
+          map.set(key, {
+            vision: model.input?.includes('image') === true,
+            reasoning: model.reasoning === true,
+            ...(cost ? { cost } : {}),
+          });
+        } else if (!existing.cost && cost) {
+          existing.cost = cost;
+        }
       }
     }
   } catch {

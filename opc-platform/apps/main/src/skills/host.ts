@@ -27,6 +27,8 @@ export interface PiSkillHostOptions {
   userDataDir: string;
   homeDir?: string;
   projectDir?: string;
+  /** Optional app-bundled zero-dependency skills directory (`resources/skills`). */
+  bundledDir?: string;
   /** Optional app-managed skill packs directory (`<userData>/skills-managed`). */
   managedDir?: string;
   scan?: typeof scanSkills;
@@ -42,6 +44,7 @@ export class PiSkillHost {
   private readonly storeFile: string;
   private readonly homeDir: string;
   private readonly projectDir: string;
+  private readonly bundledDir?: string;
   private readonly managedDir?: string;
   private readonly scanFn: typeof scanSkills;
 
@@ -52,6 +55,7 @@ export class PiSkillHost {
     this.storeFile = path.join(options.userDataDir, 'pi-skills.json');
     this.homeDir = options.homeDir ?? os.homedir();
     this.projectDir = options.projectDir ?? process.cwd();
+    this.bundledDir = options.bundledDir;
     this.managedDir = options.managedDir;
     this.scanFn = options.scan ?? scanSkills;
     this.store = this.readStore();
@@ -98,6 +102,7 @@ export class PiSkillHost {
     const result = this.scanFn({
       homeDir: this.homeDir,
       projectDir: this.projectDir,
+      ...(this.bundledDir ? { bundledDir: this.bundledDir } : {}),
       ...(this.managedDir ? { managedDir: this.managedDir } : {}),
     });
     this.lastScan = { at: Date.now(), result };

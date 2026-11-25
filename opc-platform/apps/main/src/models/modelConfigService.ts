@@ -18,6 +18,7 @@ import type { FileCredentialStore } from './credentialStore';
 import { matchBuiltinModel, type BuiltinModelEntry } from './pricingMatch';
 import { ModelRuntime, PROVIDER_PRESETS } from './runtime';
 import { defaultNetworkClient, type NetworkClient } from '../network/networkClient';
+import { discoverVideoModels } from './videoDiscovery';
 
 /** What a model-list refresh actually did, in words the UI can show. */
 export interface RefreshModelsResult {
@@ -41,6 +42,7 @@ const DEFAULT_LLM_KEY = 'default.llm';
 /** Router 会话单独一档：它读的是事件批次，通常不需要和干活的执行体同一个模型。 */
 const DEFAULT_ROUTER_KEY = 'default.router';
 const DEFAULT_IMAGE_KEY = 'default.image';
+const DEFAULT_VIDEO_KEY = 'default.video';
 const DEFAULT_ASR_KEY = 'default.asr';
 const DEFAULT_TTS_KEY = 'default.tts';
 const DEFAULT_DECISION_KEY = 'default.decision';
@@ -57,6 +59,7 @@ const DEFAULT_KEYS = [
   DEFAULT_LLM_KEY,
   DEFAULT_ROUTER_KEY,
   DEFAULT_IMAGE_KEY,
+  DEFAULT_VIDEO_KEY,
   DEFAULT_ASR_KEY,
   DEFAULT_TTS_KEY,
   DEFAULT_DECISION_KEY,
@@ -72,6 +75,7 @@ const DEFAULT_COMPACTION: CompactionSettings = {
 
 export class ModelConfigService {
   private readonly repository: ModelConfigRepository;
+  private readonly network: NetworkClient;
   readonly runtime: ModelRuntime;
 
   constructor(
@@ -80,6 +84,7 @@ export class ModelConfigService {
     network: NetworkClient = defaultNetworkClient,
   ) {
     this.repository = new ModelConfigRepository(db);
+    this.network = network;
     this.runtime = new ModelRuntime(
       this.repository,
       (providerId) => this.readKey(providerId),
@@ -158,6 +163,7 @@ export class ModelConfigService {
       outputUsdPerM?: number;
       cacheReadUsdPerM?: number;
       cacheWriteUsdPerM?: number;
+      usdPerSecond?: number;
     },
   ): ProviderConfig[] => {
     const provider = this.repository.getProvider(providerId);
@@ -178,6 +184,7 @@ export class ModelConfigService {
         // A hand-added model is enabled for the feature it was added under;
         // the LLM page's default `chat` leaves both switches off.
         imageEnabled: input.capability === 'image' ? true : undefined,
+        videoEnabled: input.capability === 'video' ? true : undefined,
         voiceEnabled: input.capability === 'asr' || input.capability === 'tts' ? true : undefined,
         decisionEnabled: input.capability === 'classifier' ? true : undefined,
         contextWindow: input.contextWindow ?? 0,
@@ -185,6 +192,7 @@ export class ModelConfigService {
         outputUsdPerM: input.outputUsdPerM ?? 0,
         cacheReadUsdPerM: input.cacheReadUsdPerM ?? 0,
         cacheWriteUsdPerM: input.cacheWriteUsdPerM ?? 0,
+        ...(input.usdPerSecond !== undefined ? { usdPerSecond: input.usdPerSecond } : {}),
       },
     ]);
     return this.listProviders();
@@ -204,9 +212,16 @@ export class ModelConfigService {
    * error page), so the caller must be able to say "this endpoint cannot list
    * models" instead of leaving the user staring at an unchanged table.
    */
-  refreshModels = async (providerId: string): Promise<RefreshModelsResult> => {
+  refreshModels = async (
+    providerId: string,
+    scope?: 'llm' | 'video',
+  ): Promise<RefreshModelsResult> => {
     const config = this.repository.getProvider(providerId);
     if (!config) throw new Error('未知 provider');
+
+    if (scope === 'video' || (scope === undefined && config.scope === 'video')) {
+      return this.refreshVideoModels(config);
+    }
 
     const before = new Set(config.models.map((model) => model.id));
     const result = await this.runtime.testProvider(config);
@@ -239,24 +254,40 @@ export class ModelConfigService {
     const listedIds = new Set(listed.map((model) => model.id));
     const imported = listed.map((model) => {
       const previous = existing.get(model.id);
-      const builtin = matchBuiltinModel(catalogue, { providerId, modelId: model.id });
-      if (previous) {
+        const builtin = matchBuiltinModel(catalogue, { providerId, modelId: model.id });
+        const hasPrice =
+          (previous?.inputUsdPerM ?? 0) > 0 || (previous?.outputUsdPerM ?? 0) > 0;
+        const builtinPrice =
+          !hasPrice &&
+          builtin &&
+          (builtin.inputUsdPerM > 0 || builtin.outputUsdPerM > 0)
+            ? {
+                inputUsdPerM: builtin.inputUsdPerM,
+                outputUsdPerM: builtin.outputUsdPerM,
+                cacheReadUsdPerM: builtin.cacheReadUsdPerM,
+                cacheWriteUsdPerM: builtin.cacheWriteUsdPerM,
+              }
+            : {};
+        if (previous) {
+          return {
+            ...previous,
+            id: model.id,
+            name: previous.name || model.name,
+            // Fill capabilities for rows stored before they were tracked; keep
+            // whatever the user/previous refresh already knew.
+            vision: previous.vision ?? builtin?.vision,
+            reasoning: previous.reasoning ?? builtin?.reasoning,
+            contextWindow: previous.contextWindow || builtin?.contextWindow,
+            ...builtinPrice,
+          };
+        }
         return {
-          ...previous,
-          id: model.id,
-          name: previous.name || model.name,
-          // Fill capabilities for rows stored before they were tracked; keep
-          // whatever the user/previous refresh already knew.
-          vision: previous.vision ?? builtin?.vision,
-          reasoning: previous.reasoning ?? builtin?.reasoning,
+          ...model,
+          vision: model.vision ?? builtin?.vision,
+          reasoning: model.reasoning ?? builtin?.reasoning,
+          contextWindow: model.contextWindow ?? builtin?.contextWindow,
+          ...builtinPrice,
         };
-      }
-      return {
-        ...model,
-        vision: model.vision ?? builtin?.vision,
-        reasoning: model.reasoning ?? builtin?.reasoning,
-        contextWindow: model.contextWindow ?? builtin?.contextWindow,
-      };
     });
     const kept = config.models.filter((model) => !listedIds.has(model.id));
     this.repository.saveModels(providerId, [...imported, ...kept]);
@@ -268,6 +299,147 @@ export class ModelConfigService {
       message: `拉取到 ${listed.length} 个模型`,
       added,
       total: listed.length,
+    };
+  };
+
+  private refreshVideoModels = async (config: ProviderConfig): Promise<RefreshModelsResult> => {
+    const before = new Set(
+      config.models.filter((m) => m.capability === 'video').map((m) => m.id),
+    );
+    const discovery = await discoverVideoModels(
+      config,
+      this.readKey(config.id),
+      this.network,
+    );
+    if (!discovery.ok) {
+      return {
+        providers: this.listProviders(),
+        ok: false,
+        message: discovery.message,
+        added: [],
+        total: before.size,
+      };
+    }
+
+    const existing = new Map(config.models.map((model) => [model.id, model]));
+    const discoveredIds = new Set(discovery.models.map((model) => model.id));
+
+    const updatedVideos: ModelOption[] = discovery.models.map((item) => {
+      const prev = existing.get(item.id);
+      if (prev) {
+        return {
+          ...prev,
+          name: prev.name || item.name,
+          capability: 'video',
+          api: prev.api ?? item.api,
+          ...(prev.usdPerSecond && prev.usdPerSecond > 0
+            ? {}
+            : item.usdPerSecond !== undefined
+              ? { usdPerSecond: item.usdPerSecond }
+              : {}),
+        };
+      }
+      return {
+        id: item.id,
+        name: item.name,
+        capability: 'video',
+        api: item.api,
+        videoEnabled: false,
+        ...(item.usdPerSecond !== undefined ? { usdPerSecond: item.usdPerSecond } : {}),
+      };
+    });
+
+    const kept = config.models.filter((model) => !discoveredIds.has(model.id));
+    this.repository.saveModels(config.id, [...updatedVideos, ...kept]);
+
+    const added = discovery.models
+      .filter((item) => !before.has(item.id))
+      .map((item) => item.id);
+    return {
+      providers: this.listProviders(),
+      ok: true,
+      message: discovery.message,
+      added,
+      total: discovery.models.length,
+    };
+  };
+
+  /**
+   * Resolves effective token pricing (USD / 1M tokens) for a provider+model:
+   * explicit configured price wins, otherwise pi's built-in catalog price.
+   */
+  resolveEffectivePricing = async (
+    providerId: string,
+    modelId: string,
+  ): Promise<
+    | {
+        inputUsdPerM: number;
+        outputUsdPerM: number;
+        cacheReadUsdPerM: number;
+        cacheWriteUsdPerM: number;
+      }
+    | undefined
+  > => {
+    const resolver = await this.createPricingResolver();
+    return resolver(providerId, modelId);
+  };
+
+  /**
+   * Builds a fast synchronous pricing resolver backed by current configured
+   * models and pi's built-in official pricing catalog.
+   */
+  createPricingResolver = async (): Promise<
+    (
+      providerId: string,
+      modelId: string,
+    ) =>
+      | {
+          inputUsdPerM: number;
+          outputUsdPerM: number;
+          cacheReadUsdPerM: number;
+          cacheWriteUsdPerM: number;
+        }
+      | undefined
+  > => {
+    const providers = this.listProviders();
+    const catalogue = await this.builtinCatalogue().catch(() => [] as BuiltinModelEntry[]);
+    const configured = new Map<
+      string,
+      {
+        inputUsdPerM: number;
+        outputUsdPerM: number;
+        cacheReadUsdPerM: number;
+        cacheWriteUsdPerM: number;
+      }
+    >();
+    for (const provider of providers) {
+      for (const model of provider.models) {
+        const inRate = model.inputUsdPerM ?? 0;
+        const outRate = model.outputUsdPerM ?? 0;
+        if (inRate > 0 || outRate > 0) {
+          configured.set(`${provider.id}::${model.id}`, {
+            inputUsdPerM: inRate,
+            outputUsdPerM: outRate,
+            cacheReadUsdPerM: model.cacheReadUsdPerM ?? inRate,
+            cacheWriteUsdPerM: model.cacheWriteUsdPerM ?? inRate,
+          });
+        }
+      }
+    }
+
+    return (providerId: string, modelId: string) => {
+      const explicit = configured.get(`${providerId}::${modelId}`);
+      if (explicit) return explicit;
+      const builtin = matchBuiltinModel(catalogue, { providerId, modelId });
+      if (builtin && (builtin.inputUsdPerM > 0 || builtin.outputUsdPerM > 0)) {
+        return {
+          inputUsdPerM: builtin.inputUsdPerM,
+          outputUsdPerM: builtin.outputUsdPerM,
+          cacheReadUsdPerM: builtin.cacheReadUsdPerM || builtin.inputUsdPerM,
+          cacheWriteUsdPerM: builtin.cacheWriteUsdPerM || builtin.inputUsdPerM,
+        };
+      }
+      return undefined;
     };
   };
 
@@ -434,6 +606,7 @@ export class ModelConfigService {
           // must not silently disable an image/voice model.
           imageEnabled: model.imageEnabled ?? previous?.imageEnabled,
           imageParameters: model.imageParameters ?? previous?.imageParameters,
+          videoEnabled: model.videoEnabled ?? previous?.videoEnabled,
           voiceEnabled: model.voiceEnabled ?? previous?.voiceEnabled,
           chatEnabled: model.chatEnabled ?? previous?.chatEnabled,
           decisionEnabled: model.decisionEnabled ?? previous?.decisionEnabled,
@@ -441,6 +614,9 @@ export class ModelConfigService {
           outputUsdPerM: previous?.outputUsdPerM ?? model.outputUsdPerM,
           cacheReadUsdPerM: previous?.cacheReadUsdPerM ?? model.cacheReadUsdPerM,
           cacheWriteUsdPerM: previous?.cacheWriteUsdPerM ?? model.cacheWriteUsdPerM,
+          ...(model.usdPerSecond !== undefined || previous?.usdPerSecond !== undefined
+            ? { usdPerSecond: model.usdPerSecond ?? previous?.usdPerSecond }
+            : {}),
           tiers: model.tiers ?? previous?.tiers,
         };
       }),
@@ -489,6 +665,7 @@ export class ModelConfigService {
     llm: this.readRef(DEFAULT_LLM_KEY),
     router: this.readRef(DEFAULT_ROUTER_KEY),
     image: this.readRef(DEFAULT_IMAGE_KEY),
+    video: this.readRef(DEFAULT_VIDEO_KEY),
     asr: this.readRef(DEFAULT_ASR_KEY),
     tts: this.readRef(DEFAULT_TTS_KEY),
     decision: this.readRef(DEFAULT_DECISION_KEY),
@@ -499,6 +676,7 @@ export class ModelConfigService {
       llm: DEFAULT_LLM_KEY,
       router: DEFAULT_ROUTER_KEY,
       image: DEFAULT_IMAGE_KEY,
+      video: DEFAULT_VIDEO_KEY,
       asr: DEFAULT_ASR_KEY,
       tts: DEFAULT_TTS_KEY,
       decision: DEFAULT_DECISION_KEY,

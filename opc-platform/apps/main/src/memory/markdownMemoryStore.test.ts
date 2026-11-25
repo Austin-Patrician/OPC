@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MarkdownMemoryStore,
   MAX_RULES,
   MAX_SNAPSHOTS,
   MAX_USER_PROFILE_CHARS,
 } from './markdownMemoryStore';
+import { MemoryReflector } from './memoryReflector';
 
 describe('MarkdownMemoryStore', () => {
   let rootDir: string;
@@ -112,7 +113,9 @@ describe('MarkdownMemoryStore', () => {
       tone: 'balanced',
       detail: 'concise',
       instructions: '',
+      assistantName: 'Friday',
     });
+    expect(routerBlock).toContain('你的名称/自称：Friday');
     expect(routerBlock).toContain('回答一律先给结论，不超过三句');
     expect(routerBlock).toContain('核心仓库位于');
     expect(routerBlock).toContain('topics/release.md');
@@ -140,5 +143,38 @@ describe('MarkdownMemoryStore', () => {
     store.updateReflectionCursor('msg-99', 123456);
     expect(store.readState().lastReflectedMessageId).toBe('msg-99');
     expect(store.readState().lastReflectedAt).toBe(123456);
+  });
+
+  it('resetAfterConversationClear flushes memory when requested and discards pending signals when skipped', async () => {
+    store.addRule('回答先给结论', { reason: 'user' });
+    store.recordSignal({ origin: 'correction', text: '以后用简洁表格', threadId: 'th-1' });
+    store.updateReflectionCursor('msg-50', 100);
+
+    const complete = vi.fn(async () => JSON.stringify({ dailyNote: '记录一条重要偏好' }));
+    const reflector = new MemoryReflector({
+      store,
+      complete,
+      readMessagesSince: () => [
+        { id: 'msg-51', senderId: 'user', text: '记住以后优先给表格', createdAt: 200 },
+      ],
+    });
+
+    // When flush = false, skip LLM reflection, drop pending signals, reset cursor, keep RULES.md intact
+    await reflector.resetAfterConversationClear({ flush: false });
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.readState().pendingSignals).toHaveLength(0);
+    expect(store.readState().lastReflectedMessageId).toBeNull();
+    expect(store.listRules()).toEqual(['回答先给结论']);
+
+    // When flush = true, run reflection first then reset cursor
+    store.updateReflectionCursor('msg-60', 300);
+    store.recordSignal({ origin: 'correction', text: '图表附单位', threadId: 'th-2' });
+    await reflector.resetAfterConversationClear({ flush: true });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(store.readState().pendingSignals).toHaveLength(0);
+    expect(store.readState().lastReflectedMessageId).toBeNull();
+    expect(store.listRules()).toEqual(['回答先给结论']);
+
+    reflector.dispose();
   });
 });

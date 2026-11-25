@@ -7,6 +7,7 @@ import type {
   RuntimeKind,
   RuntimeProfile,
   RuntimeStatus,
+  WindowsShellMode,
 } from '@opc/shared/domain';
 import type { OcrSettings } from '@opc/shared/ocr';
 import { cn } from '@/shared/lib/cn';
@@ -397,6 +398,55 @@ export function RuntimePage() {
               </button>
             </div>
           </div>
+        </Section>
+
+        <Section
+          title={t('settings.runtime.shellTitle')}
+          description={t('settings.runtime.shellDesc')}
+        >
+          {runtime.shellExecution === null ? (
+            <Row label={t('settings.runtime.loading')}>
+              <Loader2 className="size-4 animate-spin text-ink-tertiary" />
+            </Row>
+          ) : runtime.shellExecution.sandboxBackend === 'windows-guarded' ? (
+            <div className="space-y-3">
+              <Note tone="info">{t('settings.runtime.shellWindowsNote')}</Note>
+              <Row
+                label={t('settings.runtime.shellModeLabel')}
+                hint={t('settings.runtime.shellModeHint')}
+              >
+                <Segmented<WindowsShellMode>
+                  label={t('settings.runtime.shellModeLabel')}
+                  value={runtime.shellExecution.settings.windowsMode}
+                  onChange={(windowsMode) => {
+                    if (!runtime.savingShellExecution) {
+                      void runtime.setShellExecution({ windowsMode });
+                    }
+                  }}
+                  options={[
+                    { value: 'ask', label: t('settings.runtime.shellModeAsk') },
+                    { value: 'auto', label: t('settings.runtime.shellModeAuto') },
+                    { value: 'disabled', label: t('settings.runtime.shellModeDisabled') },
+                  ]}
+                />
+              </Row>
+            </div>
+          ) : runtime.shellExecution.sandboxBackend === 'none' ? (
+            <Note tone="warn">{runtime.shellExecution.sandboxDetail}</Note>
+          ) : (
+            <Row
+              label={
+                <span className="flex flex-wrap items-center gap-2">
+                  {t('settings.runtime.shellSandboxLabel')}
+                  <StatusBadge
+                    tone="green"
+                    label={t('settings.runtime.shellSandboxActive')}
+                  />
+                </span>
+              }
+              hint={runtime.shellExecution.sandboxDetail}
+            />
+          )}
         </Section>
 
         <Section

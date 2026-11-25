@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '@opc/shared/domain';
 import {
   INITIAL_FIRST_ITEM_INDEX,
+  filterResolvedActionBlocks,
+  isLocallyResolvedEmptyActionMessage,
   mergeSnapshotMessages,
   prependOlderMessages,
 } from './messageList';
@@ -86,5 +88,86 @@ describe('messageList helpers', () => {
     // Only m8 and m9 are newly added visible messages; task-hidden is invisible and m10 already existed.
     expect(next.firstItemIndex).toBe(INITIAL_FIRST_ITEM_INDEX - 2);
     expect(next.messages[3]).toBe(m10);
+  });
+
+  it('mergeSnapshotMessages 在确认审批或请示卡片后会从列表中移除对应消息，不留下空头部', () => {
+    const older = makeMessage('m0');
+    const kept = makeMessage('m1');
+    const approvalMsg = makeMessage('m-approval', {
+      text: '需要允许工具权限',
+      content: [
+        {
+          type: 'approval',
+          reportId: 'r-approval-1',
+          threadId: 't-1',
+          taskId: 'task-1',
+          tool: 'bash',
+          title: '允许执行脚本',
+          body: '允许运行 Python 脚本',
+          state: 'pending',
+        },
+      ],
+    });
+    const workflowMsg = makeMessage('m-workflow', {
+      text: '请示问题',
+      content: [
+        {
+          type: 'workflow',
+          reportId: 'r-workflow-1',
+          threadId: 't-1',
+          kind: 'question',
+          title: '请确认方向',
+          body: '是否继续？',
+          state: 'pending',
+        },
+      ],
+    });
+
+    const afterRemoveOne = mergeSnapshotMessages(
+      [older, kept, approvalMsg, workflowMsg],
+      [kept, workflowMsg],
+    );
+    expect(afterRemoveOne.map((m) => m.id)).toEqual(['m0', 'm1', 'm-workflow']);
+
+    const afterClearAll = mergeSnapshotMessages([approvalMsg], []);
+    expect(afterClearAll).toEqual([]);
+  });
+
+  it('isLocallyResolvedEmptyActionMessage 仅在纯操作卡全部确认时隐藏整条消息', () => {
+    const resolved = new Set(['r-1']);
+    const pureApproval = makeMessage('m-pure', {
+      content: [
+        {
+          type: 'approval',
+          reportId: 'r-1',
+          threadId: 't-1',
+          taskId: 'task-1',
+          tool: 'bash',
+          title: '审批',
+          body: '正文',
+          state: 'pending',
+        },
+      ],
+    });
+    const mixed = makeMessage('m-mixed', {
+      content: [
+        { type: 'markdown', text: '附言说明' },
+        {
+          type: 'workflow',
+          reportId: 'r-1',
+          threadId: 't-1',
+          kind: 'question',
+          title: '请示',
+          body: '问题',
+          state: 'pending',
+        },
+      ],
+    });
+
+    expect(isLocallyResolvedEmptyActionMessage(pureApproval, resolved)).toBe(true);
+    expect(isLocallyResolvedEmptyActionMessage(mixed, resolved)).toBe(false);
+    expect(filterResolvedActionBlocks(mixed.content!, resolved)).toEqual([
+      { type: 'markdown', text: '附言说明' },
+    ]);
   });
 });

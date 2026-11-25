@@ -35,6 +35,8 @@ export interface McpConnection {
   refreshTools(): Promise<readonly Tool[]>;
   /** 服务器说它的工具变了。返回撤销订阅。 */
   onToolsChanged(listener: () => void): () => void;
+  /** 连接关闭（意外断开或主动关闭）时触发。返回撤销订阅。 */
+  onClose?(listener: () => void): () => void;
   callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult>;
   readResource(uri: string): Promise<ReadResourceResult>;
   listResourceTemplates(): Promise<readonly ResourceTemplate[]>;
@@ -94,6 +96,10 @@ export async function connectMcp(
     throw error;
   }
 
+  client.onError((error) => {
+    console.warn(`[mcp] ${config.name} 传输异常:`, error instanceof Error ? error.message : String(error));
+  });
+
   const request = { ...(options.signal ? { signal: options.signal } : {}) };
   const tools = await client.listTools(request);
   // 资源是可选的：服务器没声明这项能力就不去问（问了也是一颗空炮）。
@@ -116,6 +122,7 @@ export async function connectMcp(
     },
     onToolsChanged: (listener) =>
       client.onNotification('notifications/tools/list_changed', () => listener()),
+    onClose: (listener) => client.onClose(listener),
     callTool: (name, args) => client.callTool(name, args, request),
     readResource: (uri) => client.readResource(uri, request),
     listResourceTemplates: () => client.listResourceTemplates(request),
@@ -142,8 +149,14 @@ export function sharedMcpConnection(config: McpServerConfig): Promise<McpConnect
 
   const opened = connectMcp(config);
   shared.set(key, opened);
-  // 连不上就别把它缓存成一个永远失败的 promise：下次改完配置要能重试。
-  opened.catch(() => shared.delete(key));
+  // 连接关闭或连不上就从缓存移除，确保后续任务可以重建连接。
+  opened.then((connection) => {
+    connection.onClose?.(() => {
+      if (shared.get(key) === opened) shared.delete(key);
+    });
+  }, () => {
+    if (shared.get(key) === opened) shared.delete(key);
+  });
   return opened;
 }
 

@@ -1,6 +1,6 @@
 import type { ContextEdit, Conversation, EntryId, Harness } from "@earendil-works/pi-durable";
 import type { ModelRef, RouterContextStats } from "@opc/shared/domain";
-import { diffCost, diffUsage } from "../work/usage";
+import { diffCostBreakdown, diffTokenDetails } from "../work/usage";
 
 export const ROUTER_COMPACT_INSTRUCTIONS = [
   "你正在压缩常驻 Personal Agent Router 的控制面上下文。",
@@ -67,6 +67,11 @@ export interface RouterSessionDeps {
     finishedAt: number;
     input: number;
     output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    reasoning?: number;
+    total?: number;
+    providerCostUsd?: number;
     configuredCostUsd?: number;
     status: "ok" | "interrupted";
   }) => void;
@@ -266,7 +271,8 @@ export class RouterSession {
         const ok = settled.status === "done";
         if (usageReader && usageBefore) {
           const usageAfter = await usageReader(context as never);
-          const usageDelta = diffUsage(usageBefore, usageAfter);
+          const usageDelta = diffTokenDetails(usageBefore, usageAfter);
+          const costDelta = diffCostBreakdown(usageBefore, usageAfter);
           this.deps.onUsage?.({
             ...(selectedModel
               ? {
@@ -277,9 +283,17 @@ export class RouterSession {
             conversationId: String(conversation.id),
             startedAt: callStartedAt,
             finishedAt: Date.now(),
-            ...usageDelta,
-            ...(diffCost(usageBefore, usageAfter) > 0
-              ? { configuredCostUsd: diffCost(usageBefore, usageAfter) }
+            input: usageDelta.input,
+            output: usageDelta.output,
+            cacheRead: usageDelta.cacheRead,
+            cacheWrite: usageDelta.cacheWrite,
+            ...(usageDelta.reasoning > 0 ? { reasoning: usageDelta.reasoning } : {}),
+            total: usageDelta.total,
+            ...(costDelta.providerCostUsd > 0
+              ? { providerCostUsd: costDelta.providerCostUsd }
+              : {}),
+            ...(costDelta.configuredCostUsd > 0
+              ? { configuredCostUsd: costDelta.configuredCostUsd }
               : {}),
             status: ok ? "ok" : "interrupted",
           });

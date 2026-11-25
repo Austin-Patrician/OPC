@@ -1,5 +1,5 @@
 import { useLocation, useOutlet } from 'react-router-dom';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AssistantActivity } from '@opc/shared/ipc';
 import { useCompanySync } from '@/entities/company/model/useCompany';
 import { useBillingSync } from '@/entities/billing/model/useBilling';
@@ -9,6 +9,7 @@ import { NavRail } from '@/widgets/nav-rail/NavRail';
 import { TitleBar } from '@/widgets/title-bar/TitleBar';
 import { BuddyCompanion } from '@/widgets/buddy-companion/BuddyCompanion';
 import { ChatSearchModal } from '@/features/chat/ui/ChatSearchModal';
+import { NewChatConfirmModal } from '@/features/chat/ui/NewChatConfirmModal';
 
 /**
  * One rounded desktop window contains the navigation rail and routed content.
@@ -19,6 +20,7 @@ export function AppShell() {
   const location = useLocation();
   const isChat = location.pathname.startsWith('/chat') || location.pathname === '/';
   const [searchOpen, setSearchOpen] = useState(false);
+  const [newChatOpen, setNewChatOpen] = useState(false);
   const [chatActivity, setChatActivity] = useState<AssistantActivity>();
   const [welcomeVisible, setWelcomeVisible] = useState(false);
   const outlet = useOutlet({ setChatActivity, setWelcomeVisible });
@@ -28,6 +30,18 @@ export function AppShell() {
   useCompanySync();
   useBillingSync();
   const background = useUiPrefs((state) => state.background);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isChat || welcomeVisible || searchOpen) return;
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        setNewChatOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isChat, welcomeVisible, searchOpen]);
 
   return (
     <div className="buddy-viewport relative isolate flex h-full w-full overflow-hidden">
@@ -39,6 +53,9 @@ export function AppShell() {
             <TitleBar
               searchEnabled={isChat}
               onToggleSearch={() => setSearchOpen((open) => !open)}
+              newChatEnabled={isChat}
+              newChatDisabled={welcomeVisible}
+              onNewChat={() => setNewChatOpen(true)}
               showChatStatus={isChat}
               chatActivity={isChat ? chatActivity : undefined}
             />
@@ -65,6 +82,7 @@ export function AppShell() {
         />
       </div>
       {searchOpen ? <ChatSearchModal onClose={() => setSearchOpen(false)} /> : null}
+      {newChatOpen ? <NewChatConfirmModal onClose={() => setNewChatOpen(false)} /> : null}
     </div>
   );
 }

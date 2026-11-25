@@ -1,4 +1,6 @@
+import type { ImageModelCapabilities } from '@opc/shared/domain';
 import { imageCapabilitiesForProtocol } from './imageCapabilities';
+import { DIRECT_VIDEO_BASE_URLS, DIRECT_VIDEO_MODELS } from './videoCatalog';
 
 export interface CatalogPrice {
   input: number;
@@ -17,14 +19,15 @@ export interface CatalogPrice {
 export interface CatalogModel {
   id: string;
   name: string;
-  type: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
+  type: 'chat' | 'image' | 'video' | 'classifier' | 'asr' | 'tts';
   api: string;
   contextWindow?: number;
   reasoning?: boolean;
   /** pi 的 `getSupportedThinkingLevels()` 结果，见 shared/domain 的同名字段。 */
   thinkingLevels?: string[];
   vision?: boolean;
-  imageParameters?: import('@opc/shared/domain').ImageModelCapabilities;
+  imageParameters?: ImageModelCapabilities;
+  usdPerSecond?: number;
   price?: CatalogPrice;
 }
 
@@ -33,7 +36,7 @@ export interface CatalogProvider {
   baseUrl: string;
   /** Every API kind this provider's models use. */
   apis: string[];
-  counts: { chat: number; image: number; classifier: number; asr: number; tts: number };
+  counts: { chat: number; image: number; video: number; classifier: number; asr: number; tts: number };
   models: CatalogModel[];
 }
 
@@ -238,12 +241,22 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
     }
 
     const voice = (DIRECT_VOICE_MODELS[providerId] ?? []).map((model) => ({ ...model }));
+    const video = (DIRECT_VIDEO_MODELS[providerId] ?? []).map((model) => ({ ...model }));
 
-    if (chat.length === 0 && image.length === 0 && classifier.length === 0 && voice.length === 0) continue;
+    if (
+      chat.length === 0 &&
+      image.length === 0 &&
+      video.length === 0 &&
+      classifier.length === 0 &&
+      voice.length === 0
+    ) {
+      continue;
+    }
 
     const models = [
       ...chat.map((model) => toModel(model, 'chat')),
       ...image,
+      ...video,
       ...classifier.map((model) => toModel(model, 'classifier')),
       ...voice,
     ];
@@ -254,12 +267,14 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
         chat[0]?.baseUrl ??
         builtinImage[0]?.baseUrl ??
         DIRECT_IMAGE_BASE_URLS[providerId] ??
+        DIRECT_VIDEO_BASE_URLS[providerId] ??
         DIRECT_VOICE_BASE_URLS[providerId] ??
         '',
       apis: Array.from(new Set(models.map((model) => model.api))).sort(),
       counts: {
         chat: chat.length,
         image: image.length,
+        video: video.length,
         classifier: classifier.length,
         asr: voice.filter((model) => model.type === 'asr').length,
         tts: voice.filter((model) => model.type === 'tts').length,
@@ -273,12 +288,34 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
   const covered = new Set(providers.map((provider) => provider.id));
   for (const [providerId, imageModels] of Object.entries(DIRECT_IMAGE_MODELS)) {
     if (covered.has(providerId)) continue;
+    const videoModels = (DIRECT_VIDEO_MODELS[providerId] ?? []).map((model) => ({ ...model }));
+    const models = [...imageModels.map((model) => ({ ...model })), ...videoModels];
     providers.push({
       id: providerId,
-      baseUrl: DIRECT_IMAGE_BASE_URLS[providerId] ?? '',
-      apis: Array.from(new Set(imageModels.map((model) => model.api))).sort(),
-      counts: { chat: 0, image: imageModels.length, classifier: 0, asr: 0, tts: 0 },
-      models: imageModels.map((model) => ({ ...model })),
+      baseUrl: DIRECT_IMAGE_BASE_URLS[providerId] ?? DIRECT_VIDEO_BASE_URLS[providerId] ?? '',
+      apis: Array.from(new Set(models.map((model) => model.api))).sort(),
+      counts: {
+        chat: 0,
+        image: imageModels.length,
+        video: videoModels.length,
+        classifier: 0,
+        asr: 0,
+        tts: 0,
+      },
+      models,
+    });
+    covered.add(providerId);
+  }
+
+  // Video-only providers (fal.ai, Volcengine Ark Seedance, Kling, OpenAI-compatible gateway).
+  for (const [providerId, videoModels] of Object.entries(DIRECT_VIDEO_MODELS)) {
+    if (covered.has(providerId)) continue;
+    providers.push({
+      id: providerId,
+      baseUrl: DIRECT_VIDEO_BASE_URLS[providerId] ?? '',
+      apis: Array.from(new Set(videoModels.map((model) => model.api))).sort(),
+      counts: { chat: 0, image: 0, video: videoModels.length, classifier: 0, asr: 0, tts: 0 },
+      models: videoModels.map((model) => ({ ...model })),
     });
     covered.add(providerId);
   }
@@ -294,6 +331,7 @@ export async function getCatalog(): Promise<CatalogProvider[]> {
       counts: {
         chat: 0,
         image: 0,
+        video: 0,
         classifier: 0,
         asr: voiceModels.filter((model) => model.type === 'asr').length,
         tts: voiceModels.filter((model) => model.type === 'tts').length,

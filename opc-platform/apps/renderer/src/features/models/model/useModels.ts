@@ -29,7 +29,7 @@ interface ModelsState {
 export function useModels() {
   const [state, setState] = useState<ModelsState>({
     providers: [],
-    defaults: { llm: null, router: null, image: null, asr: null, tts: null, decision: null },
+    defaults: { llm: null, router: null, image: null, video: null, asr: null, tts: null, decision: null },
     compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 32_768 },
     thinking: 'medium',
     routerThinking: 'medium',
@@ -88,9 +88,9 @@ export function useModels() {
     // Returns the outcome (ok/message/added) instead of void, so the page can report it.
     // The imported list is applied straight from the result: without that the table kept
     // showing the pre-refresh models until the page was remounted.
-    refreshModels: async (providerId: string) => {
+    refreshModels: async (providerId: string, scope?: 'llm' | 'video') => {
       try {
-        const result = await bridge?.refreshModels(providerId);
+        const result = await bridge?.refreshModels(providerId, scope);
         setState((previous) => ({
           ...previous,
           providers: result?.providers ?? previous.providers,
@@ -113,11 +113,12 @@ export function useModels() {
         contextWindow?: number;
         api?: string;
         /** Defaults to `chat` in the main process. */
-        capability?: 'chat' | 'image' | 'classifier' | 'asr' | 'tts';
+        capability?: 'chat' | 'image' | 'video' | 'classifier' | 'asr' | 'tts';
         inputUsdPerM?: number;
         outputUsdPerM?: number;
         cacheReadUsdPerM?: number;
         cacheWriteUsdPerM?: number;
+        usdPerSecond?: number;
       },
     ) => run(() => bridge?.addModel(providerId, input)),
     supportsOauth: (providerId: string) => bridge?.supportsOauth(providerId) ?? Promise.resolve(false),

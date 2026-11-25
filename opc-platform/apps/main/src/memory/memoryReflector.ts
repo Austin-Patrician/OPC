@@ -49,7 +49,7 @@ const DEFAULT_IDLE_MIN_MESSAGES = 2;
 
 const ORIGIN_LABEL: Record<MemorySignalOrigin, string> = {
   rework: '用户退回返工',
-  steering: '中途改方向',
+  steering: '中途改方向（内部调度/路线微调，切勿当成系统权限或用户长期铁律）',
   pivot: '否定当前路线并转向',
   abort: '主动中止任务',
   task_recovery: '多次试错后修复成功（提炼避坑经验）',
@@ -127,6 +127,26 @@ export class MemoryReflector {
     } catch {
       // Compaction and reset must never fail because of background reflection.
     }
+  }
+
+  /**
+   * Synchronizes reflection state when the user starts a new conversation.
+   * Preserves all `memory/*.md` files on disk, flushes or discards pending signals,
+   * and resets the message reflection cursor.
+   */
+  async resetAfterConversationClear(options: { flush: boolean }): Promise<void> {
+    this.pendingUserMessageCount = 0;
+    this.clearIdleTimer();
+    this.clearSignalTimer();
+    if (options.flush) {
+      await this.flushBeforeCompact();
+    } else {
+      const pending = this.deps.store.readState().pendingSignals;
+      if (pending.length > 0) {
+        this.deps.store.consumeSignals(pending.map((signal) => signal.id));
+      }
+    }
+    this.deps.store.resetReflectionCursor(Date.now());
   }
 
   reflectNow(): Promise<MemoryReflectionRunView> {
@@ -345,10 +365,14 @@ const REFLECTION_SYSTEM_PROMPT = [
   '',
   '严禁写入的内容（违反会导致记忆污染）：',
   '- 不要把「助手刚执行了某次任务」「某条指令跑通了」当成铁律或避坑；一次性的寒暄、临时状态也不要进 USER.md/RULES.md。',
+  '- 严禁把助手/Router 自己猜测的运行时/沙箱/权限/授权弹窗/附件路径结论（如“bash 被硬禁用”“用户端看不到授权弹窗”“附件只传 D 盘路径”）写入 RULES.md 或 USER.md。RULES.md 只记录用户亲口明确要求的跨任务行为/输出规范（称呼、语气、排版标准等），绝不记录内部 steer_line 改道话术或单次环境排查猜想。',
+  '- 若现有 RULES.md 或 USER.md 中出现已被后续工具进展推翻的过时环境/权限限制条目，应主动通过 `rulesRemove` / `userSections` 清理。',
   '- 不要把泛泛而谈的空话（如"应当仔细检查需求"）写进 PLAYBOOK.md；避坑条必须指出**具体报错/环境/行为原因 + 明确替代做法**。',
   '- 若 USER.md 中某一小节需要补充信息，必须在 `userSections[sectionName]` 返回**合并旧条目+新信息并去重精简后的整节条目数组**。未变化的节不要输出。',
   '- 如果没有值得长期记住的变化，返回 `{}`。只输出 JSON，不要输出任何额外解释。',
 ].join('\n');
+
+export const MEMORY_REFLECTION_SYSTEM_PROMPT = REFLECTION_SYSTEM_PROMPT;
 
 function buildReflectionUserPrompt(input: {
   userDoc: string;

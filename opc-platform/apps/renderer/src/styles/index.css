@@ -1768,8 +1768,94 @@
   mask-image: radial-gradient(ellipse 80% 70% at 50% 42%, #000 25%, transparent 80%);
 }
 
+:root {
+  --in-oklab: ;
+  --in-oklch: ;
+}
+@supports (background: linear-gradient(in oklab, white, black)) {
+  :root {
+    --in-oklab: in oklab;
+    --in-oklch: in oklch;
+  }
+}
+
+.buddy-orb-capsule {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+  transition: color 220ms ease;
+}
+.buddy-orb-capsule-label {
+  letter-spacing: -0.01em;
+}
+.buddy-orb-capsule[data-orb-mode='listening'],
+.buddy-orb-capsule[data-orb-mode='thinking'],
+.buddy-orb-capsule[data-orb-mode='working'],
+.buddy-orb-capsule[data-orb-mode='speaking'],
+.buddy-orb-capsule[data-orb-mode='transcribing'],
+.buddy-orb-capsule[data-orb-mode='waiting'],
+.buddy-orb-capsule[data-orb-mode='error'] {
+  color: var(--text-primary);
+}
+
+.voice-orb {
+  isolation: isolate;
+}
+
+/* 4-bar sleek acoustic mini equalizer for listening/speaking */
+.voice-orb-bars {
+  height: 12px;
+}
+.voice-orb-bars i {
+  display: block;
+  width: 2px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.78;
+  transform-origin: center center;
+  animation: voice-orb-bar 0.72s ease-in-out infinite;
+}
+.voice-orb-bars i:nth-child(1) {
+  height: 7px;
+  animation-delay: 0ms;
+}
+.voice-orb-bars i:nth-child(2) {
+  height: 11px;
+  animation-delay: 110ms;
+}
+.voice-orb-bars i:nth-child(3) {
+  height: 9px;
+  animation-delay: 220ms;
+}
+.voice-orb-bars i:nth-child(4) {
+  height: 6px;
+  animation-delay: 330ms;
+}
+.buddy-orb-capsule[data-orb-mode='listening'] .voice-orb-bars i {
+  background: #0ea5e9;
+  color: #0ea5e9;
+}
+[data-theme='dark'] .buddy-orb-capsule[data-orb-mode='listening'] .voice-orb-bars i {
+  background: #38bdf8;
+  color: #38bdf8;
+}
+.buddy-orb-capsule[data-orb-mode='speaking'] .voice-orb-bars i {
+  background: linear-gradient(180deg, #38bdf8, #34d399);
+}
+
+@keyframes voice-orb-bar {
+  0%, 100% { transform: scaleY(0.32); }
+  50% { transform: scaleY(calc(0.88 + var(--orb-level, 0.18) * 0.35)); }
+}
+
 /* Runtime Observatory motion: status dots, live lanes, and inspector progress. */
 @media (prefers-reduced-motion: reduce) {
+  .voice-orb-bars i {
+    animation: none !important;
+    transition: none !important;
+  }
   .onb-root *,
   .onb-root *::before,
   .onb-root *::after {

@@ -2,8 +2,11 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Message, WorkTask } from '@opc/shared/domain';
-import { referencedConversationArtifacts } from './conversationArtifacts';
+import type { ChatAttachmentRef, Message, WorkTask } from '@opc/shared/domain';
+import {
+  referencedConversationArtifacts,
+  referencedConversationUserAttachments,
+} from './conversationArtifacts';
 
 const roots: string[] = [];
 
@@ -117,5 +120,83 @@ describe('conversation artifact references', () => {
 
     expect(referencedConversationArtifacts({ ...common, text: 'escape.png', messages: message('assets/escape.png') })).toEqual([]);
     expect(referencedConversationArtifacts({ ...common, text: 'missing.png', messages: message('assets/missing.png'), getTask: () => missing })).toEqual([]);
+  });
+});
+
+function userMessage(
+  id: string,
+  text: string,
+  attachments?: ChatAttachmentRef[],
+): Message {
+  return {
+    id,
+    kind: 'text',
+    senderId: 'user',
+    senderName: '我',
+    timestamp: '12:00',
+    text,
+    ...(attachments ? { attachments } : {}),
+  };
+}
+
+describe('conversation user attachment references', () => {
+  it('carries over prior user attachments on explicit filename/stem mention, follow-up cues, or recent turns', () => {
+    const folder = root();
+    const resumePath = path.join(folder, 'Austin_Resume_EN.pdf');
+    writeFileSync(resumePath, '%PDF-1.4 resume');
+    const missingPath = path.join(folder, 'deleted.pdf');
+
+    const att: ChatAttachmentRef = {
+      id: 'att-1',
+      name: 'Austin_Resume_EN.pdf',
+      path: resumePath,
+      size: 15,
+      source: 'file',
+      availability: 'available',
+    };
+    const deletedAtt: ChatAttachmentRef = {
+      id: 'att-deleted',
+      name: 'deleted.pdf',
+      path: missingPath,
+      size: 10,
+      source: 'file',
+      availability: 'available',
+    };
+
+    // 1. Recent turn carryover (within 6 messages) even without repeating filename
+    const recentRefs = referencedConversationUserAttachments({
+      text: '帮我翻一下',
+      messages: [userMessage('m-1', '上传了简历', [att, deletedAtt])],
+    });
+    expect(recentRefs).toHaveLength(1);
+    expect(recentRefs[0]?.name).toBe('Austin_Resume_EN.pdf');
+
+    // 2. Old history outside 6-message window: carried over when follow-up cue or filename/stem is mentioned
+    const filler: Message[] = Array.from({ length: 8 }, (_, idx) =>
+      userMessage(`filler-${idx}`, `闲聊 ${idx}`),
+    );
+    const oldHistory = [userMessage('m-old', '之前发过', [att]), ...filler];
+
+    expect(
+      referencedConversationUserAttachments({
+        text: '附件我已经上传了，请帮我翻译成中文版',
+        messages: oldHistory,
+      }),
+    ).toHaveLength(1);
+
+    expect(
+      referencedConversationUserAttachments({
+        text: '用 Austin_Resume_EN 那个版本再生成一份',
+        messages: oldHistory,
+      }),
+    ).toHaveLength(1);
+
+    // 3. Unrelated message outside window does not re-attach old files
+    expect(
+      referencedConversationUserAttachments({
+        text: '今天天气不错',
+        messages: oldHistory,
+      }),
+    ).toEqual([]);
   });
 });
