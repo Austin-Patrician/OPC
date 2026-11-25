@@ -52,6 +52,9 @@ import type {
   WorkTask,
   WorkerProgressEvent,
   RouterContextStats,
+  ObservatoryRouterEvent,
+  ObservatorySnapshot,
+  ObservatoryTaskDetail,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
@@ -559,6 +562,34 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.skillPacks.progressEvent, handler);
       return () => {
         ipcRenderer.off(IPC.skillPacks.progressEvent, handler);
+      };
+    },
+  },
+  observatory: {
+    snapshot: () =>
+      ipcRenderer.invoke(IPC.observatory.snapshot) as Promise<ObservatorySnapshot>,
+    taskDetail: (taskId: string) =>
+      ipcRenderer.invoke(
+        IPC.observatory.taskDetail,
+        taskId,
+      ) as Promise<ObservatoryTaskDetail | null>,
+    openWorkspace: (taskId: string) =>
+      ipcRenderer.invoke(IPC.observatory.openWorkspace, taskId) as Promise<{
+        ok: boolean;
+        error?: string;
+      }>,
+    revealArtifact: (taskId: string, relPath: string) =>
+      ipcRenderer.invoke(
+        IPC.observatory.revealArtifact,
+        taskId,
+        relPath,
+      ) as Promise<{ ok: boolean; error?: string }>,
+    onRouterEvent: (listener: (event: ObservatoryRouterEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, event: ObservatoryRouterEvent) =>
+        listener(event);
+      ipcRenderer.on(IPC.observatory.routerEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.observatory.routerEvent, handler);
       };
     },
   },

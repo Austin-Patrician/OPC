@@ -51,6 +51,9 @@ import type {
   WorkerProgressEvent,
   RouterContextStats,
   ChatAttachmentRef,
+  ObservatoryRouterEvent,
+  ObservatorySnapshot,
+  ObservatoryTaskDetail,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -300,6 +303,13 @@ export const IPC = {
     uninstallEnv: "skillPacks:uninstallEnv",
     changedEvent: "skillPacks:changed",
     progressEvent: "skillPacks:progress",
+  },
+  observatory: {
+    snapshot: "observatory:snapshot",
+    taskDetail: "observatory:taskDetail",
+    openWorkspace: "observatory:openWorkspace",
+    revealArtifact: "observatory:revealArtifact",
+    routerEvent: "observatory:routerEvent",
   },
 } as const;
 
@@ -1191,6 +1201,14 @@ export interface WatchdogBridge {
   ): Promise<{ providerId: string; modelId: string } | null>;
 }
 
+export interface ObservatoryBridge {
+  snapshot(): Promise<ObservatorySnapshot>;
+  taskDetail(taskId: string): Promise<ObservatoryTaskDetail | null>;
+  openWorkspace(taskId: string): Promise<{ ok: boolean; error?: string }>;
+  revealArtifact(taskId: string, relPath: string): Promise<{ ok: boolean; error?: string }>;
+  onRouterEvent(listener: (event: ObservatoryRouterEvent) => void): () => void;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
@@ -1230,6 +1248,7 @@ export interface OpcBridge {
   browser: BrowserBridge;
   desktop: DesktopBridge;
   watchdog: WatchdogBridge;
+  observatory: ObservatoryBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };

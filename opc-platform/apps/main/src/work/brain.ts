@@ -5,6 +5,8 @@ export interface AcceptanceFeedback {
   attempt: number;
   reason: string;
   evidence: { exitCode: number | null; stdoutTail: string; stderrTail: string; command: string[] };
+  truncatedNoTools?: boolean;
+  existingFiles?: string[];
 }
 
 export interface BrainContext {
@@ -47,7 +49,7 @@ export interface TaskBrain {
   readonly name: string;
   /** Attempts allowed including the first; a repair costs one more attempt. */
   readonly maxAttempts?: number;
-  execute(context: BrainContext): Promise<{ answer?: string }>;
+  execute(context: BrainContext): Promise<{ answer?: string; truncatedNoTools?: boolean; stopReason?: string }>;
 }
 
 const SERVER_JS = `const http = require('node:http');

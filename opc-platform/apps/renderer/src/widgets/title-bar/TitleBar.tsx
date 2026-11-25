@@ -1,9 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { Maximize2, Minus, Search, Square, SquarePen, X } from 'lucide-react';
+import { Maximize2, Minus, PanelRight, Search, Square, SquarePen, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AssistantActivity, AssistantActivityPhase } from '@opc/shared/ipc';
 import { assistantName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
+import type { ObservatoryStatusKind } from '@/features/observatory/model/useObservatory';
 import { subscribeBuddySignal } from '@/shared/ui/buddyEvents';
 import { VoiceOrb } from '@/shared/ui/VoiceOrb';
 import { resolveStatusActivityKey, resolveVoiceOrbMode } from '@/shared/ui/voiceOrbState';
@@ -16,6 +17,10 @@ interface TitleBarProps {
   onNewChat?: () => void;
   showChatStatus?: boolean;
   chatActivity?: AssistantActivity;
+  observatoryEnabled?: boolean;
+  observatoryOpen?: boolean;
+  observatoryStatus?: ObservatoryStatusKind;
+  onToggleObservatory?: () => void;
 }
 
 const TYPING_DECAY_MS = 1_500;
@@ -29,6 +34,10 @@ export function TitleBar({
   onNewChat,
   showChatStatus = false,
   chatActivity,
+  observatoryEnabled = false,
+  observatoryOpen = false,
+  observatoryStatus = 'idle',
+  onToggleObservatory,
 }: TitleBarProps) {
   const { t } = useTranslation();
   const profile = useCompanyProfile();
@@ -148,13 +157,21 @@ export function TitleBar({
     <header className="buddy-titlebar relative z-30 flex h-[44px] shrink-0 items-center px-4">
       <div className="buddy-titlebar-drag app-drag absolute inset-0" aria-hidden />
       {showChatStatus ? (
-        <div
+        <button
+          type="button"
           role="status"
           aria-live="polite"
           aria-label={statusText}
+          aria-expanded={observatoryEnabled ? observatoryOpen : undefined}
+          title={observatoryEnabled ? t('observatory.toggleHint') : undefined}
+          onClick={() => {
+            if (observatoryEnabled) onToggleObservatory?.();
+          }}
           data-orb-mode={orbMode}
           style={{ '--orb-level': voiceLevel.toFixed(3) } as CSSProperties}
-          className="buddy-assistant-status buddy-orb-capsule no-drag absolute left-1/2 z-10 flex min-w-0 max-w-[min(48vw,320px)] -translate-x-1/2 items-center gap-2 rounded-full px-2 py-1"
+          className={`buddy-assistant-status buddy-orb-capsule no-drag absolute left-1/2 z-10 flex min-w-0 max-w-[min(48vw,320px)] -translate-x-1/2 items-center gap-2 rounded-full px-2 py-1 ${
+            observatoryEnabled ? 'cursor-pointer' : ''
+          }`}
         >
           <VoiceOrb mode={orbMode} level={voiceLevel} size={22} />
           <span className="buddy-assistant-status-label buddy-orb-capsule-label truncate text-xs font-medium">
@@ -168,11 +185,36 @@ export function TitleBar({
               <i />
             </span>
           ) : null}
-        </div>
+        </button>
       ) : null}
       <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-2">
-        {searchEnabled || newChatEnabled ? (
+        {searchEnabled || newChatEnabled || observatoryEnabled ? (
           <div className="no-drag flex items-center gap-1">
+            {observatoryEnabled && onToggleObservatory ? (
+              <button
+                type="button"
+                aria-label={t('observatory.title')}
+                aria-pressed={observatoryOpen}
+                title={t('observatory.toggleHint')}
+                onClick={onToggleObservatory}
+                className={`buddy-header-action relative ${
+                  observatoryOpen ? 'bg-surface-active text-ink' : ''
+                }`}
+              >
+                <PanelRight size={15} strokeWidth={1.8} />
+                {observatoryStatus !== 'idle' ? (
+                  <span
+                    className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ${
+                      observatoryStatus === 'blocked'
+                        ? 'bg-warning observatory-dot-pulse'
+                        : observatoryStatus === 'error'
+                          ? 'bg-danger'
+                          : 'bg-accent observatory-dot-pulse'
+                    }`}
+                  />
+                ) : null}
+              </button>
+            ) : null}
             {newChatEnabled && onNewChat ? (
               <button
                 type="button"

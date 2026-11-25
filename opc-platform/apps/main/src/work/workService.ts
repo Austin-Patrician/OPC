@@ -596,7 +596,7 @@ export class WorkService {
           }
         : undefined,
       brain: (process.env.OPC_BRAIN_VARIANT ? scriptedBrain : (this.modelBrain ?? scriptedBrain)) as TaskBrain,
-      fallbackBrain: scriptedBrain,
+      ...(process.env.OPC_BRAIN_VARIANT ? { fallbackBrain: scriptedBrain } : {}),
       repository: this.repository,
       recordDurableStep: (taskId, text) => this.recordDurableStep(taskId, text),
       approvalReport: (taskId) => {
@@ -1074,10 +1074,23 @@ export class WorkService {
           ? baseContract.outputs
           : [{ kind: 'text' as const, description: '完成增量改动后的简短结论' }];
     const mergedAttachments = mergeAttachments(baseContract.attachments, input.attachments);
+    const summarizedInstruction =
+      instruction
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.length > 0)
+        ?.slice(0, 120) ?? instruction.slice(0, 120);
+    const derivedDeliverable =
+      input.updatedOutputs && input.updatedOutputs.length > 0
+        ? input.updatedOutputs
+            .map((output) => (output.kind === 'file' ? output.path : output.description))
+            .filter(Boolean)
+            .join('；')
+        : baseContract.deliverable || summarizedInstruction;
     const nextContract: TaskContract = {
       ...baseContract,
       objective: instruction,
-      deliverable: input.mode === 'pivot' ? instruction : baseContract.deliverable || instruction,
+      deliverable: input.mode === 'pivot' ? derivedDeliverable : baseContract.deliverable || derivedDeliverable,
       outputs: nextOutputs,
       ...(mergedAttachments.length > 0 ? { attachments: mergedAttachments } : {}),
       ...(input.acceptance ? { acceptance: input.acceptance } : {}),

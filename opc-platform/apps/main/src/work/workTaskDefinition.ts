@@ -1,4 +1,4 @@
-import type { TaskAcceptance, TaskOutputSpec, TaskRecord, WorkReport, WorkTask } from '@opc/shared/domain';
+import type { TaskAcceptance, TaskRecord, WorkReport, WorkTask } from '@opc/shared/domain';
 import type { TaskRepository } from '../data/taskRepository';
 import type { Context } from '@earendil-works/chord/context';
 import { defineTask, type TaskDefinition } from '@earendil-works/pi-durable';
@@ -10,10 +10,11 @@ import {
   VERIFY_REVIEW_VERDICT,
 } from './acceptanceTemplate';
 import type { AcceptanceFeedback, TaskBrain } from './brain';
+import { verifyDeclaredOutputs } from './deliverableCheck';
 import { runCommand } from './exec';
 import type { NetworkClient } from '../network/networkClient';
 import type { RuntimeService } from '../runtime/service';
-import { ensureDir, listWorkspaceFiles, writeFileWithin } from './workspace';
+import { ensureDir, listWorkspaceFiles, writeFileWithin, type WorkspaceFile } from './workspace';
 import {
   buildChildren,
   JOIN_POLL_MS,
@@ -45,6 +46,8 @@ type WorkTaskState =
       joined?: number;
       lastEvidence?: AcceptanceFeedback['evidence'];
       lastReason?: string;
+      lastTruncatedNoTools?: boolean;
+      lastExistingFiles?: string[];
     }
   | { phase: 'approval'; attempt: number; reportId: string }
   /**
@@ -54,7 +57,7 @@ type WorkTaskState =
    * pi 的 `sleepUntil`，不是 `await new Promise`——后者在重启后什么都不会剩下。
    */
   | { phase: 'collect'; attempt: number; joined: number; since: number }
-  | { phase: 'verify'; attempt: number };
+  | { phase: 'verify'; attempt: number; joined?: number; truncatedNoTools?: boolean };
 
 export interface WorkTaskResult {
   verdict: 'pass' | 'fail';
@@ -94,8 +97,8 @@ export interface WorkTaskServices {
     taskId: string;
     threadId?: string;
   }) => TaskRecord[];
-  /** Used when the primary brain throws (e.g. revoked key): degrade, don't fail. */
-  fallbackBrain: TaskBrain;
+  /** Used when the primary brain throws (e.g. scripted demo fallback when explicitly configured). */
+  fallbackBrain?: TaskBrain;
   repository: TaskRepository;
   recordDurableStep: (taskId: string, text: string) => Promise<void>;
   onTaskChanged: (taskId: string) => void;
@@ -148,6 +151,10 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             attempt: attempt - 1,
             reason: task.state.checkpoint.lastReason ?? '验收未通过',
             evidence: task.state.checkpoint.lastEvidence,
+            ...(task.state.checkpoint.lastTruncatedNoTools ? { truncatedNoTools: true } : {}),
+            ...(task.state.checkpoint.lastExistingFiles
+              ? { existingFiles: task.state.checkpoint.lastExistingFiles }
+              : {}),
           }
         : undefined;
 
@@ -260,8 +267,11 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
           },
         });
 
+      let truncatedNoTools = false;
       try {
-        const answer = (await runBrain(brain)).answer?.trim() ?? '';
+        const brainResult = await runBrain(brain);
+        const answer = brainResult.answer?.trim() ?? '';
+        truncatedNoTools = Boolean(brainResult.truncatedNoTools);
         if (answer) repository.setAnswer(workTask.id, answer);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -281,12 +291,23 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             onTaskChanged,
           });
         } else {
+          const fallback = requireServices().fallbackBrain;
+          if (!fallback) {
+            logStep(task.input.workTaskId, `主执行器异常：${message}`, {
+              repository,
+              recordDurableStep,
+              onTaskChanged,
+            });
+            throw error;
+          }
           logStep(task.input.workTaskId, `主执行器失败（${message}），回退到脚本化执行`, {
             repository,
             recordDurableStep,
             onTaskChanged,
           });
-          const answer = (await runBrain(requireServices().fallbackBrain)).answer?.trim() ?? '';
+          const fallbackResult = await runBrain(fallback);
+          const answer = fallbackResult.answer?.trim() ?? '';
+          truncatedNoTools = Boolean(fallbackResult.truncatedNoTools);
           if (answer) repository.setAnswer(workTask.id, answer);
         }
       }
@@ -332,7 +353,15 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
       }
 
       await runtime.commit(
-        () => ({ status: 'running', checkpoint: { ...task.state.checkpoint, phase: 'verify', attempt } }),
+        () => ({
+          status: 'running',
+          checkpoint: {
+            phase: 'verify',
+            attempt,
+            ...(joined > 0 ? { joined } : {}),
+            ...(truncatedNoTools ? { truncatedNoTools: true } : {}),
+          },
+        }),
         context,
       );
     },
@@ -409,25 +438,56 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         deliverable: workTask.deliverableSpec,
         outputs: [],
       };
-      const outputFailure = missingOutput(contract.outputs, files, answer);
-      if (outputFailure) {
+      const check = verifyDeclaredOutputs({
+        outputs: contract.outputs,
+        workspaceDir,
+        files,
+        answer,
+      });
+
+      const artifactMap = new Map<string, WorkspaceFile>();
+      for (const file of files) artifactMap.set(file.relPath, file);
+      for (const file of check.discoveredFiles) artifactMap.set(file.relPath, file);
+      repository.clearArtifacts(workTask.id);
+      for (const file of artifactMap.values()) {
+        repository.addArtifact(workTask.id, file.relPath, file.absolutePath);
+      }
+
+      for (const item of check.mapped) {
+        logStep(workTask.id, `交付物路径自动匹配：${item.declared} → ${item.actual}`, {
+          repository,
+          recordDurableStep,
+          onTaskChanged,
+        });
+      }
+
+      if (!check.ok) {
+        const truncatedNote = task.state.checkpoint.truncatedNoTools
+          ? '（上一轮模型思考超长触及输出上限被截断，未调用任何工具）'
+          : '';
+        const failureReason = `${check.reason ?? '输出契约未满足'}${truncatedNote}`;
         const attempts = task.state.checkpoint.attempt;
         const result: WorkTaskResult = {
           verdict: 'fail',
           attempts,
-          reason: outputFailure,
+          reason: failureReason,
           ...(answer ? { answer } : {}),
         };
         repository.addAcceptance(workTask.id, {
           verdict: 'fail',
-          reason: outputFailure,
+          reason: failureReason,
           evidence: {
             command: ['opc', 'output-contract'],
             exitCode: 1,
             stdoutTail: '',
-            stderrTail: outputFailure,
+            stderrTail: failureReason,
             durationMs: 0,
           },
+        });
+        logStep(workTask.id, `输出契约未满足：${failureReason}`, {
+          repository,
+          recordDurableStep,
+          onTaskChanged,
         });
         if (attempts >= task.input.maxAttempts) {
           await runtime.commit(() => ({ status: 'terminal', outcome: { status: 'completed', result } }), context);
@@ -436,26 +496,24 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
             () => ({
               status: 'running',
               checkpoint: {
-                ...task.state.checkpoint,
                 phase: 'produce',
+                attempt: attempts,
+                ...(task.state.checkpoint.joined !== undefined ? { joined: task.state.checkpoint.joined } : {}),
                 lastEvidence: {
                   command: ['opc', 'output-contract'],
                   exitCode: 1,
                   stdoutTail: '',
-                  stderrTail: outputFailure,
+                  stderrTail: failureReason,
                 },
-                lastReason: outputFailure,
+                lastReason: failureReason,
+                ...(task.state.checkpoint.truncatedNoTools ? { lastTruncatedNoTools: true } : {}),
+                ...(check.existingFiles.length > 0 ? { lastExistingFiles: check.existingFiles } : {}),
               },
             }),
             context,
           );
         }
         return;
-      }
-
-      repository.clearArtifacts(workTask.id);
-      for (const file of files) {
-        repository.addArtifact(workTask.id, file.relPath, file.absolutePath);
       }
 
       const acceptance = await accept(workTask, workspaceDir, checksDir);
@@ -487,8 +545,9 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
         () => ({
           status: 'running',
           checkpoint: {
-            ...task.state.checkpoint,
             phase: 'produce',
+            attempt: attempts,
+            ...(task.state.checkpoint.joined !== undefined ? { joined: task.state.checkpoint.joined } : {}),
             lastEvidence: {
               command: acceptance.evidence.command,
               exitCode: acceptance.evidence.exitCode,
@@ -496,6 +555,7 @@ const definition: TaskDefinition<WorkTaskInput, WorkTaskState, WorkTaskResult, o
               stderrTail: acceptance.evidence.stderrTail,
             },
             lastReason: acceptance.reason,
+            ...(check.existingFiles.length > 0 ? { lastExistingFiles: check.existingFiles } : {}),
           },
         }),
         context,
@@ -526,16 +586,6 @@ function toWorkTask(
   const task = repository.getTask(taskId);
   if (!task) throw new Error(`未知任务: ${taskId}`);
   return task;
-}
-
-function missingOutput(outputs: readonly TaskOutputSpec[], files: readonly { relPath: string }[], answer: string): string | null {
-  for (const output of outputs) {
-    if (output.kind === 'text' && !answer) return `缺少文本回答：${output.description}`;
-    if (output.kind === 'file' && !files.some((file) => file.relPath === output.path)) {
-      return `缺少文件交付物：${output.path}`;
-    }
-  }
-  return null;
 }
 
 function logStep(

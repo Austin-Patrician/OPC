@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tmpdir } from 'node:os';
 import type { WorkTask } from '@opc/shared/domain';
-import { buildPrompt, HarnessBrain } from './harnessBrain';
+import { buildPrompt, buildRetryFeedbackPrompt, HarnessBrain } from './harnessBrain';
 
 /**
  * 提示词是契约：执行体只看得到这一段字。
@@ -242,6 +242,49 @@ describe('执行体看到的提示词', () => {
 
     expect(prompt.indexOf('先给最小可运行版本')).toBeLessThan(prompt.indexOf('再加一个 /health'));
   });
+
+  it('当 objective/brief/deliverable 完全相同时自动去重，不重复拼接 3 遍', () => {
+    const body = '将输入的英文简历翻译为中文 PDF 并输出到 output/resume.pdf';
+    const prompt = buildPrompt(
+      task({
+        brief: body,
+        deliverableSpec: body,
+        contract: {
+          objective: body,
+          deliverable: body,
+          outputs: [{ kind: 'file', path: 'output\\resume.pdf', description: '中文简历 PDF' }],
+        },
+      }),
+    );
+
+    expect(prompt.split(body)).toHaveLength(2);
+    expect(prompt).toContain('- 文件 output/resume.pdf：中文简历 PDF');
+  });
+
+  it('buildRetryFeedbackPrompt 精简输出截断纠偏与工作区已有文件列表', () => {
+    const retryPrompt = buildRetryFeedbackPrompt(
+      task({
+        contract: {
+          objective: '翻译简历',
+          deliverable: '中文 PDF',
+          outputs: [{ kind: 'file', path: 'output/resume.pdf', description: '中文简历' }],
+        },
+      }),
+      {
+        attempt: 1,
+        reason: '缺少文件交付物：output/resume.pdf',
+        evidence: { command: ['opc', 'output-contract'], exitCode: 1, stdoutTail: '', stderrTail: '' },
+        truncatedNoTools: true,
+        existingFiles: ['output/中文版.pdf'],
+      },
+    );
+
+    expect(retryPrompt).toContain('上一轮（第 1 次尝试）未通过系统验收');
+    expect(retryPrompt).toContain('思考过长触及输出上限被截断');
+    expect(retryPrompt).toContain('output/中文版.pdf');
+    expect(retryPrompt).toContain('- 文件 output/resume.pdf：中文简历');
+    expect(retryPrompt).not.toContain('验收命令退出码');
+  });
 });
 
 /**
@@ -347,5 +390,69 @@ describe('把话插进正在跑的活', () => {
     });
 
     expect(result.answer).toBe('这是最终汇报正文。');
+  });
+
+  it('当 stopReason=length 且 0 工具调用时标记 truncatedNoTools，同任务重试自动降级 thinking 为 low 并发送精简重试提示', async () => {
+    const submitted: Array<{ content: unknown }> = [];
+    const configured: Array<{ thinkingLevel?: string }> = [];
+    const truncatedEntry = {
+      model: [{ role: 'assistant', stopReason: 'length', content: [{ type: 'thinking', thinking: 'long...' }] }],
+    };
+    const conversation = {
+      id: 'conv-retry',
+      configure: async (next: { thinkingLevel?: string }) => {
+        configured.push(next);
+      },
+      submit: async (draft: { content: unknown }) => {
+        submitted.push(draft);
+        return {
+          wait: async () => ({ type: 'input', status: 'done', answer: 'entry-1' }),
+        };
+      },
+      commit: async (change: (tx: { entry: (id: string) => Promise<typeof truncatedEntry> }) => unknown) =>
+        change({ entry: async () => truncatedEntry }),
+    };
+    const harness = {
+      createConversation: async () => conversation,
+      commit: async () => undefined,
+      conversation: async () => conversation,
+      usage: async () => ({}),
+    };
+    const brain = new HarnessBrain({
+      harnessFor: async () => ({ harness: harness as never }),
+      context: async () => ({}) as never,
+      model: () => ({ providerId: 'p', modelId: 'm' }),
+      thinking: () => 'high',
+      price: () => ({ inputUsdPerM: 0, outputUsdPerM: 0 }),
+      onTokens: () => undefined,
+    });
+
+    const first = await brain.execute({
+      task: task(),
+      workspaceDir: tmpdir(),
+      durableTaskId: 'durable-trunc-1',
+      log: () => undefined,
+    });
+    expect(first.truncatedNoTools).toBe(true);
+    expect(first.stopReason).toBe('length');
+
+    await brain.execute({
+      task: task(),
+      workspaceDir: tmpdir(),
+      durableTaskId: 'durable-trunc-1',
+      feedback: {
+        attempt: 1,
+        reason: '缺少文件交付物：output/a.pdf',
+        evidence: { command: ['opc', 'output-contract'], exitCode: 1, stdoutTail: '', stderrTail: '' },
+        truncatedNoTools: true,
+        existingFiles: ['output/b.pdf'],
+      },
+      log: () => undefined,
+    });
+
+    expect(configured).toEqual([{ model: { provider: 'p', modelId: 'm' }, thinkingLevel: 'low', cwd: tmpdir() }]);
+    expect(String(submitted[1]?.content)).toContain('思考过长触及输出上限被截断');
+    expect(String(submitted[1]?.content)).toContain('output/b.pdf');
+    expect(String(submitted[1]?.content)).not.toContain('你要完成下面的交付契约');
   });
 });

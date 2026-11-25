@@ -183,6 +183,12 @@ export interface WorkspaceFile {
   bytes: number;
 }
 
+/** Normalizes workspace-relative paths to POSIX `/` separators without leading `./` or `/`. */
+export function normalizeWorkspaceRelPath(relPath: string): string {
+  const posix = relPath.trim().replaceAll('\\', '/').replace(/\/+/g, '/');
+  return posix.replace(/^(?:\.\/)+/, '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
 const IGNORED = new Set(['.git', 'node_modules', '.DS_Store']);
 
 /** Flat list of regular files in a workspace (bounded, so a runaway agent cannot flood). */
@@ -207,13 +213,13 @@ export function listWorkspaceFiles(rootDir: string, limit = 50): WorkspaceFile[]
 
       const stat = fs.statSync(absolutePath);
       results.push({
-        relPath: path.relative(rootDir, absolutePath),
+        relPath: normalizeWorkspaceRelPath(path.relative(root, absolutePath)),
         absolutePath,
         bytes: stat.size,
       });
     }
   };
 
-  walk(rootDir);
+  walk(root);
   return results;
 }

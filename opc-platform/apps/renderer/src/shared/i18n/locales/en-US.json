@@ -1990,5 +1990,104 @@
         "instruction": "Remind me to handle this scheduled task and surface any helpful context."
       }
     }
+  },
+  "observatory": {
+    "title": "Execution Observatory",
+    "toggleHint": "Toggle Execution Observatory (Ctrl+Shift+I)",
+    "closeHint": "Close Execution Observatory (Esc)",
+    "refresh": "Refresh",
+    "toggleDetail": "Toggle detail",
+    "tabs": {
+      "workers": "Workers",
+      "router": "Router"
+    },
+    "filter": {
+      "all": "All",
+      "active": "Active",
+      "blocked": "Blocked"
+    },
+    "threadPicker": {
+      "blockedGroup": "Blocked",
+      "activeGroup": "Running",
+      "recentGroup": "Recent"
+    },
+    "unassigned": "Unassigned worker",
+    "noThreads": "No work threads yet",
+    "selectThreadHint": "Select a work thread to inspect worker internals",
+    "openWorkspace": "Open workspace folder",
+    "workspace": "Workspace",
+    "abort": "Abort",
+    "kpi": {
+      "status": "Status",
+      "elapsed": "Elapsed",
+      "cost": "Tokens & Cost"
+    },
+    "subtabs": {
+      "trace": "Trace",
+      "contract": "Contract",
+      "artifacts": "Artifacts"
+    },
+    "trace": {
+      "keyOnly": "Key only",
+      "allSteps": "All",
+      "burstLabel": "Read & explore · {{count}} steps",
+      "turnSettlement": "Turn settled",
+      "noToolCallsInRound": "No tool calls recorded in this round (model may have hit output/thinking limit or replied in text)",
+      "roundsLabel": "Rounds",
+      "roundTooltipTitle": "Round {{index}}",
+      "roundTooltipSteps": "{{count}} steps",
+      "turnMode": {
+        "initial": "Initial",
+        "append": "Append",
+        "pivot": "Pivot",
+        "rework": "Rework"
+      }
+    },
+    "prunedSteps": "{{count}} steps pruned",
+    "workerLiveRunning": "Worker is active — live steps stream here automatically…",
+    "noTrace": "No action trace recorded",
+    "noTaskYet": "No execution task dispatched on this thread yet",
+    "revealArtifact": "Reveal",
+    "noArtifacts": "No artifacts generated yet",
+    "blocker": {
+      "approvalTitle": "Waiting for approval",
+      "allowInTask": "Allow (in this task)",
+      "deny": "Deny",
+      "questionTitle": "Worker needs clarification",
+      "questionPlaceholder": "Reply directly to unblock worker…",
+      "waitingChildren": "Waiting for {{count}} child task(s)",
+      "errorTitle": "Task failed or rejected"
+    },
+    "contract": {
+      "objective": "Objective",
+      "deliverable": "Deliverable",
+      "workerAnswer": "Worker final response",
+      "attachments": "Input attachments (inputs/)",
+      "steps": "Milestone steps",
+      "systemSteps": "System log steps ({{count}})",
+      "acceptance": "Acceptance check"
+    },
+    "router": {
+      "phase": {
+        "idle": "Idle",
+        "thinking": "Thinking",
+        "tool": "Calling tool",
+        "compacting": "Compacting context",
+        "error": "Error"
+      },
+      "kind": {
+        "event_batch": "Event batch",
+        "tool": "Tool call",
+        "turn": "Turn end",
+        "lifecycle": "Lifecycle"
+      },
+      "contextWindow": "Router context window",
+      "contextCounts": "{{entries}} entries · {{pruned}} pruned",
+      "compact": "Compact",
+      "timelineTitle": "Router Internal Decision Timeline",
+      "turnToolsCount": "{{count}} steps",
+      "noTrace": "No Router internal trace entries recorded in this session yet",
+      "inspectWorker": "Inspect Worker"
+    }
   }
 }

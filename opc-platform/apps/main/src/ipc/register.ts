@@ -29,6 +29,7 @@ import type {
   RouterContextStats,
   RouterScheduleDraft,
   RouterSchedulePatch,
+  ObservatoryRouterEvent,
 } from "@opc/shared/domain";
 import {
   MAX_CHAT_ATTACHMENT_BYTES,
@@ -87,6 +88,7 @@ import type { DesktopBroker } from "../desktop/broker";
 import type { AssistantToolsService } from "../assistant/assistantTools";
 import type { UsageRepository } from "../data/usageRepository";
 import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
+import type { ObservatoryService } from "../observatory/observatoryService";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -166,6 +168,10 @@ interface RegisterOptions {
     compactContext(): Promise<{ ok: boolean; reason?: string }>;
     resetContext(options?: ResetChatOptions): Promise<ResetChatResult>;
   };
+  observatory?: ObservatoryService;
+  subscribeObservatoryRouter?: (
+    listener: (event: ObservatoryRouterEvent) => void,
+  ) => () => void;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -202,6 +208,8 @@ export function registerIpc({
   browser,
   desktop,
   routerControls,
+  observatory,
+  subscribeObservatoryRouter,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -247,6 +255,11 @@ export function registerIpc({
   const unsubscribeWorkProgress = work.subscribeProgress((progress) => {
     broadcast(IPC.work.progressEvent, progress);
   });
+  const unsubscribeObservatoryRouter = subscribeObservatoryRouter
+    ? subscribeObservatoryRouter((event) => {
+        broadcast(IPC.observatory.routerEvent, event);
+      })
+    : () => undefined;
 
   const unsubscribe = chat.subscribe((snapshot) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -1517,6 +1530,31 @@ export function registerIpc({
     work.runTask(taskId);
   });
 
+  if (observatory) {
+    ipcMain.handle(IPC.observatory.snapshot, () => observatory.snapshot());
+    ipcMain.handle(IPC.observatory.taskDetail, (_event, taskId: unknown) => {
+      if (typeof taskId !== "string" || !taskId.trim()) {
+        throw new Error("observatory:taskDetail 需要 taskId");
+      }
+      return observatory.taskDetail(taskId);
+    });
+    ipcMain.handle(IPC.observatory.openWorkspace, (_event, taskId: unknown) => {
+      if (typeof taskId !== "string" || !taskId.trim()) {
+        throw new Error("observatory:openWorkspace 需要 taskId");
+      }
+      return observatory.openWorkspace(taskId);
+    });
+    ipcMain.handle(
+      IPC.observatory.revealArtifact,
+      (_event, taskId: unknown, relPath: unknown) => {
+        if (typeof taskId !== "string" || typeof relPath !== "string" || !relPath.trim()) {
+          throw new Error("observatory:revealArtifact 参数非法");
+        }
+        return observatory.revealArtifact(taskId, relPath);
+      },
+    );
+  }
+
   return () => {
     for (const channel of Object.values(IPC.models))
       ipcMain.removeHandler(channel);
@@ -1526,6 +1564,7 @@ export function registerIpc({
     unsubscribeUsage();
     unsubscribeSchedules();
     unsubscribeWorkProgress();
+    unsubscribeObservatoryRouter();
     ipcMain.removeHandler(IPC.billing.get);
     for (const channel of [IPC.router.listSchedules, IPC.router.createSchedule, IPC.router.updateSchedule,
       IPC.router.cancelSchedule, IPC.router.listScheduleOccurrences]) ipcMain.removeHandler(channel);
@@ -1558,6 +1597,10 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.getContextStats);
     ipcMain.removeHandler(IPC.chat.compactContext);
     ipcMain.removeHandler(IPC.chat.resetContext);
+    ipcMain.removeHandler(IPC.observatory.snapshot);
+    ipcMain.removeHandler(IPC.observatory.taskDetail);
+    ipcMain.removeHandler(IPC.observatory.openWorkspace);
+    ipcMain.removeHandler(IPC.observatory.revealArtifact);
   };
 }
 

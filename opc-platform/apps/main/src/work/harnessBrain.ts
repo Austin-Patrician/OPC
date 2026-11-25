@@ -9,7 +9,7 @@ import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { registerTraceRecorder, type TraceRecorder } from './trace';
 import { childStatusLabel } from './children';
 import { calculateTokenCost, diffCostBreakdown, diffTokenDetails } from './usage';
-import { stageAttachmentsToWorkspace } from './workspace';
+import { normalizeWorkspaceRelPath, stageAttachmentsToWorkspace } from './workspace';
 
 export interface HarnessBrainDeps {
   /** The runtime this task runs in (keyed by worker, not by person). */
@@ -223,7 +223,7 @@ export class HarnessBrain implements TaskBrain {
       conversationId?: string;
       status?: 'ok' | 'error' | 'aborted' | 'interrupted' | 'unknown';
     }) => void;
-  }): Promise<{ answer?: string }> {
+  }): Promise<{ answer?: string; truncatedNoTools?: boolean; stopReason?: string }> {
     const { task, workspaceDir, durableTaskId, log, feedback, reportUsage } = context;
 
     const model = this.deps.model(runtimeIdentityFor(task));
@@ -231,11 +231,13 @@ export class HarnessBrain implements TaskBrain {
 
     const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
     const ctx = await this.deps.context();
+    const configuredThinking = this.deps.thinking() || 'medium';
+    const effectiveThinkingLevel = feedback?.truncatedNoTools ? 'low' : configuredThinking;
 
     const callStartedAt = Date.now();
     const before = await harness.usage(ctx);
     let conversation = durableTaskId ? this.conversations.get(durableTaskId) : undefined;
-    let reusedWarmConversation = false;
+    let reusedWarmConversation = Boolean(conversation);
 
     // Living Worker: reuse the thread worker's persistent conversation when available.
     if (!conversation && task.workerId && this.deps.workerConversation) {
@@ -247,18 +249,6 @@ export class HarnessBrain implements TaskBrain {
         if (found) {
           conversation = found;
           reusedWarmConversation = true;
-          if (typeof conversation.configure === 'function') {
-            await conversation
-              .configure(
-                {
-                  model: { provider: model.providerId, modelId: model.modelId },
-                  thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
-                  cwd: workspaceDir,
-                } as never,
-                ctx,
-              )
-              .catch(() => undefined);
-          }
         }
       }
     }
@@ -268,7 +258,22 @@ export class HarnessBrain implements TaskBrain {
         const page = await tx.scanConversations({ ownerTaskId: durableTaskId as never, order: 'descending' }, 1);
         return page.items[0]?.id;
       }, ctx);
-      if (existingId) conversation = await harness.conversation(existingId, ctx);
+      if (existingId) {
+        conversation = await harness.conversation(existingId, ctx);
+        if (conversation) reusedWarmConversation = true;
+      }
+    }
+    if (conversation && reusedWarmConversation && typeof conversation.configure === 'function') {
+      await conversation
+        .configure(
+          {
+            model: { provider: model.providerId, modelId: model.modelId },
+            thinkingLevel: effectiveThinkingLevel as never,
+            cwd: workspaceDir,
+          } as never,
+          ctx,
+        )
+        .catch(() => undefined);
     }
     if (!conversation) {
       const persistent = Boolean(task.workerId && this.deps.onWorkerConversation);
@@ -284,7 +289,7 @@ export class HarnessBrain implements TaskBrain {
           agent: {
             model: { provider: model.providerId, modelId: model.modelId },
             // Thinking level is a real setting (Settings → LLM), not UI decoration.
-            thinkingLevel: (this.deps.thinking() ?? 'medium') as never,
+            thinkingLevel: effectiveThinkingLevel as never,
             cwd: workspaceDir,
           },
         },
@@ -333,7 +338,17 @@ export class HarnessBrain implements TaskBrain {
 
     // 动作流：从这一刻起，模型每调一个工具都会落一行（`opc.trace` 那个 hook 负责写）。
     // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
-    const recorder = this.deps.trace?.(task.id) ?? null;
+    let recordedTools = 0;
+    const rawRecorder = this.deps.trace?.(task.id) ?? null;
+    const recorder: TraceRecorder | null = rawRecorder
+      ? {
+          taskId: rawRecorder.taskId,
+          record(input) {
+            if (input.kind === 'tool') recordedTools += 1;
+            rawRecorder.record(input);
+          },
+        }
+      : null;
     const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder) : null;
     const stopApproval = this.deps.registerApproval?.(conversation.id, task.id) ?? null;
 
@@ -342,12 +357,19 @@ export class HarnessBrain implements TaskBrain {
         ? `复用热上下文继续 pi 循环（${task.turnMode ?? 'append'}）：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`
         : `交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`,
     );
-    if (feedback) log(`修复上下文：${feedback.reason}`);
+    if (feedback) {
+      log(`修复上下文：${feedback.reason}`);
+      if (feedback.truncatedNoTools) {
+        log('检测到上一轮思考超长被截断，本轮自动降级思考强度为 low');
+      }
+    }
 
     const promptContent =
-      reusedWarmConversation && (task.turnMode === 'append' || task.turnMode === 'pivot') && !feedback
-        ? buildDeltaPrompt(promptTask, missing)
-        : buildPrompt(promptTask, feedback, missing);
+      reusedWarmConversation && feedback
+        ? buildRetryFeedbackPrompt(promptTask, feedback)
+        : reusedWarmConversation && (task.turnMode === 'append' || task.turnMode === 'pivot') && !feedback
+          ? buildDeltaPrompt(promptTask, missing)
+          : buildPrompt(promptTask, feedback, missing);
 
     this.live.set(task.id, conversation);
     try {
@@ -397,6 +419,36 @@ export class HarnessBrain implements TaskBrain {
         ...(task.workerId ? { workerId: task.workerId } : {}),
         ...usageRecord,
       });
+      const answerEntry =
+        settled.status === 'done' && settled.type === 'input'
+          ? await conversation.commit((tx) => tx.entry(settled.answer), ctx).catch(() => undefined)
+          : undefined;
+      const answer = assistantText(answerEntry);
+      const stopMeta = assistantStopMeta(answerEntry);
+      const truncatedNoTools = stopMeta.stopReason === 'length' && recordedTools === 0;
+      if (truncatedNoTools) {
+        recorder?.record({
+          kind: 'error',
+          name: '输出截断',
+          ok: false,
+          argsDigest: '模型思考或回复超出最大输出限制，未调用任何工具',
+        });
+      } else if (stopMeta.stopReason === 'error') {
+        recorder?.record({
+          kind: 'error',
+          name: '模型响应异常',
+          ok: false,
+          argsDigest: stopMeta.errorMessage || 'stopReason=error',
+        });
+      } else if (settled.status === 'done' && recordedTools === 0) {
+        recorder?.record({
+          kind: 'decision',
+          name: '纯文本回复',
+          ok: true,
+          argsDigest: answer || '未调用工具直接结束本轮',
+        });
+      }
+
       if (spent > 0 || effectiveCost > 0) {
         reportUsage?.(usageRecord);
         log(
@@ -416,21 +468,17 @@ export class HarnessBrain implements TaskBrain {
       if (settled.status !== 'done') {
         throw new Error(`pi 循环未完成（${settled.status}）`);
       }
-      // `settled.answer` is the durable assistant-entry id. Read its text from
-      // the conversation so the work task can persist the response and verify a
-      // text-output contract against the actual final answer.
-      const answerEntry =
-        settled.type === 'input'
-          ? await conversation.commit((tx) => tx.entry(settled.answer), ctx)
-          : undefined;
-      const answer = assistantText(answerEntry);
       if (task.workerId && this.deps.onWorkerConversation && typeof conversation.context === 'function') {
         const postView = await conversation.context(ctx).catch(() => undefined);
         const tail = postView?.entries[postView.entries.length - 1];
         this.deps.onWorkerConversation(task.workerId, String(conversation.id), tail ? Number(tail.id) : null);
       }
       log('pi 循环结束');
-      return answer ? { answer } : {};
+      return {
+        ...(answer ? { answer } : {}),
+        ...(truncatedNoTools ? { truncatedNoTools: true } : {}),
+        ...(stopMeta.stopReason ? { stopReason: stopMeta.stopReason } : {}),
+      };
     } catch (error) {
       // 失败也要留痕：这是事后回答"它为什么没干完"唯一的证据。
       recorder?.record({
@@ -463,20 +511,25 @@ export function buildPrompt(
     deliverable: task.deliverableSpec,
     outputs: [],
   };
+  const objectiveText = contract.objective.trim();
+  const briefText = task.brief.trim();
+  const deliverableText = contract.deliverable.trim();
   const lines = [
     `你要完成下面的交付契约。可以自由选择工具、文件和最终回答来完成，不要为了满足系统要求创建无关文件。`,
     '',
     `任务：${task.title}`,
-    `目标：${contract.objective}`,
-    ...(task.brief ? [`说明：${task.brief}`] : []),
-    `交付物：${contract.deliverable}`,
+    ...(objectiveText && objectiveText !== briefText ? [`目标：${contract.objective}`] : []),
+    ...(briefText ? [`说明：${task.brief}`] : []),
+    ...(deliverableText && deliverableText !== objectiveText && deliverableText !== briefText
+      ? [`交付物：${contract.deliverable}`]
+      : []),
     '输出：',
   ];
 
   for (const output of contract.outputs) {
     lines.push(
       output.kind === 'file'
-        ? `- 文件 ${output.path}：${output.description}`
+        ? `- 文件 ${normalizeWorkspaceRelPath(output.path)}：${output.description}`
         : `- 文本回答：${output.description}`,
     );
   }
@@ -533,6 +586,7 @@ export function buildPrompt(
     '2. 用 bash 做**离线**检查（例如 `node --check server.js`）；**不要**启动长驻服务、不要访问网络——',
     '   沙箱会阻断出网，而系统会在沙箱外用真实验收脚本启动并判定。',
     '3. 确认无误后立即结束；如果要求文本回答，把结论放在最终回答里。',
+    '4. 若声明了文件输出，请直接写入对应工作区相对路径；写较大文件或脚本时请分步落盘，避免在单次思考中输出过长导致截断。',
   );
 
   /*
@@ -572,16 +626,68 @@ export function buildPrompt(
   }
 
   if (feedback) {
-    lines.push(
-      '',
-      `注意：上一版没有通过系统验收（第 ${feedback.attempt} 次）。`,
-      `退出码：${feedback.evidence.exitCode ?? 'null'}`,
-      `stdout：${feedback.evidence.stdoutTail || '(空)'}`,
-      `stderr：${feedback.evidence.stderrTail || '(空)'}`,
-      '请修复问题后重新验证。',
-    );
+    lines.push('', `注意：上一版没有通过系统验收（第 ${feedback.attempt} 次）：${feedback.reason}`);
+    if (feedback.truncatedNoTools) {
+      lines.push('重要提示：上一轮思考超长触及输出上限被截断且未调用任何工具。请不要在思考中草拟整篇代码或文本，先调用工具探索/分步写入文件。');
+    }
+    if (feedback.existingFiles && feedback.existingFiles.length > 0) {
+      lines.push(`当前工作区已检测到以下文件（若已生成但路径不符可直接移动/重命名）：${feedback.existingFiles.join('、')}`);
+    }
+    if (feedback.evidence.command[0] !== 'opc') {
+      lines.push(
+        `退出码：${feedback.evidence.exitCode ?? 'null'}`,
+        `stdout：${feedback.evidence.stdoutTail || '(空)'}`,
+        `stderr：${feedback.evidence.stderrTail || '(空)'}`,
+      );
+    }
+    lines.push('请修复问题后重新验证。');
   }
 
+  return lines.join('\n');
+}
+
+/**
+ * Concise retry prompt used when reusing an already-populated conversation (`attempt >= 2`),
+ * avoiding re-injecting the entire cold-start contract, records, and memory pack.
+ */
+export function buildRetryFeedbackPrompt(task: WorkTask, feedback: AcceptanceFeedback): string {
+  const contract = task.contract ?? {
+    objective: task.brief,
+    deliverable: task.deliverableSpec,
+    outputs: [],
+  };
+  const lines = [
+    `上一轮（第 ${feedback.attempt} 次尝试）未通过系统验收：${feedback.reason}`,
+  ];
+  if (feedback.truncatedNoTools) {
+    lines.push(
+      '',
+      '纠偏提醒：上一轮模型思考过长触及输出上限被截断，未调用任何工具。请简短思考，立即调用工具分步写入文件或检查工作区，不要在思考中草拟整篇脚本或内容。',
+    );
+  }
+  if (contract.outputs.length > 0) {
+    lines.push('', '契约要求最终交付：');
+    for (const output of contract.outputs) {
+      lines.push(
+        output.kind === 'file'
+          ? `- 文件 ${normalizeWorkspaceRelPath(output.path)}：${output.description}`
+          : `- 文本回答：${output.description}`,
+      );
+    }
+  }
+  if (feedback.existingFiles && feedback.existingFiles.length > 0) {
+    lines.push('', `当前工作区已检测到的文件：${feedback.existingFiles.join('、')}`);
+    lines.push('如果最终产物已在上述文件中但路径/文件名与契约不一致，可直接移动或复制到声明路径，无需从头重做。');
+  }
+  if (feedback.evidence.command[0] !== 'opc') {
+    lines.push(
+      '',
+      `验收命令退出码：${feedback.evidence.exitCode ?? 'null'}`,
+      `stdout：${feedback.evidence.stdoutTail || '(空)'}`,
+      `stderr：${feedback.evidence.stderrTail || '(空)'}`,
+    );
+  }
+  lines.push('', '请直接修复上述问题并在验证无误后立即结束。');
   return lines.join('\n');
 }
 
@@ -652,4 +758,22 @@ function assistantText(entry: { model?: readonly unknown[] } | undefined): strin
     }
   }
   return parts.join('\n').trim();
+}
+
+function assistantStopMeta(entry: { model?: readonly unknown[] } | undefined): {
+  stopReason?: string;
+  errorMessage?: string;
+} {
+  if (!entry?.model) return {};
+  for (const message of entry.model) {
+    if (typeof message !== 'object' || message === null) continue;
+    const item = message as { role?: unknown; stopReason?: unknown; errorMessage?: unknown };
+    if (item.role === 'assistant') {
+      return {
+        ...(typeof item.stopReason === 'string' ? { stopReason: item.stopReason } : {}),
+        ...(typeof item.errorMessage === 'string' ? { errorMessage: item.errorMessage } : {}),
+      };
+    }
+  }
+  return {};
 }

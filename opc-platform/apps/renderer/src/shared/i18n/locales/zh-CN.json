@@ -1991,5 +1991,104 @@
         "instruction": "到点提醒我处理这项约定任务，并附上相关的背景提示。"
       }
     }
+  },
+  "observatory": {
+    "title": "执行透视",
+    "toggleHint": "打开或收起执行透视 (Ctrl+Shift+I)",
+    "closeHint": "收起执行透视 (Esc)",
+    "refresh": "刷新状态",
+    "toggleDetail": "展开或收起详情",
+    "tabs": {
+      "workers": "Workers",
+      "router": "Router"
+    },
+    "filter": {
+      "all": "全部",
+      "active": "活跃",
+      "blocked": "阻塞"
+    },
+    "threadPicker": {
+      "blockedGroup": "待处理阻塞",
+      "activeGroup": "正在执行",
+      "recentGroup": "最近工作线"
+    },
+    "unassigned": "未分配执行体",
+    "noThreads": "暂无工作线",
+    "selectThreadHint": "选择一条工作线以查看执行体内部详情",
+    "openWorkspace": "在文件管理器中打开工作区",
+    "workspace": "工作区",
+    "abort": "中止",
+    "kpi": {
+      "status": "状态",
+      "elapsed": "耗时",
+      "cost": "用量与费用"
+    },
+    "subtabs": {
+      "trace": "执行流",
+      "contract": "契约",
+      "artifacts": "产物"
+    },
+    "trace": {
+      "keyOnly": "仅关键",
+      "allSteps": "全部",
+      "burstLabel": "探索与读取 · {{count}} 步",
+      "turnSettlement": "本轮结算",
+      "noToolCallsInRound": "该轮未调用任何工具（可能模型思考超出输出上限，或仅返回文本）",
+      "roundsLabel": "轮次",
+      "roundTooltipTitle": "第 {{index}} 轮",
+      "roundTooltipSteps": "{{count}} 步",
+      "turnMode": {
+        "initial": "初始",
+        "append": "追加",
+        "pivot": "转向",
+        "rework": "重做"
+      }
+    },
+    "prunedSteps": "略去 {{count}} 步",
+    "workerLiveRunning": "执行体正在运行，实时动作将自动同步…",
+    "noTrace": "暂无动作轨迹记录",
+    "noTaskYet": "该工作线尚未派发执行任务",
+    "revealArtifact": "定位",
+    "noArtifacts": "尚未产出交付文件",
+    "blocker": {
+      "approvalTitle": "等待权限放行",
+      "allowInTask": "允许（本任务内）",
+      "deny": "拒绝",
+      "questionTitle": "执行体正在请示",
+      "questionPlaceholder": "直接回复执行体以解除阻塞…",
+      "waitingChildren": "正在等待 {{count}} 个子任务完成",
+      "errorTitle": "执行失败或未通过验收"
+    },
+    "contract": {
+      "objective": "任务目标",
+      "deliverable": "预期交付",
+      "workerAnswer": "执行体原始回复",
+      "attachments": "输入附件（inputs/）",
+      "steps": "里程碑步骤",
+      "systemSteps": "系统记录步骤 ({{count}})",
+      "acceptance": "系统验收"
+    },
+    "router": {
+      "phase": {
+        "idle": "空闲",
+        "thinking": "正在思考",
+        "tool": "正在调用工具",
+        "compacting": "正在压缩上下文",
+        "error": "异常"
+      },
+      "kind": {
+        "event_batch": "输入批次",
+        "tool": "内部工具",
+        "turn": "轮次完成",
+        "lifecycle": "生命周期"
+      },
+      "contextWindow": "Router 上下文窗口",
+      "contextCounts": "{{entries}} 条 · 已裁 {{pruned}}",
+      "compact": "压缩",
+      "timelineTitle": "Router 内部决策时间线",
+      "turnToolsCount": "{{count}} 步",
+      "noTrace": "本轮会话启动以来暂无 Router 内部动作记录",
+      "inspectWorker": "查看 Worker"
+    }
   }
 }

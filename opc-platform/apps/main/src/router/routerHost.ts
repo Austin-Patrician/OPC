@@ -6,7 +6,9 @@ import type {
   ChatAttachmentRef,
   ChatContentBlock,
   ModelRef,
+  ObservatoryRouterEvent,
   RouterContextStats,
+  RouterObservatoryState,
   RouterResponse,
   TaskContract,
   TriagePolicy,
@@ -28,6 +30,7 @@ import type { ModelConfigService } from "../models/modelConfigService";
 import { Router } from "./router";
 import { pickRouterModel } from "./routerModel";
 import { RouterSession } from "./routerSession";
+import { createRouterTraceExtension, RouterTraceCollector } from "./routerTrace";
 import { openRouterStorage } from "./routerStorage";
 import { createRouterTools, type LineSummary } from "./routerTools";
 import type { AssistantToolsService } from "../assistant/assistantTools";
@@ -174,6 +177,10 @@ export interface RouterHost {
   resetContext: (
     options?: string | { handoff?: string; reflectMemory?: boolean },
   ) => Promise<{ ok: boolean; reason?: string }>;
+  observatoryState: () => Promise<RouterObservatoryState>;
+  subscribeObservatory: (
+    listener: (event: ObservatoryRouterEvent) => void,
+  ) => () => void;
 }
 
 export function shouldRepairMissingReply(
@@ -186,6 +193,7 @@ export function shouldRepairMissingReply(
 export function createRouterHost(deps: RouterHostDeps): RouterHost {
   const threads = deps.threads ?? new ThreadRepository(deps.db);
   const tasks = new TaskRepository(deps.db);
+  const traceCollector = new RouterTraceCollector();
 
   /**
    * Router 的模型：显式配的 `router` 一档优先，没配就跟随执行体的默认模型。
@@ -240,11 +248,15 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       deps.streamReply?.({ type: "delta", text });
     },
     onToolRound: () => {
+      traceCollector.setPhase("thinking");
       deps.onActivity?.("thinking");
       deps.streamReply?.({ type: "clear" });
     },
-    onTurn: ({ ok }) => {
-      if (!ok) deps.onActivity?.("error");
+    onTurn: ({ ok, error }) => {
+      if (!ok) {
+        traceCollector.setPhase("error", { error: error ?? "Router turn failed" });
+        deps.onActivity?.("error");
+      }
     },
     onUsage: (usage) => {
       const providerCost = usage.providerCostUsd;
@@ -652,6 +664,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
 
   function registry(): Registry {
     const built = createRegistry();
+    built.install(createRouterTraceExtension(traceCollector, () => session.busy));
     built.install(
       createRouterTools({
         openLine: (input) => {
@@ -875,6 +888,22 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       pendingResponse = null;
       openedLineThisTurn = false;
       handledAsyncActionThisTurn = false;
+      const turnStartedAt = Date.now();
+      const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? "";
+      traceCollector.setPhase("thinking", { error: null });
+      traceCollector.record({
+        kind: "event_batch",
+        name: "deliver",
+        summary: firstLine || `输入批次 (${text.length} 字符)`,
+        detail: [
+          context.attachments.length > 0 ? `Attachments: ${context.attachments.length}` : "",
+          targets.length > 0 ? `Targets: ${targets.map((t) => t.address).join(", ")}` : "",
+          text.slice(0, 900),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        ok: true,
+      });
       try {
         await session.deliver(text);
         if (
@@ -889,6 +918,14 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         }
         if (!pendingResponse && (openedLineThisTurn || handledAsyncActionThisTurn)) {
           deps.streamReply?.({ type: "finish" });
+          traceCollector.setPhase("idle", { error: null });
+          traceCollector.record({
+            kind: "turn",
+            name: "dispatch_complete",
+            summary: openedLineThisTurn ? "已开启新工作线并在后台推进" : "已调度后台工作线",
+            ok: true,
+            ms: Date.now() - turnStartedAt,
+          });
           return;
         }
         const response = pendingResponse as RouterResponse | null;
@@ -910,6 +947,14 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           });
           deps.streamReply?.({ type: "finish" });
           deps.onActivity?.("error");
+          traceCollector.setPhase("error", { error: "Router 未提交结构化回复" });
+          traceCollector.record({
+            kind: "turn",
+            name: "protocol_error",
+            summary: "Router 两轮都没有提交结构化最终回复",
+            ok: false,
+            ms: Date.now() - turnStartedAt,
+          });
           return;
         }
         const target = response.replyTarget
@@ -933,6 +978,25 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           deps.streamReply?.({ type: "finish" });
           deps.onActivity?.("completed");
         }
+        traceCollector.setPhase("idle", { error: null });
+        traceCollector.record({
+          kind: "turn",
+          name: "reply_complete",
+          summary: `已提交回复 (${response.blocks.length} blocks)`,
+          ok: true,
+          ms: Date.now() - turnStartedAt,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        traceCollector.setPhase("error", { error: message });
+        traceCollector.record({
+          kind: "turn",
+          name: "turn_error",
+          summary: message,
+          ok: false,
+          ms: Date.now() - turnStartedAt,
+        });
+        throw error;
       } finally {
         activeReplyTargets = [];
         activeInputAttachments = [];
@@ -977,6 +1041,13 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           : {}),
       });
       if (!result.ok) {
+        traceCollector.record({
+          kind: "lifecycle",
+          name: "passthrough",
+          summary: `${intent.thread.title} → 退回 Router (${result.reason ?? "failed"})`,
+          threadId: intent.thread.id,
+          ok: false,
+        });
         console.warn(
           "[router] 直通失败，退回 Slow Path",
           intent.event.id,
@@ -984,20 +1055,74 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         );
         return false;
       }
+      traceCollector.record({
+        kind: "lifecycle",
+        name: "passthrough",
+        summary: `直通工作线「${intent.thread.title}」`,
+        threadId: intent.thread.id,
+        ok: true,
+      });
       return true;
     },
   });
+
+  const buildObservatoryState = async (): Promise<RouterObservatoryState> => {
+    const contextStats = await session.contextStats();
+    const phaseState = traceCollector.getPhaseState();
+    const currentModel = model();
+    const resolvedPhase =
+      phaseState.phase === "idle" && session.busy
+        ? "thinking"
+        : contextStats.compacting
+          ? "compacting"
+          : phaseState.phase;
+    return {
+      phase: resolvedPhase,
+      ...(phaseState.activeTool ? { activeTool: phaseState.activeTool } : {}),
+      modelLabel: currentModel
+        ? `${currentModel.providerId}/${currentModel.modelId}`
+        : "未配置",
+      contextStats,
+      lastError: phaseState.lastError ?? session.error,
+      trace: traceCollector.list(),
+    };
+  };
 
   return {
     router,
     session,
     tick: () => router.tick(),
     settle: () => session.settle(),
-    interrupt: (reason, options) => router.interrupt(reason, options),
+    interrupt: async (reason, options) => {
+      const ok = await router.interrupt(reason, options);
+      traceCollector.setPhase("idle", { error: null });
+      traceCollector.record({
+        kind: "lifecycle",
+        name: "interrupt",
+        summary: reason ? `中断当前轮次：${reason}` : "中断当前轮次",
+        ok,
+      });
+      return ok;
+    },
     contextStats: () => session.contextStats(),
     compactContext: async () => {
-      await deps.memoryReflector?.flushBeforeCompact();
-      return session.compactNow();
+      traceCollector.setPhase("compacting");
+      try {
+        await deps.memoryReflector?.flushBeforeCompact();
+        const res = await session.compactNow();
+        traceCollector.setPhase("idle", { error: null });
+        traceCollector.record({
+          kind: "lifecycle",
+          name: "compact",
+          summary: res.ok ? "Router 上下文已压缩" : `压缩跳过：${res.reason ?? "无需压缩"}`,
+          ok: res.ok,
+        });
+        return res;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        traceCollector.setPhase("error", { error: message });
+        throw error;
+      }
     },
     resetContext: async (options) => {
       const normalized =
@@ -1010,8 +1135,18 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
       if (normalized.reflectMemory) {
         await deps.memoryReflector?.flushBeforeCompact();
       }
-      return session.resetTopic(normalized.handoff);
+      const res = await session.resetTopic(normalized.handoff);
+      traceCollector.setPhase("idle", { error: null });
+      traceCollector.record({
+        kind: "lifecycle",
+        name: "reset",
+        summary: res.ok ? "Router 会话已重置" : `重置失败：${res.reason ?? ""}`,
+        ok: res.ok,
+      });
+      return res;
     },
+    observatoryState: buildObservatoryState,
+    subscribeObservatory: (listener) => traceCollector.subscribe(listener),
   };
 }
 

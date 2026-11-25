@@ -82,6 +82,7 @@ import { DesktopBroker } from './desktop/broker';
 import { AssistantToolsService } from './assistant/assistantTools';
 import { UsageRepository } from './data/usageRepository';
 import { RouterScheduleRepository } from './data/routerScheduleRepository';
+import { ObservatoryService } from './observatory/observatoryService';
 
 /** §7.5: idle → cooling (no auto replies); much older → archived + consolidated. */
 const IDLE_COOLING_MS = 60 * 60 * 1000;
@@ -1013,6 +1014,16 @@ async function bootstrap(): Promise<void> {
         };
       },
     },
+    observatory: new ObservatoryService({
+      work,
+      threads,
+      models: modelConfig,
+      workspaceRoot: appPaths.workspaceDir,
+      getRouterState: () => goalRouter.observatoryState(),
+      openPath: (absPath) => shell.openPath(absPath),
+      showItemInFolder: (absPath) => shell.showItemInFolder(absPath),
+    }),
+    subscribeObservatoryRouter: (listener) => goalRouter.subscribeObservatory(listener),
   });
 
   // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。

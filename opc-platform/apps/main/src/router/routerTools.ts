@@ -277,7 +277,7 @@ export function createRouterTools(deps: RouterToolDeps) {
         parameters: Type.Object({
           contract: Type.Object({
             objective: Type.String({ description: '要解决的问题或要达成的目标。' }),
-            deliverable: Type.String({ description: '完成后必须交付什么。' }),
+            deliverable: Type.String({ description: '完成后交付物的一句话概括，简洁明了，不要照抄 objective 全文。' }),
             outputs: Type.Optional(
               Type.Array(
                 Type.Union([
@@ -287,11 +287,18 @@ export function createRouterTools(deps: RouterToolDeps) {
                   }),
                   Type.Object({
                     kind: Type.Literal('file'),
-                    description: Type.String({ description: '文件交付物的内容和用途。' }),
-                    path: Type.String({ description: '工作区内的相对路径。' }),
+                    description: Type.String({ description: '最终文件交付物的内容和用途。' }),
+                    path: Type.String({
+                      description:
+                        '工作区内的 POSIX 相对路径（必须用 / 分隔）；推荐统一放在 output/ 目录下（不要混用 output/ 与 outputs/）。',
+                    }),
                   }),
                 ]),
-                { minItems: 1, description: '可选：声明需要验收的文本或文件输出；省略时默认接受文本结论。' },
+                {
+                  minItems: 1,
+                  description:
+                    '可选：声明需要验收的最终文本或文件输出；只为最终交付物声明 file（不要把中间脚本或临时文件列入），省略时默认接受文本结论。',
+                },
               ),
             ),
             attachments: Type.Optional(Type.Array(Type.Object({
@@ -468,10 +475,10 @@ export function createRouterTools(deps: RouterToolDeps) {
                 Type.Object({
                   kind: Type.Literal('file'),
                   description: Type.String(),
-                  path: Type.String(),
+                  path: Type.String({ description: '工作区内的 POSIX 相对路径（用 / 分隔，推荐统一放在 output/ 目录）。' }),
                 }),
               ]),
-              { description: '可选：同步更新后的交付物清单。' },
+              { description: '可选：同步更新后的最终交付物清单。' },
             ),
           ),
         }),
@@ -517,9 +524,13 @@ export function createRouterTools(deps: RouterToolDeps) {
                   Type.Array(
                     Type.Union([
                       Type.Object({ kind: Type.Literal('text'), description: Type.String() }),
-                      Type.Object({ kind: Type.Literal('file'), description: Type.String(), path: Type.String() }),
+                      Type.Object({
+                        kind: Type.Literal('file'),
+                        description: Type.String(),
+                        path: Type.String({ description: '工作区内的 POSIX 相对路径（用 / 分隔，推荐统一放在 output/ 目录）。' }),
+                      }),
                     ]),
-                    { description: '可选：更新后的交付物清单。' },
+                    { description: '可选：更新后的最终交付物清单。' },
                   ),
                 ),
                 acceptance: Type.Optional(

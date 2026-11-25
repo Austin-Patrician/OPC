@@ -48,7 +48,29 @@ interface BuiltinChatLike {
   id: string;
   input?: readonly string[];
   reasoning?: boolean;
+  maxTokens?: number;
   cost?: BuiltinCostLike;
+}
+
+/**
+ * Resolves output token budget (`maxTokens`). Reasoning models share `maxTokens`
+ * between thinking and final/tool output tokens, so capping them at 8192 starves
+ * tool calls whenever thinking runs long.
+ */
+export function resolveModelMaxTokens(input: {
+  contextWindow?: number;
+  reasoning?: boolean;
+  builtinMaxTokens?: number;
+}): number {
+  const contextWindow = input.contextWindow && input.contextWindow > 0 ? input.contextWindow : 128_000;
+  const hardCap = Math.max(4_096, Math.floor(contextWindow / 2));
+  if (input.builtinMaxTokens && input.builtinMaxTokens > 0) {
+    return Math.min(input.builtinMaxTokens, hardCap);
+  }
+  const target = input.reasoning
+    ? Math.min(32_768, Math.max(16_384, Math.round(contextWindow / 4)))
+    : Math.min(16_384, Math.round(contextWindow / 8));
+  return Math.min(Math.max(4_096, target), hardCap);
 }
 
 function hasPositiveBuiltinCost(cost?: BuiltinCostLike): boolean {
@@ -289,7 +311,11 @@ export class ModelRuntime {
           cost: resolvedCost,
           reasoning,
           contextWindow: model.contextWindow ?? 128_000,
-          maxTokens: Math.min(8_192, Math.round((model.contextWindow ?? 128_000) / 8)),
+          maxTokens: resolveModelMaxTokens({
+            contextWindow: model.contextWindow,
+            reasoning,
+            builtinMaxTokens: builtin?.maxTokens ?? known?.maxTokens,
+          }),
         };
       });
 
@@ -448,14 +474,14 @@ function findBuiltinLike(models: readonly BuiltinChatLike[], modelId: string) {
 
 /** id → capability & optional catalog price, across every built-in provider, built once per process. */
 let globalCapabilities:
-  | Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>
+  | Map<string, { vision: boolean; reasoning: boolean; maxTokens?: number; cost?: BuiltinCostLike }>
   | null = null;
 
 async function globalBuiltinCapabilities(): Promise<
-  Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>
+  Map<string, { vision: boolean; reasoning: boolean; maxTokens?: number; cost?: BuiltinCostLike }>
 > {
   if (globalCapabilities) return globalCapabilities;
-  const map = new Map<string, { vision: boolean; reasoning: boolean; cost?: BuiltinCostLike }>();
+  const map = new Map<string, { vision: boolean; reasoning: boolean; maxTokens?: number; cost?: BuiltinCostLike }>();
   try {
     const { builtinProviders, getBuiltinModels } = await import('@earendil-works/pi-ai/providers/all');
     for (const provider of builtinProviders()) {
@@ -465,14 +491,18 @@ async function globalBuiltinCapabilities(): Promise<
         if (!key) continue;
         const existing = map.get(key);
         const cost = hasPositiveBuiltinCost(model.cost) ? model.cost : undefined;
+        const maxTokens =
+          typeof model.maxTokens === 'number' && model.maxTokens > 0 ? model.maxTokens : undefined;
         if (!existing) {
           map.set(key, {
             vision: model.input?.includes('image') === true,
             reasoning: model.reasoning === true,
+            ...(maxTokens ? { maxTokens } : {}),
             ...(cost ? { cost } : {}),
           });
-        } else if (!existing.cost && cost) {
-          existing.cost = cost;
+        } else {
+          if (!existing.cost && cost) existing.cost = cost;
+          if (!existing.maxTokens && maxTokens) existing.maxTokens = maxTokens;
         }
       }
     }

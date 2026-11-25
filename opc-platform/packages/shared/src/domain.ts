@@ -1505,3 +1505,135 @@ export interface ShellExecutionStatus {
 }
 
 export type ApprovalPermitScope = 'once' | 'task' | 'always';
+
+/** ── Execution Observatory Drawer (internal Worker & Router telemetry) ──── */
+
+export type ObservatoryBlocker =
+  | {
+      kind: 'approval';
+      reportId: string;
+      title: string;
+      body: string;
+      tool?: string;
+      createdAt: number;
+    }
+  | {
+      kind: 'question';
+      reportId: string;
+      title: string;
+      body: string;
+      createdAt: number;
+    }
+  | {
+      kind: 'waiting_children';
+      children: Array<{ id: string; title: string; status: TaskStatus }>;
+    }
+  | {
+      kind: 'error';
+      message: string;
+      exitCode?: number | null;
+      stderrTail?: string;
+    };
+
+export interface ObservatoryThreadTaskSummary {
+  id: string;
+  title: string;
+  turnMode?: 'initial' | 'append' | 'pivot' | 'rework';
+  status: TaskStatus;
+  createdAt: number;
+  updatedAt: number;
+  traceCount: number;
+  tokensUsed: number;
+}
+
+export interface ObservatoryThreadItem {
+  threadId: string;
+  title: string;
+  goal: string;
+  livingGoal?: string | null;
+  state: ThreadState;
+  source: TriggerSource;
+  lastActivityAt: number;
+  spentTokens: number;
+  worker?: {
+    id: string;
+    name: string;
+    template: WorkerTemplate;
+    status: WorkerStatus;
+    modelLabel: string;
+  };
+  latestTask?: {
+    id: string;
+    title: string;
+    status: TaskStatus;
+    startedAt?: number;
+    finishedAt?: number;
+    updatedAt: number;
+    totalTokens: number;
+    costUsd: number;
+    artifactCount: number;
+    traceCount: number;
+    lastTool?: {
+      name: string;
+      argsDigest: string;
+      ok: boolean | null;
+      at: number;
+    };
+  };
+  tasks?: ObservatoryThreadTaskSummary[];
+  blocker: ObservatoryBlocker | null;
+}
+
+export interface ObservatoryTaskDetail {
+  task: WorkTask;
+  trace: TaskTrace[];
+  children: WorkTask[];
+  blocker: ObservatoryBlocker | null;
+  workspaceAbsPath: string | null;
+  modelLabel: string;
+}
+
+export type RouterTraceKind = 'event_batch' | 'tool' | 'turn' | 'lifecycle';
+
+export interface RouterTraceEntry {
+  id: string;
+  seq: number;
+  at: number;
+  kind: RouterTraceKind;
+  name: string;
+  summary: string;
+  detail?: string;
+  ok: boolean | null;
+  ms?: number;
+  threadId?: string;
+}
+
+export type RouterObservatoryPhase = 'idle' | 'thinking' | 'tool' | 'compacting' | 'error';
+
+export interface RouterObservatoryState {
+  phase: RouterObservatoryPhase;
+  activeTool?: string;
+  modelLabel: string;
+  contextStats: RouterContextStats;
+  lastError: string | null;
+  trace: RouterTraceEntry[];
+}
+
+export interface ObservatorySnapshot {
+  generatedAt: number;
+  activeCount: number;
+  blockedCount: number;
+  errorCount: number;
+  router: RouterObservatoryState;
+  threads: ObservatoryThreadItem[];
+}
+
+export type ObservatoryRouterEvent =
+  | { type: 'state'; state: RouterObservatoryState }
+  | {
+      type: 'trace';
+      entry: RouterTraceEntry;
+      phase: RouterObservatoryPhase;
+      activeTool?: string;
+    };
+

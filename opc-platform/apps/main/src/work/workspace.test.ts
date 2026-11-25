@@ -3,7 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ChatAttachmentRef } from '@opc/shared/domain';
 import { afterEach, describe, expect, it } from 'vitest';
-import { listWorkspaceFiles, stageAttachmentsToWorkspace } from './workspace';
+import { listWorkspaceFiles, normalizeWorkspaceRelPath, stageAttachmentsToWorkspace } from './workspace';
+
+describe('normalizeWorkspaceRelPath', () => {
+  it('将 Windows 反斜杠和前缀规范化为 POSIX 相对路径', () => {
+    expect(normalizeWorkspaceRelPath('outputs\\张浮生_中文简历.pdf')).toBe('outputs/张浮生_中文简历.pdf');
+    expect(normalizeWorkspaceRelPath('./nested\\a//b.txt')).toBe('nested/a/b.txt');
+    expect(normalizeWorkspaceRelPath('/output/result.pdf/')).toBe('output/result.pdf');
+  });
+});
 
 describe('stageAttachmentsToWorkspace and listWorkspaceFiles', () => {
   const dirs: string[] = [];
@@ -55,5 +63,19 @@ describe('stageAttachmentsToWorkspace and listWorkspaceFiles', () => {
 
     // `listWorkspaceFiles` excludes top-level `inputs/` so input attachments are not treated as deliverables.
     expect(listWorkspaceFiles(workspace).map((file) => file.relPath)).toEqual(['translated.docx']);
+  });
+
+  it('listWorkspaceFiles 对嵌套子目录返回 POSIX / 分隔路径', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'opc-nested-rel-'));
+    dirs.push(base);
+    const workspace = path.join(base, 'workspace');
+    fs.mkdirSync(path.join(workspace, 'output'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, 'nested', 'a'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'output', '张浮生_中文简历.pdf'), 'pdf-bytes');
+    fs.writeFileSync(path.join(workspace, 'nested', 'a', 'b.txt'), 'hello');
+
+    const relPaths = listWorkspaceFiles(workspace).map((file) => file.relPath).sort();
+    expect(relPaths).toEqual(['nested/a/b.txt', 'output/张浮生_中文简历.pdf']);
+    expect(relPaths.every((p) => !p.includes('\\'))).toBe(true);
   });
 });
