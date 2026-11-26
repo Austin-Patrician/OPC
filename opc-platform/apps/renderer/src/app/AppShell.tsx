@@ -54,7 +54,10 @@ export function AppShell() {
 
   return (
     <div className="buddy-viewport relative isolate flex h-full w-full overflow-hidden">
-      <BackgroundLayer kind={background.kind} url={background.url} />
+      <BackgroundLayer
+        background={background}
+        isOpaqueRoute={!isChat && !location.pathname.startsWith('/settings')}
+      />
       <div className="buddy-desktop relative z-10 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
         <div className="buddy-layout relative flex min-h-0 flex-1 overflow-hidden">
           <NavRail />

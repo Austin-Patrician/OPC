@@ -56,6 +56,8 @@ import type {
   ObservatoryRouterEvent,
   ObservatorySnapshot,
   ObservatoryTaskDetail,
+  WallpaperAsset,
+  WallpaperPowerState,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
@@ -625,6 +627,40 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.observatory.routerEvent, handler);
       return () => {
         ipcRenderer.off(IPC.observatory.routerEvent, handler);
+      };
+    },
+  },
+  wallpaper: {
+    choose: () => ipcRenderer.invoke(IPC.wallpaper.choose),
+    importFile: (sourcePath: string) => ipcRenderer.invoke(IPC.wallpaper.importFile, sourcePath),
+    importDroppedFile: (file: File) => {
+      let sourcePath: string;
+      try {
+        sourcePath = webUtils.getPathForFile(file);
+      } catch {
+        sourcePath = (file as File & { path?: string }).path ?? "";
+      }
+      if (!sourcePath) {
+        return Promise.resolve({ ok: false, error: "无法读取拖拽文件的本地路径。" });
+      }
+      return ipcRenderer.invoke(IPC.wallpaper.importFile, sourcePath);
+    },
+    savePoster: (input: {
+      filename: string;
+      dataUrl: string;
+      width?: number;
+      height?: number;
+      durationSec?: number;
+    }) => ipcRenderer.invoke(IPC.wallpaper.savePoster, input) as Promise<WallpaperAsset | null>,
+    getCurrent: () => ipcRenderer.invoke(IPC.wallpaper.getCurrent) as Promise<WallpaperAsset | null>,
+    clear: () => ipcRenderer.invoke(IPC.wallpaper.clear) as Promise<{ ok: boolean }>,
+    getPowerState: () =>
+      ipcRenderer.invoke(IPC.wallpaper.getPowerState) as Promise<WallpaperPowerState>,
+    onPowerState: (listener: (state: WallpaperPowerState) => void) => {
+      const handler = (_event: IpcRendererEvent, state: WallpaperPowerState) => listener(state);
+      ipcRenderer.on(IPC.wallpaper.powerStateEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.wallpaper.powerStateEvent, handler);
       };
     },
   },

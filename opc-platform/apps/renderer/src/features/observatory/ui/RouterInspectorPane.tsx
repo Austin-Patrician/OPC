@@ -72,7 +72,7 @@ function RouterStepRow({
             isError ? 'bg-danger/8 hover:bg-danger/12' : 'hover:bg-surface-hover/65'
           }`}
         >
-          <span className="absolute left-0 top-[5px] flex h-[16px] w-[16px] items-center justify-center rounded bg-panel">
+          <span className="observatory-rail-node absolute left-0 top-[5px] flex h-[16px] w-[16px] items-center justify-center rounded bg-panel">
             <ObservatoryIcon
               visual={visual}
               size={13.5}

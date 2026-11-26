@@ -19,6 +19,8 @@ export interface AppPaths {
    * directory is a supported operation — see `apps/main/src/cache/`.
    */
   cacheDir: string;
+  /** Disk-backed user wallpaper media (`<userData>/wallpapers`). */
+  wallpapersDir?: string;
 }
 
 export function resolveAppPaths(): AppPaths {
@@ -32,5 +34,6 @@ export function resolveAppPaths(): AppPaths {
     logsDir: path.join(userData, 'logs'),
     probeDir: path.join(userData, 'diagnostics'),
     cacheDir: path.join(userData, 'cache'),
+    wallpapersDir: path.join(userData, 'wallpapers'),
   };
 }

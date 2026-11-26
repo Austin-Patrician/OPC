@@ -1639,4 +1639,30 @@ export type ObservatoryRouterEvent =
 
 export { partitionTaskArtifacts, type PartitionedArtifacts } from './artifacts';
 
+/** ── High-fidelity System Wallpaper ─────────────────────────────────────── */
+
+export type WallpaperMediaKind = 'image' | 'animated-image' | 'video';
+
+export interface WallpaperAsset {
+  filename: string;
+  posterFilename?: string;
+  originalName: string;
+  mediaKind: WallpaperMediaKind;
+  mimeType: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  importedAt: number;
+}
+
+export interface WallpaperPowerState {
+  windowVisible: boolean;
+  windowFocused: boolean;
+  windowMinimized: boolean;
+  systemSuspended: boolean;
+  onBattery: boolean;
+}
+
+
 

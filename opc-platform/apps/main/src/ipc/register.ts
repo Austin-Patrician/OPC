@@ -31,6 +31,7 @@ import type {
   RouterScheduleDraft,
   RouterSchedulePatch,
   ObservatoryRouterEvent,
+  WallpaperPowerState,
 } from "@opc/shared/domain";
 import {
   MAX_CHAT_ATTACHMENT_BYTES,
@@ -96,6 +97,7 @@ import type { AssistantToolsService } from "../assistant/assistantTools";
 import type { UsageRepository } from "../data/usageRepository";
 import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
 import type { ObservatoryService } from "../observatory/observatoryService";
+import type { WallpaperService } from "../appearance/wallpaperService";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -180,6 +182,11 @@ interface RegisterOptions {
   subscribeObservatoryRouter?: (
     listener: (event: ObservatoryRouterEvent) => void,
   ) => () => void;
+  wallpaper?: WallpaperService;
+  getWallpaperPowerState?: () => WallpaperPowerState;
+  subscribeWallpaperPowerState?: (
+    listener: (state: WallpaperPowerState) => void,
+  ) => () => void;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -219,6 +226,9 @@ export function registerIpc({
   observatory,
   docPreview,
   subscribeObservatoryRouter,
+  wallpaper,
+  getWallpaperPowerState,
+  subscribeWallpaperPowerState,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -267,6 +277,12 @@ export function registerIpc({
   const unsubscribeObservatoryRouter = subscribeObservatoryRouter
     ? subscribeObservatoryRouter((event) => {
         broadcast(IPC.observatory.routerEvent, event);
+      })
+    : () => undefined;
+
+  const unsubscribeWallpaperPower = subscribeWallpaperPowerState
+    ? subscribeWallpaperPowerState((state) => {
+        broadcast(IPC.wallpaper.powerStateEvent, state);
       })
     : () => undefined;
 
@@ -1663,6 +1679,47 @@ export function registerIpc({
     );
   }
 
+  if (wallpaper) {
+    ipcMain.handle(IPC.wallpaper.choose, (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      return wallpaper.choose(window);
+    });
+    ipcMain.handle(IPC.wallpaper.importFile, (_event, sourcePath: unknown) => {
+      if (typeof sourcePath !== "string" || !sourcePath.trim()) {
+        throw new Error("wallpaper:importFile 需要文件路径");
+      }
+      return wallpaper.importFromPath(sourcePath);
+    });
+    ipcMain.handle(IPC.wallpaper.savePoster, (_event, raw: unknown) => {
+      if (typeof raw !== "object" || raw === null) {
+        throw new Error("wallpaper:savePoster 参数非法");
+      }
+      const input = raw as Record<string, unknown>;
+      if (typeof input.filename !== "string" || typeof input.dataUrl !== "string") {
+        throw new Error("wallpaper:savePoster 参数缺少 filename/dataUrl");
+      }
+      return wallpaper.savePoster({
+        filename: input.filename,
+        dataUrl: input.dataUrl,
+        ...(typeof input.width === "number" ? { width: input.width } : {}),
+        ...(typeof input.height === "number" ? { height: input.height } : {}),
+        ...(typeof input.durationSec === "number" ? { durationSec: input.durationSec } : {}),
+      });
+    });
+    ipcMain.handle(IPC.wallpaper.getCurrent, () => wallpaper.getCurrent());
+    ipcMain.handle(IPC.wallpaper.clear, () => wallpaper.clear());
+  }
+
+  ipcMain.handle(IPC.wallpaper.getPowerState, (): WallpaperPowerState =>
+    getWallpaperPowerState?.() ?? {
+      windowVisible: true,
+      windowFocused: true,
+      windowMinimized: false,
+      systemSuspended: false,
+      onBattery: false,
+    },
+  );
+
   return () => {
     for (const channel of Object.values(IPC.models))
       ipcMain.removeHandler(channel);
@@ -1673,6 +1730,7 @@ export function registerIpc({
     unsubscribeSchedules();
     unsubscribeWorkProgress();
     unsubscribeObservatoryRouter();
+    unsubscribeWallpaperPower();
     ipcMain.removeHandler(IPC.billing.get);
     for (const channel of [IPC.router.listSchedules, IPC.router.createSchedule, IPC.router.updateSchedule,
       IPC.router.cancelSchedule, IPC.router.listScheduleOccurrences]) ipcMain.removeHandler(channel);
@@ -1714,6 +1772,16 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.observatory.taskDetail);
     ipcMain.removeHandler(IPC.observatory.openWorkspace);
     ipcMain.removeHandler(IPC.observatory.revealArtifact);
+    for (const channel of [
+      IPC.wallpaper.choose,
+      IPC.wallpaper.importFile,
+      IPC.wallpaper.savePoster,
+      IPC.wallpaper.getCurrent,
+      IPC.wallpaper.clear,
+      IPC.wallpaper.getPowerState,
+    ]) {
+      ipcMain.removeHandler(channel);
+    }
   };
 }
 

@@ -54,6 +54,8 @@ import type {
   ObservatoryRouterEvent,
   ObservatorySnapshot,
   ObservatoryTaskDetail,
+  WallpaperAsset,
+  WallpaperPowerState,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -321,6 +323,15 @@ export const IPC = {
     openWorkspace: "observatory:openWorkspace",
     revealArtifact: "observatory:revealArtifact",
     routerEvent: "observatory:routerEvent",
+  },
+  wallpaper: {
+    choose: "wallpaper:choose",
+    importFile: "wallpaper:importFile",
+    savePoster: "wallpaper:savePoster",
+    getCurrent: "wallpaper:getCurrent",
+    clear: "wallpaper:clear",
+    getPowerState: "wallpaper:getPowerState",
+    powerStateEvent: "wallpaper:powerState",
   },
 } as const;
 
@@ -1291,6 +1302,30 @@ export interface ObservatoryBridge {
   onRouterEvent(listener: (event: ObservatoryRouterEvent) => void): () => void;
 }
 
+export interface WallpaperImportResult {
+  ok: boolean;
+  canceled?: boolean;
+  asset?: WallpaperAsset;
+  error?: string;
+}
+
+export interface WallpaperBridge {
+  choose(): Promise<WallpaperImportResult>;
+  importFile(sourcePath: string): Promise<WallpaperImportResult>;
+  importDroppedFile(file: File): Promise<WallpaperImportResult>;
+  savePoster(input: {
+    filename: string;
+    dataUrl: string;
+    width?: number;
+    height?: number;
+    durationSec?: number;
+  }): Promise<WallpaperAsset | null>;
+  getCurrent(): Promise<WallpaperAsset | null>;
+  clear(): Promise<{ ok: boolean }>;
+  getPowerState(): Promise<WallpaperPowerState>;
+  onPowerState(listener: (state: WallpaperPowerState) => void): () => void;
+}
+
 export interface LocalPathActionResult {
   ok: boolean;
   blockedExecutable?: boolean;
@@ -1341,6 +1376,7 @@ export interface OpcBridge {
   desktop: DesktopBridge;
   watchdog: WatchdogBridge;
   observatory: ObservatoryBridge;
+  wallpaper: WallpaperBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };

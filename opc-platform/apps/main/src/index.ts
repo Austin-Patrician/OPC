@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, session, shell, utilityProcess } from 'electron';
+import { app, BrowserWindow, powerMonitor, session, shell, utilityProcess } from 'electron';
 import { isSafeExternalUrl } from './system/localPathActions';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
@@ -27,7 +27,7 @@ import { VideoService } from './models/videoService';
 import { ModelConfigService } from './models/modelConfigService';
 import { DecisionService } from './models/decisionService';
 import { SpeechService } from './models/speechService';
-import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE, type SubtaskDraft, type Worker, type WorkThread } from '@opc/shared/domain';
+import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE, type SubtaskDraft, type WallpaperPowerState, type Worker, type WorkThread } from '@opc/shared/domain';
 import { IPC } from '@opc/shared/ipc';
 import { CompanyService } from './company/companyService';
 import { NetworkProxyService } from './network/proxyService';
@@ -38,6 +38,8 @@ import { OcrSettingsStore } from './ocr/settings';
 import { ShellExecutionSettingsStore } from './sandbox/settings';
 import { registerOcrScheme } from './ocr/protocol';
 import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
+import { handleWallpaperProtocol, registerWallpaperScheme } from './appearance/wallpaperProtocol';
+import { WallpaperService } from './appearance/wallpaperService';
 import { handleDocProtocol, registerDocScheme, resolvePdfjsAssetsDir } from './preview/docProtocol';
 import { DocPreviewService } from './preview/docPreviewService';
 import type { SpreadsheetWorkerResponse } from './preview/spreadsheetWorker';
@@ -98,6 +100,7 @@ const isDev = !app.isPackaged;
 registerOcrScheme();
 registerChatMediaScheme();
 registerDocScheme();
+registerWallpaperScheme();
 
 /** Compile-time constant injected by electron-vite: `out/main`. */
 const mainDir = __dirname;
@@ -260,7 +263,7 @@ function hardenSession() {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' opc-doc://pdfjs; worker-src 'self' opc-doc: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: opc-media: opc-doc:; media-src 'self' blob: opc-media:; font-src 'self' data: blob: opc-doc:; connect-src 'self' opc-doc:",
+          "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' opc-doc://pdfjs; worker-src 'self' opc-doc: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: opc-media: opc-doc: opc-wallpaper:; media-src 'self' blob: opc-media: opc-wallpaper:; font-src 'self' data: blob: opc-doc:; connect-src 'self' opc-doc: opc-wallpaper:",
         ],
       },
     });
@@ -949,6 +952,33 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  const wallpapersDir = appPaths.wallpapersDir ?? path.join(appPaths.userData, 'wallpapers');
+  const wallpaperService = new WallpaperService(wallpapersDir);
+  let wallpaperPowerState: WallpaperPowerState = {
+    windowVisible: true,
+    windowFocused: true,
+    windowMinimized: false,
+    systemSuspended: false,
+    onBattery: typeof powerMonitor.isOnBatteryPower === 'function' ? powerMonitor.isOnBatteryPower() : false,
+  };
+  const wallpaperPowerListeners = new Set<(state: WallpaperPowerState) => void>();
+  const publishWallpaperPowerState = (patch: Partial<WallpaperPowerState>) => {
+    const next: WallpaperPowerState = { ...wallpaperPowerState, ...patch };
+    if (
+      next.windowVisible === wallpaperPowerState.windowVisible &&
+      next.windowFocused === wallpaperPowerState.windowFocused &&
+      next.windowMinimized === wallpaperPowerState.windowMinimized &&
+      next.systemSuspended === wallpaperPowerState.systemSuspended &&
+      next.onBattery === wallpaperPowerState.onBattery
+    ) {
+      return;
+    }
+    wallpaperPowerState = next;
+    for (const listener of wallpaperPowerListeners) {
+      listener(next);
+    }
+  };
+
   disposeIpc = registerIpc({
     chat,
     work,
@@ -1058,6 +1088,14 @@ async function bootstrap(): Promise<void> {
     }),
     docPreview,
     subscribeObservatoryRouter: (listener) => goalRouter.subscribeObservatory(listener),
+    wallpaper: wallpaperService,
+    getWallpaperPowerState: () => wallpaperPowerState,
+    subscribeWallpaperPowerState: (listener) => {
+      wallpaperPowerListeners.add(listener);
+      return () => {
+        wallpaperPowerListeners.delete(listener);
+      };
+    },
   });
 
   // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。
@@ -1370,6 +1408,7 @@ async function bootstrap(): Promise<void> {
   void work.recover();
   hardenSession();
   handleChatMediaProtocol(session.defaultSession, appPaths.workspaceDir);
+  handleWallpaperProtocol(session.defaultSession, wallpapersDir);
   handleDocProtocol(session.defaultSession, {
     pdfjsAssetsDir: resolvePdfjsAssetsDir({
       rendererDir: path.join(mainDir, '../renderer'),
@@ -1379,7 +1418,41 @@ async function bootstrap(): Promise<void> {
   });
   mainWindow = createMainWindow();
 
+  const onWindowFocus = () =>
+    publishWallpaperPowerState({ windowFocused: true, windowMinimized: false, windowVisible: true });
+  const onWindowBlur = () => publishWallpaperPowerState({ windowFocused: false });
+  const onWindowMinimize = () => publishWallpaperPowerState({ windowMinimized: true, windowFocused: false });
+  const onWindowRestore = () =>
+    publishWallpaperPowerState({ windowMinimized: false, windowVisible: true });
+  const onWindowHide = () => publishWallpaperPowerState({ windowVisible: false, windowFocused: false });
+  const onWindowShow = () => publishWallpaperPowerState({ windowVisible: true });
+  const onSystemSuspend = () => publishWallpaperPowerState({ systemSuspended: true });
+  const onSystemResume = () => publishWallpaperPowerState({ systemSuspended: false });
+  const onLockScreen = () => publishWallpaperPowerState({ systemSuspended: true, windowFocused: false });
+  const onUnlockScreen = () => publishWallpaperPowerState({ systemSuspended: false });
+  const onBattery = () => publishWallpaperPowerState({ onBattery: true });
+  const onAc = () => publishWallpaperPowerState({ onBattery: false });
+
+  mainWindow.on('focus', onWindowFocus);
+  mainWindow.on('blur', onWindowBlur);
+  mainWindow.on('minimize', onWindowMinimize);
+  mainWindow.on('restore', onWindowRestore);
+  mainWindow.on('hide', onWindowHide);
+  mainWindow.on('show', onWindowShow);
+  powerMonitor.on('suspend', onSystemSuspend);
+  powerMonitor.on('resume', onSystemResume);
+  powerMonitor.on('lock-screen', onLockScreen);
+  powerMonitor.on('unlock-screen', onUnlockScreen);
+  powerMonitor.on('on-battery', onBattery);
+  powerMonitor.on('on-ac', onAc);
+
   mainWindow.on('closed', () => {
+    powerMonitor.off('suspend', onSystemSuspend);
+    powerMonitor.off('resume', onSystemResume);
+    powerMonitor.off('lock-screen', onLockScreen);
+    powerMonitor.off('unlock-screen', onUnlockScreen);
+    powerMonitor.off('on-battery', onBattery);
+    powerMonitor.off('on-ac', onAc);
     mainWindow = null;
   });
 }

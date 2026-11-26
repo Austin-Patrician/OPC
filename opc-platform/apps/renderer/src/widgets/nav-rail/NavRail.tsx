@@ -29,6 +29,7 @@ export function NavRail() {
   const currentAssistantName = assistantName(profile, t('company.assistantFallback'));
   const chatActive = location.pathname.startsWith('/chat') || location.pathname === '/';
   const schedulesActive = location.pathname.startsWith('/schedules');
+  const settingsActive = location.pathname.startsWith('/settings');
 
   useEffect(() => {
     return () => {
@@ -129,8 +130,9 @@ export function NavRail() {
           type="button"
           onClick={() => navigate('/settings')}
           aria-label={t('common.settings')}
+          aria-current={settingsActive ? 'page' : undefined}
           title={t('common.settings')}
-          className="buddy-rail-button buddy-settings-button"
+          className={cn('buddy-rail-button buddy-settings-button relative', settingsActive && 'buddy-rail-button-active')}
         >
           <Settings size={18} strokeWidth={1.75} />
         </button>

@@ -1,4 +1,4 @@
-import type { BackgroundKind, FontFamilyId, FontScaleId } from './types';
+import type { FontFamilyId, FontScaleId } from './types';
 
 export const FONT_FAMILIES: readonly { id: FontFamilyId; labelKey: string; sample: string }[] = [
   { id: 'inter', labelKey: 'settings.font.inter', sample: 'Aa Inter' },
@@ -14,14 +14,6 @@ export const FONT_SCALES: readonly { id: FontScaleId; percent: number }[] = [
   { id: 'md', percent: 100 },
   { id: 'lg', percent: 108 },
   { id: 'xl', percent: 116 },
-];
-
-export const BACKGROUND_KINDS: readonly { id: BackgroundKind; labelKey: string }[] = [
-  { id: 'none', labelKey: 'settings.background.none' },
-  { id: 'mesh', labelKey: 'settings.background.mesh' },
-  { id: 'grid', labelKey: 'settings.background.grid' },
-  { id: 'aurora', labelKey: 'settings.background.aurora' },
-  { id: 'custom', labelKey: 'settings.background.custom' },
 ];
 
 export const DEFAULT_FONT_SCALE: FontScaleId = 'md';

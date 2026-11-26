@@ -107,6 +107,7 @@ export function ExecutionObservatoryDrawer({
   const content = (
     <aside
       aria-label={t('observatory.title')}
+      data-layout={wide ? 'docked' : 'overlay'}
       style={wide ? { width: `${width}px` } : { width: 'min(92vw, 440px)' }}
       className={`observatory-drawer relative flex h-full min-h-0 shrink-0 flex-col border-l border-line bg-panel ${
         wide ? '' : 'shadow-2xl'
@@ -117,112 +118,114 @@ export function ExecutionObservatoryDrawer({
           role="separator"
           aria-orientation="vertical"
           onMouseDown={startResize}
-          className="observatory-resize-handle absolute inset-y-0 left-0 z-20 w-[5px] -translate-x-1/2 cursor-col-resize"
+          className="observatory-resize-handle absolute inset-y-3 left-0 z-20 w-[6px] -translate-x-1/2 cursor-col-resize rounded-full"
         />
       ) : null}
 
-      {/* Layer 1: Minimal 40px underline tab bar */}
-      <div className="flex h-[40px] shrink-0 items-stretch justify-between border-b border-line px-3.5">
-        <div className="flex items-stretch gap-5">
-          <button
-            type="button"
-            onClick={() => observatory.setSelectedTab('workers')}
-            className={`relative inline-flex items-center gap-1.5 text-xs font-medium transition ${
-              workersActive ? 'text-ink' : 'text-ink-tertiary hover:text-ink-secondary'
-            }`}
-          >
-            <span>{t('observatory.tabs.workers')}</span>
-            {workerCountBadge ? (
-              <span
-                className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none tabular-nums ${
-                  workerCountBadge.tone === 'warning'
-                    ? 'bg-warning/18 text-warning'
-                    : 'bg-accent-soft text-accent-ink'
-                }`}
-              >
-                {workerCountBadge.label}
-              </span>
-            ) : null}
-            {workersActive ? (
-              <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
-            ) : null}
-          </button>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[inherit]">
+        {/* Layer 1: Minimal 40px underline tab bar */}
+        <div className="flex h-[40px] shrink-0 items-stretch justify-between border-b border-line px-3.5">
+          <div className="flex items-stretch gap-5">
+            <button
+              type="button"
+              onClick={() => observatory.setSelectedTab('workers')}
+              className={`relative inline-flex items-center gap-1.5 text-xs font-medium transition ${
+                workersActive ? 'text-ink' : 'text-ink-tertiary hover:text-ink-secondary'
+              }`}
+            >
+              <span>{t('observatory.tabs.workers')}</span>
+              {workerCountBadge ? (
+                <span
+                  className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none tabular-nums ${
+                    workerCountBadge.tone === 'warning'
+                      ? 'bg-warning/18 text-warning'
+                      : 'bg-accent-soft text-accent-ink'
+                  }`}
+                >
+                  {workerCountBadge.label}
+                </span>
+              ) : null}
+              {workersActive ? (
+                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
+              ) : null}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => observatory.setSelectedTab('router')}
-            className={`relative inline-flex items-center gap-1.5 text-xs font-medium transition ${
-              routerActive ? 'text-ink' : 'text-ink-tertiary hover:text-ink-secondary'
-            }`}
-          >
-            <span>{t('observatory.tabs.router')}</span>
-            {observatory.badge.routerBusy ? (
-              <span className="h-1.5 w-1.5 rounded-full bg-accent observatory-dot-pulse" />
-            ) : null}
-            {routerActive ? (
-              <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
-            ) : null}
-          </button>
+            <button
+              type="button"
+              onClick={() => observatory.setSelectedTab('router')}
+              className={`relative inline-flex items-center gap-1.5 text-xs font-medium transition ${
+                routerActive ? 'text-ink' : 'text-ink-tertiary hover:text-ink-secondary'
+              }`}
+            >
+              <span>{t('observatory.tabs.router')}</span>
+              {observatory.badge.routerBusy ? (
+                <span className="h-1.5 w-1.5 rounded-full bg-accent observatory-dot-pulse" />
+              ) : null}
+              {routerActive ? (
+                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-accent" />
+              ) : null}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => void observatory.refresh()}
+              disabled={observatory.loading}
+              aria-label={t('observatory.refresh')}
+              title={t('observatory.refresh')}
+              className="buddy-header-action"
+            >
+              <RefreshCw
+                size={13.5}
+                strokeWidth={1.8}
+                className={observatory.loading ? 'animate-spin' : ''}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t('common.close')}
+              title={t('observatory.closeHint')}
+              className="buddy-header-action"
+            >
+              <X size={14.5} strokeWidth={1.8} />
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => void observatory.refresh()}
-            disabled={observatory.loading}
-            aria-label={t('observatory.refresh')}
-            title={t('observatory.refresh')}
-            className="buddy-header-action"
-          >
-            <RefreshCw
-              size={13.5}
-              strokeWidth={1.8}
-              className={observatory.loading ? 'animate-spin' : ''}
-            />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t('common.close')}
-            title={t('observatory.closeHint')}
-            className="buddy-header-action"
-          >
-            <X size={14.5} strokeWidth={1.8} />
-          </button>
-        </div>
+        {observatory.error ? (
+          <div className="shrink-0 border-b border-line bg-danger/10 px-3.5 py-1.5 text-[11.5px] text-danger">
+            {observatory.error}
+          </div>
+        ) : null}
+
+        {workersActive ? (
+          <WorkerInspectorPane
+            threads={observatory.snapshot?.threads ?? []}
+            selectedThreadId={observatory.selectedThreadId}
+            selectedTaskId={observatory.selectedTaskId}
+            selectedThread={observatory.selectedThread}
+            taskDetail={observatory.taskDetail}
+            loadingDetail={observatory.loadingDetail}
+            actionBusy={observatory.actionBusy}
+            onSelectThread={observatory.selectThread}
+            onSelectTask={observatory.selectTask}
+            onApproveBlocker={observatory.approveBlocker}
+            onAnswerQuestion={observatory.answerQuestion}
+            onAbortThread={observatory.abortThread}
+            onOpenWorkspace={observatory.openWorkspace}
+            onRevealArtifact={observatory.revealArtifact}
+          />
+        ) : (
+          <RouterInspectorPane
+            router={observatory.snapshot?.router ?? null}
+            actionBusy={observatory.actionBusy}
+            onCompact={observatory.compactRouter}
+            onJumpToThread={observatory.jumpToThread}
+          />
+        )}
       </div>
-
-      {observatory.error ? (
-        <div className="shrink-0 border-b border-line bg-danger/10 px-3.5 py-1.5 text-[11.5px] text-danger">
-          {observatory.error}
-        </div>
-      ) : null}
-
-      {workersActive ? (
-        <WorkerInspectorPane
-          threads={observatory.snapshot?.threads ?? []}
-          selectedThreadId={observatory.selectedThreadId}
-          selectedTaskId={observatory.selectedTaskId}
-          selectedThread={observatory.selectedThread}
-          taskDetail={observatory.taskDetail}
-          loadingDetail={observatory.loadingDetail}
-          actionBusy={observatory.actionBusy}
-          onSelectThread={observatory.selectThread}
-          onSelectTask={observatory.selectTask}
-          onApproveBlocker={observatory.approveBlocker}
-          onAnswerQuestion={observatory.answerQuestion}
-          onAbortThread={observatory.abortThread}
-          onOpenWorkspace={observatory.openWorkspace}
-          onRevealArtifact={observatory.revealArtifact}
-        />
-      ) : (
-        <RouterInspectorPane
-          router={observatory.snapshot?.router ?? null}
-          actionBusy={observatory.actionBusy}
-          onCompact={observatory.compactRouter}
-          onJumpToThread={observatory.jumpToThread}
-        />
-      )}
     </aside>
   );
 

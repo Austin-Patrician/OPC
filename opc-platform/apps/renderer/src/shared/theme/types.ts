@@ -1,16 +1,37 @@
+import type { WallpaperAsset } from '@opc/shared/domain';
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type ResolvedTheme = 'light' | 'dark';
 
 export type FontFamilyId = 'inter' | 'jakarta' | 'serif' | 'noto' | 'mono' | 'system';
 export type FontScaleId = 'sm' | 'md' | 'lg' | 'xl';
 
-export type BackgroundKind = 'none' | 'mesh' | 'grid' | 'aurora' | 'custom';
+export type BackgroundKind = 'none' | 'custom';
 
 export interface BackgroundPref {
   kind: BackgroundKind;
-  /** Image or GIF URL (remote, `data:` or `blob:`); only used when kind === 'custom'. */
-  url: string;
+  asset: WallpaperAsset | null;
+  /** Pure light/dark optical scrim opacity (0 – 0.7). */
+  scrimOpacity: number;
+  /** Optional soft blur in pixels (0 = native crisp fidelity). */
+  blurPx: number;
+  /** Message bubble & card opacity (0 – 0.95; 0 = transparent text). */
+  cardOpacity: number;
+  /** Pause video/GIF decoding while the window is unfocused (default true). */
+  pauseOnBlur: boolean;
 }
+
+export const DEFAULT_BACKGROUND_PREF: BackgroundPref = {
+  kind: 'none',
+  asset: null,
+  scrimOpacity: 0.2,
+  blurPx: 0,
+  cardOpacity: 0.62,
+  pauseOnBlur: true,
+};
+
+export const MAX_WALLPAPER_IMAGE_MB = 40;
+export const MAX_WALLPAPER_VIDEO_MB = 150;
 
 export type BuddySizeId = 'sm' | 'md' | 'lg';
 export type BuddyDockMode = 'floating' | 'peek';
@@ -37,6 +58,3 @@ export interface AppearancePrefs {
   fontScale: FontScaleId;
   background: BackgroundPref;
 }
-
-/** Hard cap for user wallpapers stored in localStorage (2 MB ≈ 2.7 MB base64). */
-export const MAX_BACKGROUND_BYTES = 2 * 1024 * 1024;

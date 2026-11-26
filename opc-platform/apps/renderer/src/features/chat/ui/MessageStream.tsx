@@ -287,10 +287,10 @@ export function MessageStream({
   }, [firstItemIndex, visibleMessages.length]);
 
   return (
-    <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
+    <div className="buddy-stream-wrap relative min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-[var(--panel-bg-base)] to-transparent"
+        className="buddy-stream-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-5 bg-gradient-to-b from-[var(--panel-bg-base)] to-transparent"
       />
       <Virtuoso<Message, StreamVirtuosoContext>
         ref={virtuosoRef}
@@ -312,7 +312,7 @@ export function MessageStream({
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-[var(--panel-bg-base)] to-transparent"
+        className="buddy-stream-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-[var(--panel-bg-base)] to-transparent"
       />
       {!atBottom && visibleMessages.length > 0 ? (
         <button

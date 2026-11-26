@@ -15,6 +15,8 @@ export function ThemeSync() {
   const fontFamilyId = useUiPrefs((state) => state.fontFamilyId);
   const fontScale = useUiPrefs((state) => state.fontScale);
   const background = useUiPrefs((state) => state.background);
+  const setBackground = useUiPrefs((state) => state.setBackground);
+  const updateBackground = useUiPrefs((state) => state.updateBackground);
   const locale = useUiPrefs((state) => state.locale);
 
   const [prefersDark, setPrefersDark] = useState(
@@ -27,6 +29,29 @@ export function ThemeSync() {
     media.addEventListener('change', onChange);
     return () => media.removeEventListener('change', onChange);
   }, []);
+
+  // Reconcile persisted UI metadata against disk wallpaper manifest once at boot.
+  useEffect(() => {
+    const bridge = window.opc?.wallpaper;
+    if (!bridge) return undefined;
+    let canceled = false;
+    void bridge.getCurrent().then((diskAsset) => {
+      if (canceled) return;
+      const currentBg = useUiPrefs.getState().background;
+      if (!diskAsset) {
+        if (currentBg.kind !== 'none' || currentBg.asset !== null) {
+          setBackground({ ...currentBg, kind: 'none', asset: null });
+        }
+        return;
+      }
+      if (currentBg.kind === 'custom') {
+        updateBackground({ asset: diskAsset });
+      }
+    }).catch(() => undefined);
+    return () => {
+      canceled = true;
+    };
+  }, [setBackground, updateBackground]);
 
   useEffect(() => {
     void ensureFontLoaded(fontFamilyId);

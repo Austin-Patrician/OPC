@@ -428,7 +428,7 @@ function StepRailRow({
         }`}
       >
         <span
-          className="absolute left-[1px] top-[5px] flex h-[18px] w-[18px] items-center justify-center rounded bg-panel"
+          className="observatory-rail-node absolute left-[1px] top-[5px] flex h-[18px] w-[18px] items-center justify-center rounded bg-panel"
         >
           <ObservatoryIcon
             visual={visual}
@@ -509,7 +509,7 @@ function BurstRailRow({
         onClick={() => setExpanded((prev) => !prev)}
         className="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left transition hover:bg-surface-hover/65"
       >
-        <span className="absolute left-[1px] top-[5px] flex h-[18px] w-[18px] items-center justify-center rounded bg-panel">
+        <span className="observatory-rail-node absolute left-[1px] top-[5px] flex h-[18px] w-[18px] items-center justify-center rounded bg-panel">
           <ObservatoryIcon visual={visual} size={14} />
         </span>
 
