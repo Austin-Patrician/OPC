@@ -10,6 +10,10 @@ asar: true
 # OCR models and the ONNX Runtime WASM binary live outside the asar so the
 # renderer can fetch them over the `opc-ocr://` protocol without unpacking.
 extraResources:
+  - from: build
+    to: brand
+    filter:
+      - 'icon.*'
   - from: resources/ocr
     to: ocr
     filter:

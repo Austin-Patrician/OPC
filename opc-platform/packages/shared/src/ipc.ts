@@ -56,6 +56,14 @@ import type {
   ObservatoryTaskDetail,
   WallpaperAsset,
   WallpaperPowerState,
+  NotificationActionEvent,
+  NotificationContextUpdate,
+  NotificationSettingsPatch,
+  NotificationStatus,
+  ChannelConnectionTestResult,
+  ChannelView,
+  FeishuChannelSettingsPatch,
+  FeishuDomain,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -146,9 +154,16 @@ export const IPC = {
     listScheduleOccurrences: "router:listScheduleOccurrences",
     scheduleChangedEvent: "router:scheduleChanged",
   },
-  trigger: {
-    status: "trigger:status",
-    set: "trigger:set",
+  channels: {
+    list: "channels:list",
+    updateFeishu: "channels:updateFeishu",
+    testConnection: "channels:testConnection",
+    reconnect: "channels:reconnect",
+    approvePairing: "channels:approvePairing",
+    rejectPairing: "channels:rejectPairing",
+    removeAllowlistEntry: "channels:removeAllowlistEntry",
+    forgetTarget: "channels:forgetTarget",
+    changedEvent: "channels:changed",
   },
   threads: {
     start: "threads:start",
@@ -332,6 +347,13 @@ export const IPC = {
     clear: "wallpaper:clear",
     getPowerState: "wallpaper:getPowerState",
     powerStateEvent: "wallpaper:powerState",
+  },
+  notifications: {
+    getStatus: "notifications:getStatus",
+    update: "notifications:update",
+    test: "notifications:test",
+    setContext: "notifications:setContext",
+    actionEvent: "notifications:action",
   },
 } as const;
 
@@ -926,33 +948,27 @@ export interface RouterBridge {
 }
 
 /**
- * 触发源：外部平台把事件推进来的那扇门。
+ * 外部应用渠道（当前内置飞书长连接，后续可扩展钉钉/Slack/Telegram 等插件）。
  *
- * 界面需要知道的只有三件事：门开着没有、地址是什么、这一家配了密钥没有。密钥本身
- * 不回传给渲染进程——它没有用到的场合，还多一个能泄露它的地方。
+ * 凭证由主进程 `safeStorage` 加密保管；渲染进程只拿到 `hasAppSecret` 布尔标记，不回传明文密钥。
  */
-export interface TriggerEntryStatus {
-  id: string;
-  source: string;
-  /** 要填到平台里的那个 URL。门没开时也给（它是"应该在哪"）。 */
-  url: string;
-  configured: boolean;
-}
-
-export interface TriggerStatus {
-  running: boolean;
-  port: number;
-  entries: TriggerEntryStatus[];
-}
-
-export interface TriggerPatch {
-  port?: number;
-  secrets?: Partial<Record<"github" | "feishu" | "dingtalk", string>>;
-}
-
-export interface TriggerBridge {
-  status(): Promise<TriggerStatus>;
-  set(patch: TriggerPatch): Promise<TriggerStatus>;
+export interface ChannelsBridge {
+  list(): Promise<ChannelView[]>;
+  updateFeishu(patch: FeishuChannelSettingsPatch): Promise<ChannelView[]>;
+  testConnection(
+    channelId: string,
+    draft?: { appId?: string; appSecret?: string; domain?: FeishuDomain },
+  ): Promise<ChannelConnectionTestResult>;
+  reconnect(channelId: string): Promise<ChannelView[]>;
+  approvePairing(requestId: string): Promise<ChannelView[]>;
+  rejectPairing(requestId: string): Promise<ChannelView[]>;
+  removeAllowlistEntry(
+    channelId: string,
+    kind: "dm" | "group",
+    entryId: string,
+  ): Promise<ChannelView[]>;
+  forgetTarget(channelId: string, address: string): Promise<ChannelView[]>;
+  onChanged(listener: (channels: ChannelView[]) => void): () => void;
 }
 
 export interface FactsBridge {
@@ -1326,6 +1342,14 @@ export interface WallpaperBridge {
   onPowerState(listener: (state: WallpaperPowerState) => void): () => void;
 }
 
+export interface NotificationsBridge {
+  getStatus(): Promise<NotificationStatus>;
+  update(patch: NotificationSettingsPatch): Promise<NotificationStatus>;
+  test(): Promise<{ ok: boolean; reason?: string }>;
+  setContext(context: NotificationContextUpdate): Promise<void>;
+  onAction(listener: (event: NotificationActionEvent) => void): () => void;
+}
+
 export interface LocalPathActionResult {
   ok: boolean;
   blockedExecutable?: boolean;
@@ -1367,7 +1391,7 @@ export interface OpcBridge {
   facts: FactsBridge;
   memory: MemoryBridge;
   router: RouterBridge;
-  trigger: TriggerBridge;
+  channels: ChannelsBridge;
   billing: BillingBridge;
   usage: UsageBridge;
   threads: ThreadsBridge;
@@ -1377,6 +1401,7 @@ export interface OpcBridge {
   watchdog: WatchdogBridge;
   observatory: ObservatoryBridge;
   wallpaper: WallpaperBridge;
+  notifications: NotificationsBridge;
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };

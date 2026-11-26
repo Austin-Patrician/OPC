@@ -1161,6 +1161,15 @@ export interface ProxyTestResult {
   ip?: string;
 }
 
+export interface MessageChannelMeta {
+  channelId: string;
+  channelName: string;
+  chatKind: 'p2p' | 'group';
+  chatId: string;
+  senderName?: string;
+  direction: 'inbound' | 'outbound';
+}
+
 export interface Message {
   id: string;
   kind: MessageKind;
@@ -1183,6 +1192,8 @@ export interface Message {
   task?: WorkTask;
   mentions?: string[];
   attachments?: ChatAttachmentRef[];
+  /** Present when mirrored to/from an external app channel (e.g. Feishu). */
+  channelMeta?: MessageChannelMeta;
 }
 
 /**
@@ -1663,6 +1674,152 @@ export interface WallpaperPowerState {
   systemSuspended: boolean;
   onBattery: boolean;
 }
+
+/** ── Native Desktop Notifications ───────────────────────────────────────── */
+
+export type NotificationWhen = 'background' | 'always';
+export type NotificationCategory = 'approval' | 'question' | 'reply' | 'error';
+export type NotificationLocale = 'zh-CN' | 'en-US';
+export type NotificationRouteScope = 'chat' | 'other';
+
+export interface NotificationEventToggles {
+  /** Blocking worker approval requests & clarification questions. */
+  needsAction: boolean;
+  /** Router replies, completed deliverable summaries & schedule outputs. */
+  replies: boolean;
+  /** Root task failures & Watchdog escalations. */
+  errors: boolean;
+}
+
+export interface NotificationSettings {
+  enabled: boolean;
+  when: NotificationWhen;
+  sound: boolean;
+  showPreview: boolean;
+  /** Windows taskbar flash / macOS Dock bounce & badge count. */
+  attentionCue: boolean;
+  events: NotificationEventToggles;
+}
+
+export interface NotificationSettingsPatch {
+  enabled?: boolean;
+  when?: NotificationWhen;
+  sound?: boolean;
+  showPreview?: boolean;
+  attentionCue?: boolean;
+  events?: Partial<NotificationEventToggles>;
+}
+
+export interface NotificationStatus {
+  supported: boolean;
+  platform: 'darwin' | 'win32' | 'linux';
+  settings: NotificationSettings;
+}
+
+export interface NotificationContextUpdate {
+  route?: NotificationRouteScope;
+  locale?: NotificationLocale;
+}
+
+export interface NotificationActionEvent {
+  category: NotificationCategory;
+  target:
+    | { kind: 'chat'; conversationId?: string }
+    | { kind: 'observatory'; threadId: string; taskId?: string };
+}
+
+/** ── External Messaging Channels (Plugin Architecture) ───────────────────── */
+
+export type ChannelTransportKind = 'socket' | 'polling' | 'webhook';
+export type ChannelConnectionState =
+  | 'disabled'
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'error';
+export type ChannelDmPolicy = 'pairing' | 'allowlist' | 'open';
+export type ChannelGroupPolicy = 'mention' | 'allowlist' | 'open' | 'disabled';
+export type FeishuDomain = 'feishu' | 'lark';
+
+export interface ChannelAccessConfig {
+  dmPolicy: ChannelDmPolicy;
+  dmAllowlist: string[];
+  groupPolicy: ChannelGroupPolicy;
+  groupAllowlist: string[];
+}
+
+export interface ChannelPairingRequest {
+  id: string;
+  channelId: string;
+  senderId: string;
+  senderName: string;
+  chatId: string;
+  chatKind: 'p2p' | 'group';
+  firstMessagePreview: string;
+  createdAt: number;
+}
+
+export interface ChannelTargetView {
+  channelId: string;
+  address: string;
+  chatKind: 'p2p' | 'group';
+  title: string;
+  lastActiveAt: number;
+}
+
+export interface FeishuChannelSettingsView {
+  enabled: boolean;
+  domain: FeishuDomain;
+  appId: string;
+  hasAppSecret: boolean;
+  mirrorToDesktop: boolean;
+  thinkingReaction: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface FeishuChannelSettingsPatch {
+  enabled?: boolean;
+  domain?: FeishuDomain;
+  appId?: string;
+  /** Empty string clears the saved App Secret; omitted keeps the existing secret. */
+  appSecret?: string;
+  mirrorToDesktop?: boolean;
+  thinkingReaction?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+export interface ChannelRuntimeStatus {
+  channelId: string;
+  transport: ChannelTransportKind;
+  state: ChannelConnectionState;
+  botName?: string;
+  botOpenId?: string;
+  connectedAt?: number;
+  lastEventAt?: number;
+  lastError?: string;
+  lastErrorAt?: number;
+}
+
+export interface ChannelView {
+  id: string;
+  name: string;
+  transport: ChannelTransportKind;
+  configured: boolean;
+  status: ChannelRuntimeStatus;
+  settings: FeishuChannelSettingsView;
+  pendingPairings: ChannelPairingRequest[];
+  knownTargets: ChannelTargetView[];
+}
+
+export interface ChannelConnectionTestResult {
+  ok: boolean;
+  botName?: string;
+  botOpenId?: string;
+  error?: string;
+  latencyMs: number;
+}
+
 
 
 

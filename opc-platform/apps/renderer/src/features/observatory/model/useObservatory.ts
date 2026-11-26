@@ -70,6 +70,7 @@ export function useObservatory(open: boolean) {
   selectedTaskIdRef.current = selectedTaskId;
   const refreshTimerRef = useRef<number | null>(null);
   const wasOpenRef = useRef(false);
+  const pendingFocusRef = useRef<{ threadId: string; taskId?: string } | null>(null);
 
   const loadDetailForThread = useCallback(
     async (snap: ObservatorySnapshot, threadId: string | null, preferredTaskId?: string | null) => {
@@ -106,7 +107,11 @@ export function useObservatory(open: boolean) {
   );
 
   const refresh = useCallback(
-    async (options?: { focusPriority?: boolean }) => {
+    async (options?: {
+      focusPriority?: boolean;
+      targetThreadId?: string;
+      targetTaskId?: string | null;
+    }) => {
       const bridge = window.opc?.observatory;
       if (!bridge) return;
       if (openRef.current) setLoading(true);
@@ -121,13 +126,16 @@ export function useObservatory(open: boolean) {
         });
         setError(null);
 
-        const preferredThreadId = options?.focusPriority
-          ? pickInitialThreadId(next.threads, null)
-          : pickInitialThreadId(next.threads, selectedThreadIdRef.current);
+        const preferredThreadId = options?.targetThreadId
+          ? pickInitialThreadId(next.threads, options.targetThreadId)
+          : options?.focusPriority
+            ? pickInitialThreadId(next.threads, null)
+            : pickInitialThreadId(next.threads, selectedThreadIdRef.current);
 
         setSelectedThreadId(preferredThreadId);
 
         if (
+          !options?.targetThreadId &&
           options?.focusPriority &&
           next.blockedCount === 0 &&
           next.activeCount === 0 &&
@@ -139,7 +147,11 @@ export function useObservatory(open: boolean) {
         }
 
         if (openRef.current && preferredThreadId) {
-          const targetTaskId = options?.focusPriority ? null : selectedTaskIdRef.current;
+          const targetTaskId = options?.targetThreadId
+            ? (options.targetTaskId ?? null)
+            : options?.focusPriority
+              ? null
+              : selectedTaskIdRef.current;
           await loadDetailForThread(next, preferredThreadId, targetTaskId);
         } else if (!preferredThreadId) {
           setSelectedTaskId(null);
@@ -172,7 +184,16 @@ export function useObservatory(open: boolean) {
     const justOpened = open && !wasOpenRef.current;
     wasOpenRef.current = open;
     if (justOpened) {
-      void refresh({ focusPriority: true });
+      const pending = pendingFocusRef.current;
+      pendingFocusRef.current = null;
+      if (pending) {
+        void refresh({
+          targetThreadId: pending.threadId,
+          targetTaskId: pending.taskId ?? null,
+        });
+      } else {
+        void refresh({ focusPriority: true });
+      }
     } else if (!snapshot) {
       void refresh();
     }
@@ -288,6 +309,26 @@ export function useObservatory(open: boolean) {
       }
     },
     [loadDetailForThread, refresh, snapshot],
+  );
+
+  const focusTarget = useCallback(
+    (threadId: string, taskId?: string) => {
+      setSelectedTab('workers');
+      selectedThreadIdRef.current = threadId;
+      selectedTaskIdRef.current = taskId ?? null;
+      setSelectedThreadId(threadId);
+      setSelectedTaskId(taskId ?? null);
+      if (openRef.current) {
+        pendingFocusRef.current = null;
+        void refresh({ targetThreadId: threadId, targetTaskId: taskId ?? null });
+      } else {
+        pendingFocusRef.current = {
+          threadId,
+          ...(taskId ? { taskId } : {}),
+        };
+      }
+    },
+    [refresh],
   );
 
   const approveBlocker = useCallback(
@@ -415,6 +456,7 @@ export function useObservatory(open: boolean) {
     selectThread,
     selectTask,
     jumpToThread,
+    focusTarget,
     approveBlocker,
     answerQuestion,
     abortThread,

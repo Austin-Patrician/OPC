@@ -2,7 +2,7 @@ import type { AttentionLevel, ChatAttachmentRef, TriggerEvent, WorkReport, WorkT
 import type { FaultSink } from '../data/systemEventRepository';
 import { messageOf } from '../data/systemEventRepository';
 import type { ThreadRepository } from '../data/threadRepository';
-import type { TriggerReplyTarget } from '../trigger/types';
+import type { TriggerReplyTarget } from '@opc/shared/domain';
 import type { SemanticScreener } from './semanticGate';
 import { DEFAULT_INLINE_BUDGET, perItemBudget, spillText, type InlineBudget } from './inline';
 import { RouterInterruptedError } from './routerSession';

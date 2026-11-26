@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AboutPage } from './pages/AboutPage';
 import { AppearancePage } from './pages/AppearancePage';
+import { ChannelsPage } from './pages/ChannelsPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { CompanyPage } from './pages/CompanyPage';
 import { BillingPage } from './pages/BillingPage';
 import { CompactionPage } from './pages/CompactionPage';
@@ -25,11 +27,12 @@ import { CapabilitiesExtensionsPage } from './pages/CapabilitiesExtensionsPage';
 import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
-import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2 } from 'lucide-react';
+import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, Share2 } from 'lucide-react';
 import { cn } from '@/shared/lib/cn';
 
 const PAGE_IDS = [
   'appearance',
+  'notifications',
   'company',
   'billing',
   'usage',
@@ -42,6 +45,7 @@ const PAGE_IDS = [
   'runtime',
   'capabilitiesSkills',
   'capabilitiesExtensions',
+  'channels',
   'llm',
   'image',
   'video',
@@ -91,6 +95,7 @@ export function SettingsShell() {
       color: '#8E8E93',
       pages: [
         { id: 'appearance', label: t('settings.page.appearance') },
+        { id: 'notifications', label: t('settings.page.notifications') },
         { id: 'company', label: t('settings.page.company') },
         { id: 'billing', label: t('settings.page.billing') },
         { id: 'usage', label: t('settings.page.usage') },
@@ -147,6 +152,13 @@ export function SettingsShell() {
       ],
     },
     {
+      id: 'channels',
+      label: t('settings.group.channels'),
+      icon: Share2,
+      color: '#0A84FF',
+      pages: [{ id: 'channels', label: t('settings.page.channels') }],
+    },
+    {
       // Outgoing traffic is infrastructure, not a model concern: its own group
       // keeps it one click away instead of buried under 通用.
       id: 'network',
@@ -189,6 +201,8 @@ export function SettingsShell() {
     switch (page) {
       case 'appearance':
         return <AppearancePage />;
+      case 'notifications':
+        return <NotificationsPage />;
       case 'company':
         return <CompanyPage />;
       case 'billing':
@@ -213,6 +227,8 @@ export function SettingsShell() {
         return <CapabilitiesExtensionsPage />;
       case 'capabilitiesSkills':
         return <CapabilitiesSkillsPage />;
+      case 'channels':
+        return <ChannelsPage />;
       case 'llm':
         return <LlmPage />;
       case 'image':
@@ -240,7 +256,7 @@ export function SettingsShell() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 bg-panel select-none">
-      <aside className="flex w-[13.75rem] shrink-0 flex-col border-r border-line bg-sidebar">
+      <aside className="flex w-[15rem] shrink-0 flex-col border-r border-line bg-sidebar">
         <div className="shrink-0 px-4 pt-7 pb-3">
           <h1 className="text-xl font-bold tracking-tight text-ink">{t('settings.title')}</h1>
           <p className="mt-0.5 text-xs-plus text-ink-tertiary">{t('settings.subtitleShort')}</p>
@@ -290,7 +306,7 @@ export function SettingsShell() {
                   >
                     <Icon className="size-3" strokeWidth={2.2} />
                   </span>
-                  <span className="flex-1 text-left">{group.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-left">{group.label}</span>
                   {hasSubmenu ? (
                     <span
                       className={cn(
@@ -312,14 +328,15 @@ export function SettingsShell() {
                         data-testid={`settings-page-${entry.id}`}
                         onClick={() => setPage(entry.id)}
                         aria-current={entry.id === page ? 'page' : undefined}
+                        title={entry.label}
                         className={cn(
-                          'flex h-7 w-full items-center rounded-md px-2 text-sm-plus transition-colors',
+                          'flex h-7 w-full min-w-0 items-center rounded-md px-2 text-left text-sm-plus transition-colors',
                           entry.id === page
                             ? 'bg-surface-active font-medium text-ink'
                             : 'text-ink-tertiary hover:bg-ink/5 hover:text-ink',
                         )}
                       >
-                        {entry.label}
+                        <span className="min-w-0 flex-1 truncate">{entry.label}</span>
                       </button>
                     ))}
                   </div>

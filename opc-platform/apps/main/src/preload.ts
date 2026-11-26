@@ -58,6 +58,14 @@ import type {
   ObservatoryTaskDetail,
   WallpaperAsset,
   WallpaperPowerState,
+  NotificationActionEvent,
+  NotificationContextUpdate,
+  NotificationSettingsPatch,
+  NotificationStatus,
+  ChannelConnectionTestResult,
+  ChannelView,
+  FeishuChannelSettingsPatch,
+  FeishuDomain,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
@@ -344,9 +352,44 @@ const bridge: OpcBridge = {
     getModel: () => ipcRenderer.invoke(IPC.watchdog.getModel),
     setModel: (ref: unknown) => ipcRenderer.invoke(IPC.watchdog.setModel, ref),
   },
-  trigger: {
-    status: () => ipcRenderer.invoke(IPC.trigger.status),
-    set: (patch: unknown) => ipcRenderer.invoke(IPC.trigger.set, patch),
+  channels: {
+    list: () => ipcRenderer.invoke(IPC.channels.list) as Promise<ChannelView[]>,
+    updateFeishu: (patch: FeishuChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateFeishu, patch) as Promise<ChannelView[]>,
+    testConnection: (
+      channelId: string,
+      draft?: { appId?: string; appSecret?: string; domain?: FeishuDomain },
+    ) =>
+      ipcRenderer.invoke(
+        IPC.channels.testConnection,
+        channelId,
+        draft,
+      ) as Promise<ChannelConnectionTestResult>,
+    reconnect: (channelId: string) =>
+      ipcRenderer.invoke(IPC.channels.reconnect, channelId) as Promise<ChannelView[]>,
+    approvePairing: (requestId: string) =>
+      ipcRenderer.invoke(IPC.channels.approvePairing, requestId) as Promise<ChannelView[]>,
+    rejectPairing: (requestId: string) =>
+      ipcRenderer.invoke(IPC.channels.rejectPairing, requestId) as Promise<ChannelView[]>,
+    removeAllowlistEntry: (channelId: string, kind: "dm" | "group", entryId: string) =>
+      ipcRenderer.invoke(
+        IPC.channels.removeAllowlistEntry,
+        channelId,
+        kind,
+        entryId,
+      ) as Promise<ChannelView[]>,
+    forgetTarget: (channelId: string, address: string) =>
+      ipcRenderer.invoke(IPC.channels.forgetTarget, channelId, address) as Promise<
+        ChannelView[]
+      >,
+    onChanged: (listener: (channels: ChannelView[]) => void) => {
+      const handler = (_event: IpcRendererEvent, payload: ChannelView[]) =>
+        listener(payload);
+      ipcRenderer.on(IPC.channels.changedEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.channels.changedEvent, handler);
+      };
+    },
   },
   workers: {
     list: () => ipcRenderer.invoke(IPC.workers.list),
@@ -661,6 +704,24 @@ const bridge: OpcBridge = {
       ipcRenderer.on(IPC.wallpaper.powerStateEvent, handler);
       return () => {
         ipcRenderer.off(IPC.wallpaper.powerStateEvent, handler);
+      };
+    },
+  },
+  notifications: {
+    getStatus: () =>
+      ipcRenderer.invoke(IPC.notifications.getStatus) as Promise<NotificationStatus>,
+    update: (patch: NotificationSettingsPatch) =>
+      ipcRenderer.invoke(IPC.notifications.update, patch) as Promise<NotificationStatus>,
+    test: () =>
+      ipcRenderer.invoke(IPC.notifications.test) as Promise<{ ok: boolean; reason?: string }>,
+    setContext: (context: NotificationContextUpdate) =>
+      ipcRenderer.invoke(IPC.notifications.setContext, context) as Promise<void>,
+    onAction: (listener: (event: NotificationActionEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, payload: NotificationActionEvent) =>
+        listener(payload);
+      ipcRenderer.on(IPC.notifications.actionEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.notifications.actionEvent, handler);
       };
     },
   },

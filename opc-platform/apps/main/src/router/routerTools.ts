@@ -1,6 +1,11 @@
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
-import type { ChatContentBlock, RouterResponse, TaskContract } from '@opc/shared/domain';
+import type {
+  ChannelTargetView,
+  ChatContentBlock,
+  RouterResponse,
+  TaskContract,
+} from '@opc/shared/domain';
 import type { RouterSchedule, RouterScheduleDraft, RouterSchedulePatch } from '@opc/shared/domain';
 import { recallView } from './inline';
 import { renderRouterWorkerCapabilities, type RouterWorkerCapability } from './routerCapabilities';
@@ -144,6 +149,14 @@ export interface RouterToolDeps {
     update(id: string, patch: RouterSchedulePatch): RouterSchedule;
     cancel(id: string): RouterSchedule;
   };
+  channels?: {
+    listTargets(): ChannelTargetView[];
+    sendMessage(input: {
+      address: string;
+      text: string;
+      filePaths?: string[];
+    }): Promise<{ ok: boolean; messageId?: string; error?: string }>;
+  };
 }
 
 const ok = (text: string, details?: Record<string, string | null>) => ({
@@ -186,6 +199,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           '用户通过聊天上传的附件，在调用 open_line_of_work / continue_line / steer_line 时系统会自动复制文件本体到目标工作区的 inputs/ 目录，执行体可直接读取；不要向用户声称“只收到本地路径/无法访问 D 盘”或要求用户手动拖文件到工作区。',
           '用户明确要求未来某个时间提醒或重复检查时，用 create_schedule 建立计划；用户没有给出必要日期、时间或时区时先询问。',
           '定时请求到期后视作用户预先安排的输入，结合届时上下文决定是否 open_line_of_work；不要只因为计划到期就盲目执行过时或失去意义的请求。',
+          '收到来自飞书等外部渠道的消息且带有 reply_target 时，调用 reply_to_user 并传入对应的 reply_target 即可原路回复该会话；如需主动向外部群或联系人推送消息（例如定时汇报），先用 channel_list_targets 查询真实已知地址，再用 channel_send_message 发送，禁止编造外部会话地址。',
           '',
           '## 你要记得',
           '你的系统上下文里每轮都带有用户画像（USER.md）、长期铁律（RULES.md）和专题目录，输入里也会自动附带相关的避坑提醒（PLAYBOOK.md）与专题片段。',
@@ -268,6 +282,7 @@ export function createRouterTools(deps: RouterToolDeps) {
     tools: [
       ...(deps.assistantTools ? createAssistantToolsExtension(deps.assistantTools).tools ?? [] : []),
       ...(deps.schedules ? scheduleTools(deps.schedules) : []),
+      ...(deps.channels ? channelTools(deps.channels) : []),
       defineTool({
         name: 'open_line_of_work',
         description:
@@ -811,6 +826,53 @@ function scheduleTools(service: NonNullable<RouterToolDeps['schedules']>) {
         } catch (error) {
           return fail(`取消计划失败：${error instanceof Error ? error.message : String(error)}`);
         }
+      },
+    }),
+  ];
+}
+
+function channelTools(service: NonNullable<RouterToolDeps['channels']>) {
+  return [
+    defineTool({
+      name: 'channel_list_targets',
+      description:
+        '列出已连接的外部应用渠道（如飞书）近期活跃的会话目标，返回真实可用的 address（例如 feishu:chat:oc_...）、会话类型与标题。',
+      parameters: Type.Object({}),
+      execute: async () => {
+        const targets = service.listTargets();
+        if (targets.length === 0) {
+          return ok('暂无外部渠道会话记录。请先让用户在飞书里向机器人发送一条消息，或确认应用渠道已开启连接。');
+        }
+        const lines = targets.map(
+          (t) =>
+            `- ${t.address} · ${t.channelId} · ${t.chatKind === 'group' ? '群聊' : '私聊'} · ${t.title} · 最近活跃：${new Date(t.lastActiveAt).toLocaleString('zh-CN')}`,
+        );
+        return ok(lines.join('\n'));
+      },
+    }),
+    defineTool({
+      name: 'channel_send_message',
+      description:
+        '主动向外部应用渠道（如飞书私聊或群聊）发送消息，可选附带工作区内的文件。address 必须来自 channel_list_targets 或当前事件的 reply_target。',
+      parameters: Type.Object({
+        address: Type.String({ description: '目标会话地址，例如 feishu:chat:oc_xxx。' }),
+        text: Type.String({ description: '要发送的文本或 Markdown 内容。' }),
+        file_paths: Type.Optional(
+          Type.Array(Type.String({ description: '工作区内的文件路径（可选）。' })),
+        ),
+      }),
+      execute: async (args) => {
+        const result = await service.sendMessage({
+          address: args.address,
+          text: args.text,
+          ...(args.file_paths?.length ? { filePaths: args.file_paths } : {}),
+        });
+        if (!result.ok) {
+          return fail(`外部渠道发送失败：${result.error ?? '未知错误'}`);
+        }
+        return ok(`已发送到 ${args.address}。`, {
+          ...(result.messageId ? { messageId: result.messageId } : {}),
+        });
       },
     }),
   ];

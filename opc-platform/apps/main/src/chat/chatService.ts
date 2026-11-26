@@ -4,6 +4,7 @@ import type {
   Conversation,
   ConversationStatus,
   Message,
+  MessageChannelMeta,
   WorkTask,
 } from '@opc/shared/domain';
 import type { CompanyDatabase } from '../data/companyDatabase';
@@ -755,6 +756,65 @@ export class ChatService {
     if (!conversation) return;
     this.appendReply(conversation, ROUTER_FACE, text, content);
     this.completeActivity(conversationId);
+  };
+
+  /**
+   * Mirrors an inbound external-channel message (e.g. from Feishu) into the
+   * desktop assistant conversation without firing `onUserMessage` (which would
+   * double-enqueue into the Router).
+   */
+  appendMirroredUserMessage = (input: {
+    text: string;
+    attachments?: ChatAttachmentRef[];
+    channelMeta: MessageChannelMeta;
+  }): void => {
+    const conversationId = this.ensureAssistant();
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    this.appendMessage(
+      conversation,
+      {
+        id: createId('msg'),
+        kind: 'text',
+        senderId: 'user',
+        senderName: input.channelMeta.senderName?.trim() || '外部消息',
+        timestamp: formatClock(),
+        text: input.text,
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+        channelMeta: input.channelMeta,
+      },
+      { read: conversation.id === this.activeConversationId },
+    );
+  };
+
+  /**
+   * Mirrors an outbound external-channel reply into the desktop assistant
+   * conversation so the user has full cross-surface visibility.
+   */
+  appendMirroredAssistantMessage = (input: {
+    text: string;
+    content?: ChatContentBlock[];
+    channelMeta: MessageChannelMeta;
+  }): void => {
+    const conversationId = this.ensureAssistant();
+    const conversation = this.snapshot.conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    this.appendMessage(
+      conversation,
+      {
+        id: createId('msg'),
+        kind: 'text',
+        senderId: ROUTER_FACE.id,
+        senderName: ROUTER_FACE.name,
+        senderRole: [ROUTER_FACE.role, ROUTER_FACE.level].filter(Boolean).join(' · '),
+        senderAvatarUrl: ROUTER_FACE.avatarUrl,
+        timestamp: formatClock(),
+        text: input.text,
+        ...(input.content?.length ? { content: input.content } : {}),
+        channelMeta: input.channelMeta,
+      },
+      { read: conversation.id === this.activeConversationId },
+    );
   };
 
   /** Start an ephemeral Router message. It becomes durable only when finished. */

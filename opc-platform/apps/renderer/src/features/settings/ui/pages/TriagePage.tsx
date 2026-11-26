@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { TriggerSource, TriagePolicy } from '@opc/shared/domain';
 import { DEFAULT_TRIAGE_POLICY, isChatModelEnabled } from '@opc/shared/domain';
@@ -6,8 +7,7 @@ import { useModels } from '@/features/models/model/useModels';
 import { useCatalog } from '@/features/models/model/useCatalog';
 import { cn } from '@/shared/lib/cn';
 import { ModelPicker, pickerGroups } from '@/shared/ui/ModelPicker';
-import { PageHeader, Row, Section, Segmented } from '../kit';
-import { TriggerSourceSection } from './TriggerSourceSection';
+import { PageHeader, Row, Section, Segmented, buttonClass } from '../kit';
 
 /**
  * Settings → 通用 → 事件调度。
@@ -33,6 +33,7 @@ const THRESHOLDS = [0.5, 0.7, 0.9] as const;
 
 export function TriagePage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const models = useModels();
   const { catalog } = useCatalog();
   const [policy, setPolicy] = useState<TriagePolicy>(DEFAULT_TRIAGE_POLICY);
@@ -275,8 +276,23 @@ export function TriagePage() {
           {t('settings.triage.footnote')}
         </p>
 
-        {/* 事件**从哪进来**和**怎么被过滤**是同一件事的两半，放在一页里。 */}
-        <TriggerSourceSection />
+        <Section
+          title={t('settings.triage.channelsLinkTitle')}
+          description={t('settings.triage.channelsLinkDesc')}
+        >
+          <Row
+            label={t('settings.triage.channelsLinkRow')}
+            hint={t('settings.triage.channelsLinkHint')}
+          >
+            <button
+              type="button"
+              onClick={() => navigate('/settings?page=channels')}
+              className={buttonClass.secondary}
+            >
+              {t('settings.triage.channelsLinkAction')}
+            </button>
+          </Row>
+        </Section>
       </div>
     </>
   );

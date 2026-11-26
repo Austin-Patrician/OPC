@@ -5,7 +5,7 @@ import type {
   TaskContract,
   WorkerTemplate,
 } from '@opc/shared/domain';
-import type { TriggerReplyTarget } from '../trigger/types';
+import type { TriggerReplyTarget } from '@opc/shared/domain';
 import { inferTemplate } from '../work/workerPool';
 import { UNVERIFIED_GATE } from '../work/acceptanceGate';
 import type { ThreadRepository } from '../data/threadRepository';

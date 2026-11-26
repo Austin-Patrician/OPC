@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Harness, Registry } from "@earendil-works/pi-durable";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type {
+  ChannelTargetView,
   ChatAttachmentRef,
   ChatContentBlock,
   ModelRef,
@@ -43,7 +44,7 @@ import { bodyOf, createFastPath } from "./triage";
 import { calculateTokenCost, resolveChargedCost } from "../work/usage";
 import { unfinishedReason, unfinishedTasksOf } from "./threadBusy";
 import type { OpenLineInput, OpenLineResult } from "./workDispatch";
-import type { TriggerReplyTarget } from "../trigger/types";
+import type { TriggerReplyTarget } from "@opc/shared/domain";
 import { renderTrace } from "../work/trace";
 import {
   formatReportLine,
@@ -106,8 +107,18 @@ export interface RouterHostDeps {
   /** Optional platform sender. If absent, a targeted reply falls back to desktop and logs. */
   externalReply?: (
     target: TriggerReplyTarget,
-    text: string,
+    response: RouterResponse,
+    fallbackText: string,
   ) => void | Promise<void>;
+  /** Proactive external-channel tools exposed to Router when channels are wired. */
+  channels?: {
+    listTargets(): ChannelTargetView[];
+    sendMessage(input: {
+      address: string;
+      text: string;
+      filePaths?: string[];
+    }): Promise<{ ok: boolean; messageId?: string; error?: string }>;
+  };
   /** 中途改方向。`live` 是"真的插进正在跑的会话"的条数。 */
   steer?: (
     threadId: string,
@@ -780,6 +791,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
           update: (id, patch) => deps.schedules!.update(id, patch),
           cancel: (id) => deps.schedules!.cancel(id),
         } : undefined,
+        channels: deps.channels,
         assistantTools: deps.assistantTools,
       }),
     );
@@ -965,6 +977,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         if (target && deps.externalReply) {
           await deps.externalReply(
             target,
+            response,
             formatExternalReplyFromBlocks(response.blocks),
           );
           deps.onActivity?.("completed");

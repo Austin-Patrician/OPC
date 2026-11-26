@@ -4,6 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, powerMonitor, session, shell, utilityProcess } from 'electron';
 import { isSafeExternalUrl } from './system/localPathActions';
+import {
+  APP_USER_MODEL_ID,
+  ensureWindowsDevStartMenuShortcut,
+  resolveBrandIconPath,
+} from './system/brandIcon';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
 import {
@@ -40,6 +45,8 @@ import { registerOcrScheme } from './ocr/protocol';
 import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
 import { handleWallpaperProtocol, registerWallpaperScheme } from './appearance/wallpaperProtocol';
 import { WallpaperService } from './appearance/wallpaperService';
+import { NotificationSettingsStore } from './notifications/settings';
+import { NotificationService } from './notifications/notificationService';
 import { handleDocProtocol, registerDocScheme, resolvePdfjsAssetsDir } from './preview/docProtocol';
 import { DocPreviewService } from './preview/docPreviewService';
 import type { SpreadsheetWorkerResponse } from './preview/spreadsheetWorker';
@@ -53,19 +60,14 @@ import { PiSkillHost } from './skills/host';
 import { resolveBundledSkillsDir } from './skills/scanner';
 import { resolveSkillPacksSourceDir, SkillPackService } from './skills/packs';
 import { BillingSettingsService } from './work/billingSettings';
-import { TaskRepository } from './data/taskRepository';
 import { SystemEventRepository } from './data/systemEventRepository';
 import { WatchdogIncidentRepository } from './data/watchdogIncidentRepository';
 import { WatchdogActionRepository } from './data/watchdogActionRepository';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
-import { createDingTalkAdapter } from './trigger/dingtalk';
-import { createFeishuAdapter } from './trigger/feishu';
-import { createGitHubAdapter } from './trigger/github';
-import { ingestTrigger } from './trigger/ingest';
-import { TriggerRegistry } from './trigger/registry';
-import { startTriggerServer, type TriggerServer } from './trigger/server';
-import { TriggerSettingsStore } from './trigger/settings';
+import { ChannelManager } from './channels/channelManager';
+import { FeishuPlugin } from './channels/feishu/feishuPlugin';
+import { ChannelStore } from './channels/store';
 import { WatchdogHost } from './watchdog/host';
 import { createWatchdogJudge } from './watchdog/judge';
 import { WatchdogModelStore } from './watchdog/model';
@@ -159,7 +161,21 @@ let browserBroker: BrowserBroker | null = null;
 let desktopBroker: DesktopBroker | null = null;
 /** Kept at module scope so IPC can trigger a manual wake (§7.2 P0). */
 let disposeIpc: (() => void) | null = null;
+function resolveBrandIcon(kind: 'ico' | 'png'): string | undefined {
+	return resolveBrandIconPath(kind, {
+		mainDir,
+		appPath: app.getAppPath(),
+		resourcesPath: process.resourcesPath,
+		packaged: app.isPackaged,
+	});
+}
 function createMainWindow() {
+	const windowIcon =
+		process.platform === "win32"
+			? (resolveBrandIcon("ico") ?? resolveBrandIcon("png"))
+			: process.platform === "darwin"
+				? undefined
+				: resolveBrandIcon("png");
 	const window = new BrowserWindow({
 		width: 1260,
 		height: 800,
@@ -169,6 +185,7 @@ function createMainWindow() {
 		show: false,
 		backgroundColor: "#dcdce0",
 		title: "OPC Agent 工作台",
+		...(windowIcon ? { icon: windowIcon } : {}),
 		...process.platform === "darwin" ? {
 			titleBarStyle: "hiddenInset",
 			trafficLightPosition: {
@@ -185,6 +202,9 @@ function createMainWindow() {
 			spellcheck: false
 		}
 	});
+	if (process.platform === "win32" && windowIcon) {
+		window.setIcon(windowIcon);
+	}
 	if (process.platform === "darwin") {
 		// The renderer owns the right-side window controls; avoid duplicating the
 		// native traffic lights on the left side of the title bar.
@@ -389,6 +409,44 @@ async function bootstrap(): Promise<void> {
     apply: applyProxy,
   });
   const assistantTools = new AssistantToolsService(db, networkClient);
+  const companyService = new CompanyService(db);
+  const notificationSettingsStore = new NotificationSettingsStore(db);
+  let wallpaperPowerState: WallpaperPowerState = {
+    windowVisible: true,
+    windowFocused: true,
+    windowMinimized: false,
+    systemSuspended: false,
+    onBattery: typeof powerMonitor.isOnBatteryPower === 'function' ? powerMonitor.isOnBatteryPower() : false,
+  };
+  const wallpaperPowerListeners = new Set<(state: WallpaperPowerState) => void>();
+  const publishWallpaperPowerState = (patch: Partial<WallpaperPowerState>) => {
+    const next: WallpaperPowerState = { ...wallpaperPowerState, ...patch };
+    if (
+      next.windowVisible === wallpaperPowerState.windowVisible &&
+      next.windowFocused === wallpaperPowerState.windowFocused &&
+      next.windowMinimized === wallpaperPowerState.windowMinimized &&
+      next.systemSuspended === wallpaperPowerState.systemSuspended &&
+      next.onBattery === wallpaperPowerState.onBattery
+    ) {
+      return;
+    }
+    wallpaperPowerState = next;
+    for (const listener of wallpaperPowerListeners) {
+      listener(next);
+    }
+  };
+  const notifications = new NotificationService({
+    settingsStore: notificationSettingsStore,
+    getAssistantName: () => companyService.get().assistantName.trim() || 'Buddy',
+    getWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+    getWindowState: () => ({
+      windowVisible: wallpaperPowerState.windowVisible,
+      windowFocused: wallpaperPowerState.windowFocused,
+      windowMinimized: wallpaperPowerState.windowMinimized,
+    }),
+    isHeadless: isHeadlessMode,
+    resolveIconPath: () => resolveBrandIcon('png') ?? resolveBrandIcon('ico'),
+  });
   // One instance for the process: the router writes threads here, IPC reads them.
   const threads = new ThreadRepository(db);
   // 全新安装要有一个人能干活：界面上已经没有招聘和组织架构了，
@@ -448,6 +506,13 @@ async function bootstrap(): Promise<void> {
       title: report.title,
       body: report.body,
       state: 'pending',
+    });
+    notifications.notifyQuestion({
+      reportId: report.id,
+      threadId: report.threadId,
+      ...(report.taskId ? { taskId: report.taskId } : {}),
+      title: report.title,
+      body: report.body,
     });
     if (report.level === 'decide') chat?.setActivity(conversationId, 'waiting_user');
   };
@@ -609,6 +674,7 @@ async function bootstrap(): Promise<void> {
     console.warn(`[mcp] 读到 ${mcpConfigured.length} 个服务器：${mcpConfigured.map((s) => s.name).join('、')}`);
   }
   let wakeRouter: () => void = () => undefined;
+  let channelManager: ChannelManager | null = null;
   work = new WorkService({
     db,
     threads,
@@ -631,6 +697,22 @@ async function bootstrap(): Promise<void> {
         body: report.body,
         state: 'pending',
       });
+      notifications.notifyApproval({
+        reportId: report.id,
+        threadId: report.threadId,
+        taskId: task.id,
+        title: report.title,
+        body: report.body,
+        tool,
+      });
+      const sourceThread = threads.getThread(report.threadId);
+      if (sourceThread?.replyTarget && channelManager) {
+        void channelManager.sendApprovalNotice(sourceThread.replyTarget, {
+          title: report.title,
+          body: report.body,
+          tool,
+        });
+      }
     },
     onApprovalResolved: (reportId, state) => {
       chat?.updateApprovalCard(reportId, state);
@@ -661,6 +743,31 @@ async function bootstrap(): Promise<void> {
     browser: browserBroker,
     desktop: desktopBroker,
   });
+  const seenTaskStatus = new Map<string, string>();
+  for (const existingTask of work.listAllTasks(200)) {
+    seenTaskStatus.set(existingTask.id, existingTask.status);
+  }
+  const unsubscribeTaskNotify = work.subscribe((changedTask) => {
+    const previous = seenTaskStatus.get(changedTask.id);
+    seenTaskStatus.set(changedTask.id, changedTask.status);
+    if (seenTaskStatus.size > 500) {
+      const firstKey = seenTaskStatus.keys().next().value;
+      if (firstKey) seenTaskStatus.delete(firstKey);
+    }
+    const transitionedToFailure =
+      (changedTask.status === 'failed' || changedTask.status === 'rejected') &&
+      previous !== undefined &&
+      previous !== 'failed' &&
+      previous !== 'rejected';
+    if (!transitionedToFailure || changedTask.parentTaskId || !changedTask.threadId) return;
+    notifications.notifyError({
+      dedupeId: changedTask.id,
+      threadId: changedTask.threadId,
+      taskId: changedTask.id,
+      title: changedTask.title,
+      body: changedTask.error || changedTask.acceptance?.reason || changedTask.title,
+    });
+  });
   // Development phase: discard approval prompts created before chat cards were
   // introduced, otherwise old queue state can leave threads permanently waiting.
   const persistedApprovalCards = new Set(
@@ -683,39 +790,35 @@ async function bootstrap(): Promise<void> {
   const triage = new TriagePolicyStore(db);
   const schedules = new RouterScheduleRepository(db);
 
-  /**
-   * 触发源（§3 事件驱动）：GitHub、飞书、钉钉。
-   *
-   * 三家各自一个适配器，只管自己那套方言；`TriggerRegistry` 按 `/hook/<id>` 认人，
-   * 认出来之后验身、归一，再交给 `ingestTrigger` 落事件。**加一个新的触发源不改
-   * 调度循环一行**——这就是这一层存在的理由。
-   *
-   * 密钥每次请求重新读（`secret()` 是个闭包），所以在设置里改完立刻生效；端口不行，
-   * 端口要重启才换，界面上说清楚。
-   */
-  const triggerSettings = new TriggerSettingsStore(db);
-  const triggerRegistry = new TriggerRegistry([
-    createGitHubAdapter(() => triggerSettings.get().secrets.github),
-    createFeishuAdapter(() => triggerSettings.get().secrets.feishu),
-    createDingTalkAdapter(() => triggerSettings.get().secrets.dingtalk),
-  ]);
-  let triggerServer: TriggerServer | null = null;
-  const triggerStatus = () => {
-    const settings = triggerSettings.get();
-    return {
-      running: triggerServer !== null,
-      port: triggerServer?.port ?? settings.port,
-      entries: triggerRegistry.entries.map((entry) => {
-        const url = triggerServer?.urls.find((candidate) => candidate.id === entry.id)?.url;
-        return {
-          id: entry.id,
-          source: entry.source,
-          url: url ?? `http://127.0.0.1:${settings.port}/hook/${entry.id}`,
-          configured: Boolean(settings.secrets[entry.id as keyof typeof settings.secrets]?.trim()),
-        };
-      }),
-    };
-  };
+  const channelStore = new ChannelStore(db);
+  const channelAttachmentsDir = path.join(appPaths.userData, 'channel-attachments');
+  channelManager = new ChannelManager({
+    store: channelStore,
+    threads,
+    ...(chat ? { chat } : {}),
+    attachmentsDir: channelAttachmentsDir,
+    allowedFileRoots: [appPaths.workspaceDir, channelAttachmentsDir],
+    onAcceptedEvent: () => wakeRouter(),
+    resolveTaskArtifactPath: (taskId, relPath) => {
+      if (!taskId || !work) return null;
+      const task = work.getTask(taskId);
+      if (!task) return null;
+      const taskDir = path.resolve(appPaths.workspaceDir, task.workspaceRelPath);
+      const target = path.resolve(taskDir, relPath);
+      if (target !== taskDir && !target.startsWith(`${taskDir}${path.sep}`)) return null;
+      return target;
+    },
+    onPairingRequest: (req) => {
+      notifications.notifyQuestion({
+        reportId: req.id,
+        title: `飞书配对请求：${req.senderName}`,
+        body: req.firstMessagePreview
+          ? `消息预览：${req.firstMessagePreview}（请到「设置 → 应用渠道」审批）`
+          : '请到「设置 → 应用渠道」允许或拒绝该用户的私聊访问。',
+      });
+    },
+  });
+  channelManager.registerPlugin(new FeishuPlugin(channelStore));
 
   /**
    * Router：一个真的会话。
@@ -747,7 +850,7 @@ async function bootstrap(): Promise<void> {
     /** 工作台的规矩：执行体的提示词里有，Router 也得有。 */
     facts,
     personalPreferences: () => {
-      const profile = new CompanyService(db).get();
+      const profile = companyService.get();
       return {
         tone: profile.replyTone,
         detail: profile.replyDetail,
@@ -783,11 +886,38 @@ async function bootstrap(): Promise<void> {
       },
     }),
     // Router 对你说话：走聊天这条唯一的外观信道（§2.2）。
-    reply: (response) => chat!.appendRouterMessage(
-      chat!.ensureAssistant(),
-      response.blocks.filter((block) => block.type === 'markdown').map((block) => block.text).join('\n\n'),
-      response.blocks,
-    ),
+    reply: (response) => {
+      const conversationId = chat!.ensureAssistant();
+      const markdownText = response.blocks
+        .filter((block) => block.type === 'markdown')
+        .map((block) => block.text)
+        .join('\n\n');
+      chat!.appendRouterMessage(conversationId, markdownText, response.blocks);
+      const fallbackText = response.blocks
+        .map((block) =>
+          'title' in block && typeof block.title === 'string'
+            ? block.title
+            : 'summary' in block && typeof block.summary === 'string'
+              ? block.summary
+              : '',
+        )
+        .filter(Boolean)
+        .join(' · ');
+      notifications.notifyReply({
+        conversationId,
+        text: markdownText.trim() || fallbackText,
+      });
+    },
+    externalReply: async (target, response, fallbackText) => {
+      await channelManager?.sendExternalReply(target, response, fallbackText);
+    },
+    channels: {
+      listTargets: () => channelManager?.listTargets() ?? [],
+      sendMessage: (input) =>
+        channelManager
+          ? channelManager.sendProactiveMessage(input)
+          : Promise.resolve({ ok: false, error: '渠道服务未就绪' }),
+    },
     onActivity: (phase) => {
       const conversationId = chat?.ensureAssistant();
       if (!conversationId) return;
@@ -954,30 +1084,6 @@ async function bootstrap(): Promise<void> {
 
   const wallpapersDir = appPaths.wallpapersDir ?? path.join(appPaths.userData, 'wallpapers');
   const wallpaperService = new WallpaperService(wallpapersDir);
-  let wallpaperPowerState: WallpaperPowerState = {
-    windowVisible: true,
-    windowFocused: true,
-    windowMinimized: false,
-    systemSuspended: false,
-    onBattery: typeof powerMonitor.isOnBatteryPower === 'function' ? powerMonitor.isOnBatteryPower() : false,
-  };
-  const wallpaperPowerListeners = new Set<(state: WallpaperPowerState) => void>();
-  const publishWallpaperPowerState = (patch: Partial<WallpaperPowerState>) => {
-    const next: WallpaperPowerState = { ...wallpaperPowerState, ...patch };
-    if (
-      next.windowVisible === wallpaperPowerState.windowVisible &&
-      next.windowFocused === wallpaperPowerState.windowFocused &&
-      next.windowMinimized === wallpaperPowerState.windowMinimized &&
-      next.systemSuspended === wallpaperPowerState.systemSuspended &&
-      next.onBattery === wallpaperPowerState.onBattery
-    ) {
-      return;
-    }
-    wallpaperPowerState = next;
-    for (const listener of wallpaperPowerListeners) {
-      listener(next);
-    }
-  };
 
   disposeIpc = registerIpc({
     chat,
@@ -1007,16 +1113,8 @@ async function bootstrap(): Promise<void> {
       // 模型/钥匙在别的页面改的：这里把子进程手里的那份刷新掉。
       onModelChanged: () => watchdogHost?.refreshModel(),
     },
-    triggers: {
-      status: triggerStatus,
-      set: (patch: unknown) => {
-        triggerSettings.set(patch as never);
-        // 端口改了要重启才生效，所以这里回的是**当前**状态而不是愿望：界面照着
-        // 它显示"重启后生效"，比让用户以为已经换过去要诚实。
-        return triggerStatus();
-      },
-    },
-    company: new CompanyService(db),
+    channels: channelManager,
+    company: companyService,
     network,
     assistantTools,
     runtime: runtimeService,
@@ -1096,10 +1194,13 @@ async function bootstrap(): Promise<void> {
         wallpaperPowerListeners.delete(listener);
       };
     },
+    notifications,
   });
 
   // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。
   app.on('before-quit', () => {
+    unsubscribeTaskNotify();
+    notifications.dispose();
     docPreview.dispose();
     void closeAllMcpConnections();
   });
@@ -1212,6 +1313,13 @@ async function bootstrap(): Promise<void> {
           .join('\n'),
         taskId: incident.subjectId,
       });
+      notifications.notifyError({
+        dedupeId: incident.subjectId || incident.id,
+        threadId: row.thread_id,
+        taskId: incident.subjectId,
+        title: row.title,
+        body: incident.summary,
+      });
       return true;
     },
     ...(isWatchdogProbe ? { intervalMs: 1_000 } : {}),
@@ -1316,35 +1424,10 @@ async function bootstrap(): Promise<void> {
       console.warn('[OPC] 无法创建收件目录，文件夹触发源本次不启用', error);
     }
 
-    /**
-     * 触发入口。只监听本机：GitHub / 飞书 / 钉钉都在公网上，要接起来还得在中间放一条
-     * 隧道——这一步由用户决定，我们只把门装好。起不来（端口被占）不影响应用打开，
-     * 设置页会显示"没在运行"和原因。
-     */
-    const triggerTasks = new TaskRepository(db);
-    void startTriggerServer({
-      registry: triggerRegistry,
-      port: triggerSettings.get().port,
-      onAccepted: (trigger, meta) => {
-        const result = ingestTrigger({ threads, tasks: triggerTasks }, trigger, meta);
-        if (!result.inserted) return;
-        // 一条外部事件到了就推一轮：GitHub 的评论不该等 20 秒的定时器。
-        pushTick();
-      },
-      onOutcome: (outcome) => {
-        if (outcome.reason) console.warn('[trigger]', outcome.reason);
-      },
-    })
-      .then((server) => {
-        triggerServer = server;
-        console.warn('[trigger] 触发入口已就绪', server.urls.map((entry) => entry.url).join(' '));
-      })
-      .catch((error: unknown) => {
-        console.warn('[trigger] 触发入口没能启动（端口可能被占用）', error);
-      });
+    void channelManager?.startEnabled();
 
     app.on('before-quit', () => {
-      void triggerServer?.close().catch(() => undefined);
+      void channelManager?.stopAll();
     });
 
     const watcher = new FolderWatcher({
@@ -1418,8 +1501,10 @@ async function bootstrap(): Promise<void> {
   });
   mainWindow = createMainWindow();
 
-  const onWindowFocus = () =>
+  const onWindowFocus = () => {
     publishWallpaperPowerState({ windowFocused: true, windowMinimized: false, windowVisible: true });
+    notifications.onWindowFocused();
+  };
   const onWindowBlur = () => publishWallpaperPowerState({ windowFocused: false });
   const onWindowMinimize = () => publishWallpaperPowerState({ windowMinimized: true, windowFocused: false });
   const onWindowRestore = () =>
@@ -1427,7 +1512,10 @@ async function bootstrap(): Promise<void> {
   const onWindowHide = () => publishWallpaperPowerState({ windowVisible: false, windowFocused: false });
   const onWindowShow = () => publishWallpaperPowerState({ windowVisible: true });
   const onSystemSuspend = () => publishWallpaperPowerState({ systemSuspended: true });
-  const onSystemResume = () => publishWallpaperPowerState({ systemSuspended: false });
+  const onSystemResume = () => {
+    publishWallpaperPowerState({ systemSuspended: false });
+    void channelManager?.onSystemResume();
+  };
   const onLockScreen = () => publishWallpaperPowerState({ systemSuspended: true, windowFocused: false });
   const onUnlockScreen = () => publishWallpaperPowerState({ systemSuspended: false });
   const onBattery = () => publishWallpaperPowerState({ onBattery: true });
@@ -1494,7 +1582,28 @@ if (!hasLock) {
   });
 
   void app.whenReady().then(async () => {
-    app.setAppUserModelId('com.opc.agent.workspace');
+    app.setAppUserModelId(APP_USER_MODEL_ID);
+    if (!isHeadlessMode) {
+      const devIco = resolveBrandIcon('ico');
+      ensureWindowsDevStartMenuShortcut({
+        platform: process.platform,
+        packaged: app.isPackaged,
+        headless: isHeadlessMode,
+        appDataDir: app.getPath('appData'),
+        execPath: process.execPath,
+        appPath: app.getAppPath(),
+        cwd: path.resolve(mainDir, '../..'),
+        ...(process.argv[1] ? { scriptArg: process.argv[1] } : {}),
+        ...(devIco ? { iconPath: devIco } : {}),
+        readShortcutLink: (shortcutPath) => shell.readShortcutLink(shortcutPath),
+        writeShortcutLink: (shortcutPath, operation, details) =>
+          shell.writeShortcutLink(shortcutPath, operation, details),
+      });
+      if (process.platform === 'darwin' && !app.isPackaged) {
+        const dockIcon = resolveBrandIcon('png');
+        if (dockIcon) app.dock?.setIcon(dockIcon);
+      }
+    }
 
     if (isOcrProbe) {
       // Proves the whole path outside of a task: protocol → hidden window →

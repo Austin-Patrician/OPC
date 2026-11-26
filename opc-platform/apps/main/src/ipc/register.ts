@@ -6,18 +6,19 @@ import {
   type ResetChatResult,
   type SendMessageInput,
   type ChatSearchInput,
-  type TriggerPatch,
-  type TriggerStatus,
   type UsageFilter,
   type DocPreviewSource,
 } from "@opc/shared/ipc";
 import type {
   ApprovalPermitScope,
   BundledRuntime,
+  ChannelView,
   CompactionSettings,
   CompanyProfilePatch,
   CreateTaskInput,
   DecisionClassifyInput,
+  FeishuChannelSettingsPatch,
+  FeishuDomain,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -32,6 +33,9 @@ import type {
   RouterSchedulePatch,
   ObservatoryRouterEvent,
   WallpaperPowerState,
+  NotificationContextUpdate,
+  NotificationSettingsPatch,
+  NotificationStatus,
 } from "@opc/shared/domain";
 import {
   MAX_CHAT_ATTACHMENT_BYTES,
@@ -55,6 +59,7 @@ import { runDiagnostics } from "../diagnostics/report";
 import type { OcrSettings } from "@opc/shared/ocr";
 import type { FactService } from "../memory/factService";
 import type { TriagePolicyStore } from "../router/triagePolicy";
+import type { ChannelManager } from "../channels/channelManager";
 import type { ThreadRepository } from "../data/threadRepository";
 import type { MarkdownMemoryStore } from "../memory/markdownMemoryStore";
 import type { MemorySearchIndex } from "../memory/memorySearchIndex";
@@ -98,6 +103,7 @@ import type { UsageRepository } from "../data/usageRepository";
 import type { RouterScheduleRepository } from "../data/routerScheduleRepository";
 import type { ObservatoryService } from "../observatory/observatoryService";
 import type { WallpaperService } from "../appearance/wallpaperService";
+import type { NotificationService } from "../notifications/notificationService";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -157,11 +163,8 @@ interface RegisterOptions {
   /** 两层过滤的策略（设置 → 通用 → 调度）：写进 `app_setting`，调度每轮读。 */
   triage: TriagePolicyStore;
   schedules: RouterScheduleRepository;
-  /** 触发源：外部平台推进来的那扇门。 */
-  triggers: {
-    status: () => TriggerStatus;
-    set: (patch: TriggerPatch) => TriggerStatus;
-  };
+  /** 外部应用渠道（飞书等）。 */
+  channels: ChannelManager;
   /** Pi 扩展的发现、加载与开关；扫描只读文件，加载才执行代码。 */
   piExtensions: PiExtensionHost;
   /** 本机技能（SKILL.md）的发现与开关；纯文本，不需要信任。 */
@@ -187,6 +190,7 @@ interface RegisterOptions {
   subscribeWallpaperPowerState?: (
     listener: (state: WallpaperPowerState) => void,
   ) => () => void;
+  notifications?: NotificationService;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -218,7 +222,7 @@ export function registerIpc({
   skillPacks,
   triage,
   schedules,
-  triggers,
+  channels,
   watchdog,
   browser,
   desktop,
@@ -229,6 +233,7 @@ export function registerIpc({
   wallpaper,
   getWallpaperPowerState,
   subscribeWallpaperPowerState,
+  notifications,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -1013,13 +1018,70 @@ export function registerIpc({
     memoryStore.status(memoryReflector.isReflecting()),
   );
 
-  ipcMain.handle(IPC.trigger.status, () => triggers.status());
-  ipcMain.handle(IPC.trigger.set, (_event, patch: unknown) => {
-    if (typeof patch !== "object" || patch === null) {
-      throw new Error("trigger:set 参数非法");
-    }
-    return triggers.set(patch as TriggerPatch);
+  const unsubscribeChannels = channels.onChanged(() => {
+    broadcast(IPC.channels.changedEvent, channels.listViews());
   });
+  ipcMain.handle(IPC.channels.list, (): ChannelView[] => channels.listViews());
+  ipcMain.handle(IPC.channels.updateFeishu, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateFeishu 参数非法");
+    }
+    return channels.updateFeishu(raw as FeishuChannelSettingsPatch);
+  });
+  ipcMain.handle(
+    IPC.channels.testConnection,
+    (_event, channelId: unknown, draft?: unknown) => {
+      if (typeof channelId !== "string" || !channelId.trim()) {
+        throw new Error("channels:testConnection 参数非法");
+      }
+      return channels.testConnection(
+        channelId.trim(),
+        typeof draft === "object" && draft !== null
+          ? (draft as { appId?: string; appSecret?: string; domain?: FeishuDomain })
+          : undefined,
+      );
+    },
+  );
+  ipcMain.handle(IPC.channels.reconnect, (_event, channelId: unknown) => {
+    if (typeof channelId !== "string" || !channelId.trim()) {
+      throw new Error("channels:reconnect 参数非法");
+    }
+    return channels.reconnect(channelId.trim());
+  });
+  ipcMain.handle(IPC.channels.approvePairing, (_event, requestId: unknown) => {
+    if (typeof requestId !== "string" || !requestId.trim()) {
+      throw new Error("channels:approvePairing 参数非法");
+    }
+    return channels.approvePairing(requestId.trim());
+  });
+  ipcMain.handle(IPC.channels.rejectPairing, (_event, requestId: unknown) => {
+    if (typeof requestId !== "string" || !requestId.trim()) {
+      throw new Error("channels:rejectPairing 参数非法");
+    }
+    return channels.rejectPairing(requestId.trim());
+  });
+  ipcMain.handle(
+    IPC.channels.removeAllowlistEntry,
+    (_event, channelId: unknown, kind: unknown, entryId: unknown) => {
+      if (
+        typeof channelId !== "string" ||
+        (kind !== "dm" && kind !== "group") ||
+        typeof entryId !== "string"
+      ) {
+        throw new Error("channels:removeAllowlistEntry 参数非法");
+      }
+      return channels.removeAllowlistEntry(channelId, kind, entryId);
+    },
+  );
+  ipcMain.handle(
+    IPC.channels.forgetTarget,
+    (_event, channelId: unknown, address: unknown) => {
+      if (typeof channelId !== "string" || typeof address !== "string") {
+        throw new Error("channels:forgetTarget 参数非法");
+      }
+      return channels.forgetTarget(channelId, address);
+    },
+  );
 
   ipcMain.handle(IPC.router.getTriage, () => triage.get());
   ipcMain.handle(IPC.router.setTriage, (_event, patch: unknown) => {
@@ -1720,6 +1782,64 @@ export function registerIpc({
     },
   );
 
+  const unsubscribeNotificationActions =
+    notifications?.subscribeAction((event) =>
+      broadcast(IPC.notifications.actionEvent, event),
+    ) ?? (() => undefined);
+
+  const defaultNotificationStatus = (): NotificationStatus => ({
+    supported: false,
+    platform:
+      process.platform === "darwin" || process.platform === "win32"
+        ? process.platform
+        : "linux",
+    settings: {
+      enabled: false,
+      when: "background",
+      sound: true,
+      showPreview: true,
+      attentionCue: true,
+      events: { needsAction: true, replies: true, errors: true },
+    },
+  });
+
+  ipcMain.handle(IPC.notifications.getStatus, (): NotificationStatus =>
+    notifications?.getStatus() ?? defaultNotificationStatus(),
+  );
+  ipcMain.handle(IPC.notifications.update, (_event, raw: unknown): NotificationStatus => {
+    if (!notifications) return defaultNotificationStatus();
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("notifications:update 参数非法");
+    }
+    const candidate = raw as Record<string, unknown>;
+    const patch: NotificationSettingsPatch = {};
+    if (typeof candidate.enabled === "boolean") patch.enabled = candidate.enabled;
+    if (candidate.when === "background" || candidate.when === "always") patch.when = candidate.when;
+    if (typeof candidate.sound === "boolean") patch.sound = candidate.sound;
+    if (typeof candidate.showPreview === "boolean") patch.showPreview = candidate.showPreview;
+    if (typeof candidate.attentionCue === "boolean") patch.attentionCue = candidate.attentionCue;
+    if (typeof candidate.events === "object" && candidate.events !== null && !Array.isArray(candidate.events)) {
+      const ev = candidate.events as Record<string, unknown>;
+      const eventsPatch: NonNullable<NotificationSettingsPatch["events"]> = {};
+      if (typeof ev.needsAction === "boolean") eventsPatch.needsAction = ev.needsAction;
+      if (typeof ev.replies === "boolean") eventsPatch.replies = ev.replies;
+      if (typeof ev.errors === "boolean") eventsPatch.errors = ev.errors;
+      patch.events = eventsPatch;
+    }
+    return notifications.updateSettings(patch);
+  });
+  ipcMain.handle(IPC.notifications.test, () =>
+    notifications?.sendTest() ?? { ok: false, reason: "unavailable" },
+  );
+  ipcMain.handle(IPC.notifications.setContext, (_event, raw: unknown) => {
+    if (!notifications || typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+    const candidate = raw as Record<string, unknown>;
+    const update: NotificationContextUpdate = {};
+    if (candidate.route === "chat" || candidate.route === "other") update.route = candidate.route;
+    if (candidate.locale === "zh-CN" || candidate.locale === "en-US") update.locale = candidate.locale;
+    notifications.setContext(update);
+  });
+
   return () => {
     for (const channel of Object.values(IPC.models))
       ipcMain.removeHandler(channel);
@@ -1731,6 +1851,20 @@ export function registerIpc({
     unsubscribeWorkProgress();
     unsubscribeObservatoryRouter();
     unsubscribeWallpaperPower();
+    unsubscribeNotificationActions();
+    unsubscribeChannels();
+    for (const channel of [
+      IPC.channels.list,
+      IPC.channels.updateFeishu,
+      IPC.channels.testConnection,
+      IPC.channels.reconnect,
+      IPC.channels.approvePairing,
+      IPC.channels.rejectPairing,
+      IPC.channels.removeAllowlistEntry,
+      IPC.channels.forgetTarget,
+    ]) {
+      ipcMain.removeHandler(channel);
+    }
     ipcMain.removeHandler(IPC.billing.get);
     for (const channel of [IPC.router.listSchedules, IPC.router.createSchedule, IPC.router.updateSchedule,
       IPC.router.cancelSchedule, IPC.router.listScheduleOccurrences]) ipcMain.removeHandler(channel);
@@ -1779,6 +1913,14 @@ export function registerIpc({
       IPC.wallpaper.getCurrent,
       IPC.wallpaper.clear,
       IPC.wallpaper.getPowerState,
+    ]) {
+      ipcMain.removeHandler(channel);
+    }
+    for (const channel of [
+      IPC.notifications.getStatus,
+      IPC.notifications.update,
+      IPC.notifications.test,
+      IPC.notifications.setContext,
     ]) {
       ipcMain.removeHandler(channel);
     }

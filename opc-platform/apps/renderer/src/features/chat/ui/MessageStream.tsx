@@ -345,6 +345,7 @@ const MessageRow = memo(function MessageRow({
   resolvedReportIds: ReadonlySet<string>;
   onActionCardResolved: (reportId: string) => void;
 }) {
+  const { t } = useTranslation();
   const filteredBlocks = useMemo(
     () => (
       message.content?.length
@@ -380,10 +381,19 @@ const MessageRow = memo(function MessageRow({
   if (isLocallyResolvedEmptyActionMessage(message, resolvedReportIds)) return null;
 
   if (message.senderId === 'user') {
+    const channelMeta = message.channelMeta;
     return (
       <div className="min-w-0 max-w-full space-y-2.5">
         {message.timeHeader ? <TimeHeader value={message.timeHeader} /> : null}
         <div className="group flex min-w-0 max-w-full flex-col items-end">
+          {channelMeta ? (
+            <span className="mb-1 inline-flex items-center gap-1 rounded-full border border-line/80 bg-surface px-2 py-0.5 text-[11px] text-ink-tertiary">
+              <span>{t('chat.channelMeta.from', { channel: channelMeta.channelName })}</span>
+              {channelMeta.chatKind === 'group' ? (
+                <span>· {t('chat.channelMeta.group')}</span>
+              ) : null}
+            </span>
+          ) : null}
           <div className="buddy-user-bubble min-w-0 max-w-[min(82%,560px)] rounded-[20px] rounded-br-[6px] px-4 py-2.5 text-[14.5px] leading-[1.62] break-words">
             {message.text?.trim() ? <UserMessageText text={message.text} /> : null}
             <AttachmentList
@@ -419,6 +429,11 @@ const MessageRow = memo(function MessageRow({
           {displayRole ? (
             <span className="rounded bg-surface-muted px-1.5 py-px text-2xs text-ink-tertiary">
               {displayRole}
+            </span>
+          ) : null}
+          {message.channelMeta ? (
+            <span className="rounded bg-accent-soft px-1.5 py-px text-[11px] font-medium text-accent-ink">
+              {t('chat.channelMeta.syncedTo', { channel: message.channelMeta.channelName })}
             </span>
           ) : null}
           <span className="text-[11px] text-ink-quaternary">{message.timestamp}</span>

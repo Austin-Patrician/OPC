@@ -1,4 +1,4 @@
-import { useLocation, useOutlet } from 'react-router-dom';
+import { useLocation, useNavigate, useOutlet } from 'react-router-dom';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AssistantActivity } from '@opc/shared/ipc';
 import { useCompanySync } from '@/entities/company/model/useCompany';
@@ -21,6 +21,7 @@ import { OfficePreviewModal } from '@/features/doc-preview/ui/OfficePreviewModal
  */
 export function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
   const isChat = location.pathname.startsWith('/chat') || location.pathname === '/';
   const [searchOpen, setSearchOpen] = useState(false);
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -34,7 +35,33 @@ export function AppShell() {
   useCompanySync();
   useBillingSync();
   const background = useUiPrefs((state) => state.background);
+  const locale = useUiPrefs((state) => state.locale);
   const observatory = useObservatory(observatoryOpen);
+  const isChatRef = useRef(isChat);
+  isChatRef.current = isChat;
+  const focusTargetRef = useRef(observatory.focusTarget);
+  focusTargetRef.current = observatory.focusTarget;
+
+  useEffect(() => {
+    void window.opc?.notifications?.setContext({
+      route: isChat ? 'chat' : 'other',
+      locale,
+    });
+  }, [isChat, locale]);
+
+  useEffect(() => {
+    const onAction = window.opc?.notifications?.onAction;
+    if (!onAction) return undefined;
+    return onAction((event) => {
+      if (!isChatRef.current) {
+        navigate('/chat');
+      }
+      if (event.target.kind === 'observatory') {
+        focusTargetRef.current(event.target.threadId, event.target.taskId);
+        setObservatoryOpen(true);
+      }
+    });
+  }, [navigate]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

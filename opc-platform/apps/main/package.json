@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "@opc/shared": "workspace:*"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.77.0"
   }
 }
