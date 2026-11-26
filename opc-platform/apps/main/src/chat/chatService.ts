@@ -317,6 +317,38 @@ export class ChatService {
 
   getSnapshot = (): ChatSnapshot => this.snapshot;
 
+  /**
+   * Resolves a persisted user attachment by `(messageId, attachmentId)`, checking
+   * both the active memory window and older paginated rows in SQLite.
+   */
+  findAttachment = (
+    messageId: string,
+    attachmentId: string,
+    conversationId?: string,
+  ): ChatAttachmentRef | null => {
+    for (const conversation of this.snapshot.conversations) {
+      if (conversationId && conversation.id !== conversationId) continue;
+      const hit = conversation.messages.find((message) => message.id === messageId);
+      const attachment = hit?.attachments?.find((item) => item.id === attachmentId);
+      if (attachment) return attachment;
+    }
+    if (!this.db) return null;
+    const row = conversationId
+      ? (this.db
+          .prepare('SELECT payload FROM message WHERE conversation_id = ? AND id = ?')
+          .get(conversationId, messageId) as { payload: string } | undefined)
+      : (this.db
+          .prepare('SELECT payload FROM message WHERE id = ?')
+          .get(messageId) as { payload: string } | undefined);
+    if (!row?.payload) return null;
+    try {
+      const parsed = JSON.parse(row.payload) as Message;
+      return parsed.attachments?.find((item) => item.id === attachmentId) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   subscribe = (listener: (snapshot: ChatSnapshot) => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

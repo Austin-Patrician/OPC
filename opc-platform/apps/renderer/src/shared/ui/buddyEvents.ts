@@ -4,6 +4,7 @@ export type BuddySignal =
   | { kind: 'file-drop' }
   | { kind: 'sent' }
   | { kind: 'brand-summon' }
+  | { kind: 'quote'; text: string }
   | { kind: 'voice'; state: 'idle' | 'recording' | 'transcribing'; level?: number }
   | { kind: 'tts'; speaking: boolean };
 

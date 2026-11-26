@@ -10,6 +10,8 @@ import { VoiceOrb } from '@/shared/ui/VoiceOrb';
 import { resolveStatusActivityKey, resolveVoiceOrbMode } from '@/shared/ui/voiceOrbState';
 
 interface TitleBarProps {
+  /** When true, omits the solid header bar and floats only the window controls + thin drag zone. */
+  floating?: boolean;
   searchEnabled: boolean;
   onToggleSearch: () => void;
   newChatEnabled?: boolean;
@@ -27,6 +29,7 @@ const TYPING_DECAY_MS = 1_500;
 
 /** One chrome row for the VoiceOrb status capsule, search action, and window controls. */
 export function TitleBar({
+  floating = false,
   searchEnabled,
   onToggleSearch,
   newChatEnabled = false,
@@ -154,9 +157,22 @@ export function TitleBar({
   };
 
   return (
-    <header className="buddy-titlebar relative z-30 flex h-[44px] shrink-0 items-center px-4">
-      <div className="buddy-titlebar-drag app-drag absolute inset-0" aria-hidden />
-      {showChatStatus ? (
+    <header
+      className={
+        floating
+          ? 'pointer-events-none absolute inset-x-0 top-0 z-30 flex h-[44px] items-center px-4'
+          : 'buddy-titlebar relative z-30 flex h-[44px] shrink-0 items-center px-4'
+      }
+    >
+      <div
+        className={
+          floating
+            ? 'buddy-titlebar-drag app-drag pointer-events-auto absolute inset-x-0 top-0 h-[36px]'
+            : 'buddy-titlebar-drag app-drag absolute inset-0'
+        }
+        aria-hidden
+      />
+      {!floating && showChatStatus ? (
         <button
           type="button"
           role="status"
@@ -241,7 +257,13 @@ export function TitleBar({
           </div>
         ) : null}
       </div>
-      <div className="buddy-window-controls no-drag relative z-10 ml-3 flex shrink-0 items-center gap-0.5">
+      <div
+        className={`buddy-window-controls no-drag pointer-events-auto relative z-10 ml-3 flex shrink-0 items-center gap-0.5 ${
+          floating
+            ? '-mr-1 rounded-lg bg-[color-mix(in_srgb,var(--panel-bg-base)_82%,transparent)] px-1 py-0.5 backdrop-blur-md'
+            : ''
+        }`}
+      >
         <button
           type="button"
           onClick={() => void window.opc?.window.minimize()}

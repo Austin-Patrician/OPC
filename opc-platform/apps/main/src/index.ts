@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, session, shell } from 'electron';
+import { app, BrowserWindow, session, shell, utilityProcess } from 'electron';
+import { isSafeExternalUrl } from './system/localPathActions';
 import type { Context } from '@earendil-works/chord/context';
 import { ChatService } from './chat/chatService';
 import {
@@ -37,6 +38,9 @@ import { OcrSettingsStore } from './ocr/settings';
 import { ShellExecutionSettingsStore } from './sandbox/settings';
 import { registerOcrScheme } from './ocr/protocol';
 import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
+import { handleDocProtocol, registerDocScheme, resolvePdfjsAssetsDir } from './preview/docProtocol';
+import { DocPreviewService } from './preview/docPreviewService';
+import type { SpreadsheetWorkerResponse } from './preview/spreadsheetWorker';
 import { OcrService } from './ocr/service';
 import { decryptSecret, encryptSecret } from './models/keyCipher';
 import { initAppPaths, appPaths } from './paths';
@@ -93,6 +97,7 @@ const isDev = !app.isPackaged;
 // Must happen before `app.whenReady()`: the OCR window loads over `opc-ocr://`.
 registerOcrScheme();
 registerChatMediaScheme();
+registerDocScheme();
 
 /** Compile-time constant injected by electron-vite: `out/main`. */
 const mainDir = __dirname;
@@ -187,14 +192,14 @@ function createMainWindow() {
 		if (!isSmoke) window.show();
 	});
 	window.webContents.setWindowOpenHandler(({ url }) => {
-		if (/^https?:\/\//.test(url)) shell.openExternal(url);
+		if (isSafeExternalUrl(url)) void shell.openExternal(url);
 		return { action: "deny" };
 	});
 	window.webContents.on("will-navigate", (event, url) => {
 		const devOrigin = process.env.ELECTRON_RENDERER_URL;
 		if (!(devOrigin ? url.startsWith(devOrigin) : url.startsWith("file://"))) {
 			event.preventDefault();
-			if (/^https?:\/\//.test(url)) shell.openExternal(url);
+			if (isSafeExternalUrl(url)) void shell.openExternal(url);
 		}
 	});
 	if (isSmoke) attachSmokeTest(window);
@@ -255,7 +260,7 @@ function hardenSession() {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: opc-media:; media-src 'self' blob: opc-media:; font-src 'self' data:; connect-src 'self'",
+          "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' opc-doc://pdfjs; worker-src 'self' opc-doc: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: opc-media: opc-doc:; media-src 'self' blob: opc-media:; font-src 'self' data: blob: opc-doc:; connect-src 'self' opc-doc:",
         ],
       },
     });
@@ -916,6 +921,34 @@ async function bootstrap(): Promise<void> {
     console.warn('issue key backfill failed', error);
   }
 
+  const docPreview = new DocPreviewService({
+    workspaceRoot: appPaths.workspaceDir,
+    getTask: (taskId) => work?.getTask(taskId),
+    findAttachment: (messageId, attachmentId, conversationId) =>
+      chat!.findAttachment(messageId, attachmentId, conversationId),
+    openPath: (absPath) => shell.openPath(absPath),
+    workerPath: path.join(mainDir, 'spreadsheetWorker.js'),
+    createWorker: (workerPath) => {
+      const child = utilityProcess.fork(workerPath, [], {
+        serviceName: 'opc-spreadsheet-worker',
+        stdio: 'pipe',
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        process.stderr.write(`[spreadsheet-worker] ${chunk.toString().trimEnd()}\n`);
+      });
+      return {
+        postMessage: (msg) => child.postMessage(msg),
+        onMessage: (cb) =>
+          child.on('message', (msg) => cb(msg as SpreadsheetWorkerResponse)),
+        onError: () => undefined,
+        onExit: (cb) => child.on('exit', cb),
+        terminate: () => {
+          child.kill();
+        },
+      };
+    },
+  });
+
   disposeIpc = registerIpc({
     chat,
     work,
@@ -1023,11 +1056,13 @@ async function bootstrap(): Promise<void> {
       openPath: (absPath) => shell.openPath(absPath),
       showItemInFolder: (absPath) => shell.showItemInFolder(absPath),
     }),
+    docPreview,
     subscribeObservatoryRouter: (listener) => goalRouter.subscribeObservatory(listener),
   });
 
   // MCP 服务器是子进程（stdio）：退出时要真的收掉，否则它们会活过这个应用。
   app.on('before-quit', () => {
+    docPreview.dispose();
     void closeAllMcpConnections();
   });
 
@@ -1335,6 +1370,13 @@ async function bootstrap(): Promise<void> {
   void work.recover();
   hardenSession();
   handleChatMediaProtocol(session.defaultSession, appPaths.workspaceDir);
+  handleDocProtocol(session.defaultSession, {
+    pdfjsAssetsDir: resolvePdfjsAssetsDir({
+      rendererDir: path.join(mainDir, '../renderer'),
+      appPath: app.getAppPath(),
+    }),
+    resolveSessionFile: (id) => docPreview.resolveProtocolFile(id),
+  });
   mainWindow = createMainWindow();
 
   mainWindow.on('closed', () => {

@@ -1637,3 +1637,6 @@ export type ObservatoryRouterEvent =
       activeTool?: string;
     };
 
+export { partitionTaskArtifacts, type PartitionedArtifacts } from './artifacts';
+
+

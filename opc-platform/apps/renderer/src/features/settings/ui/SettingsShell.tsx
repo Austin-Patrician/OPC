@@ -98,15 +98,13 @@ export function SettingsShell() {
       ],
     },
     {
-      // 事件调度、进展监督、记忆都是"它怎么工作"的策略，和外观/计费这类
-      // 通用偏好分开，免得在通用下面越堆越长。
+      // 事件调度与记忆体系都是"Agent 如何思考和沉淀"的策略，和通用偏好分开。
       id: 'behavior',
       label: t('settings.group.behavior'),
       icon: Brain,
       color: '#FF375F',
       pages: [
         { id: 'triage', label: t('settings.page.triage') },
-        { id: 'watchdog', label: t('settings.page.watchdog') },
         { id: 'memory', label: t('settings.page.memory') },
         { id: 'workspaceRules', label: t('settings.page.workspaceRules') },
         { id: 'consolidation', label: t('settings.page.consolidation') },
@@ -126,12 +124,15 @@ export function SettingsShell() {
       ],
     },
     {
-      // 运行时是环境本身（Node/Python/OCR），不是某个模型选项：单独成组。
+      // 运行时涵盖解释器、OCR、命令权限以及独立守护进程监督，属于运行保障层。
       id: 'runtime',
       label: t('settings.group.runtime'),
       icon: Cpu,
       color: '#5856D6',
-      pages: [{ id: 'runtime', label: t('settings.page.runtime') }],
+      pages: [
+        { id: 'runtime', label: t('settings.page.runtime') },
+        { id: 'watchdog', label: t('settings.page.watchdog') },
+      ],
     },
     {
       // 技能、MCP 与扩展各司其职，收进设置，避免导航栏再多一个一级入口。
@@ -240,14 +241,14 @@ export function SettingsShell() {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 bg-panel select-none">
       <aside className="flex w-[13.75rem] shrink-0 flex-col border-r border-line bg-sidebar">
-        <div className="shrink-0 px-4 pt-4 pb-3">
+        <div className="shrink-0 px-4 pt-7 pb-3">
           <h1 className="text-xl font-bold tracking-tight text-ink">{t('settings.title')}</h1>
           <p className="mt-0.5 text-xs-plus text-ink-tertiary">{t('settings.subtitleShort')}</p>
         </div>
 
         <nav
           aria-label={t('settings.title')}
-          className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3"
+          className="no-drag flex-1 space-y-0.5 overflow-y-auto px-2 pb-3"
         >
           {groups.map((group) => {
             const Icon = group.icon;
@@ -333,8 +334,8 @@ export function SettingsShell() {
         </div> */}
       </aside>
 
-      <main className="page-scroll h-full min-h-0 min-w-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
-        <div className="mx-auto max-w-[55rem] px-8 pt-6 pb-10">{content}</div>
+      <main className="h-full min-h-0 min-w-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
+        <div className="mx-auto max-w-[55rem] px-8 pt-11 pb-10">{content}</div>
       </main>
     </div>
   );

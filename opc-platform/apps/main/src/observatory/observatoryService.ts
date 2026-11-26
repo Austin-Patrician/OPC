@@ -1,15 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type {
-  ObservatoryBlocker,
-  ObservatorySnapshot,
-  ObservatoryTaskDetail,
-  ObservatoryThreadItem,
-  ObservatoryThreadTaskSummary,
-  RouterObservatoryState,
-  WorkReport,
-  WorkTask,
-  Worker,
+import {
+  partitionTaskArtifacts,
+  type ObservatoryBlocker,
+  type ObservatorySnapshot,
+  type ObservatoryTaskDetail,
+  type ObservatoryThreadItem,
+  type ObservatoryThreadTaskSummary,
+  type RouterObservatoryState,
+  type WorkReport,
+  type WorkTask,
+  type Worker,
 } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 import type { ModelConfigService } from '../models/modelConfigService';
@@ -262,7 +263,10 @@ export class ObservatoryService {
                 updatedAt: latestTask.updatedAt,
                 totalTokens: latestTask.tokensUsed,
                 costUsd: latestTask.costUsd,
-                artifactCount: latestTask.artifacts.length,
+                artifactCount: partitionTaskArtifacts(
+                  latestTask.artifacts,
+                  latestTask.contract?.outputs,
+                ).deliverables.length,
                 traceCount: actionTraceCount,
                 ...(lastTrace
                   ? {

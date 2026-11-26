@@ -1,4 +1,4 @@
-import { copyFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
@@ -40,6 +40,8 @@ export default defineConfig({
           // 需要自己的入口文件：`utilityProcess.fork` 加载的是磁盘上的一个文件，
           // 不是主 bundle 里的一个函数。
           watchdog: resolve(__dirname, 'apps/main/src/watchdog/child.ts'),
+          // Spreadsheet preview worker runs on Node `worker_threads` so large XLSX/CSV parsing never blocks main.
+          spreadsheetWorker: resolve(__dirname, 'apps/main/src/preview/spreadsheetWorker.ts'),
         },
       },
     },
@@ -68,7 +70,29 @@ export default defineConfig({
       // `opc-ocr://app/ort/` (the copy in resources/ocr).
       conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production'],
     },
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'copy-pdfjs-assets',
+        closeBundle() {
+          const pdfjsRoot = resolve(__dirname, 'node_modules/pdfjs-dist');
+          const destRoot = resolve(__dirname, 'out/renderer/pdfjs');
+          if (!existsSync(pdfjsRoot)) return;
+          mkdirSync(destRoot, { recursive: true });
+          const workerSrc = resolve(pdfjsRoot, 'build/pdf.worker.min.mjs');
+          if (existsSync(workerSrc)) {
+            copyFileSync(workerSrc, resolve(destRoot, 'pdf.worker.min.mjs'));
+          }
+          for (const dirName of ['cmaps', 'standard_fonts', 'wasm']) {
+            const srcDir = resolve(pdfjsRoot, dirName);
+            if (existsSync(srcDir)) {
+              cpSync(srcDir, resolve(destRoot, dirName), { recursive: true, force: true });
+            }
+          }
+        },
+      },
+    ],
     // The OCR page loads ~5 MB of ESM (ONNX Runtime + the OCR pipeline). Pre-
     // bundling it makes the first dev call slower than loading it as-is.
     optimizeDeps: {
@@ -90,6 +114,11 @@ export default defineConfig({
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined;
+            if (id.includes('pdfjs-dist')) return 'office-pdf';
+            if (id.includes('docx-preview')) return 'office-docx';
+            if (id.includes('pptx-preview')) return 'office-pptx';
+            if (id.includes('jszip')) return 'office-zip';
+            if (id.includes('echarts') || id.includes('zrender')) return 'charts';
             if (id.includes('i18next')) return 'i18n';
             if (/react(-dom|-router)?\//.test(id)) return 'react';
             return 'vendor';

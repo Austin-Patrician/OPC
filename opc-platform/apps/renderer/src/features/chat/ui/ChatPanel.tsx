@@ -158,6 +158,7 @@ export function ChatPanel({
           <WelcomeCanvas onSend={(text) => onSend(text, [])} />
         ) : (
           <MessageStream
+            conversationId={conversation.id}
             messages={streamState.messages}
             firstItemIndex={streamState.firstItemIndex}
             agents={agents}

@@ -10,9 +10,10 @@ import { useTranslation } from 'react-i18next';
 import { useModels } from '@/features/models/model/useModels';
 import { useVoiceRecorder } from '../model/useVoiceRecorder';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
 import { assistantName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
-import { emitBuddySignal } from '@/shared/ui/buddyEvents';
+import { emitBuddySignal, subscribeBuddySignal } from '@/shared/ui/buddyEvents';
 
 /** Maximum visible rows before the composer starts scrolling. */
 const MAX_COMPOSER_ROWS = 6;
@@ -91,13 +92,36 @@ export function Composer({ onSend, history, busy = false, onStop }: ComposerProp
     ),
   );
 
-  /** Set text and put the caret at the end, used when recalling history. */
-  const applyComposerText = (value: string) => {
+  /** Set text and put the caret at the end, used when recalling history or quoting. */
+  const applyComposerText = useCallback((value: string) => {
     setText(value);
     window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
       inputRef.current?.setSelectionRange(value.length, value.length);
     });
-  };
+  }, []);
+
+  useEffect(() => {
+    return subscribeBuddySignal((signal) => {
+      if (signal.kind !== 'quote') return;
+      const snippet = signal.text.trim();
+      if (!snippet) return;
+      const maxLen = 400;
+      const clipped = snippet.length > maxLen ? `${snippet.slice(0, maxLen).trimEnd()}…` : snippet;
+      const quoted = clipped
+        .split(/\r?\n/)
+        .map((line) => `> ${line}`)
+        .join('\n');
+      setText((current) => {
+        const next = current.trim() ? `${current.trimEnd()}\n\n${quoted}\n\n` : `${quoted}\n\n`;
+        window.requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.setSelectionRange(next.length, next.length);
+        });
+        return next;
+      });
+    });
+  }, []);
   const resetHistory = () => {
     setHistoryIndex(null);
     setHistoryDraft('');
@@ -139,6 +163,18 @@ export function Composer({ onSend, history, busy = false, onStop }: ComposerProp
 
   const addFiles = useCallback(async (files: File[]) => {
     setAttachmentError(null);
+    if (files.length === 0) return;
+    const resolver = window.opc?.chat.resolveDroppedFiles;
+    if (resolver) {
+      try {
+        const refs = await resolver(files);
+        if (refs.length > 0) appendAttachments(refs);
+        else setAttachmentError('无法读取该文件路径');
+      } catch (error) {
+        setAttachmentError(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     const refs: ChatAttachmentRef[] = [];
     for (const file of files) {
       const filePath = (file as File & { path?: string }).path;
@@ -271,7 +307,7 @@ export function Composer({ onSend, history, busy = false, onStop }: ComposerProp
           autoFocus
           placeholder={inputPlaceholder}
           aria-label={inputPlaceholder}
-          className="buddy-composer-input chat-scrollbar-reveal w-full min-w-0 resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-[14.5px] leading-[1.55] outline-none"
+          className="buddy-composer-input w-full min-w-0 resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-[14.5px] leading-[1.55] outline-none"
         />
         <div className="flex items-center justify-between gap-2 px-2.5 pt-1 pb-2.5">
           <div className="flex items-center gap-1">
@@ -348,14 +384,31 @@ function AttachmentTray({ attachments, onRemove }: { attachments: readonly ChatA
 }
 
 function AttachmentChip({ file, onRemove }: { file: ChatAttachmentRef; onRemove: () => void }) {
+  const { t } = useTranslation();
   const extension = file.name.includes('.') ? file.name.split('.').pop() : undefined;
+  const missing = file.availability === 'missing';
   return (
     <div className="buddy-attachment-chip group">
-      <span className="buddy-attachment-icon" dangerouslySetInnerHTML={{ __html: getFileIcon(extension, file.name) }} aria-hidden="true" />
-      <span className="buddy-attachment-meta">
-        <span className="buddy-attachment-name" title={file.name}>{file.name}</span>
-        <span className="buddy-attachment-size">{formatAttachmentSize(file.size)}{file.availability === 'missing' ? ' · 文件不可用' : ''}</span>
-      </span>
+      <button
+        type="button"
+        disabled={missing}
+        title={missing ? undefined : t('chat.artifact.preview')}
+        onClick={() => {
+          if (missing) return;
+          openDocPreview({
+            source: { kind: 'staged', attachmentId: file.id },
+            fileName: file.name,
+            bytes: file.size,
+          });
+        }}
+        className="flex min-w-0 flex-1 items-center gap-[9px] text-left disabled:cursor-default"
+      >
+        <span className="buddy-attachment-icon" dangerouslySetInnerHTML={{ __html: getFileIcon(extension, file.name) }} aria-hidden="true" />
+        <span className="buddy-attachment-meta">
+          <span className="buddy-attachment-name" title={file.name}>{file.name}</span>
+          <span className="buddy-attachment-size">{formatAttachmentSize(file.size)}{missing ? ' · 文件不可用' : ''}</span>
+        </span>
+      </button>
       <button type="button" className="buddy-attachment-remove" onClick={onRemove} aria-label={`移除 ${file.name}`} title="移除附件"><X size={14} strokeWidth={2.2} /></button>
     </div>
   );

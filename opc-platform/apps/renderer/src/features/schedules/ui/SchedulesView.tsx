@@ -199,7 +199,7 @@ export function SchedulesView() {
 
   return (
     <main className="min-h-0 flex-1 overflow-y-auto bg-panel text-ink">
-      <div className="mx-auto w-full max-w-[1120px] px-5 py-7 sm:px-8 sm:py-8">
+      <div className="mx-auto w-full max-w-[1120px] px-5 pt-11 pb-8 sm:px-8">
         {/* Top Header */}
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3.5">

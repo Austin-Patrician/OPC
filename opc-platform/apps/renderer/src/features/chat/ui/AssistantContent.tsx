@@ -1,5 +1,5 @@
-import { isValidElement, memo, useEffect, useState, type ComponentProps, type ReactNode } from 'react';
-import { Check, Copy, Download, RotateCcw, Send } from 'lucide-react';
+import { memo, useEffect, useState, type ComponentProps } from 'react';
+import { Check, Download, Eye, RotateCcw, Send } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 import remarkGfm from 'remark-gfm';
@@ -10,26 +10,32 @@ import mermaid from 'mermaid';
 import embed from 'vega-embed';
 import type { ApprovalPermitScope, ChatContentBlock } from '@opc/shared/domain';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
-import { imageAspectCache, mediaUrlCache, mermaidSvgCache } from '../lib/renderCache';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
+import { imageAspectCache, mediaUrlCache } from '../lib/renderCache';
+import { remarkChatEntities, transformMarkdownUrl } from '../lib/remarkChatEntities';
 import { containsExternalVegaDataUrl } from '../lib/vegaSpec';
+import {
+  CodeBlock,
+  MarkdownAnchor,
+  MarkdownBlockquote,
+  MarkdownInlineCode,
+  MarkdownTable,
+  MermaidBlock,
+} from './MarkdownBlocks';
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral' });
 
 type MarkdownComponents = ComponentProps<typeof ReactMarkdown>['components'];
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkChatEntities];
 const REHYPE_PLUGINS_FULL = [rehypeKatex, rehypeHighlight];
 const REHYPE_PLUGINS_STREAMING = [rehypeKatex];
 
 const BASE_MARKDOWN_COMPONENTS: MarkdownComponents = {
-  a: ({ href, children, ...props }) => <a href={safeLink(href)} target="_blank" rel="noreferrer noopener" className="break-all text-accent-ink underline decoration-accent/35 underline-offset-2 hover:text-accent" {...props}>{children}</a>,
+  a: (props) => <MarkdownAnchor {...props} />,
   img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  table: ({ children }) => (
-    <div className="my-3.5 max-w-full overflow-x-auto rounded-xl border border-line bg-surface">
-      <table className="w-full border-collapse text-[13.5px]">{children}</table>
-    </div>
-  ),
+  table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
   th: ({ children }) => (
     <th className="border-b border-line bg-surface-muted/70 px-3.5 py-2 text-left text-[12px] font-semibold text-ink-secondary">
       {children}
@@ -40,22 +46,26 @@ const BASE_MARKDOWN_COMPONENTS: MarkdownComponents = {
       {children}
     </td>
   ),
-  blockquote: ({ children }) => <blockquote>{children}</blockquote>,
+  blockquote: (props) => <MarkdownBlockquote {...props} />,
 };
 
 const MARKDOWN_COMPONENTS_FULL: MarkdownComponents = {
   ...BASE_MARKDOWN_COMPONENTS,
   code: ({ className, children, ...props }) => {
     const value = String(children).replace(/\n$/, '');
-    if (/language-mermaid/.test(className ?? '')) return <Mermaid source={value} />;
+    if (/language-mermaid/.test(className ?? '')) return <MermaidBlock source={value} />;
     if (/language-vega-lite/.test(className ?? '') || /language-vegalite/.test(className ?? '')) return <VegaLite source={value} />;
-    return <code className={className} {...props}>{children}</code>;
+    return <MarkdownInlineCode className={className} {...props}>{children}</MarkdownInlineCode>;
   },
 };
 
 const MARKDOWN_COMPONENTS_STREAMING: MarkdownComponents = {
   ...BASE_MARKDOWN_COMPONENTS,
-  code: ({ className, children, ...props }) => <code className={className} {...props}>{children}</code>,
+  code: ({ className, children, ...props }) => (
+    <MarkdownInlineCode className={className} {...props}>
+      {children}
+    </MarkdownInlineCode>
+  ),
 };
 
 function getMediaCacheKey(block: ChatContentBlock): string | null {
@@ -304,34 +314,63 @@ const FileBlock = memo(function FileBlock({ block }: { block: Extract<ChatConten
     }
   };
 
+  const preview = () => {
+    openDocPreview({
+      source: {
+        kind: 'artifact',
+        taskId: block.source.taskId,
+        relPath: block.source.relPath,
+      },
+      fileName,
+    });
+  };
+
   return (
-    <div className="flex w-full max-w-[18rem] items-center gap-2.5 rounded-xl border border-line bg-surface px-3 py-2 shadow-card">
-      <span
-        className="flex h-7 w-[26px] shrink-0 items-center justify-center overflow-hidden [&_svg]:size-full"
-        dangerouslySetInnerHTML={{ __html: getFileIcon(extension, fileName) }}
-        aria-hidden="true"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] leading-tight font-semibold text-ink" title={block.source.relPath}>
-          {fileName}
-        </div>
-        <div
-          className={`truncate text-[10px] leading-tight ${failed ? 'text-danger' : 'text-ink-tertiary'}`}
-          title={message ?? block.title ?? block.source.relPath}
-          aria-live="polite"
-        >
-          {message ?? block.title ?? block.source.relPath}
-        </div>
-      </div>
+    <div className="flex w-full max-w-[20rem] items-center gap-2 rounded-xl border border-line bg-surface px-2.5 py-2 shadow-card transition-colors hover:border-line-strong">
       <button
         type="button"
-        onClick={() => void save()}
-        aria-label={t('chat.artifact.save')}
-        title={t('chat.artifact.save')}
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink"
+        onClick={preview}
+        title={t('chat.artifact.preview')}
+        className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        <Download className="size-3.5" />
+        <span
+          className="flex h-7 w-[26px] shrink-0 items-center justify-center overflow-hidden [&_svg]:size-full"
+          dangerouslySetInnerHTML={{ __html: getFileIcon(extension, fileName) }}
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12px] leading-tight font-semibold text-ink" title={block.source.relPath}>
+            {fileName}
+          </div>
+          <div
+            className={`truncate text-[10px] leading-tight ${failed ? 'text-danger' : 'text-ink-tertiary'}`}
+            title={message ?? block.title ?? block.source.relPath}
+            aria-live="polite"
+          >
+            {message ?? block.title ?? block.source.relPath}
+          </div>
+        </div>
       </button>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={preview}
+          aria-label={t('chat.artifact.preview')}
+          title={t('chat.artifact.preview')}
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink"
+        >
+          <Eye className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => void save()}
+          aria-label={t('chat.artifact.save')}
+          title={t('chat.artifact.save')}
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink"
+        >
+          <Download className="size-3.5" />
+        </button>
+      </div>
     </div>
   );
 });
@@ -479,91 +518,13 @@ const Markdown = memo(function Markdown({ text, streaming = false }: { text: str
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={streaming ? REHYPE_PLUGINS_STREAMING : REHYPE_PLUGINS_FULL}
+      urlTransform={transformMarkdownUrl}
       components={streaming ? MARKDOWN_COMPONENTS_STREAMING : MARKDOWN_COMPONENTS_FULL}
     >
       {text}
     </ReactMarkdown>
   );
 });
-
-const CodeBlock = memo(function CodeBlock({ children }: { children: ReactNode }) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-  const source = textFromNode(children).replace(/\n$/, '');
-  const language = extractCodeLanguage(children);
-
-  const copy = async () => {
-    if (!source) return;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(source);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = source;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copiedByFallback = document.execCommand('copy');
-        textarea.remove();
-        if (!copiedByFallback) throw new Error('copy failed');
-      }
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  return (
-    <div className="my-3.5 overflow-hidden rounded-xl border border-line bg-[var(--code-bg)]">
-      <div className="flex items-center justify-between border-b border-line bg-[var(--code-header-bg)] px-3.5 py-1.5">
-        <span className="font-mono text-[11px] font-medium text-ink-tertiary">{language}</span>
-        {source ? (
-          <button
-            type="button"
-            onClick={() => void copy()}
-            aria-label={t(copied ? 'chat.codeCopied' : 'chat.copyCode')}
-            title={t(copied ? 'chat.codeCopied' : 'chat.copyCode')}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium text-ink-tertiary transition hover:bg-surface-hover hover:text-ink"
-          >
-            {copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
-            <span>{copied ? '已复制' : '复制'}</span>
-          </button>
-        ) : null}
-      </div>
-      <pre tabIndex={0} className="chat-scrollbar-reveal m-0 max-w-full overflow-x-auto bg-transparent px-3.5 py-3 font-mono text-[13px] leading-[1.65] text-ink">
-        {children}
-      </pre>
-    </div>
-  );
-});
-
-function extractCodeLanguage(node: ReactNode): string {
-  if (isValidElement(node)) {
-    const props = node.props as { className?: string };
-    const match = /language-([a-z0-9_+-]+)/i.exec(props.className ?? '');
-    if (match?.[1]) return match[1].toLowerCase();
-  }
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = extractCodeLanguage(child);
-      if (found !== 'code') return found;
-    }
-  }
-  return 'code';
-}
-
-function textFromNode(node: ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(textFromNode).join('');
-  if (isValidElement(node)) {
-    const props = node.props as { children?: ReactNode };
-    return textFromNode(props.children);
-  }
-  return '';
-}
 
 /**
  * Markdown images use the same main-process media gate as explicit image blocks.
@@ -619,7 +580,7 @@ const MarkdownImage = memo(function MarkdownImage({ src, alt }: { src?: string; 
 
   if (failed) {
     return src
-      ? <a href={safeLink(src)} target="_blank" rel="noreferrer noopener" className="break-all text-accent-ink underline underline-offset-2">{alt || src}</a>
+      ? <MarkdownAnchor href={src}>{alt || src}</MarkdownAnchor>
       : <span className="text-ink-tertiary">图片加载失败</span>;
   }
   if (!proxied) return <div className="h-20 w-32 animate-pulse rounded-lg bg-ink/5" aria-label={alt ?? '加载图片'} />;
@@ -638,35 +599,6 @@ const MarkdownImage = memo(function MarkdownImage({ src, alt }: { src?: string; 
       className="max-h-96 max-w-full rounded-lg"
     />
   );
-});
-
-function safeLink(href?: string) {
-  if (!href) return undefined;
-  try { const url = new URL(href); return ['https:', 'http:', 'mailto:'].includes(url.protocol) ? href : undefined; } catch { return undefined; }
-}
-
-const Mermaid = memo(function Mermaid({ source }: { source: string }) {
-  const [svg, setSvg] = useState(() => mermaidSvgCache.get(source) ?? '');
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    const cached = mermaidSvgCache.get(source);
-    if (cached) {
-      setSvg(cached);
-      setFailed(false);
-      return undefined;
-    }
-    let active = true;
-    setSvg('');
-    setFailed(false);
-    mermaid.render(`m-${crypto.randomUUID()}`, source)
-      .then((result) => {
-        mermaidSvgCache.set(source, result.svg);
-        if (active) setSvg(result.svg);
-      })
-      .catch(() => { if (active) setFailed(true); });
-    return () => { active = false; };
-  }, [source]);
-  return failed ? <pre className="overflow-x-auto rounded bg-ink/5 p-3 text-sm">{source}</pre> : svg ? <div className="my-3 overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} /> : <div className="my-3 h-20 animate-pulse rounded bg-ink/5" />;
 });
 
 const VegaLite = memo(function VegaLite({ source }: { source: string }) {

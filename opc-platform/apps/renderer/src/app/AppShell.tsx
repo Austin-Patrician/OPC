@@ -12,6 +12,7 @@ import { ChatSearchModal } from '@/features/chat/ui/ChatSearchModal';
 import { NewChatConfirmModal } from '@/features/chat/ui/NewChatConfirmModal';
 import { useObservatory } from '@/features/observatory/model/useObservatory';
 import { ExecutionObservatoryDrawer } from '@/features/observatory/ui/ExecutionObservatoryDrawer';
+import { OfficePreviewModal } from '@/features/doc-preview/ui/OfficePreviewModal';
 
 /**
  * One rounded desktop window contains the navigation rail and routed content.
@@ -59,6 +60,7 @@ export function AppShell() {
           <NavRail />
           <div className="buddy-main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <TitleBar
+              floating={!isChat && !observatoryOpen}
               searchEnabled={isChat}
               onToggleSearch={() => setSearchOpen((open) => !open)}
               newChatEnabled={isChat}
@@ -102,6 +104,7 @@ export function AppShell() {
       </div>
       {searchOpen ? <ChatSearchModal onClose={() => setSearchOpen(false)} /> : null}
       {newChatOpen ? <NewChatConfirmModal onClose={() => setNewChatOpen(false)} /> : null}
+      <OfficePreviewModal />
     </div>
   );
 }

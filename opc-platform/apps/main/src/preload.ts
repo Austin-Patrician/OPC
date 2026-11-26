@@ -8,6 +8,7 @@ import {
   type SendMessageInput,
   type BrowserStatus,
   type BrowserInstallProgress,
+  type DocPreviewSource,
   type DesktopStatus,
   type DesktopInstallProgress,
   type AssistantToolsSettings,
@@ -56,7 +57,7 @@ import type {
   ObservatorySnapshot,
   ObservatoryTaskDetail,
 } from "@opc/shared/domain";
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 /**
  * The only surface the renderer may touch. No Node, no filesystem, no SQLite.
@@ -67,6 +68,12 @@ const bridge: OpcBridge = {
   platform: process.platform,
   app: {
     getInfo: () => ipcRenderer.invoke(IPC.app.getInfo),
+    openExternal: (url: string) =>
+      ipcRenderer.invoke(IPC.app.openExternal, url),
+    openLocalPath: (rawPath: string) =>
+      ipcRenderer.invoke(IPC.app.openLocalPath, rawPath),
+    revealLocalPath: (rawPath: string) =>
+      ipcRenderer.invoke(IPC.app.revealLocalPath, rawPath),
   },
   window: {
     minimize: () => ipcRenderer.invoke(IPC.window.minimize),
@@ -154,6 +161,18 @@ const bridge: OpcBridge = {
     sendMessage: (input: SendMessageInput) =>
       ipcRenderer.invoke(IPC.chat.sendMessage, input),
     chooseAttachments: () => ipcRenderer.invoke(IPC.chat.chooseAttachments),
+    resolveDroppedFiles: (files: File[]) => {
+      const paths = files
+        .map((file) => {
+          try {
+            return webUtils.getPathForFile(file);
+          } catch {
+            return (file as File & { path?: string }).path ?? '';
+          }
+        })
+        .filter((value) => typeof value === 'string' && value.length > 0);
+      return ipcRenderer.invoke(IPC.chat.registerDroppedAttachments, paths);
+    },
     materializeClipboardAttachment: (input: { name: string; mimeType?: string; bytes: ArrayBuffer }) =>
       ipcRenderer.invoke(IPC.chat.materializeClipboardAttachment, input),
     markRead: (conversationId: string) =>
@@ -335,6 +354,22 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.artifacts.read, taskId, relPath),
     saveAs: (taskId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.artifacts.saveAs, taskId, relPath),
+  },
+  docPreview: {
+    openSession: (source: DocPreviewSource) =>
+      ipcRenderer.invoke(IPC.docPreview.openSession, source),
+    closeSession: (sessionId: string) =>
+      ipcRenderer.invoke(IPC.docPreview.closeSession, sessionId),
+    readSpreadsheetPage: (input: {
+      sessionId: string;
+      sheetIndex?: number;
+      offset?: number;
+      limit?: number;
+    }) => ipcRenderer.invoke(IPC.docPreview.readSpreadsheetPage, input),
+    openExternal: (source: DocPreviewSource) =>
+      ipcRenderer.invoke(IPC.docPreview.openExternal, source),
+    saveAs: (source: DocPreviewSource) =>
+      ipcRenderer.invoke(IPC.docPreview.saveAs, source),
   },
   chatMedia: {
     register: (input: unknown) => ipcRenderer.invoke(IPC.chatMedia.register, input),

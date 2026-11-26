@@ -4,6 +4,7 @@ import type { WorkTask as WorkTaskModel } from '@opc/shared/domain';
 import type { TaskStatus, WorkTask } from '../model/types';
 import { getWorkTransport } from '@/shared/api/workTransport';
 import { useMoney } from '@/entities/billing/model/useBilling';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
 
 const STATUS_STYLE: Record<TaskStatus, string> = {
   open: 'bg-ink/5 text-ink-tertiary',
@@ -151,13 +152,21 @@ function ArtifactGrid({ taskId, artifacts }: { taskId: string; artifacts: Artifa
       {others.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {others.map((artifact) => (
-            <span
+            <button
               key={artifact.id}
-              className="rounded bg-surface-muted px-1.5 py-0.5 font-mono text-3xs text-ink-secondary"
-              title={artifact.sha256}
+              type="button"
+              onClick={() =>
+                openDocPreview({
+                  source: { kind: 'artifact', taskId, relPath: artifact.relPath },
+                  fileName: artifact.relPath.split(/[\\/]/).pop() || artifact.relPath,
+                  bytes: artifact.bytes,
+                })
+              }
+              className="rounded border border-transparent bg-surface-muted px-1.5 py-0.5 font-mono text-3xs text-ink-secondary transition hover:border-line-strong hover:bg-surface-hover hover:text-ink"
+              title={`${artifact.relPath} · ${artifact.sha256}`}
             >
               {artifact.relPath} · {artifact.bytes}B
-            </span>
+            </button>
           ))}
         </div>
       ) : null}

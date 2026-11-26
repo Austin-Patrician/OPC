@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Eye,
   FolderOpen,
   FolderSearch,
   Layers,
@@ -11,17 +12,27 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type {
-  ObservatoryBlocker,
-  ObservatoryTaskDetail,
-  ObservatoryThreadItem,
-  TaskTrace,
+import {
+  partitionTaskArtifacts,
+  type ObservatoryBlocker,
+  type ObservatoryTaskDetail,
+  type ObservatoryThreadItem,
+  type TaskArtifact,
+  type TaskTrace,
 } from '@opc/shared/domain';
 import {
   groupWorkerTrace,
   type WorkerTraceDisplayItem,
 } from '../model/traceFolding';
-import { formatStepMs, isSlowStepMs } from '../model/formatters';
+import {
+  formatCostCompact,
+  formatDurationCompact,
+  formatStepMs,
+  formatTokensCompact,
+  isSlowStepMs,
+  shortModelName,
+} from '../model/formatters';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
 import { CompactMarkdown } from './CompactMarkdown';
 import {
   APPROVAL_VISUAL,
@@ -51,22 +62,6 @@ interface WorkerInspectorPaneProps {
   onRevealArtifact: (taskId: string, relPath: string) => Promise<void>;
 }
 
-function formatDuration(ms: number): string {
-  const safe = Math.max(0, Math.floor(ms / 1000));
-  const mins = Math.floor(safe / 60);
-  const secs = safe % 60;
-  if (mins >= 60) {
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h ${String(mins % 60).padStart(2, '0')}m`;
-  }
-  return mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
-}
-
-function formatTokensCompact(tokens: number): string {
-  if (tokens < 1000) return `${tokens}`;
-  return `${(tokens / 1000).toFixed(1)}k`;
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -79,11 +74,6 @@ function formatTime(ts: number): string {
     minute: '2-digit',
     second: '2-digit',
   });
-}
-
-function shortModelName(modelLabel: string): string {
-  const slash = modelLabel.lastIndexOf('/');
-  return slash >= 0 ? modelLabel.slice(slash + 1) : modelLabel;
 }
 
 function statusDotClass(item: ObservatoryThreadItem): string {
@@ -267,7 +257,7 @@ function BlockerFocalCard({
             ) : null}
           </div>
           <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-ink-tertiary">
-            {formatDuration(now - blocker.createdAt)}
+            {formatDurationCompact(now - blocker.createdAt)}
           </span>
         </div>
         <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-secondary">
@@ -312,7 +302,7 @@ function BlockerFocalCard({
             <span>{t('observatory.blocker.questionTitle')}</span>
           </div>
           <span className="font-mono text-[10.5px] tabular-nums text-ink-tertiary">
-            {formatDuration(now - blocker.createdAt)}
+            {formatDurationCompact(now - blocker.createdAt)}
           </span>
         </div>
         <CompactMarkdown
@@ -554,6 +544,73 @@ function BurstRailRow({
   );
 }
 
+function ArtifactRow({
+  artifact,
+  taskId,
+  muted = false,
+  onReveal,
+}: {
+  artifact: TaskArtifact;
+  taskId: string;
+  muted?: boolean;
+  onReveal: (taskId: string, relPath: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const visual = resolveArtifactVisual(artifact.relPath);
+  const fileName = artifact.relPath.split(/[\\/]/).pop() || artifact.relPath;
+  const openPreview = () => {
+    openDocPreview({
+      source: { kind: 'artifact', taskId, relPath: artifact.relPath },
+      fileName,
+      bytes: artifact.bytes,
+    });
+  };
+  return (
+    <div
+      className={`group flex items-center justify-between gap-2 ${muted ? 'py-1.5 opacity-85' : 'py-2'}`}
+    >
+      <button
+        type="button"
+        onClick={openPreview}
+        title={t('observatory.previewArtifact')}
+        className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left transition hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        <ObservatoryIcon visual={visual} size={muted ? 14 : 16} />
+        <div className="min-w-0">
+          <div
+            className={`truncate font-mono ${
+              muted ? 'text-[11px] text-ink-secondary' : 'text-[11.5px] text-ink'
+            }`}
+          >
+            {artifact.relPath}
+          </div>
+          <div className="font-mono text-[10px] tabular-nums text-ink-tertiary">
+            {formatBytes(artifact.bytes)}
+          </div>
+        </div>
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={openPreview}
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-ink-tertiary opacity-80 transition hover:bg-surface-hover hover:text-ink group-hover:opacity-100"
+        >
+          <Eye size={12.5} strokeWidth={1.8} />
+          <span>{t('observatory.previewArtifact')}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => void onReveal(taskId, artifact.relPath)}
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-ink-tertiary opacity-80 transition hover:bg-surface-hover hover:text-ink group-hover:opacity-100"
+        >
+          <FolderSearch size={12.5} strokeWidth={1.8} />
+          <span>{t('observatory.revealArtifact')}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function WorkerInspectorPane({
   threads,
   selectedThreadId: _selectedThreadId,
@@ -574,6 +631,7 @@ export function WorkerInspectorPane({
   const [subTab, setSubTab] = useState<DetailSubTab>('trace');
   const [keyOnly, setKeyOnly] = useState(false);
   const [stepsExpanded, setStepsExpanded] = useState(false);
+  const [intermediateExpanded, setIntermediateExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   const activeRunning = useMemo(() => {
@@ -606,6 +664,14 @@ export function WorkerInspectorPane({
   );
   const threadTasks = useMemo(() => selectedThread?.tasks ?? [], [selectedThread]);
   const activeViewedTaskId = selectedTaskId ?? task?.id ?? selectedThread?.latestTask?.id ?? null;
+  useEffect(() => {
+    setIntermediateExpanded(false);
+  }, [activeViewedTaskId]);
+
+  const partitionedArtifacts = useMemo(
+    () => partitionTaskArtifacts(task?.artifacts ?? [], task?.contract?.outputs),
+    [task],
+  );
   const selectedRoundTask = useMemo(
     () =>
       threadTasks.find((roundTask) => roundTask.id === activeViewedTaskId) ??
@@ -614,11 +680,21 @@ export function WorkerInspectorPane({
     [activeViewedTaskId, threadTasks],
   );
 
-  const modelLabel = shortModelName(
-    taskDetail?.modelLabel ?? selectedThread?.worker?.modelLabel ?? '—',
-  );
+  const rawModelLabel = taskDetail?.modelLabel ?? selectedThread?.worker?.modelLabel ?? '—';
+  const modelLabel = shortModelName(rawModelLabel);
   const totalTokens = task?.tokensUsed ?? selectedThread?.spentTokens ?? 0;
   const costUsd = task?.costUsd ?? selectedThread?.latestTask?.costUsd ?? 0;
+  const telemetryTooltip = selectedThread
+    ? [
+        selectedThread.worker?.name,
+        rawModelLabel,
+        ...(elapsedMs !== null ? [formatDurationCompact(elapsedMs)] : []),
+        ...(totalTokens > 0 ? [`${totalTokens.toLocaleString()} tok`] : []),
+        ...(costUsd > 0 ? [formatCostCompact(costUsd)] : []),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -660,28 +736,27 @@ export function WorkerInspectorPane({
         </div>
 
         {selectedThread ? (
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1.5 font-mono text-[10.5px] tabular-nums text-ink-tertiary">
-            <span className="font-sans text-ink-secondary">
-              {selectedThread.worker?.name ?? t('observatory.unassigned')}
-            </span>
-            <span className="opacity-40">·</span>
-            <span className="truncate">{modelLabel}</span>
+          <div
+            title={telemetryTooltip}
+            className="mt-0.5 flex flex-nowrap items-center gap-1.5 overflow-hidden whitespace-nowrap px-1.5 font-mono text-[10.5px] tabular-nums text-ink-tertiary"
+          >
+            <span className="min-w-0 truncate text-ink-secondary">{modelLabel}</span>
             {elapsedMs !== null ? (
               <>
-                <span className="opacity-40">·</span>
-                <span>{formatDuration(elapsedMs)}</span>
+                <span className="shrink-0 opacity-40">·</span>
+                <span className="shrink-0">{formatDurationCompact(elapsedMs)}</span>
               </>
             ) : null}
             {totalTokens > 0 ? (
               <>
-                <span className="opacity-40">·</span>
-                <span>{formatTokensCompact(totalTokens)} tok</span>
+                <span className="shrink-0 opacity-40">·</span>
+                <span className="shrink-0">{formatTokensCompact(totalTokens)} tok</span>
               </>
             ) : null}
             {costUsd > 0 ? (
               <>
-                <span className="opacity-40">·</span>
-                <span>${costUsd.toFixed(3)}</span>
+                <span className="shrink-0 opacity-40">·</span>
+                <span className="shrink-0">{formatCostCompact(costUsd)}</span>
               </>
             ) : null}
           </div>
@@ -802,7 +877,9 @@ export function WorkerInspectorPane({
                         ? taskDetail.trace.filter((entry) => entry.kind !== 'usage').length
                         : (selectedThread.latestTask?.traceCount ?? 0))
                     : tab === 'artifacts'
-                      ? (task?.artifacts.length ?? selectedThread.latestTask?.artifactCount ?? 0)
+                      ? (task
+                          ? partitionedArtifacts.deliverables.length
+                          : (selectedThread.latestTask?.artifactCount ?? 0))
                       : null;
                 return (
                   <button
@@ -916,37 +993,62 @@ export function WorkerInspectorPane({
                 </div>
               )
             ) : subTab === 'artifacts' ? (
-              task && task.artifacts.length > 0 ? (
-                <div className="divide-y divide-line">
-                  {task.artifacts.map((artifact) => {
-                    const visual = resolveArtifactVisual(artifact.relPath);
-                    return (
-                      <div
-                        key={artifact.id}
-                        className="group flex items-center justify-between gap-2 py-2"
+              task &&
+              (partitionedArtifacts.deliverables.length > 0 ||
+                partitionedArtifacts.intermediate.length > 0) ? (
+                <div>
+                  {partitionedArtifacts.deliverables.length > 0 ? (
+                    <div className="divide-y divide-line">
+                      {partitionedArtifacts.deliverables.map((artifact) => (
+                        <ArtifactRow
+                          key={artifact.id}
+                          artifact={artifact}
+                          taskId={task.id}
+                          onReveal={onRevealArtifact}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-5 text-center text-xs text-ink-tertiary">
+                      {t('observatory.noArtifacts')}
+                    </div>
+                  )}
+
+                  {partitionedArtifacts.intermediate.length > 0 ? (
+                    <div
+                      className={
+                        partitionedArtifacts.deliverables.length > 0
+                          ? 'mt-2 border-t border-line pt-2.5'
+                          : 'border-t border-line pt-2.5'
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setIntermediateExpanded((prev) => !prev)}
+                        className="flex w-full items-center justify-between py-1 text-[10.5px] font-medium text-ink-tertiary transition hover:text-ink-secondary"
                       >
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <ObservatoryIcon visual={visual} size={16} />
-                          <div className="min-w-0">
-                            <div className="truncate font-mono text-[11.5px] text-ink">
-                              {artifact.relPath}
-                            </div>
-                            <div className="font-mono text-[10px] tabular-nums text-ink-tertiary">
-                              {formatBytes(artifact.bytes)}
-                            </div>
-                          </div>
+                        <span>
+                          {t('observatory.intermediateArtifacts', {
+                            count: partitionedArtifacts.intermediate.length,
+                          })}
+                        </span>
+                        {intermediateExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                      </button>
+                      {intermediateExpanded ? (
+                        <div className="mt-1 divide-y divide-line/60">
+                          {partitionedArtifacts.intermediate.map((artifact) => (
+                            <ArtifactRow
+                              key={artifact.id}
+                              artifact={artifact}
+                              taskId={task.id}
+                              muted
+                              onReveal={onRevealArtifact}
+                            />
+                          ))}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void onRevealArtifact(task.id, artifact.relPath)}
-                          className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-ink-tertiary opacity-80 transition hover:bg-surface-hover hover:text-ink group-hover:opacity-100"
-                        >
-                          <FolderSearch size={12.5} strokeWidth={1.8} />
-                          <span>{t('observatory.revealArtifact')}</span>
-                        </button>
-                      </div>
-                    );
-                  })}
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-xs text-ink-tertiary">

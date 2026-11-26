@@ -3,7 +3,12 @@ import { ArrowUpRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { RouterObservatoryState, RouterTraceEntry } from '@opc/shared/domain';
 import { groupRouterTraceByTurn, type RouterTurnGroup } from '../model/traceFolding';
-import { extractReplyMarkdown, formatStepMs, isSlowStepMs } from '../model/formatters';
+import {
+  extractReplyMarkdown,
+  formatStepMs,
+  isSlowStepMs,
+  shortModelName,
+} from '../model/formatters';
 import { CompactMarkdown } from './CompactMarkdown';
 import {
   COMPACT_VISUAL,
@@ -28,11 +33,6 @@ function formatTime(ts: number): string {
     minute: '2-digit',
     second: '2-digit',
   });
-}
-
-function shortModelName(modelLabel: string): string {
-  const slash = modelLabel.lastIndexOf('/');
-  return slash >= 0 ? modelLabel.slice(slash + 1) : modelLabel;
 }
 
 function phaseDotColor(phase: RouterObservatoryState['phase']): string {

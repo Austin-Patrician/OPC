@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronRight, CircleDashed, Loader2, ShieldAlert, Stamp } from 'lucide-react';
+import { CheckCircle2, ChevronRight, CircleDashed, Eye, Loader2, ShieldAlert, Stamp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { formatAppTime } from '@/shared/lib/appTime';
 import type { TaskStatus, TaskTrace, WorkTask } from '@opc/shared/domain';
 import { renderTrace } from '@opc/shared/trace';
 import { cn } from '@/shared/lib/cn';
 import { useMoney } from '@/entities/billing/model/useBilling';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
 
 /**
  * Issue ledger — every work item in the company, read as a ledger rather than a
@@ -839,10 +840,26 @@ function IssueDetail({
             <h3 className="mb-1 text-3xs font-semibold tracking-[0.14em] text-ink-tertiary uppercase">
               {t('issues.artifacts')}
             </h3>
-            <ul className="space-y-0.5 font-mono text-2xs text-ink-secondary">
+            <ul className="space-y-1 font-mono text-2xs text-ink-secondary">
               {task.artifacts.map((artifact) => (
-                <li key={artifact.id} className="truncate">
-                  {artifact.relPath}
+                <li key={artifact.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openDocPreview({
+                        source: { kind: 'artifact', taskId: task.id, relPath: artifact.relPath },
+                        fileName: artifact.relPath.split(/[\\/]/).pop() || artifact.relPath,
+                        bytes: artifact.bytes,
+                      })
+                    }
+                    className="group flex w-full items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left transition hover:bg-surface-hover hover:text-ink"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{artifact.relPath}</span>
+                    <Eye
+                      size={12}
+                      className="shrink-0 text-ink-tertiary opacity-70 transition group-hover:text-ink group-hover:opacity-100"
+                    />
+                  </button>
                 </li>
               ))}
             </ul>

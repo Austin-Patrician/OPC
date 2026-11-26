@@ -26,6 +26,20 @@ describe('parseRichText', () => {
     ]);
   });
 
+  it('separates emails and file paths cleanly without turning emails into mentions', () => {
+    const result = parseRichText('发送给 dev@example.com，附件见 C:\\Users\\demo\\plan.pdf。');
+    expect(result).toEqual([
+      { type: 'text', value: '发送给 ' },
+      { type: 'email', value: 'dev@example.com', email: 'dev@example.com', href: 'mailto:dev@example.com' },
+      { type: 'text', value: '，附件见 ' },
+      expect.objectContaining({
+        type: 'file',
+        value: 'C:\\Users\\demo\\plan.pdf',
+      }),
+      { type: 'text', value: '。' },
+    ]);
+  });
+
   it('does not treat other protocols as links', () => {
     expect(parseRichText('javascript:alert(1)')).toEqual([
       { type: 'text', value: 'javascript:alert(1)' },

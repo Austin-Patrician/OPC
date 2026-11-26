@@ -76,6 +76,7 @@ export const IPC = {
     restore: "chat:restore",
     snapshotEvent: "chat:snapshot",
     chooseAttachments: "chat:chooseAttachments",
+    registerDroppedAttachments: "chat:registerDroppedAttachments",
     materializeClipboardAttachment: "chat:materializeClipboardAttachment",
     interrupt: "chat:interrupt",
     getContextStats: "chat:getContextStats",
@@ -214,6 +215,13 @@ export const IPC = {
     read: "artifacts:read",
     saveAs: "artifacts:saveAs",
   },
+  docPreview: {
+    openSession: "docPreview:openSession",
+    closeSession: "docPreview:closeSession",
+    readSpreadsheetPage: "docPreview:readSpreadsheetPage",
+    openExternal: "docPreview:openExternal",
+    saveAs: "docPreview:saveAs",
+  },
   chatMedia: { register: "chatMedia:register" },
   auth: {
     login: "auth:login",
@@ -248,6 +256,9 @@ export const IPC = {
   },
   app: {
     getInfo: "app:getInfo",
+    openExternal: "app:openExternal",
+    openLocalPath: "app:openLocalPath",
+    revealLocalPath: "app:revealLocalPath",
   },
   window: {
     minimize: "window:minimize",
@@ -420,6 +431,7 @@ export interface ChatBridge {
   onSnapshot(listener: (snapshot: ChatSnapshot) => void): () => void;
   sendMessage(input: SendMessageInput): Promise<void>;
   chooseAttachments(): Promise<ChatAttachmentRef[]>;
+  resolveDroppedFiles?(files: File[]): Promise<ChatAttachmentRef[]>;
   materializeClipboardAttachment(input: {
     name: string;
     mimeType?: string;
@@ -1017,6 +1029,76 @@ export interface ChatMediaBridge {
   }): Promise<{ ok: boolean; url?: string; error?: string }>;
 }
 
+export type DocPreviewSource =
+  | { kind: "artifact"; taskId: string; relPath: string }
+  | { kind: "attachment"; conversationId?: string; messageId: string; attachmentId: string }
+  | { kind: "staged"; attachmentId: string };
+
+export type DocPreviewKind =
+  | "pdf"
+  | "docx"
+  | "spreadsheet"
+  | "pptx"
+  | "text"
+  | "image"
+  | "unsupported";
+
+export interface DocPreviewOpenResult {
+  ok: boolean;
+  sessionId?: string;
+  docUrl?: string;
+  kind?: DocPreviewKind;
+  fileName?: string;
+  ext?: string;
+  bytes?: number;
+  tooLargeForInApp?: boolean;
+  canSaveAs?: boolean;
+  error?: string;
+}
+
+export interface SpreadsheetSheetMeta {
+  name: string;
+  index: number;
+  rowCount: number;
+  colCount: number;
+  truncatedRows?: boolean;
+}
+
+export interface SpreadsheetCellMerge {
+  startRow: number;
+  endRow: number;
+  startCol: number;
+  endCol: number;
+}
+
+export interface SpreadsheetPageResult {
+  ok: boolean;
+  sheets?: SpreadsheetSheetMeta[];
+  activeSheetIndex?: number;
+  startRow?: number;
+  totalRows?: number;
+  colCount?: number;
+  rows?: string[][];
+  colWidths?: number[];
+  merges?: SpreadsheetCellMerge[];
+  hasMore?: boolean;
+  truncatedCols?: boolean;
+  error?: string;
+}
+
+export interface DocPreviewBridge {
+  openSession(source: DocPreviewSource): Promise<DocPreviewOpenResult>;
+  closeSession(sessionId: string): Promise<void>;
+  readSpreadsheetPage(input: {
+    sessionId: string;
+    sheetIndex?: number;
+    offset?: number;
+    limit?: number;
+  }): Promise<SpreadsheetPageResult>;
+  openExternal(source: DocPreviewSource): Promise<{ ok: boolean; error?: string }>;
+  saveAs(source: DocPreviewSource): Promise<{ ok: boolean; path?: string; error?: string }>;
+}
+
 /**
  * The company row + its profile preferences (§1.3: one company per install).
  *
@@ -1209,11 +1291,20 @@ export interface ObservatoryBridge {
   onRouterEvent(listener: (event: ObservatoryRouterEvent) => void): () => void;
 }
 
+export interface LocalPathActionResult {
+  ok: boolean;
+  blockedExecutable?: boolean;
+  error?: string;
+}
+
 export interface OpcBridge {
   readonly platform: string;
   readonly isElectron: true;
   app: {
     getInfo(): Promise<AppInfo>;
+    openExternal(url: string): Promise<{ ok: boolean; error?: string }>;
+    openLocalPath(rawPath: string): Promise<LocalPathActionResult>;
+    revealLocalPath(rawPath: string): Promise<LocalPathActionResult>;
   };
   window: {
     minimize(): Promise<void>;
@@ -1231,6 +1322,7 @@ export interface OpcBridge {
   decisions: DecisionsBridge;
   auth: AuthBridge;
   artifacts: ArtifactsBridge;
+  docPreview: DocPreviewBridge;
   chatMedia: ChatMediaBridge;
   workers: WorkersBridge;
   capabilities: CapabilitiesBridge;

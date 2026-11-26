@@ -1,28 +1,43 @@
 import { useMemo } from 'react';
+import {
+  ChatEmailChip,
+  ChatFilePathChip,
+  ChatUrlChip,
+} from '@/shared/ui/ChatEntityChips';
 import { parseRichText } from '../lib/parseRichText';
 
 interface RichTextProps {
   text: string;
 }
 
-/** Renders text with mention pills and safe links. No HTML injection. */
+/** Renders text with mention pills, email chips, URL chips, and file path actions. */
 export function RichText({ text }: RichTextProps) {
   const segments = useMemo(() => parseRichText(text), [text]);
 
   return (
     <>
       {segments.map((segment, index) => {
-        if (segment.type === 'link') {
+        if (segment.type === 'link' && segment.href) {
           return (
-            <a
-              key={index}
-              href={segment.href}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="break-all text-accent-ink underline underline-offset-2 hover:text-accent"
-            >
+            <ChatUrlChip key={index} href={segment.href} rawText={segment.value}>
               {segment.value}
-            </a>
+            </ChatUrlChip>
+          );
+        }
+
+        if (segment.type === 'email' && segment.email) {
+          return (
+            <ChatEmailChip key={index} email={segment.email} href={segment.href}>
+              {segment.value}
+            </ChatEmailChip>
+          );
+        }
+
+        if (segment.type === 'file' && segment.file) {
+          return (
+            <ChatFilePathChip key={index} file={segment.file}>
+              {segment.value}
+            </ChatFilePathChip>
           );
         }
 

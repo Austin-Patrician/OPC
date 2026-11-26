@@ -1,15 +1,18 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
-import { ArrowDown, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, RotateCw } from 'lucide-react';
+import { ArrowDown, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, Quote, RotateCw } from 'lucide-react';
 import { Avatar } from '@/entities/agent/ui/Avatar';
 import { assistantName, userName } from '@/entities/company/model/options';
 import { useCompanyProfile } from '@/entities/company/model/useCompany';
 import { BuddyMark } from '@/shared/ui/BuddyMark';
+import { emitBuddySignal } from '@/shared/ui/buddyEvents';
+import { useCopyFeedback } from '@/shared/ui/ChatEntityChips';
 import type { Agent } from '@/entities/agent/model/types';
 import type { Message } from '@/entities/message/model/types';
 import type { ChatAttachmentRef } from '@opc/shared/domain';
 import type { ChatMessagePage } from '@opc/shared/ipc';
 import { getFileIcon } from '@/shared/file-icon/file-icons';
+import { openDocPreview } from '@/shared/model/docPreviewStore';
 import { RichText } from '@/entities/message/ui/RichText';
 import {
   filterResolvedActionBlocks,
@@ -23,6 +26,7 @@ import { TypingIndicator } from './TypingIndicator';
 import { useTranslation } from 'react-i18next';
 
 interface MessageStreamProps {
+  conversationId: string;
   messages: readonly Message[];
   firstItemIndex: number;
   agents: readonly Agent[];
@@ -87,6 +91,7 @@ function getMessageKey(_: number, message: Message): string {
  * conversation with thousands of turns keeps a flat memory profile.
  */
 export function MessageStream({
+  conversationId,
   messages,
   firstItemIndex,
   agents,
@@ -261,6 +266,7 @@ export function MessageStream({
   const renderItem = useCallback((_: number, message: Message) => (
     <div className={`buddy-message-gutter min-w-0 max-w-full rounded-xl px-6 py-3 transition-colors duration-300 ${message.id === highlightedMessageId ? 'bg-amber-400/15 ring-1 ring-amber-400/30' : ''}`}>
       <MessageRow
+        conversationId={conversationId}
         message={message}
         agent={agentById.get(message.senderId)}
         userName={currentUserName}
@@ -269,7 +275,7 @@ export function MessageStream({
         onActionCardResolved={handleActionCardResolved}
       />
     </div>
-  ), [agentById, currentAssistantName, currentUserName, handleActionCardResolved, highlightedMessageId, resolvedReportIds]);
+  ), [agentById, conversationId, currentAssistantName, currentUserName, handleActionCardResolved, highlightedMessageId, resolvedReportIds]);
 
   const jumpToLatest = useCallback(() => {
     userScrolledUpRef.current = false;
@@ -323,6 +329,7 @@ export function MessageStream({
 }
 
 const MessageRow = memo(function MessageRow({
+  conversationId,
   message,
   agent,
   userName,
@@ -330,6 +337,7 @@ const MessageRow = memo(function MessageRow({
   resolvedReportIds,
   onActionCardResolved,
 }: {
+  conversationId: string;
   message: Message;
   agent?: Agent;
   userName: string;
@@ -375,11 +383,16 @@ const MessageRow = memo(function MessageRow({
     return (
       <div className="min-w-0 max-w-full space-y-2.5">
         {message.timeHeader ? <TimeHeader value={message.timeHeader} /> : null}
-        <div className="flex min-w-0 max-w-full justify-end">
+        <div className="group flex min-w-0 max-w-full flex-col items-end">
           <div className="buddy-user-bubble min-w-0 max-w-[min(82%,560px)] rounded-[20px] rounded-br-[6px] px-4 py-2.5 text-[14.5px] leading-[1.62] break-words">
             {message.text?.trim() ? <UserMessageText text={message.text} /> : null}
-            <AttachmentList attachments={message.attachments} />
+            <AttachmentList
+              conversationId={conversationId}
+              messageId={message.id}
+              attachments={message.attachments}
+            />
           </div>
+          {message.text?.trim() ? <UserMessageFooter text={message.text} /> : null}
         </div>
       </div>
     );
@@ -490,20 +503,58 @@ const UserMessageText = memo(function UserMessageText({ text }: { text: string }
   );
 });
 
-const AttachmentList = memo(function AttachmentList({ attachments }: { attachments?: readonly ChatAttachmentRef[] }) {
+const AttachmentList = memo(function AttachmentList({
+  conversationId,
+  messageId,
+  attachments,
+}: {
+  conversationId: string;
+  messageId: string;
+  attachments?: readonly ChatAttachmentRef[];
+}) {
+  const { t } = useTranslation();
   if (!attachments?.length) return null;
   return (
     <div className="buddy-sent-attachments" aria-label={`已发送 ${attachments.length} 个附件`}>
       {attachments.map((file) => {
         const extension = file.name.includes('.') ? file.name.split('.').pop() : undefined;
+        const missing = file.availability === 'missing';
+        if (missing) {
+          return (
+            <div key={file.id} className="buddy-sent-attachment buddy-sent-attachment-missing">
+              <span className="buddy-sent-attachment-icon" dangerouslySetInnerHTML={{ __html: getFileIcon(extension, file.name) }} aria-hidden="true" />
+              <span className="buddy-sent-attachment-meta">
+                <span className="buddy-sent-attachment-name" title={file.name}>{file.name}</span>
+                <span className="buddy-sent-attachment-detail">{formatMessageAttachmentSize(file.size)} · 文件不可用</span>
+              </span>
+            </div>
+          );
+        }
         return (
-          <div key={file.id} className={`buddy-sent-attachment ${file.availability === 'missing' ? 'buddy-sent-attachment-missing' : ''}`}>
+          <button
+            key={file.id}
+            type="button"
+            title={t('chat.artifact.preview')}
+            onClick={() =>
+              openDocPreview({
+                source: {
+                  kind: 'attachment',
+                  conversationId,
+                  messageId,
+                  attachmentId: file.id,
+                },
+                fileName: file.name,
+                bytes: file.size,
+              })
+            }
+            className="buddy-sent-attachment cursor-pointer transition-colors hover:border-line-strong hover:bg-surface-hover/60"
+          >
             <span className="buddy-sent-attachment-icon" dangerouslySetInnerHTML={{ __html: getFileIcon(extension, file.name) }} aria-hidden="true" />
             <span className="buddy-sent-attachment-meta">
               <span className="buddy-sent-attachment-name" title={file.name}>{file.name}</span>
-              <span className="buddy-sent-attachment-detail">{formatMessageAttachmentSize(file.size)}{file.availability === 'missing' ? ' · 文件不可用' : ''}</span>
+              <span className="buddy-sent-attachment-detail">{formatMessageAttachmentSize(file.size)}</span>
             </span>
-          </div>
+          </button>
         );
       })}
     </div>
@@ -517,45 +568,64 @@ function formatMessageAttachmentSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
+const UserMessageFooter = memo(function UserMessageFooter({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const { state, announcement, triggerCopy } = useCopyFeedback(
+    t('chat.entity.copied'),
+    t('chat.entity.copyFailed'),
+  );
+
+  return (
+    <div className="pointer-events-none mt-1 flex h-6 items-center justify-end gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+      <button
+        type="button"
+        onClick={() => void triggerCopy(text)}
+        data-copied={state === 'copied' ? '' : undefined}
+        aria-label={t('chat.copyMessage')}
+        title={t(state === 'copied' ? 'chat.entity.copied' : 'chat.copyMessage')}
+        className="inline-flex size-6 items-center justify-center rounded-md text-ink-quaternary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      >
+        {state === 'copied' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+      </button>
+      <span className="sr-only" role="status">
+        {announcement}
+      </span>
+    </div>
+  );
+});
+
 const AssistantMessageFooter = memo(function AssistantMessageFooter({ text }: { text: string }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        const success = document.execCommand('copy');
-        textarea.remove();
-        if (!success) throw new Error('copy failed');
-      }
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  };
+  const { state, announcement, triggerCopy } = useCopyFeedback(
+    t('chat.responseCopied'),
+    t('chat.entity.copyFailed'),
+  );
 
   return (
     <div className="pointer-events-none mt-1.5 flex h-6 w-full items-center justify-start gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
       <button
         type="button"
-        onClick={() => void copy()}
-        aria-label={t(copied ? 'chat.responseCopied' : 'chat.copyResponse')}
-        title={t(copied ? 'chat.responseCopied' : 'chat.copyResponse')}
+        onClick={() => void triggerCopy(text)}
+        data-copied={state === 'copied' ? '' : undefined}
+        aria-label={t(state === 'copied' ? 'chat.responseCopied' : 'chat.copyResponse')}
+        title={t(state === 'copied' ? 'chat.responseCopied' : 'chat.copyResponse')}
         className="inline-flex size-6 items-center justify-center rounded-md text-ink-quaternary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+        {state === 'copied' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+      </button>
+      <button
+        type="button"
+        onClick={() => emitBuddySignal({ kind: 'quote', text })}
+        aria-label={t('chat.quoteReply')}
+        title={t('chat.quoteReply')}
+        className="inline-flex size-6 items-center justify-center rounded-md text-ink-quaternary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      >
+        <Quote className="size-3.5" />
       </button>
       <SpeakButton text={text} />
+      <span className="sr-only" role="status">
+        {announcement}
+      </span>
     </div>
   );
 });

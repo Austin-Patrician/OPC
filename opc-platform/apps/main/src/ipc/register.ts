@@ -9,6 +9,7 @@ import {
   type TriggerPatch,
   type TriggerStatus,
   type UsageFilter,
+  type DocPreviewSource,
 } from "@opc/shared/ipc";
 import type {
   ApprovalPermitScope,
@@ -43,6 +44,11 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { getAppInfo } from "../appInfo";
+import {
+  isSafeExternalUrl,
+  runSafeOpenLocalPath,
+  runSafeRevealLocalPath,
+} from "../system/localPathActions";
 import type { ChatService } from "../chat/chatService";
 import { runDiagnostics } from "../diagnostics/report";
 import type { OcrSettings } from "@opc/shared/ocr";
@@ -56,6 +62,7 @@ import type { AuthService } from "../models/authService";
 import type { CompanyService } from "../company/companyService";
 import { readImageArtifact } from "../work/artifacts";
 import { registerArtifactMedia, registerRemoteMedia } from "../chat/mediaProtocol";
+import type { DocPreviewService } from "../preview/docPreviewService";
 import { appPaths } from "../paths";
 import { closeAllMcpConnections } from "../mcp/connection";
 import {
@@ -169,6 +176,7 @@ interface RegisterOptions {
     resetContext(options?: ResetChatOptions): Promise<ResetChatResult>;
   };
   observatory?: ObservatoryService;
+  docPreview?: DocPreviewService;
   subscribeObservatoryRouter?: (
     listener: (event: ObservatoryRouterEvent) => void,
   ) => () => void;
@@ -209,6 +217,7 @@ export function registerIpc({
   desktop,
   routerControls,
   observatory,
+  docPreview,
   subscribeObservatoryRouter,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
@@ -324,6 +333,48 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.app.getInfo, () => getAppInfo());
+
+  const localBaseDirs = () => {
+    const taskDirs = work
+      .listTasks(25)
+      .map((task) => path.resolve(workspaceRoot, task.workspaceRelPath));
+    return [app.getAppPath(), process.cwd(), workspaceRoot, ...taskDirs];
+  };
+
+  ipcMain.handle(IPC.app.openExternal, async (_event, url: unknown) => {
+    if (typeof url !== "string" || !isSafeExternalUrl(url)) {
+      return { ok: false, error: "不支持或非法的链接协议" };
+    }
+    try {
+      await shell.openExternal(url.trim());
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  ipcMain.handle(IPC.app.openLocalPath, (_event, rawPath: unknown) => {
+    if (typeof rawPath !== "string") {
+      return { ok: false, error: "路径参数非法" };
+    }
+    return runSafeOpenLocalPath(rawPath, {
+      baseDirs: localBaseDirs(),
+      openPath: (absPath) => shell.openPath(absPath),
+    });
+  });
+
+  ipcMain.handle(IPC.app.revealLocalPath, (_event, rawPath: unknown) => {
+    if (typeof rawPath !== "string") {
+      return { ok: false, error: "路径参数非法" };
+    }
+    return runSafeRevealLocalPath(rawPath, {
+      baseDirs: localBaseDirs(),
+      showItemInFolder: (absPath) => shell.showItemInFolder(absPath),
+    });
+  });
 
   ipcMain.handle(IPC.window.minimize, (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -471,7 +522,18 @@ export function registerIpc({
       ? await dialog.showOpenDialog(window, { title: '选择附件', properties: ['openFile', 'multiSelections'] })
       : await dialog.showOpenDialog({ title: '选择附件', properties: ['openFile', 'multiSelections'] });
     if (result.canceled) return [];
-    return validateAttachmentPaths(result.filePaths);
+    const refs = validateAttachmentPaths(result.filePaths);
+    docPreview?.authorizeStagedAttachments(refs);
+    return refs;
+  });
+
+  ipcMain.handle(IPC.chat.registerDroppedAttachments, (_event, paths: unknown) => {
+    if (!Array.isArray(paths) || !paths.every((entry) => typeof entry === 'string')) {
+      throw new Error('chat:registerDroppedAttachments 参数非法');
+    }
+    const refs = validateAttachmentPaths(paths);
+    docPreview?.authorizeStagedAttachments(refs);
+    return refs;
   });
 
   ipcMain.handle(IPC.chat.materializeClipboardAttachment, async (_event, input: unknown) => {
@@ -485,7 +547,9 @@ export function registerIpc({
     const safe = path.basename(value.name).replaceAll(/[^\w.\- ]/g, '_') || 'clipboard-file';
     const target = path.join(dir, `${id}-${safe}`);
     fs.writeFileSync(target, Buffer.from(value.bytes));
-    return { id, name: safe, path: target, size: value.bytes.byteLength, ...(typeof value.mimeType === 'string' ? { mimeType: value.mimeType } : {}), source: 'clipboard' as const, availability: 'available' as const };
+    const ref = { id, name: safe, path: target, size: value.bytes.byteLength, ...(typeof value.mimeType === 'string' ? { mimeType: value.mimeType } : {}), source: 'clipboard' as const, availability: 'available' as const };
+    docPreview?.authorizeStagedAttachments([ref]);
+    return ref;
   });
 
   ipcMain.handle(IPC.chat.sendMessage, (_event, input: unknown) => {
@@ -1360,6 +1424,50 @@ export function registerIpc({
     },
   );
 
+  if (docPreview) {
+    ipcMain.handle(IPC.docPreview.openSession, (_event, source: unknown) => {
+      if (!isDocPreviewSource(source)) throw new Error("docPreview:openSession 参数非法");
+      return docPreview.openSession(source);
+    });
+    ipcMain.handle(IPC.docPreview.closeSession, (_event, sessionId: unknown) => {
+      if (typeof sessionId !== "string" || !sessionId.trim()) return;
+      docPreview.closeSession(sessionId);
+    });
+    ipcMain.handle(IPC.docPreview.readSpreadsheetPage, (_event, input: unknown) => {
+      if (!input || typeof input !== "object") {
+        throw new Error("docPreview:readSpreadsheetPage 参数非法");
+      }
+      const value = input as Record<string, unknown>;
+      if (typeof value.sessionId !== "string" || !value.sessionId.trim()) {
+        throw new Error("docPreview:readSpreadsheetPage 需要 sessionId");
+      }
+      return docPreview.readSpreadsheetPage({
+        sessionId: value.sessionId,
+        ...(typeof value.sheetIndex === "number" ? { sheetIndex: value.sheetIndex } : {}),
+        ...(typeof value.offset === "number" ? { offset: value.offset } : {}),
+        ...(typeof value.limit === "number" ? { limit: value.limit } : {}),
+      });
+    });
+    ipcMain.handle(IPC.docPreview.openExternal, (_event, source: unknown) => {
+      if (!isDocPreviewSource(source)) throw new Error("docPreview:openExternal 参数非法");
+      return docPreview.openExternal(source);
+    });
+    ipcMain.handle(IPC.docPreview.saveAs, async (event, source: unknown) => {
+      if (!isDocPreviewSource(source)) throw new Error("docPreview:saveAs 参数非法");
+      const resolved = docPreview.resolveSourceFile(source);
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const result = await dialog.showSaveDialog(window ?? undefined!, {
+        defaultPath: resolved.fileName,
+      });
+      if (result.canceled || !result.filePath) {
+        return { ok: false, error: "已取消" };
+      }
+      fs.copyFileSync(resolved.filePath, result.filePath);
+      return { ok: true, path: result.filePath };
+    });
+  }
+
   ipcMain.handle(
     IPC.auth.answer,
     (_event, promptId: unknown, value: unknown) => {
@@ -1586,6 +1694,9 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.company.get);
     ipcMain.removeHandler(IPC.company.update);
     ipcMain.removeHandler(IPC.diagnostics.report);
+    ipcMain.removeHandler(IPC.chat.chooseAttachments);
+    ipcMain.removeHandler(IPC.chat.registerDroppedAttachments);
+    ipcMain.removeHandler(IPC.chat.materializeClipboardAttachment);
     ipcMain.removeHandler(IPC.chat.getSnapshot);
     ipcMain.removeHandler(IPC.chat.loadOlderMessages);
     ipcMain.removeHandler(IPC.chat.sendMessage);
@@ -1597,6 +1708,8 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.chat.getContextStats);
     ipcMain.removeHandler(IPC.chat.compactContext);
     ipcMain.removeHandler(IPC.chat.resetContext);
+    for (const channel of Object.values(IPC.docPreview))
+      ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.observatory.snapshot);
     ipcMain.removeHandler(IPC.observatory.taskDetail);
     ipcMain.removeHandler(IPC.observatory.openWorkspace);
@@ -1766,6 +1879,32 @@ function validateIncomingAttachments(attachments: NonNullable<SendMessageInput['
   if (totalBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
     throw new Error('单条消息附件总大小不能超过 250MB');
   }
+}
+
+function isDocPreviewSource(value: unknown): value is DocPreviewSource {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind === "artifact") {
+    return (
+      typeof candidate.taskId === "string" &&
+      candidate.taskId.trim().length > 0 &&
+      typeof candidate.relPath === "string" &&
+      candidate.relPath.trim().length > 0
+    );
+  }
+  if (candidate.kind === "attachment") {
+    return (
+      typeof candidate.messageId === "string" &&
+      candidate.messageId.trim().length > 0 &&
+      typeof candidate.attachmentId === "string" &&
+      candidate.attachmentId.trim().length > 0 &&
+      (candidate.conversationId === undefined || typeof candidate.conversationId === "string")
+    );
+  }
+  if (candidate.kind === "staged") {
+    return typeof candidate.attachmentId === "string" && candidate.attachmentId.trim().length > 0;
+  }
+  return false;
 }
 
 function isRuntimeProfileDraft(value: unknown): value is RuntimeProfileDraft {

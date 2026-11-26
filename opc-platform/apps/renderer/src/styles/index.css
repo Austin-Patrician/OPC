@@ -116,22 +116,27 @@
   }
 
   * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
+    scrollbar-width: auto;
+    scrollbar-color: auto;
   }
 
   ::-webkit-scrollbar {
     width: 5px;
     height: 5px;
   }
-  ::-webkit-scrollbar-track {
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
+    background: transparent;
     border-radius: 9999px;
   }
-  ::-webkit-scrollbar-thumb:hover {
+  [data-scrolling='true']::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+  }
+  ::-webkit-scrollbar-thumb:hover,
+  ::-webkit-scrollbar-thumb:active {
     background: var(--scrollbar-thumb-hover);
   }
 
@@ -142,31 +147,6 @@
 }
 
 @layer components {
-  .chat-scrollbar-reveal {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-
-  .chat-scrollbar-reveal:hover,
-  .chat-scrollbar-reveal:focus-within,
-  .chat-scrollbar-reveal:focus {
-    scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
-
-  .chat-scrollbar-reveal::-webkit-scrollbar-thumb {
-    background: transparent;
-  }
-
-  .chat-scrollbar-reveal:hover::-webkit-scrollbar-thumb,
-  .chat-scrollbar-reveal:focus-within::-webkit-scrollbar-thumb,
-  .chat-scrollbar-reveal:focus::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-  }
-
-  .chat-scrollbar-reveal:hover::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover);
-  }
-
   .surface-blur {
     backdrop-filter: blur(0px);
   }
@@ -177,29 +157,6 @@
 
   .no-drag {
     -webkit-app-region: no-drag;
-  }
-
-  .page-scroll {
-    scrollbar-width: auto;
-    scrollbar-color: auto;
-  }
-
-  .page-scroll::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
-  }
-
-  .page-scroll::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .page-scroll::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 9999px;
-  }
-
-  .page-scroll::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover);
   }
 
   /* ── Wallpapers (pure CSS, GPU-friendly, reduced-motion aware) ───────── */
@@ -938,6 +895,30 @@
 .opc-assistant-content li > p {
   margin: 0.28em 0;
 }
+.opc-assistant-content ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.25em;
+}
+.opc-assistant-content li.task-list-item {
+  list-style: none;
+  padding-left: 0;
+}
+.opc-assistant-content li.task-list-item input[type='checkbox'] {
+  margin-right: 0.48em;
+  width: 0.95em;
+  height: 0.95em;
+  accent-color: var(--accent);
+  vertical-align: -0.1em;
+}
+dialog.opc-native-dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog.opc-native-dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(4px);
+}
 .opc-assistant-content blockquote {
   margin: 0.95em 0;
   padding: 0.6em 1em;
@@ -1201,7 +1182,6 @@
   max-width: 100%;
   overflow-x: auto;
   padding: 1px 1px 3px;
-  scrollbar-width: thin;
 }
 .buddy-attachment-chip {
   position: relative;

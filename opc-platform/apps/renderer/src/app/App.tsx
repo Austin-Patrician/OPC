@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { installScrollReveal } from '@/shared/lib/scrollReveal';
 import { AppShell } from './AppShell';
 import { ThemeSync } from './ThemeSync';
 import { OnboardingGuide } from '@/features/onboarding/ui/OnboardingGuide';
@@ -13,6 +15,8 @@ import { SchedulesPage } from '@/pages/schedules/SchedulesPage';
  * (and from the dev server) without any server-side rewrites.
  */
 export function App() {
+  useEffect(() => installScrollReveal(), []);
+
   // Electron-only by design: without the preload bridge there is no data layer.
   if (!window.opc) return <DesktopOnlyNotice />;
 
