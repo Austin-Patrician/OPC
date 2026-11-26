@@ -5,9 +5,11 @@ import path from 'node:path';
 import type {
   ChannelAccessConfig,
   ChannelConnectionTestResult,
+  ChannelPairingRequest,
   ChannelRuntimeStatus,
+  ChannelTargetView,
+  ChannelView,
   ChatAttachmentRef,
-  FeishuChannelSettingsView,
   FeishuDomain,
 } from '@opc/shared/domain';
 import type { ChannelStore } from '../store';
@@ -106,8 +108,12 @@ export class FeishuPlugin implements ChannelPlugin {
     return Boolean(cfg.appId && cfg.appSecret);
   }
 
-  getSettingsView(): FeishuChannelSettingsView {
-    return this.store.getFeishuSettingsView();
+  isEnabled(): boolean {
+    return this.store.getFeishuConfig().enabled;
+  }
+
+  shouldMirrorToDesktop(): boolean {
+    return this.store.getFeishuConfig().mirrorToDesktop;
   }
 
   getAccessConfig(): ChannelAccessConfig {
@@ -116,6 +122,37 @@ export class FeishuPlugin implements ChannelPlugin {
 
   getRuntimeStatus(): ChannelRuntimeStatus {
     return { ...this.status };
+  }
+
+  toChannelView(extra: {
+    pendingPairings: ChannelPairingRequest[];
+    knownTargets: ChannelTargetView[];
+  }): ChannelView {
+    return {
+      id: this.id,
+      name: this.name,
+      transport: this.transport,
+      configured: this.isConfigured(),
+      status: this.getRuntimeStatus(),
+      settings: this.store.getFeishuSettingsView(),
+      pendingPairings: extra.pendingPairings,
+      knownTargets: extra.knownTargets,
+    };
+  }
+
+  matchesAddress(address: string): boolean {
+    return parseFeishuAddress(address) !== null;
+  }
+
+  formatTargetAddress(
+    _chatKind: 'p2p' | 'group',
+    ids: { chatId: string; senderId: string },
+  ): string {
+    return formatFeishuAddress(ids.chatId);
+  }
+
+  extractDisplayChatId(address: string): string {
+    return parseFeishuAddress(address) ?? address;
   }
 
   private setStatus(patch: Partial<ChannelRuntimeStatus>): void {

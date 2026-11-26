@@ -61,9 +61,10 @@ import type {
   NotificationSettingsPatch,
   NotificationStatus,
   ChannelConnectionTestResult,
+  ChannelTestDraft,
   ChannelView,
+  DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
-  FeishuDomain,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -157,6 +158,7 @@ export const IPC = {
   channels: {
     list: "channels:list",
     updateFeishu: "channels:updateFeishu",
+    updateDingTalk: "channels:updateDingTalk",
     testConnection: "channels:testConnection",
     reconnect: "channels:reconnect",
     approvePairing: "channels:approvePairing",
@@ -948,16 +950,17 @@ export interface RouterBridge {
 }
 
 /**
- * 外部应用渠道（当前内置飞书长连接，后续可扩展钉钉/Slack/Telegram 等插件）。
+ * 外部应用渠道（当前内置飞书长连接与钉钉 Stream，后续可扩展 Slack / Telegram 等插件）。
  *
- * 凭证由主进程 `safeStorage` 加密保管；渲染进程只拿到 `hasAppSecret` 布尔标记，不回传明文密钥。
+ * 凭证由主进程 `safeStorage` 加密保管；渲染进程只拿到布尔标记，不回传明文密钥。
  */
 export interface ChannelsBridge {
   list(): Promise<ChannelView[]>;
   updateFeishu(patch: FeishuChannelSettingsPatch): Promise<ChannelView[]>;
+  updateDingTalk(patch: DingTalkChannelSettingsPatch): Promise<ChannelView[]>;
   testConnection(
     channelId: string,
-    draft?: { appId?: string; appSecret?: string; domain?: FeishuDomain },
+    draft?: ChannelTestDraft,
   ): Promise<ChannelConnectionTestResult>;
   reconnect(channelId: string): Promise<ChannelView[]>;
   approvePairing(requestId: string): Promise<ChannelView[]>;

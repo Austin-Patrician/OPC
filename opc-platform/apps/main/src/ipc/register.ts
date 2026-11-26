@@ -12,13 +12,14 @@ import {
 import type {
   ApprovalPermitScope,
   BundledRuntime,
+  ChannelTestDraft,
   ChannelView,
   CompactionSettings,
   CompanyProfilePatch,
   CreateTaskInput,
   DecisionClassifyInput,
+  DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
-  FeishuDomain,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -1028,6 +1029,12 @@ export function registerIpc({
     }
     return channels.updateFeishu(raw as FeishuChannelSettingsPatch);
   });
+  ipcMain.handle(IPC.channels.updateDingTalk, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateDingTalk 参数非法");
+    }
+    return channels.updateDingTalk(raw as DingTalkChannelSettingsPatch);
+  });
   ipcMain.handle(
     IPC.channels.testConnection,
     (_event, channelId: unknown, draft?: unknown) => {
@@ -1037,7 +1044,7 @@ export function registerIpc({
       return channels.testConnection(
         channelId.trim(),
         typeof draft === "object" && draft !== null
-          ? (draft as { appId?: string; appSecret?: string; domain?: FeishuDomain })
+          ? (draft as ChannelTestDraft)
           : undefined,
       );
     },
@@ -1856,6 +1863,7 @@ export function registerIpc({
     for (const channel of [
       IPC.channels.list,
       IPC.channels.updateFeishu,
+      IPC.channels.updateDingTalk,
       IPC.channels.testConnection,
       IPC.channels.reconnect,
       IPC.channels.approvePairing,

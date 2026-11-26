@@ -7,6 +7,7 @@ import type {
   ChannelTargetView,
   ChannelView,
   ChatContentBlock,
+  DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
   MessageChannelMeta,
   RouterResponse,
@@ -14,7 +15,7 @@ import type {
 } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 import { evaluateChannelAccess } from './accessGuard';
-import { extractArtifactsFromBlocks, formatFeishuAddress, parseFeishuAddress } from './feishu/feishuFormat';
+import { extractArtifactsFromBlocks } from './blockArtifacts';
 import type { ChannelStore } from './store';
 import type {
   ChannelInboundMessage,
@@ -45,7 +46,7 @@ export interface ChannelManagerDeps {
   allowedFileRoots?: string[];
   onAcceptedEvent?: () => void;
   resolveTaskArtifactPath?: (taskId: string | undefined, relPath: string) => string | null;
-  onPairingRequest?: (request: ChannelPairingRequest) => void;
+  onPairingRequest?: (request: ChannelPairingRequest, channelName: string) => void;
 }
 
 interface PendingThinkingEntry {
@@ -115,7 +116,7 @@ export class ChannelManager {
   async onSystemResume(): Promise<void> {
     if (!this.started) return;
     for (const plugin of this.plugins.values()) {
-      if (plugin.getSettingsView().enabled) {
+      if (plugin.isEnabled()) {
         await plugin.reconnect().catch((err) => {
           console.warn(`[channels] 系统唤醒后重连 ${plugin.id} 失败`, err);
         });
@@ -125,16 +126,12 @@ export class ChannelManager {
   }
 
   listViews(): ChannelView[] {
-    return [...this.plugins.values()].map((plugin) => ({
-      id: plugin.id,
-      name: plugin.name,
-      transport: plugin.transport,
-      configured: plugin.isConfigured(),
-      status: plugin.getRuntimeStatus(),
-      settings: plugin.getSettingsView(),
-      pendingPairings: this.deps.store.listPairings(plugin.id),
-      knownTargets: this.deps.store.listTargets(plugin.id),
-    }));
+    return [...this.plugins.values()].map((plugin) =>
+      plugin.toChannelView({
+        pendingPairings: this.deps.store.listPairings(plugin.id),
+        knownTargets: this.deps.store.listTargets(plugin.id),
+      }),
+    );
   }
 
   listTargets(channelId?: string): ChannelTargetView[] {
@@ -146,6 +143,16 @@ export class ChannelManager {
     const feishu = this.plugins.get('feishu');
     if (feishu && connectionChanged && this.started) {
       await feishu.start(this.buildPluginContext());
+    }
+    this.emitChanged();
+    return this.listViews();
+  }
+
+  async updateDingTalk(patch: DingTalkChannelSettingsPatch): Promise<ChannelView[]> {
+    const { connectionChanged } = this.deps.store.updateDingTalkConfig(patch);
+    const dingtalk = this.plugins.get('dingtalk');
+    if (dingtalk && connectionChanged && this.started) {
+      await dingtalk.start(this.buildPluginContext());
     }
     this.emitChanged();
     return this.listViews();
@@ -176,7 +183,10 @@ export class ChannelManager {
     if (approved) {
       const plugin = this.plugins.get(approved.channelId);
       if (plugin) {
-        const address = formatFeishuAddress(approved.chatId);
+        const address = plugin.formatTargetAddress(approved.chatKind, {
+          chatId: approved.chatId,
+          senderId: approved.senderId,
+        });
         void plugin
           .sendMessage({
             address,
@@ -279,7 +289,7 @@ export class ChannelManager {
             text: '👋 你好！这是我第一次收到你的消息。我已在桌面端「设置 → 应用渠道」提交了配对请求，请管理员点击「允许」后再试。',
           })
           .catch(() => undefined);
-        this.deps.onPairingRequest?.(pairing.request);
+        this.deps.onPairingRequest?.(pairing.request, plugin.name);
       }
       this.emitChanged();
       return;
@@ -312,7 +322,7 @@ export class ChannelManager {
       return;
     }
 
-    if (plugin.getSettingsView().mirrorToDesktop && this.deps.chat) {
+    if (plugin.shouldMirrorToDesktop() && this.deps.chat) {
       this.deps.chat.appendMirroredUserMessage({
         text: message.text,
         attachments: message.attachments,
@@ -382,14 +392,10 @@ export class ChannelManager {
       const explicit = this.plugins.get(adapterId);
       if (explicit) return explicit;
     }
-    const colonIndex = address.indexOf(':');
-    if (colonIndex > 0) {
-      const prefix = address.slice(0, colonIndex);
-      const matched = this.plugins.get(prefix);
-      if (matched) return matched;
-    }
-    if (parseFeishuAddress(address)) {
-      return this.plugins.get('feishu');
+    for (const plugin of this.plugins.values()) {
+      if (plugin.matchesAddress(address)) {
+        return plugin;
+      }
     }
     return undefined;
   }
@@ -417,7 +423,7 @@ export class ChannelManager {
 
     if (result.ok) {
       const known = this.resolveTargetTitle(target.address, plugin.id);
-      if (plugin.getSettingsView().mirrorToDesktop && this.deps.chat) {
+      if (plugin.shouldMirrorToDesktop() && this.deps.chat) {
         const textPreview =
           fallbackText ||
           response.blocks
@@ -431,7 +437,7 @@ export class ChannelManager {
             channelId: plugin.id,
             channelName: plugin.name,
             chatKind: known?.chatKind ?? 'p2p',
-            chatId: parseFeishuAddress(target.address) ?? target.address,
+            chatId: plugin.extractDisplayChatId(target.address),
             direction: 'outbound',
           },
         });
@@ -460,7 +466,7 @@ export class ChannelManager {
 
     if (result.ok) {
       const known = this.resolveTargetTitle(input.address, plugin.id);
-      const chatId = parseFeishuAddress(input.address) ?? input.address;
+      const chatId = plugin.extractDisplayChatId(input.address);
       this.deps.store.recordTarget({
         channelId: plugin.id,
         address: input.address,
@@ -468,7 +474,7 @@ export class ChannelManager {
         title: known?.title ?? chatId,
         lastActiveAt: Date.now(),
       });
-      if (plugin.getSettingsView().mirrorToDesktop && this.deps.chat) {
+      if (plugin.shouldMirrorToDesktop() && this.deps.chat) {
         this.deps.chat.appendMirroredAssistantMessage({
           text: input.text,
           content: [{ type: 'markdown', text: input.text }],

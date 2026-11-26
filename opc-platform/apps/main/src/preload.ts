@@ -63,9 +63,10 @@ import type {
   NotificationSettingsPatch,
   NotificationStatus,
   ChannelConnectionTestResult,
+  ChannelTestDraft,
   ChannelView,
+  DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
-  FeishuDomain,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
@@ -356,9 +357,11 @@ const bridge: OpcBridge = {
     list: () => ipcRenderer.invoke(IPC.channels.list) as Promise<ChannelView[]>,
     updateFeishu: (patch: FeishuChannelSettingsPatch) =>
       ipcRenderer.invoke(IPC.channels.updateFeishu, patch) as Promise<ChannelView[]>,
+    updateDingTalk: (patch: DingTalkChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateDingTalk, patch) as Promise<ChannelView[]>,
     testConnection: (
       channelId: string,
-      draft?: { appId?: string; appSecret?: string; domain?: FeishuDomain },
+      draft?: ChannelTestDraft,
     ) =>
       ipcRenderer.invoke(
         IPC.channels.testConnection,

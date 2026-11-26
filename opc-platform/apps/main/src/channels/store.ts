@@ -3,6 +3,8 @@ import type {
   ChannelAccessConfig,
   ChannelPairingRequest,
   ChannelTargetView,
+  DingTalkChannelSettingsPatch,
+  DingTalkChannelSettingsView,
   FeishuChannelSettingsPatch,
   FeishuChannelSettingsView,
   FeishuDomain,
@@ -11,6 +13,8 @@ import { decryptSecret, encryptSecret } from '../models/keyCipher';
 
 const FEISHU_CONFIG_KEY = 'channels.feishu.config';
 const FEISHU_SECRET_KEY = 'channels.feishu.secret';
+const DINGTALK_CONFIG_KEY = 'channels.dingtalk.config';
+const DINGTALK_SECRET_KEY = 'channels.dingtalk.secret';
 const PAIRINGS_KEY = 'channels.pairings';
 const TARGETS_KEY = 'channels.targets';
 const MAX_PAIRINGS = 50;
@@ -20,12 +24,24 @@ export interface FeishuInternalConfig extends FeishuChannelSettingsView {
   appSecret: string;
 }
 
+export interface DingTalkInternalConfig extends DingTalkChannelSettingsView {
+  clientSecret: string;
+}
+
 interface StoredFeishuConfig {
   enabled?: boolean;
   domain?: FeishuDomain;
   appId?: string;
   mirrorToDesktop?: boolean;
   thinkingReaction?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+interface StoredDingTalkConfig {
+  enabled?: boolean;
+  clientId?: string;
+  robotCode?: string;
+  mirrorToDesktop?: boolean;
   access?: Partial<ChannelAccessConfig>;
 }
 
@@ -222,6 +238,94 @@ export class ChannelStore {
     return { connectionChanged };
   }
 
+  private readEncryptedSecret(settingKey: string): string {
+    const encoded = this.readSetting(settingKey);
+    if (!encoded) return '';
+    try {
+      return this.cipher.decrypt(Buffer.from(encoded, 'base64'));
+    } catch {
+      return '';
+    }
+  }
+
+  private writeEncryptedSecret(settingKey: string, plain: string): void {
+    const trimmed = plain.trim();
+    if (!trimmed) {
+      this.db.prepare('DELETE FROM app_setting WHERE key = ?').run(settingKey);
+      return;
+    }
+    const encrypted = this.cipher.encrypt(trimmed);
+    this.writeSetting(settingKey, encrypted.toString('base64'));
+  }
+
+  getDingTalkConfig(): DingTalkInternalConfig {
+    const stored = this.readJson<StoredDingTalkConfig>(DINGTALK_CONFIG_KEY, {});
+    const clientSecret = this.readEncryptedSecret(DINGTALK_SECRET_KEY);
+    return {
+      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : false,
+      clientId: typeof stored.clientId === 'string' ? stored.clientId.trim() : '',
+      hasClientSecret: clientSecret.length > 0,
+      clientSecret,
+      robotCode: typeof stored.robotCode === 'string' ? stored.robotCode.trim() : '',
+      mirrorToDesktop:
+        typeof stored.mirrorToDesktop === 'boolean' ? stored.mirrorToDesktop : true,
+      access: normalizeAccess(stored.access),
+    };
+  }
+
+  getDingTalkSettingsView(): DingTalkChannelSettingsView {
+    const full = this.getDingTalkConfig();
+    return {
+      enabled: full.enabled,
+      clientId: full.clientId,
+      hasClientSecret: full.hasClientSecret,
+      robotCode: full.robotCode,
+      mirrorToDesktop: full.mirrorToDesktop,
+      access: full.access,
+    };
+  }
+
+  updateDingTalkConfig(patch: DingTalkChannelSettingsPatch): { connectionChanged: boolean } {
+    const current = this.getDingTalkConfig();
+    const nextEnabled = typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled;
+    const nextClientId =
+      typeof patch.clientId === 'string' ? patch.clientId.trim() : current.clientId;
+    const nextRobotCode =
+      typeof patch.robotCode === 'string' ? patch.robotCode.trim() : current.robotCode;
+    const nextMirror =
+      typeof patch.mirrorToDesktop === 'boolean'
+        ? patch.mirrorToDesktop
+        : current.mirrorToDesktop;
+    const nextAccess = normalizeAccess({
+      ...current.access,
+      ...(patch.access ?? {}),
+    });
+
+    let secretChanged = false;
+    if (patch.clientSecret !== undefined) {
+      const nextSecret = patch.clientSecret.trim();
+      secretChanged = nextSecret !== current.clientSecret;
+      this.writeEncryptedSecret(DINGTALK_SECRET_KEY, nextSecret);
+    }
+
+    const storedPayload: StoredDingTalkConfig = {
+      enabled: nextEnabled,
+      clientId: nextClientId,
+      robotCode: nextRobotCode,
+      mirrorToDesktop: nextMirror,
+      access: nextAccess,
+    };
+    this.writeSetting(DINGTALK_CONFIG_KEY, JSON.stringify(storedPayload));
+
+    const connectionChanged =
+      nextEnabled !== current.enabled ||
+      nextClientId !== current.clientId ||
+      nextRobotCode !== current.robotCode ||
+      secretChanged;
+
+    return { connectionChanged };
+  }
+
   listPairings(channelId?: string): ChannelPairingRequest[] {
     const all = this.readJson<ChannelPairingRequest[]>(PAIRINGS_KEY, []);
     const filtered = channelId ? all.filter((item) => item.channelId === channelId) : all;
@@ -273,6 +377,15 @@ export class ChannelStore {
           },
         });
       }
+    } else if (target.channelId === 'dingtalk') {
+      const config = this.getDingTalkConfig();
+      if (!config.access.dmAllowlist.includes(target.senderId)) {
+        this.updateDingTalkConfig({
+          access: {
+            dmAllowlist: [...config.access.dmAllowlist, target.senderId],
+          },
+        });
+      }
     }
     return target;
   }
@@ -286,21 +399,40 @@ export class ChannelStore {
   }
 
   removeAllowlistEntry(channelId: string, kind: 'dm' | 'group', entryId: string): void {
-    if (channelId !== 'feishu') return;
-    const config = this.getFeishuConfig();
-    if (kind === 'dm') {
+    if (channelId === 'feishu') {
+      const config = this.getFeishuConfig();
+      if (kind === 'dm') {
+        this.updateFeishuConfig({
+          access: {
+            dmAllowlist: config.access.dmAllowlist.filter((id) => id !== entryId),
+          },
+        });
+        return;
+      }
       this.updateFeishuConfig({
         access: {
-          dmAllowlist: config.access.dmAllowlist.filter((id) => id !== entryId),
+          groupAllowlist: config.access.groupAllowlist.filter((id) => id !== entryId),
         },
       });
       return;
     }
-    this.updateFeishuConfig({
-      access: {
-        groupAllowlist: config.access.groupAllowlist.filter((id) => id !== entryId),
-      },
-    });
+
+    if (channelId === 'dingtalk') {
+      const config = this.getDingTalkConfig();
+      if (kind === 'dm') {
+        this.updateDingTalkConfig({
+          access: {
+            dmAllowlist: config.access.dmAllowlist.filter((id) => id !== entryId),
+          },
+        });
+        return;
+      }
+      this.updateDingTalkConfig({
+        access: {
+          groupAllowlist: config.access.groupAllowlist.filter((id) => id !== entryId),
+        },
+      });
+    }
   }
 
   listTargets(channelId?: string): ChannelTargetView[] {

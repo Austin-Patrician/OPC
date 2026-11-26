@@ -1410,14 +1410,19 @@
       "classifierNone": "Not configured (this step is skipped)",
       "classifierNoChoices": "No classifier is enabled yet: enable one under Settings → Models → Decision, or this step will be skipped.",
       "channelsLinkTitle": "External app connections moved to Channels",
-      "channelsLinkDesc": "Feishu and external messaging apps now connect bidirectionally via long-lived connections without local ports or tunnels.",
-      "channelsLinkRow": "External app channels (Feishu & more)",
+      "channelsLinkDesc": "Feishu, DingTalk, and external messaging apps now connect bidirectionally via long-lived connections without local ports or tunnels.",
+      "channelsLinkRow": "External app channels (Feishu, DingTalk & more)",
       "channelsLinkHint": "Manage bot credentials, DM pairing approvals, group @mention rules, and desktop mirroring.",
       "channelsLinkAction": "Open Channels settings"
     },
     "channels": {
-      "description": "Connect Buddy to Feishu / Lark and future external apps. Receive messages, images, and files in real time and send Markdown cards or workspace artifacts back.",
-      "extensibilityNote": "Plugin-based channel architecture: Feishu is built in today, with DingTalk Stream, Slack Socket, Telegram, and custom Webhooks ready to plug into the same surface.",
+      "description": "Connect Buddy to Feishu / Lark, DingTalk, and future external apps. Receive messages, images, and files in real time and send Markdown or workspace artifacts back.",
+      "extensibilityNote": "Plugin-based channel architecture: Feishu WebSocket and DingTalk Stream are built in today, with Slack Socket, Telegram, and custom Webhooks ready to plug into the same surface.",
+      "overview": {
+        "configured": "Credentials configured",
+        "unconfigured": "Not configured yet",
+        "pendingPairings": "{{count}} pending"
+      },
       "state": {
         "disabled": "Disabled",
         "disconnected": "Disconnected",
@@ -1463,6 +1468,31 @@
         "secretSavedPlaceholder": "•••••••• (saved securely; leave empty to keep)",
         "secretPlaceholder": "Paste your Feishu App Secret",
         "credentialsActions": "Validate & save"
+      },
+      "dingtalk": {
+        "title": "DingTalk Bot (Stream Mode)",
+        "subtitle": "No public domain or reverse proxy required. Bidirectional Markdown, image, and workspace file delivery over DingTalk Stream + OpenAPI.",
+        "enableToggle": "Enable DingTalk channel",
+        "botIdentity": "Active bot ID",
+        "guideTitle": "4-step DingTalk Open Platform setup guide",
+        "guideHint": "Expand for Stream mode & permission steps",
+        "step1": "Create an Enterprise Internal App in DingTalk Developer Portal and enable the Robot capability.",
+        "step2": "In the Robot settings, set Message Receiving Mode to \"Stream Mode\".",
+        "step3": "Enable permissions for sending enterprise robot messages and downloading robot message files.",
+        "step4": "Publish a version of the app, paste Client ID (AppKey) & Client Secret below, test the connection, and toggle on.",
+        "clientId": "Client ID (AppKey)",
+        "clientSecret": "Client Secret (AppSecret)",
+        "secretSavedHint": "Client Secret is encrypted in your OS keychain and never echoed back. Leave blank to keep unchanged.",
+        "secretEmptyHint": "No Client Secret saved yet.",
+        "secretSavedPlaceholder": "•••••••• (saved securely; leave empty to keep)",
+        "secretPlaceholder": "Paste your DingTalk Client Secret",
+        "robotCode": "RobotCode (Optional)",
+        "robotCodeHint": "Usually identical to Client ID for internal apps; leave blank to default to Client ID.",
+        "robotCodePlaceholder": "Leave blank to reuse Client ID",
+        "addDmPlaceholder": "Enter DingTalk staffId / userId",
+        "addGroupPlaceholder": "Enter DingTalk openConversationId (e.g. cidxxx)",
+        "mirrorHint": "Keep inbound DingTalk requests and Buddy's external replies visible in your desktop Assistant stream.",
+        "targetsEmpty": "No active DingTalk chats recorded yet. Send a message to your bot in DingTalk to populate this list."
       },
       "pairing": {
         "pendingTitle": "Pending DM pairing requests ({{count}})",

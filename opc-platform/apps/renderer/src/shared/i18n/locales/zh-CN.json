@@ -1410,14 +1410,19 @@
       "classifierNone": "未配置（跳过此步骤）",
       "classifierNoChoices": "尚未启用分类模型：请在 设置 → 模型 → Decision 中启用一个，否则此步骤会被跳过。",
       "channelsLinkTitle": "外部应用接入已独立迁移",
-      "channelsLinkDesc": "无需本地端口或公网隧道，飞书等外部平台现已统一通过「应用渠道」以长连接方式双向接入。",
-      "channelsLinkRow": "外部应用渠道（飞书 / 更多平台）",
-      "channelsLinkHint": "管理飞书机器人凭证、配对审批、群聊 @ 规则与桌面同步策略。",
+      "channelsLinkDesc": "无需本地端口或公网隧道，飞书、钉钉等外部平台现已统一通过「应用渠道」以长连接方式双向接入。",
+      "channelsLinkRow": "外部应用渠道（飞书 / 钉钉 / 更多平台）",
+      "channelsLinkHint": "管理机器人凭证、配对审批、群聊 @ 规则与桌面同步策略。",
       "channelsLinkAction": "前往应用渠道配置"
     },
     "channels": {
-      "description": "将 Buddy 真实接入飞书等外部协作应用。通过长连接即时收发消息、图片与文件产物，并支持 Router 主动向外推送信息。",
-      "extensibilityNote": "渠道架构采用可插拔设计：飞书已率先内置，后续将在同页平滑扩展钉钉 Stream、Slack Socket、Telegram 与自定义 Webhook。",
+      "description": "将 Buddy 真实接入飞书、钉钉等外部协作应用。通过长连接即时收发消息、图片与文件产物，并支持 Router 主动向外推送信息。",
+      "extensibilityNote": "渠道架构采用可插拔设计：飞书 WebSocket 与钉钉 Stream 已内置就绪，后续将在同页平滑扩展 Slack Socket、Telegram 与自定义 Webhook。",
+      "overview": {
+        "configured": "凭证已配置",
+        "unconfigured": "尚未配置凭证",
+        "pendingPairings": "{{count}} 条待审批"
+      },
       "state": {
         "disabled": "已停用",
         "disconnected": "未连接",
@@ -1463,6 +1468,31 @@
         "secretSavedPlaceholder": "••••••••（已安全保存，留空则保持不变）",
         "secretPlaceholder": "粘贴飞书应用的 App Secret",
         "credentialsActions": "连接校验与保存"
+      },
+      "dingtalk": {
+        "title": "钉钉 / DingTalk 机器人（Stream 长连接）",
+        "subtitle": "无需公网域名或反向代理，通过钉钉官方 Stream 长连接与 OpenAPI 双向收发 Markdown 消息、图片与文件产物。",
+        "enableToggle": "启用钉钉渠道",
+        "botIdentity": "当前机器人标识",
+        "guideTitle": "钉钉开放平台 4 步配置指南",
+        "guideHint": "展开查看 Stream 模式与权限说明",
+        "step1": "前往钉钉开发者后台创建「企业内部应用」，在「应用能力」中添加「机器人」。",
+        "step2": "在机器人配置中，将「消息接收模式」选择为「Stream 模式」。",
+        "step3": "在「权限管理」中搜索并开通「企业内机器人发送消息权限」以及「调用机器人下载消息中文件接口权限」。",
+        "step4": "发布应用版本后，在「凭证与基础信息」复制 Client ID (AppKey) 与 Client Secret 填入下方，点击测试连接并开启开关。",
+        "clientId": "Client ID (AppKey)",
+        "clientSecret": "Client Secret (AppSecret)",
+        "secretSavedHint": "Client Secret 已使用系统钥匙串加密保存在本机，不会回传明文；留空保持不变，输入新值可覆盖。",
+        "secretEmptyHint": "尚未保存 Client Secret。",
+        "secretSavedPlaceholder": "••••••••（已安全保存，留空则保持不变）",
+        "secretPlaceholder": "粘贴钉钉应用的 Client Secret",
+        "robotCode": "RobotCode（可选）",
+        "robotCodeHint": "普通企业内部应用一般与 Client ID 相同；留空则自动使用 Client ID。",
+        "robotCodePlaceholder": "留空默认使用 Client ID",
+        "addDmPlaceholder": "输入钉钉员工 staffId / userId",
+        "addGroupPlaceholder": "输入钉钉群 openConversationId（例如 cidxxx）",
+        "mirrorHint": "开启后，来自钉钉的问题及 Buddy 的外部回复也会实时记录到桌面端主对话，便于随时切换设备衔接。",
+        "targetsEmpty": "尚无已记录的钉钉会话。在钉钉给机器人发送一条消息后会自动出现在这里。"
       },
       "pairing": {
         "pendingTitle": "待审批的私聊配对请求（{{count}}）",

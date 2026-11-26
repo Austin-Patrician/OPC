@@ -66,6 +66,7 @@ import { WatchdogActionRepository } from './data/watchdogActionRepository';
 import { ThreadRepository } from './data/threadRepository';
 import { FolderWatcher } from './router/folderWatcher';
 import { ChannelManager } from './channels/channelManager';
+import { DingTalkPlugin } from './channels/dingtalk/dingtalkPlugin';
 import { FeishuPlugin } from './channels/feishu/feishuPlugin';
 import { ChannelStore } from './channels/store';
 import { WatchdogHost } from './watchdog/host';
@@ -808,10 +809,10 @@ async function bootstrap(): Promise<void> {
       if (target !== taskDir && !target.startsWith(`${taskDir}${path.sep}`)) return null;
       return target;
     },
-    onPairingRequest: (req) => {
+    onPairingRequest: (req, channelName) => {
       notifications.notifyQuestion({
         reportId: req.id,
-        title: `飞书配对请求：${req.senderName}`,
+        title: `${channelName} 配对请求：${req.senderName}`,
         body: req.firstMessagePreview
           ? `消息预览：${req.firstMessagePreview}（请到「设置 → 应用渠道」审批）`
           : '请到「设置 → 应用渠道」允许或拒绝该用户的私聊访问。',
@@ -819,6 +820,7 @@ async function bootstrap(): Promise<void> {
     },
   });
   channelManager.registerPlugin(new FeishuPlugin(channelStore));
+  channelManager.registerPlugin(new DingTalkPlugin(channelStore));
 
   /**
    * Router：一个真的会话。

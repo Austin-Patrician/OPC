@@ -1,11 +1,13 @@
 import type {
   ChannelAccessConfig,
   ChannelConnectionTestResult,
+  ChannelPairingRequest,
   ChannelRuntimeStatus,
+  ChannelTargetView,
   ChannelTransportKind,
+  ChannelView,
   ChatAttachmentRef,
   ChatContentBlock,
-  FeishuChannelSettingsView,
   TriggerReplyTarget,
 } from '@opc/shared/domain';
 
@@ -56,13 +58,24 @@ export interface ChannelPluginContext {
 }
 
 export interface ChannelPlugin {
-  readonly id: string;
+  readonly id: 'feishu' | 'dingtalk';
   readonly name: string;
   readonly transport: ChannelTransportKind;
   isConfigured(): boolean;
-  getSettingsView(): FeishuChannelSettingsView;
+  isEnabled(): boolean;
+  shouldMirrorToDesktop(): boolean;
   getAccessConfig(): ChannelAccessConfig;
   getRuntimeStatus(): ChannelRuntimeStatus;
+  toChannelView(extra: {
+    pendingPairings: ChannelPairingRequest[];
+    knownTargets: ChannelTargetView[];
+  }): ChannelView;
+  matchesAddress(address: string): boolean;
+  formatTargetAddress(
+    chatKind: 'p2p' | 'group',
+    ids: { chatId: string; senderId: string },
+  ): string;
+  extractDisplayChatId(address: string): string;
   start(ctx: ChannelPluginContext): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;

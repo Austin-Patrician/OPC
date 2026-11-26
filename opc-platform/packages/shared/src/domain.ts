@@ -1789,6 +1789,34 @@ export interface FeishuChannelSettingsPatch {
   access?: Partial<ChannelAccessConfig>;
 }
 
+export interface DingTalkChannelSettingsView {
+  enabled: boolean;
+  clientId: string;
+  hasClientSecret: boolean;
+  robotCode: string;
+  mirrorToDesktop: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface DingTalkChannelSettingsPatch {
+  enabled?: boolean;
+  clientId?: string;
+  /** Empty string clears the saved Client Secret; omitted keeps the existing secret. */
+  clientSecret?: string;
+  robotCode?: string;
+  mirrorToDesktop?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+export interface ChannelTestDraft {
+  appId?: string;
+  appSecret?: string;
+  domain?: FeishuDomain;
+  clientId?: string;
+  clientSecret?: string;
+  robotCode?: string;
+}
+
 export interface ChannelRuntimeStatus {
   channelId: string;
   transport: ChannelTransportKind;
@@ -1801,16 +1829,26 @@ export interface ChannelRuntimeStatus {
   lastErrorAt?: number;
 }
 
-export interface ChannelView {
-  id: string;
+interface ChannelViewBase {
   name: string;
   transport: ChannelTransportKind;
   configured: boolean;
   status: ChannelRuntimeStatus;
-  settings: FeishuChannelSettingsView;
   pendingPairings: ChannelPairingRequest[];
   knownTargets: ChannelTargetView[];
 }
+
+export interface FeishuChannelView extends ChannelViewBase {
+  id: 'feishu';
+  settings: FeishuChannelSettingsView;
+}
+
+export interface DingTalkChannelView extends ChannelViewBase {
+  id: 'dingtalk';
+  settings: DingTalkChannelSettingsView;
+}
+
+export type ChannelView = FeishuChannelView | DingTalkChannelView;
 
 export interface ChannelConnectionTestResult {
   ok: boolean;
