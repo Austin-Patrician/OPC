@@ -212,13 +212,14 @@ describe('browserTool 人机接管与高效工具集', () => {
     expect(blockedDomain.isError).toBe(true);
     expect(authorize).toHaveBeenCalledTimes(1);
 
-    // Valid batch executes and returns post-snapshot
+    // Valid batch executes and returns post-snapshot (including wait with numeric amount)
     const okRes = await batchTool.execute({
       steps: [
         { action: 'open', url: 'https://www.xiaohongshu.com/explore' },
         { action: 'type', ref: '@e1', value: 'AI 工作台' },
         { action: 'press', value: 'Enter' },
         { action: 'wait', value: '1200' },
+        { action: 'wait', amount: 3500 },
       ],
     });
     expect(okRes.isError).toBeUndefined();
@@ -228,6 +229,7 @@ describe('browserTool 人机接管与高效工具集', () => {
       ['type', '@e1', 'AI 工作台'],
       ['press', 'Enter'],
       ['wait', '1200'],
+      ['wait', '3500'],
     ]);
     expect(command).toHaveBeenCalledWith(expect.anything(), 'snapshot', ['-i']);
     expect((okRes.output?.[0] as { text: string }).text).toContain('最新页面快照');

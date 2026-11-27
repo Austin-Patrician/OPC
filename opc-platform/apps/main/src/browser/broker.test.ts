@@ -7,8 +7,11 @@ import {
   browserDomainAllowed,
   BrowserBroker,
   buildAgentBrowserArgs,
+  extractExecFailureText,
   findQrLoginSwitchRef,
   isBrowserActionRisky,
+  isStaleDaemonError,
+  isTabGoneError,
 } from './broker';
 import { BrowserInstallService, normalizeBrowserSettings } from './install';
 
@@ -357,6 +360,130 @@ describe('QR login auto-switcher', () => {
 
     const passwordOnlyResult = await broker.trySwitchToQrLogin(input);
     expect(passwordOnlyResult).toEqual({ switched: false, passwordOnly: true });
+
+    await broker.dispose();
+    db.close();
+  });
+});
+
+describe('BrowserBroker error clarity & self-healing', () => {
+  it('extractExecFailureText、isTabGoneError 与 isStaleDaemonError 准确识别真实错误文本', () => {
+    const errWithStderr = Object.assign(new Error('Command exited with code 1'), {
+      stdout: '',
+      stderr: '✗ tab_gone: pinned tab was closed',
+    });
+    expect(extractExecFailureText(errWithStderr)).toEqual({
+      stdout: '',
+      stderr: '✗ tab_gone: pinned tab was closed',
+    });
+    expect(extractExecFailureText(new Error('spawn EINVAL'))).toEqual({
+      stdout: '',
+      stderr: 'spawn EINVAL',
+    });
+
+    expect(isTabGoneError('✗ tab_gone: pinned tab was closed')).toBe(true);
+    expect(isTabGoneError('Target closed')).toBe(true);
+    expect(isTabGoneError('element not found')).toBe(false);
+
+    expect(isStaleDaemonError('Timeout 25000ms exceeded waiting for response')).toBe(true);
+    expect(isStaleDaemonError('CDP connection closed')).toBe(true);
+    expect(isStaleDaemonError('element not found')).toBe(false);
+  });
+
+  it('clickRisk 支持 Playwright [ref=e1] 格式并匹配 @e1 与 e1', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-broker-ref-'));
+    cleanupDirs.push(dir);
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    const install = new BrowserInstallService(db, dir);
+    const broker = new BrowserBroker(install, dir);
+
+    vi.spyOn(
+      broker as unknown as { run: (i: unknown, cmd: readonly string[]) => Promise<{ ok: boolean; text: string }> },
+      'run',
+    ).mockResolvedValue({
+      ok: true,
+      text: '- button "提交订单" [ref=e1]\n- link "查看详情" [ref=e12]',
+    });
+
+    const input = { taskId: 'task-ref', threadId: 'th-ref', workerId: 'w-ref', userId: 'user' };
+    expect(await broker.clickRisk(input, '@e1')).toEqual({
+      consequential: true,
+      preview: '- button "提交订单" [ref=e1]',
+    });
+    expect(await broker.clickRisk(input, 'e12')).toEqual({
+      consequential: false,
+      preview: '- link "查看详情" [ref=e12]',
+    });
+
+    await broker.dispose();
+    db.close();
+  });
+
+  it('open 在 tab_gone 时自动用 tab new 恢复，snapshot 返回清晰中文指引；超时时轮转 session 重试 open 且不重放 click', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'opc-broker-heal-'));
+    cleanupDirs.push(dir);
+    const db = openCompanyDatabase(path.join(dir, 'company.db'));
+    const install = new BrowserInstallService(db, dir);
+    install.setSettings({ allowAllDomains: true });
+    const broker = new BrowserBroker(install, dir);
+    const input = { taskId: 'task-heal', threadId: 'th-heal', workerId: 'w-heal', userId: 'user' };
+    const initialSessionId = broker.sessionId(input);
+
+    const runSpy = vi
+      .spyOn(
+        broker as unknown as { run: (i: unknown, cmd: readonly string[]) => Promise<{ ok: boolean; text: string }> },
+        'run',
+      )
+      .mockImplementation(async (_i, cmd) => {
+        if (cmd[0] === 'open' && broker.sessionId(input) === initialSessionId) {
+          return { ok: false, text: '✗ tab_gone: pinned tab closed' };
+        }
+        if (cmd[0] === 'tab' && cmd[1] === 'new') {
+          return { ok: true, text: 'https://www.jd.com' };
+        }
+        return { ok: true, text: 'ok' };
+      });
+
+    // 1. open auto-recovers tab_gone via tab new
+    const openRecovered = await broker.open(input, 'https://www.jd.com');
+    expect(openRecovered).toEqual({ ok: true, text: 'https://www.jd.com' });
+    expect(runSpy).toHaveBeenCalledWith(input, ['tab', 'new', 'https://www.jd.com']);
+
+    // 2. snapshot on tab_gone gives actionable guidance
+    runSpy.mockResolvedValueOnce({ ok: false, text: '✗ tab_gone: pinned tab closed' });
+    const snapFailed = await broker.command(input, 'snapshot', ['-i']);
+    expect(snapFailed.ok).toBe(false);
+    expect(snapFailed.text).toContain('标签页已被关闭（tab_gone）');
+
+    // 3. open on timeout rotates session epoch (-r1) and retries once
+    let openAttempts = 0;
+    runSpy.mockImplementation(async (_i, cmd) => {
+      if (cmd[0] === 'open') {
+        openAttempts += 1;
+        if (openAttempts === 1) return { ok: false, text: 'Timeout 25000ms exceeded' };
+        return { ok: true, text: '✓ recovered' };
+      }
+      return { ok: true, text: 'ok' };
+    });
+    const openTimeoutRecovered = await broker.open(input, 'https://example.com');
+    expect(openTimeoutRecovered).toEqual({ ok: true, text: '✓ recovered' });
+    expect(openAttempts).toBe(2);
+    expect(broker.sessionId(input)).toBe(`${initialSessionId}-r1`);
+
+    // 4. mutating click on timeout rotates session (-r2) WITHOUT replaying click
+    let clickCalls = 0;
+    runSpy.mockImplementation(async (_i, cmd) => {
+      if (cmd[0] === 'click') {
+        clickCalls += 1;
+        return { ok: false, text: 'ETIMEDOUT daemon not responding' };
+      }
+      return { ok: true, text: 'ok' };
+    });
+    const clickFailed = await broker.command(input, 'click', ['@e5']);
+    expect(clickFailed.ok).toBe(false);
+    expect(clickCalls).toBe(1);
+    expect(clickFailed.text).toContain('已自动重置会话');
+    expect(broker.sessionId(input)).toBe(`${initialSessionId}-r2`);
 
     await broker.dispose();
     db.close();

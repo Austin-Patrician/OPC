@@ -360,7 +360,7 @@ export function createBrowserToolExtension(deps: BrowserToolDeps) {
               ref: Type.Optional(Type.String()),
               value: Type.Optional(Type.String()),
               direction: Type.Optional(Type.Union([Type.Literal('up'), Type.Literal('down')])),
-              amount: Type.Optional(Type.Integer()),
+              amount: Type.Optional(Type.Integer({ description: '滚动像素量（scroll）或等待毫秒数（wait）' })),
               sensitive: Type.Optional(Type.Boolean()),
             }),
             { minItems: 1, maxItems: 15 },
@@ -429,7 +429,10 @@ export function createBrowserToolExtension(deps: BrowserToolDeps) {
                 ...(step.amount !== undefined ? [String(step.amount)] : []),
               ]);
             } else if (step.action === 'wait') {
-              commands.push(['wait', step.value?.trim() || '1000']);
+              const waitMs =
+                step.value?.trim() ||
+                (step.amount !== undefined && step.amount > 0 ? String(step.amount) : '1000');
+              commands.push(['wait', waitMs]);
             }
           }
 

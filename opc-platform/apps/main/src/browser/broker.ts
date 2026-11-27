@@ -340,6 +340,31 @@ export function isBrowserActionRisky(preview: string): boolean {
   return RISKY_ACTION_WORDS.test(preview);
 }
 
+export function extractExecFailureText(error: unknown): { stdout: string; stderr: string } {
+  const rec = error && typeof error === 'object' ? (error as { stdout?: unknown; stderr?: unknown }) : undefined;
+  const stdout = typeof rec?.stdout === 'string' ? rec.stdout.trim() : '';
+  const stderr = typeof rec?.stderr === 'string' ? rec.stderr.trim() : '';
+  if (stdout || stderr) {
+    return { stdout, stderr };
+  }
+  return {
+    stdout: '',
+    stderr: error instanceof Error ? error.message : String(error),
+  };
+}
+
+export function isTabGoneError(text: string): boolean {
+  return /\btab_gone\b|pinned\s+tab.*(?:gone|closed|missing|not\s+found)|target\s+closed|no\s+page\s+found|page\s+has\s+been\s+closed/i.test(
+    text,
+  );
+}
+
+export function isStaleDaemonError(text: string): boolean {
+  return /\b(?:timed?\s*out|timeout|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EPIPE|socket\s+hang\s+up|daemon\s+(?:not\s+responding|failed|timed?\s*out|disconnected)|connection\s+(?:closed|refused|reset|lost)|websocket\s+(?:closed|error)|failed\s+to\s+connect|cdp\s+(?:connection|session)\s+(?:closed|lost|failed))\b/i.test(
+    text,
+  );
+}
+
 export function browserDomainAllowed(
   settings: Pick<BrowserSettings, 'allowAllDomains' | 'allowedDomains' | 'blockedDomains'>,
   url: string,
@@ -523,6 +548,7 @@ function tryFocusProcessWindow(pid?: number): void {
 
 export class BrowserBroker {
   private readonly sessions = new Map<string, Session>();
+  private readonly sessionEpoch = new Map<string, number>();
   private readonly snapshotCache = new Map<string, { text: string; at: number }>();
   private readonly locks = new Map<string, Promise<void>>();
   private managedRuntime?: ManagedRuntimeState;
@@ -564,6 +590,7 @@ export class BrowserBroker {
     if (connectionChanged) {
       this.snapshotCache.clear();
       this.sessions.clear();
+      this.sessionEpoch.clear();
       const binary = this.install.binaryPath();
       if (binary) {
         void execFilePlatform(binary, ['close', '--all'], { timeout: 5_000, windowsHide: true }).catch(() => undefined);
@@ -604,6 +631,7 @@ export class BrowserBroker {
       this.sessions.delete(session.id);
     }
     this.snapshotCache.clear();
+    this.sessionEpoch.clear();
     if (this.managedRuntime?.ownedByProcess && this.managedRuntime.pid) {
       try {
         process.kill(this.managedRuntime.pid);
@@ -636,7 +664,23 @@ export class BrowserBroker {
     return this.withLock(input.userId ?? 'default', async () => {
       const session = this.session(input);
       this.snapshotCache.delete(session.id);
-      return this.run(input, ['open', url]);
+      let result = await this.run(input, ['open', url]);
+      if (!result.ok && isTabGoneError(result.text)) {
+        const reopened = await this.run(input, ['tab', 'new', url]);
+        if (reopened.ok) return reopened;
+        result = reopened;
+      }
+      if (!result.ok && isStaleDaemonError(result.text)) {
+        this.resetSessionDaemon(input);
+        const retried = await this.run(input, ['open', url]);
+        if (retried.ok) return retried;
+        return {
+          ok: false,
+          text: `浏览器连接超时或已断开（已自动重置会话重试仍失败）：${retried.text}`,
+          details: retried.details,
+        };
+      }
+      return result;
     });
   }
 
@@ -655,7 +699,25 @@ export class BrowserBroker {
       if (result.ok && command === 'snapshot' && args.includes('-i')) {
         this.snapshotCache.set(session.id, { text: result.text, at: Date.now() });
       }
-      if (!result.ok || !NAVIGATION_COMMANDS.has(command)) return result;
+      if (!result.ok) {
+        if (isTabGoneError(result.text)) {
+          return {
+            ok: false,
+            text: `之前锁定的浏览器标签页已被关闭（tab_gone），请先调用 browser_open 重新打开目标网页。\n原始错误：${result.text}`,
+            details: result.details,
+          };
+        }
+        if (command !== 'close' && isStaleDaemonError(result.text)) {
+          this.resetSessionDaemon(input);
+          return {
+            ok: false,
+            text: `浏览器会话超时或连接中断，已自动重置会话。请调用 browser_open 重新打开页面继续。\n原始错误：${result.text}`,
+            details: result.details,
+          };
+        }
+        return result;
+      }
+      if (!NAVIGATION_COMMANDS.has(command)) return result;
 
       const urlResult = await this.run(input, ['get', 'url']);
       const currentUrl = extractUrl(urlResult.text);
@@ -681,7 +743,33 @@ export class BrowserBroker {
       const session = this.session(input);
       this.snapshotCache.delete(session.id);
       const flags = ['batch', ...(options.bail !== false ? ['--bail'] : []), '--json'];
-      const result = await this.run(input, flags, { stdin: JSON.stringify(commands) });
+      let result = await this.run(input, flags, { stdin: JSON.stringify(commands) });
+      if (!result.ok && isTabGoneError(result.text)) {
+        if (commands[0]?.[0] === 'open' && commands[0]?.[1]) {
+          const reopened = await this.run(input, ['tab', 'new', commands[0][1]]);
+          if (!reopened.ok) {
+            result = reopened;
+          } else if (commands.length === 1) {
+            result = reopened;
+          } else {
+            result = await this.run(input, flags, { stdin: JSON.stringify(commands.slice(1)) });
+          }
+        } else {
+          return {
+            ok: false,
+            text: `之前锁定的浏览器标签页已被关闭（tab_gone），请先调用 browser_open 重新打开目标网页。\n原始错误：${result.text}`,
+            details: result.details,
+          };
+        }
+      }
+      if (!result.ok && isStaleDaemonError(result.text)) {
+        this.resetSessionDaemon(input);
+        return {
+          ok: false,
+          text: `浏览器批量操作超时或连接中断，已自动重置会话。请调用 browser_open 重新打开页面继续。\n原始错误：${result.text}`,
+          details: result.details,
+        };
+      }
       if (!result.ok) return result;
 
       const urlResult = await this.run(input, ['get', 'url']);
@@ -710,7 +798,10 @@ export class BrowserBroker {
       if (snapshot.ok) snapshotText = snapshot.text;
     }
     if (!snapshotText) return { consequential: false };
-    const line = snapshotText.split(/\r?\n/).find((candidate) => candidate.includes(ref));
+    const normalizedRef = /^e\d+$/i.test(ref.trim()) ? `@${ref.trim()}` : ref.trim();
+    const line = snapshotText
+      .split(/\r?\n/)
+      .find((candidate) => extractSnapshotRef(candidate) === normalizedRef || candidate.includes(normalizedRef));
     return {
       consequential: Boolean(line && isBrowserActionRisky(line)),
       ...(line ? { preview: line.trim().slice(0, 240) } : {}),
@@ -1012,6 +1103,7 @@ export class BrowserBroker {
       if ((session.userId ?? 'default') === userId) this.sessions.delete(session.id);
     }
     this.snapshotCache.clear();
+    this.sessionEpoch.clear();
     if (this.managedRuntime?.ownedByProcess && this.managedRuntime.pid) {
       try {
         process.kill(this.managedRuntime.pid);
@@ -1032,6 +1124,7 @@ export class BrowserBroker {
     }
     this.sessions.clear();
     this.snapshotCache.clear();
+    this.sessionEpoch.clear();
     if (this.managedRuntime?.ownedByProcess && this.managedRuntime.pid) {
       try {
         process.kill(this.managedRuntime.pid);
@@ -1202,7 +1295,7 @@ export class BrowserBroker {
     });
 
     const task = execFilePlatform(binary, args, {
-      timeout: 90_000,
+      timeout: 45_000,
       maxBuffer: Math.max(64_000, settings.maxOutputBytes * 4),
       windowsHide: true,
     });
@@ -1211,8 +1304,7 @@ export class BrowserBroker {
     }
 
     const output = await task.catch((error: unknown) => ({
-      stdout: '',
-      stderr: error instanceof Error ? error.message : String(error),
+      ...extractExecFailureText(error),
       error,
     }));
     const text = `${output.stdout ?? ''}${output.stderr ? `\n${output.stderr}` : ''}`.trim();
@@ -1221,6 +1313,25 @@ export class BrowserBroker {
       text: text.slice(0, settings.maxOutputBytes),
       details: { sessionId: session.id, command: command[0] },
     };
+  }
+
+  private resetSessionDaemon(input: BrowserSessionInput): void {
+    const scopeKey = input.threadId || input.taskId;
+    const oldSession = this.session(input);
+    const oldId = oldSession.id;
+    this.sessions.delete(oldId);
+    this.snapshotCache.delete(oldId);
+    if (this.visibleTask === input.taskId) {
+      this.visibleTask = undefined;
+    }
+    this.sessionEpoch.set(scopeKey, (this.sessionEpoch.get(scopeKey) ?? 0) + 1);
+    const binary = this.install.binaryPath();
+    if (binary) {
+      void execFilePlatform(binary, ['--session', oldId, 'close'], {
+        timeout: 5_000,
+        windowsHide: true,
+      }).catch(() => undefined);
+    }
   }
 
   private taskDirectory(input: BrowserSessionInput): string {
@@ -1236,7 +1347,8 @@ export class BrowserBroker {
     const scopeKey = input.threadId || input.taskId;
     const readable = scopeKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'task';
     const digest = crypto.createHash('sha256').update(scopeKey).digest('hex').slice(0, 12);
-    const id = `opc-${readable}-${digest}`;
+    const epoch = this.sessionEpoch.get(scopeKey) ?? 0;
+    const id = epoch > 0 ? `opc-${readable}-${digest}-r${epoch}` : `opc-${readable}-${digest}`;
     const existing = this.sessions.get(id);
     if (existing) {
       existing.taskId = input.taskId;
