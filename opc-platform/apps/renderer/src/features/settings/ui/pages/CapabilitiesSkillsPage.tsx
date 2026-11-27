@@ -6,7 +6,7 @@ import { useCapabilities } from '@/features/capabilities/model/useCapabilities';
 import { cn } from '@/shared/lib/cn';
 import { buttonClass, PageHeader } from '../kit';
 
-/** 技能与工具 · 技能：内置办公技能与本地技能统一视图。 */
+/** 技能与工具 · 技能：OPC 专属精选内置技能统一视图。 */
 export function CapabilitiesSkillsPage() {
   const { t } = useTranslation();
   const capabilities = useCapabilities();

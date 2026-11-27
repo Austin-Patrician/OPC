@@ -109,4 +109,24 @@ describe('createSandboxExtension', () => {
     expect(askHook(makeCall('4', 'bash', { command: 'python scripts/build.py' }), api, {})).toBeUndefined();
     expect(askAuth).toHaveBeenCalledTimes(2);
   });
+
+  it('isolates workspaces by scopeKey when concurrent Workers share the same numeric conversationId', () => {
+    const first = setupWorkspace();
+    const second = setupWorkspace();
+    fs.writeFileSync(path.join(first.workspace, 'only-first.txt'), '1');
+    fs.writeFileSync(path.join(second.workspace, 'only-second.txt'), '2');
+
+    registerSandboxWorkspace('14', first.workspace, 'worker-ppt');
+    registerSandboxWorkspace('14', second.workspace, 'worker-whale');
+
+    const hookFirst = hookOf({ scopeKey: 'worker-ppt' });
+    const hookSecond = hookOf({ scopeKey: 'worker-whale' });
+    const api = { conversationId: '14' } as unknown as HookApi;
+
+    expect(hookFirst(makeCall('1', 'read', { path: path.join(first.workspace, 'only-first.txt') }), api, {})).toBeUndefined();
+    expect(hookFirst(makeCall('2', 'read', { path: path.join(second.workspace, 'only-second.txt') }), api, {})?.block).toContain('拒绝越界访问');
+
+    expect(hookSecond(makeCall('3', 'read', { path: path.join(second.workspace, 'only-second.txt') }), api, {})).toBeUndefined();
+    expect(hookSecond(makeCall('4', 'read', { path: path.join(first.workspace, 'only-first.txt') }), api, {})?.block).toContain('拒绝越界访问');
+  });
 });

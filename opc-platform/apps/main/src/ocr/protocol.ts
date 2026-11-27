@@ -1,5 +1,4 @@
-import { protocol } from 'electron';
-import type { Session } from 'electron';
+import { protocol, type CustomScheme, type Session } from 'electron';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -29,20 +28,20 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+export const OCR_CUSTOM_SCHEME: CustomScheme = {
+  scheme: OCR_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+};
+
 /** Must run before `app.whenReady()`; a standard scheme gets URLs, not opaque paths. */
 export function registerOcrScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: OCR_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-      },
-    },
-  ]);
+  protocol.registerSchemesAsPrivileged([OCR_CUSTOM_SCHEME]);
 }
 
 export interface OcrProtocolOptions {

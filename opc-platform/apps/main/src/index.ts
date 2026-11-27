@@ -41,13 +41,13 @@ import { RuntimeService } from './runtime/service';
 import { inspectOcrRuntime, resolveOcrAssetsDir } from './ocr/assets';
 import { OcrSettingsStore } from './ocr/settings';
 import { ShellExecutionSettingsStore } from './sandbox/settings';
-import { registerOcrScheme } from './ocr/protocol';
-import { handleChatMediaProtocol, registerChatMediaScheme } from './chat/mediaProtocol';
-import { handleWallpaperProtocol, registerWallpaperScheme } from './appearance/wallpaperProtocol';
+import { handleChatMediaProtocol } from './chat/mediaProtocol';
+import { handleWallpaperProtocol } from './appearance/wallpaperProtocol';
 import { WallpaperService } from './appearance/wallpaperService';
 import { NotificationSettingsStore } from './notifications/settings';
 import { NotificationService } from './notifications/notificationService';
-import { handleDocProtocol, registerDocScheme, resolvePdfjsAssetsDir } from './preview/docProtocol';
+import { handleDocProtocol, resolvePdfjsAssetsDir } from './preview/docProtocol';
+import { registerAppSchemes } from './protocols/registerSchemes';
 import { DocPreviewService } from './preview/docPreviewService';
 import type { SpreadsheetWorkerResponse } from './preview/spreadsheetWorker';
 import { OcrService } from './ocr/service';
@@ -68,6 +68,10 @@ import { FolderWatcher } from './router/folderWatcher';
 import { ChannelManager } from './channels/channelManager';
 import { DingTalkPlugin } from './channels/dingtalk/dingtalkPlugin';
 import { FeishuPlugin } from './channels/feishu/feishuPlugin';
+import { GitHubPlugin } from './channels/github/githubPlugin';
+import { SlackPlugin } from './channels/slack/slackPlugin';
+import { TelegramPlugin } from './channels/telegram/telegramPlugin';
+import { WeComPlugin } from './channels/wecom/wecomPlugin';
 import { ChannelStore } from './channels/store';
 import { WatchdogHost } from './watchdog/host';
 import { createWatchdogJudge } from './watchdog/judge';
@@ -99,11 +103,9 @@ const IDLE_ARCHIVE_MS = 24 * 60 * 60 * 1000;
 
 const isDev = !app.isPackaged;
 
-// Must happen before `app.whenReady()`: the OCR window loads over `opc-ocr://`.
-registerOcrScheme();
-registerChatMediaScheme();
-registerDocScheme();
-registerWallpaperScheme();
+// Must happen before `app.whenReady()` and in a single call: Electron allows
+// `registerSchemesAsPrivileged()` only once across all custom app protocols.
+registerAppSchemes();
 
 /** Compile-time constant injected by electron-vite: `out/main`. */
 const mainDir = __dirname;
@@ -676,6 +678,7 @@ async function bootstrap(): Promise<void> {
   }
   let wakeRouter: () => void = () => undefined;
   let channelManager: ChannelManager | null = null;
+  const channelStore = new ChannelStore(db);
   work = new WorkService({
     db,
     threads,
@@ -724,6 +727,7 @@ async function bootstrap(): Promise<void> {
     mcp: readMcp,
     modelConfig,
     assistantTools,
+    channelStore,
     usageRepository: usage,
     pricingMode: () => billingSettings.get().pricingMode,
     images: imageService,
@@ -791,7 +795,6 @@ async function bootstrap(): Promise<void> {
   const triage = new TriagePolicyStore(db);
   const schedules = new RouterScheduleRepository(db);
 
-  const channelStore = new ChannelStore(db);
   const channelAttachmentsDir = path.join(appPaths.userData, 'channel-attachments');
   channelManager = new ChannelManager({
     store: channelStore,
@@ -821,6 +824,10 @@ async function bootstrap(): Promise<void> {
   });
   channelManager.registerPlugin(new FeishuPlugin(channelStore));
   channelManager.registerPlugin(new DingTalkPlugin(channelStore));
+  channelManager.registerPlugin(new SlackPlugin(channelStore));
+  channelManager.registerPlugin(new WeComPlugin(channelStore));
+  channelManager.registerPlugin(new TelegramPlugin(channelStore));
+  channelManager.registerPlugin(new GitHubPlugin(channelStore));
 
   /**
    * Router：一个真的会话。
@@ -838,6 +845,7 @@ async function bootstrap(): Promise<void> {
     workspaceDir: appPaths.workspaceDir,
     modelConfig,
     assistantTools,
+    channelStore,
     usageRepository: usage,
     pricingMode: () => billingSettings.get().pricingMode,
     envFor: () => runtimeService.envFor() as Record<string, string>,

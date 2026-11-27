@@ -8,19 +8,28 @@ import { buildSeatbeltProfile, type SandboxBackend, type SandboxPolicy } from '.
 const workspaces = new Map<string, string>();
 const attachments = new Map<string, ChatAttachmentRef[]>();
 
-export function registerSandboxWorkspace(conversationId: unknown, workspace: string): void {
-  workspaces.set(String(conversationId), path.resolve(workspace));
+function scopedConvKey(conversationId: unknown, scopeKey?: string): string {
+  return scopeKey ? `${scopeKey}:${String(conversationId)}` : String(conversationId);
 }
 
-export function workspaceOf(conversationId: unknown): string | undefined {
-  return workspaces.get(String(conversationId));
+export function registerSandboxWorkspace(
+  conversationId: unknown,
+  workspace: string,
+  scopeKey?: string,
+): void {
+  workspaces.set(scopedConvKey(conversationId, scopeKey), path.resolve(workspace));
+}
+
+export function workspaceOf(conversationId: unknown, scopeKey?: string): string | undefined {
+  return workspaces.get(scopedConvKey(conversationId, scopeKey));
 }
 
 export function registerSandboxAttachments(
   conversationId: unknown,
   values: readonly (string | Pick<ChatAttachmentRef, 'path' | 'name'>)[],
+  scopeKey?: string,
 ): void {
-  const key = String(conversationId);
+  const key = scopedConvKey(conversationId, scopeKey);
   const refs = values.map((value) => {
     const filePath = typeof value === 'string' ? value : value.path;
     return {
@@ -34,13 +43,18 @@ export function registerSandboxAttachments(
   attachments.set(key, refs);
 }
 
-export function attachmentsOf(conversationId: unknown): readonly string[] {
-  return (attachments.get(String(conversationId)) ?? []).map((attachment) => attachment.path);
+export function attachmentsOf(conversationId: unknown, scopeKey?: string): readonly string[] {
+  return (attachments.get(scopedConvKey(conversationId, scopeKey)) ?? []).map(
+    (attachment) => attachment.path,
+  );
 }
 
 /** Metadata used by host-side tools (for example OCR) to resolve staged attachment names. */
-export function attachmentRefsOf(conversationId: unknown): readonly ChatAttachmentRef[] {
-  return attachments.get(String(conversationId)) ?? [];
+export function attachmentRefsOf(
+  conversationId: unknown,
+  scopeKey?: string,
+): readonly ChatAttachmentRef[] {
+  return attachments.get(scopedConvKey(conversationId, scopeKey)) ?? [];
 }
 
 /** Single-quote for /bin/sh, the only escaping the wrapper needs. */

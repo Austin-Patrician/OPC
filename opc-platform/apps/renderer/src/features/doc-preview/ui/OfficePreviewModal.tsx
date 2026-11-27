@@ -23,7 +23,7 @@ const SpreadsheetPreviewViewer = lazy(() => import('./SpreadsheetPreviewViewer')
 const PptxPreviewViewer = lazy(() => import('./PptxPreviewViewer'));
 const TextPreviewViewer = lazy(() => import('./TextPreviewViewer'));
 
-const ZOOMABLE_KINDS: ReadonlySet<DocPreviewKind> = new Set(['pdf', 'docx', 'image']);
+const ZOOMABLE_KINDS: ReadonlySet<DocPreviewKind> = new Set(['pdf', 'docx', 'pptx', 'image']);
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 
@@ -151,7 +151,7 @@ export function OfficePreviewModal() {
   const kind = session?.kind ?? 'unsupported';
   const activePreview = Boolean(session?.ok && session.docUrl && !session.tooLargeForInApp);
   const zoomable = Boolean(activePreview && ZOOMABLE_KINDS.has(kind));
-  const isPdf = Boolean(activePreview && kind === 'pdf');
+  const supportsPagedSidebar = Boolean(activePreview && (kind === 'pdf' || kind === 'pptx'));
   const showPageControls = Boolean(activePreview && pageState && pageState.total > 0);
 
   const openExternal = async () => {
@@ -181,7 +181,7 @@ export function OfficePreviewModal() {
       <section className="flex h-[min(90dvh,880px)] w-[min(94vw,1160px)] flex-col overflow-hidden rounded-2xl border border-line bg-panel text-ink shadow-[0_28px_90px_rgba(0,0,0,.32)]">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            {isPdf ? (
+            {supportsPagedSidebar ? (
               <button
                 type="button"
                 onClick={() => setShowThumbnails((prev) => !prev)}
@@ -311,7 +311,7 @@ export function OfficePreviewModal() {
                   >
                     <ZoomIn size={13.5} />
                   </button>
-                  {isPdf ? (
+                  {supportsPagedSidebar ? (
                     <>
                       <span className="mx-0.5 h-3.5 w-px bg-line" aria-hidden="true" />
                       <button
@@ -429,7 +429,11 @@ export function OfficePreviewModal() {
               ) : session.kind === 'pptx' ? (
                 <PptxPreviewViewer
                   docUrl={session.docUrl}
+                  zoom={zoom}
+                  showThumbnails={showThumbnails}
+                  fitTrigger={fitTrigger}
                   requestedPage={jumpRequest}
+                  onZoomChange={setZoom}
                   onPageStateChange={handlePageStateChange}
                 />
               ) : (

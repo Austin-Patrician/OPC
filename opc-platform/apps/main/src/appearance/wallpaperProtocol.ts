@@ -1,5 +1,4 @@
-import { protocol } from 'electron';
-import type { Session } from 'electron';
+import { protocol, type CustomScheme, type Session } from 'electron';
 import { createReadStream, statSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -77,20 +76,20 @@ export function resolveWallpaperAssetPath(wallpapersDir: string, rawName: string
   return target;
 }
 
+export const WALLPAPER_CUSTOM_SCHEME: CustomScheme = {
+  scheme: WALLPAPER_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+};
+
 /** Registers `opc-wallpaper://` as a privileged streaming scheme before `app.whenReady()`. */
 export function registerWallpaperScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: WALLPAPER_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-      },
-    },
-  ]);
+  protocol.registerSchemesAsPrivileged([WALLPAPER_CUSTOM_SCHEME]);
 }
 
 /** Serves local wallpaper files over HTTP 206 Range streaming so large videos never hit JS heap. */

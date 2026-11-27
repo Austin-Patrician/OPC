@@ -16,8 +16,15 @@ import { promptTokens } from './host';
 import { splitFrontmatter } from './scanner';
 
 const SETTINGS_KEY = 'skill_packs.settings';
+const STAMP_FILE = '.pack-stamp.json';
 export const OFFICE_ENV_ID = 'office-py';
-const DEFAULT_PACK_ORDER = ['office-pdf', 'office-excel', 'office-word', 'office-convert'] as const;
+const DEFAULT_PACK_ORDER = [
+  'office-pdf',
+  'office-word',
+  'office-excel',
+  'office-ppt',
+  'office-convert',
+] as const;
 
 export const OFFICE_PYTHON_PACKAGES = [
   'pypdf>=5.0,<7',
@@ -45,12 +52,67 @@ export const OFFICE_IMPORT_MODULES = [
   { module: 'PIL', dist: 'pillow' },
 ] as const;
 
+/**
+ * Clean MIT/BSD/Apache engine dependencies for native editable PPTX generation
+ * (hugohe3/ppt-master). AGPL-3.0 PyMuPDF is intentionally excluded; PDF parsing
+ * reuses OPC's built-in `office-pdf` pack instead.
+ */
+export const PPT_PYTHON_PACKAGES = [
+  'PyYAML>=6.0,<7',
+  'python-pptx>=1.0,<2',
+  'XlsxWriter>=3.2,<4',
+  'skia-pathops>=0.9.2,<2',
+  'uharfbuzz>=0.50,<1',
+] as const;
+
+export const PPT_IMPORT_MODULES = [
+  { module: 'yaml', dist: 'PyYAML' },
+  { module: 'pptx', dist: 'python-pptx' },
+  { module: 'xlsxwriter', dist: 'XlsxWriter' },
+  { module: 'pathops', dist: 'skia-pathops' },
+  { module: 'uharfbuzz', dist: 'uharfbuzz' },
+] as const;
+
+export const PYPI_FALLBACK_MIRRORS = [
+  {
+    label: '清华 PyPI 镜像',
+    url: 'https://pypi.tuna.tsinghua.edu.cn/simple',
+    host: 'pypi.tuna.tsinghua.edu.cn',
+  },
+  {
+    label: '阿里云 PyPI 镜像',
+    url: 'https://mirrors.aliyun.com/pypi/simple/',
+    host: 'mirrors.aliyun.com',
+  },
+] as const;
+
+const SAFE_UNZIP_SCRIPT = [
+  'import os, sys, zipfile',
+  'zip_path, dest_dir = os.path.abspath(sys.argv[1]), os.path.realpath(sys.argv[2])',
+  'os.makedirs(dest_dir, exist_ok=True)',
+  'with zipfile.ZipFile(zip_path, "r") as zf:',
+  '  for info in zf.infolist():',
+  '    target = os.path.realpath(os.path.join(dest_dir, info.filename))',
+  '    if target != dest_dir and not target.startswith(dest_dir + os.sep):',
+  '      raise ValueError(f"Unsafe zip path: {info.filename}")',
+  '    if info.is_dir():',
+  '      os.makedirs(target, exist_ok=True)',
+  '      continue',
+  '    os.makedirs(os.path.dirname(target), exist_ok=True)',
+  '    with zf.open(info, "r") as src, open(target, "wb") as dst:',
+  '      dst.write(src.read())',
+].join('\n');
+
+export type SkillPackTier = 'core' | 'ppt';
+
 export interface SkillPackManifest {
   id: string;
   name: string;
   title: string;
   description: string;
   category: 'office';
+  tier: SkillPackTier;
+  archive?: string;
   version: string;
   envId: string;
   commands: string[];
@@ -61,6 +123,12 @@ export interface SkillPackManifest {
 
 interface StoredSkillPackSettings {
   enabled: Record<string, boolean>;
+}
+
+interface PackStamp {
+  id: string;
+  version: string;
+  sourceSignature: string;
 }
 
 export type ExecResult = { stdout: string; stderr: string };
@@ -167,6 +235,50 @@ function copyPackContents(srcDir: string, destDir: string): void {
   }
 }
 
+function computeSourceSignature(manifest: SkillPackManifest): string {
+  const parts: string[] = [manifest.version];
+  const statToken = (filePath: string) => {
+    try {
+      const st = fs.statSync(filePath);
+      return `${path.basename(filePath)}:${st.size}:${Math.trunc(st.mtimeMs)}`;
+    } catch {
+      return `${path.basename(filePath)}:missing`;
+    }
+  };
+
+  parts.push(statToken(path.join(manifest.sourceDir, 'manifest.json')));
+  if (manifest.archive) {
+    parts.push(statToken(path.join(manifest.sourceDir, manifest.archive)));
+  } else {
+    parts.push(statToken(path.join(manifest.sourceDir, 'SKILL.md')));
+    const scriptsDir = path.join(manifest.sourceDir, 'scripts');
+    if (fs.existsSync(scriptsDir)) {
+      const files = fs.readdirSync(scriptsDir).sort();
+      for (const name of files) {
+        parts.push(statToken(path.join(scriptsDir, name)));
+      }
+    }
+  }
+  return parts.join('|');
+}
+
+function readStamp(destDir: string): PackStamp | null {
+  try {
+    const raw = fs.readFileSync(path.join(destDir, STAMP_FILE), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<PackStamp>;
+    if (typeof parsed.id === 'string' && typeof parsed.version === 'string' && typeof parsed.sourceSignature === 'string') {
+      return { id: parsed.id, version: parsed.version, sourceSignature: parsed.sourceSignature };
+    }
+  } catch {
+    // Missing or malformed stamp triggers clean resync.
+  }
+  return null;
+}
+
+function writeStamp(destDir: string, stamp: PackStamp): void {
+  fs.writeFileSync(path.join(destDir, STAMP_FILE), `${JSON.stringify(stamp, null, 2)}\n`, 'utf8');
+}
+
 export function loadSkillPackCatalog(sourceDir: string): SkillPackManifest[] {
   if (!fs.existsSync(sourceDir)) return [];
   const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
@@ -181,6 +293,12 @@ export function loadSkillPackCatalog(sourceDir: string): SkillPackManifest[] {
 
     try {
       const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+      const archive = typeof raw.archive === 'string' && raw.archive.trim() ? raw.archive.trim() : undefined;
+      if (archive && !fs.existsSync(path.join(packDir, archive))) {
+        console.warn(`[skill-packs] 技能包归档不存在，已跳过：${path.join(packDir, archive)}`);
+        continue;
+      }
+
       const skillRaw = fs.readFileSync(skillPath, 'utf8');
       const { frontmatter, body } = splitFrontmatter(skillRaw);
       const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : entry.name;
@@ -190,6 +308,7 @@ export function loadSkillPackCatalog(sourceDir: string): SkillPackManifest[] {
         typeof raw.description === 'string' && raw.description.trim()
           ? raw.description.trim()
           : frontmatter.description ?? '';
+      const tier: SkillPackTier = raw.tier === 'ppt' ? 'ppt' : 'core';
       const version = typeof raw.version === 'string' && raw.version.trim() ? raw.version.trim() : '1.0.0';
       const envId = typeof raw.envId === 'string' && raw.envId.trim() ? raw.envId.trim() : OFFICE_ENV_ID;
       const commands = Array.isArray(raw.commands)
@@ -213,6 +332,8 @@ export function loadSkillPackCatalog(sourceDir: string): SkillPackManifest[] {
         title,
         description,
         category: 'office',
+        tier,
+        ...(archive ? { archive } : {}),
         version,
         envId,
         commands,
@@ -245,13 +366,20 @@ export interface SkillPackServiceOptions {
   onSkillsChanged?: () => void;
 }
 
+interface PrepareOptions {
+  includePpt?: boolean;
+}
+
 /**
  * Manages built-in local office skill packs and their shared isolated Python venv.
  *
  * Key properties:
- * - Decoupled: packs live as standard `SKILL.md + scripts/*.py` folders in `resources/skill-packs/`.
- * - Isolated: packages install into `<userData>/skill-envs/office-py/` without touching system Python.
- * - Honest gating: packs are synced into `<userData>/skills-managed/` ONLY when `enabled` AND `env.state === 'ready'`.
+ * - Two-tier isolated install inside one `office-py` venv: core office packs
+ *   (`office-pdf`, `office-word`, `office-excel`, `office-convert`) remain healthy
+ *   even if optional native PPTX wheels (`office-ppt`) encounter an error.
+ * - Archive packs (`payload.zip`) extract offline with Zip-Slip protection and
+ *   attribution-guard verification.
+ * - `.pack-stamp.json` skips redundant recursive copies on startup.
  */
 export class SkillPackService {
   readonly managedSkillsDir: string;
@@ -262,7 +390,11 @@ export class SkillPackService {
   private readonly manifests: SkillPackManifest[];
   private readonly listeners = new Set<(catalog: SkillPackCatalogView) => void>();
   private envState: SkillPackEnvState = 'uninstalled';
+  private coreReady = false;
+  private pptReady = false;
+  private pptAttempted = false;
   private envError?: string;
+  private pptError?: string;
   private pythonVersion?: string;
   private installedPackages: Record<string, string> = {};
   private diskUsageCache: { checkedAt: number; bytes: number } = { checkedAt: 0, bytes: 0 };
@@ -347,16 +479,28 @@ export class SkillPackService {
     }
   }
 
+  private isPackTierReady(manifest: SkillPackManifest): boolean {
+    return manifest.tier === 'ppt' ? this.pptReady : this.coreReady;
+  }
+
   /** Fast startup check: probes any pre-existing venv and reconciles `skills-managed/`. */
   async initialize(): Promise<SkillPackCatalogView> {
+    const settings = this.readSettings();
+    const hasPptEnabled = this.manifests.some((m) => m.tier === 'ppt' && settings.enabled[m.id] === true);
     if (fs.existsSync(this.venvPythonPath())) {
       await this.probeEnv();
+      if (hasPptEnabled && !this.pptReady) {
+        this.pptAttempted = true;
+      }
     } else {
       this.envState = 'uninstalled';
+      this.coreReady = false;
+      this.pptReady = false;
+      this.pptAttempted = false;
       this.installedPackages = {};
       this.pythonVersion = undefined;
     }
-    this.syncManagedSkills();
+    await this.syncManagedSkills();
     return this.list();
   }
 
@@ -364,22 +508,29 @@ export class SkillPackService {
     const python = this.venvPythonPath();
     if (!fs.existsSync(python)) {
       this.envState = 'uninstalled';
+      this.coreReady = false;
+      this.pptReady = false;
       this.installedPackages = {};
       this.pythonVersion = undefined;
       return false;
     }
     const probeScript = [
       'import importlib, importlib.metadata, json, platform',
-      `checks = ${JSON.stringify(OFFICE_IMPORT_MODULES)}`,
+      `core_checks = ${JSON.stringify(OFFICE_IMPORT_MODULES)}`,
+      `ppt_checks = ${JSON.stringify(PPT_IMPORT_MODULES)}`,
       'versions = {}',
-      'missing = []',
-      'for item in checks:',
-      '  try:',
-      '    importlib.import_module(item["module"])',
-      '    versions[item["dist"]] = importlib.metadata.version(item["dist"])',
-      '  except Exception as exc:',
-      '    missing.append(f"{item[\'dist\']}: {exc}")',
-      'print(json.dumps({"pythonVersion": platform.python_version(), "versions": versions, "missing": missing}))',
+      'core_missing = []',
+      'ppt_missing = []',
+      'def check(items, missing):',
+      '  for item in items:',
+      '    try:',
+      '      importlib.import_module(item["module"])',
+      '      versions[item["dist"]] = importlib.metadata.version(item["dist"])',
+      '    except Exception as exc:',
+      '      missing.append(f"{item[\'dist\']}: {exc}")',
+      'check(core_checks, core_missing)',
+      'check(ppt_checks, ppt_missing)',
+      'print(json.dumps({"pythonVersion": platform.python_version(), "versions": versions, "coreMissing": core_missing, "pptMissing": ppt_missing}))',
     ].join('\n');
     try {
       const result = await this.exec(python, ['-c', probeScript], {
@@ -390,21 +541,39 @@ export class SkillPackService {
         pythonVersion?: string;
         versions?: Record<string, string>;
         missing?: string[];
+        coreMissing?: string[];
+        pptMissing?: string[];
       };
       this.pythonVersion = parsed.pythonVersion;
       this.installedPackages = parsed.versions ?? {};
-      const missing = parsed.missing ?? [];
-      if (missing.length > 0) {
+      const coreMissing = parsed.coreMissing ?? parsed.missing ?? [];
+      const pptMissing = parsed.pptMissing ?? parsed.missing ?? [];
+
+      this.coreReady = coreMissing.length === 0;
+      this.pptReady = this.coreReady && pptMissing.length === 0;
+
+      if (!this.coreReady) {
         this.envState = 'error';
-        this.envError = `缺少办公依赖包：${missing.join('；')}`;
+        this.envError = `缺少办公依赖包：${coreMissing.join('；')}`;
+        this.pptError = this.envError;
         return false;
       }
+
       this.envState = 'ready';
       this.envError = undefined;
+      if (pptMissing.length > 0) {
+        this.pptError = `缺少 PPT 引擎依赖包：${pptMissing.join('；')}`;
+      } else {
+        this.pptError = undefined;
+        this.pptAttempted = false;
+      }
       return true;
     } catch (error) {
       this.envState = 'error';
+      this.coreReady = false;
+      this.pptReady = false;
       this.envError = error instanceof Error ? error.message : String(error);
+      this.pptError = this.envError;
       return false;
     }
   }
@@ -416,6 +585,65 @@ export class SkillPackService {
     base.PYTHONIOENCODING = 'utf-8';
     base.PIP_REQUIRE_VIRTUALENV = undefined;
     return base;
+  }
+
+  private async runPipInstall(
+    venvPython: string,
+    packages: readonly string[],
+    upgrade: boolean,
+    onProgress?: (progress: SkillPackProgress) => void,
+    percent = 50,
+  ): Promise<void> {
+    const childEnv = this.pipChildEnv();
+    const baseArgs = [
+      '-m',
+      'pip',
+      'install',
+      '--no-input',
+      '--disable-pip-version-check',
+      '--timeout',
+      '45',
+      '--retries',
+      '2',
+      ...(upgrade ? ['--upgrade'] : []),
+    ];
+
+    const hasExplicitRouting = Boolean(
+      childEnv.PIP_INDEX_URL ||
+        childEnv.HTTPS_PROXY ||
+        childEnv.HTTP_PROXY ||
+        childEnv.ALL_PROXY ||
+        childEnv.https_proxy ||
+        childEnv.http_proxy ||
+        childEnv.all_proxy,
+    );
+
+    try {
+      await this.exec(venvPython, [...baseArgs, ...packages], { timeout: 300_000, env: childEnv });
+      return;
+    } catch (primaryError) {
+      if (hasExplicitRouting) throw primaryError;
+
+      let lastError: unknown = primaryError;
+      for (const mirror of PYPI_FALLBACK_MIRRORS) {
+        onProgress?.({
+          phase: 'packages',
+          percent,
+          message: `直连 PyPI 失败，正在切换${mirror.label}安装…`,
+        });
+        try {
+          await this.exec(
+            venvPython,
+            [...baseArgs, '-i', mirror.url, '--trusted-host', mirror.host, ...packages],
+            { timeout: 300_000, env: childEnv },
+          );
+          return;
+        } catch (mirrorError) {
+          lastError = mirrorError;
+        }
+      }
+      throw lastError;
+    }
   }
 
   private diskUsageBytes(): number | undefined {
@@ -436,7 +664,7 @@ export class SkillPackService {
       ...(fs.existsSync(python) ? { pythonBinary: python } : {}),
       ...(this.pythonVersion ? { pythonVersion: this.pythonVersion } : {}),
       venvDir: this.officeVenvDir,
-      packages: [...OFFICE_PYTHON_PACKAGES],
+      packages: [...OFFICE_PYTHON_PACKAGES, ...PPT_PYTHON_PACKAGES],
       installedPackages: { ...this.installedPackages },
       ...(this.diskUsageBytes() !== undefined ? { diskUsageBytes: this.diskUsageBytes() } : {}),
       sandboxBackend: sandbox.backend,
@@ -448,21 +676,27 @@ export class SkillPackService {
   list(): SkillPackCatalogView {
     const settings = this.readSettings();
     const env = this.envStatus();
-    const envReady = env.state === 'ready';
     const packs: SkillPackView[] = this.manifests.map((manifest) => {
       const enabled = settings.enabled[manifest.id] === true;
       const syncedDir = path.join(this.managedSkillsDir, manifest.id);
-      const ready = envReady && enabled && fs.existsSync(path.join(syncedDir, 'SKILL.md'));
+      const tierReady = this.isPackTierReady(manifest);
+      const ready = tierReady && enabled && fs.existsSync(path.join(syncedDir, 'SKILL.md'));
+      const packError =
+        manifest.tier === 'ppt' && this.pptAttempted && !this.pptReady && this.pptError
+          ? this.pptError
+          : undefined;
       return {
         id: manifest.id,
         name: manifest.name,
         title: manifest.title,
         description: manifest.description,
         category: manifest.category,
+        tier: manifest.tier,
         version: manifest.version,
         envId: manifest.envId,
         enabled,
         ready,
+        ...(packError ? { error: packError } : {}),
         commands: [...manifest.commands],
         dir: ready ? syncedDir : manifest.sourceDir,
         files: manifest.files,
@@ -472,9 +706,15 @@ export class SkillPackService {
     return { generatedAt: Date.now(), env, packs };
   }
 
-  async prepareEnv(onProgress?: (progress: SkillPackProgress) => void): Promise<SkillPackCatalogView> {
+  async prepareEnv(
+    onProgress?: (progress: SkillPackProgress) => void,
+    options?: PrepareOptions,
+  ): Promise<SkillPackCatalogView> {
     if (this.inFlightPrepare) return this.inFlightPrepare;
-    this.inFlightPrepare = this.runPrepareOrUpgrade(false, onProgress).finally(() => {
+    const settings = this.readSettings();
+    const includePpt =
+      options?.includePpt ?? this.manifests.some((m) => m.tier === 'ppt' && settings.enabled[m.id] === true);
+    this.inFlightPrepare = this.runPrepareOrUpgrade(false, includePpt, onProgress).finally(() => {
       this.inFlightPrepare = null;
     });
     return this.inFlightPrepare;
@@ -482,8 +722,11 @@ export class SkillPackService {
 
   async upgradeEnv(onProgress?: (progress: SkillPackProgress) => void): Promise<SkillPackCatalogView> {
     if (this.inFlightPrepare) return this.inFlightPrepare;
-    if (!fs.existsSync(this.venvPythonPath())) return this.prepareEnv(onProgress);
-    this.inFlightPrepare = this.runPrepareOrUpgrade(true, onProgress).finally(() => {
+    const settings = this.readSettings();
+    const includePpt =
+      this.pptReady || this.manifests.some((m) => m.tier === 'ppt' && settings.enabled[m.id] === true);
+    if (!fs.existsSync(this.venvPythonPath())) return this.prepareEnv(onProgress, { includePpt });
+    this.inFlightPrepare = this.runPrepareOrUpgrade(true, includePpt, onProgress).finally(() => {
       this.inFlightPrepare = null;
     });
     return this.inFlightPrepare;
@@ -491,11 +734,16 @@ export class SkillPackService {
 
   private async runPrepareOrUpgrade(
     upgrade: boolean,
+    includePpt: boolean,
     onProgress?: (progress: SkillPackProgress) => void,
   ): Promise<SkillPackCatalogView> {
     const previousState = this.envState;
     this.envState = 'installing';
     this.envError = undefined;
+    if (includePpt) {
+      this.pptAttempted = true;
+      this.pptError = undefined;
+    }
     this.emitChanged();
 
     const report = (phase: SkillPackProgress['phase'], percent: number, message: string) => {
@@ -510,7 +758,7 @@ export class SkillPackService {
 
       const venvPython = this.venvPythonPath();
       if (!fs.existsSync(venvPython) || !upgrade) {
-        report('venv', 15, '正在创建隔离的 Python 虚拟环境…');
+        report('venv', 12, '正在创建隔离的 Python 虚拟环境…');
         if (!fs.existsSync(venvPython)) {
           fs.rmSync(this.officeVenvDir, { recursive: true, force: true });
           fs.mkdirSync(this.skillEnvsDir, { recursive: true });
@@ -526,35 +774,59 @@ export class SkillPackService {
         }
       }
 
-      report('packages', 45, upgrade ? '正在升级本地办公依赖包…' : '正在安装本地办公依赖包（pypdf / openpyxl / python-docx 等）…');
-      await this.exec(
-        venvPython,
-        [
-          '-m',
-          'pip',
-          'install',
-          '--no-input',
-          '--disable-pip-version-check',
-          ...(upgrade ? ['--upgrade'] : []),
-          ...OFFICE_PYTHON_PACKAGES,
-        ],
-        { timeout: 300_000, env: this.pipChildEnv() },
-      );
+      if (!this.coreReady || upgrade) {
+        report(
+          'packages',
+          35,
+          upgrade ? '正在升级基础办公依赖包…' : '正在安装基础办公依赖包（pypdf / openpyxl / python-docx 等）…',
+        );
+        await this.runPipInstall(venvPython, OFFICE_PYTHON_PACKAGES, upgrade, onProgress, 40);
+      }
 
-      report('verify', 85, '正在校验所有办公库是否可正常导入…');
-      const ok = await this.probeEnv();
-      if (!ok) {
+      if (includePpt && (!this.pptReady || upgrade)) {
+        report(
+          'packages',
+          62,
+          upgrade
+            ? '正在升级 PPT 大师引擎依赖…'
+            : '正在安装 PPT 大师引擎依赖（python-pptx / skia-pathops / uharfbuzz 等）…',
+        );
+        try {
+          await this.runPipInstall(venvPython, PPT_PYTHON_PACKAGES, upgrade, onProgress, 68);
+        } catch (pptInstallError) {
+          // Probe core tier first so core office packs still become ready when only PPT tier failed.
+          await this.probeEnv();
+          if (this.coreReady) {
+            this.pptReady = false;
+            this.pptAttempted = true;
+            this.pptError = pptInstallError instanceof Error ? pptInstallError.message : String(pptInstallError);
+            this.diskUsageCache.checkedAt = 0;
+            await this.syncManagedSkills(onProgress);
+            this.onSkillsChanged?.();
+            this.emitChanged();
+            return this.list();
+          }
+          throw pptInstallError;
+        }
+      }
+
+      report('verify', 82, '正在校验办公组件是否可正常导入…');
+      await this.probeEnv();
+      if (!this.coreReady) {
         throw new Error(this.envError ?? '依赖安装后自检失败');
       }
 
-      report('sync', 95, '正在同步已启用的办公技能包…');
+      report('sync', 92, '正在准备已启用的办公技能包…');
       this.diskUsageCache.checkedAt = 0;
-      this.syncManagedSkills();
+      await this.syncManagedSkills(onProgress);
       report('sync', 100, '办公技能环境已就绪');
     } catch (error) {
       this.envState = fs.existsSync(this.venvPythonPath()) || previousState === 'error' ? 'error' : 'uninstalled';
+      this.coreReady = false;
+      this.pptReady = false;
       this.envError = error instanceof Error ? error.message : String(error);
-      this.syncManagedSkills();
+      if (includePpt) this.pptError = this.envError;
+      await this.syncManagedSkills();
     }
 
     this.onSkillsChanged?.();
@@ -570,35 +842,86 @@ export class SkillPackService {
     const manifest = this.manifests.find((item) => item.id === packId);
     if (!manifest) throw new Error(`未知办公技能包：${packId}`);
 
-    if (enabled && this.envState !== 'ready') {
-      const prepared = await this.prepareEnv(onProgress);
-      if (prepared.env.state !== 'ready') {
-        throw new Error(prepared.env.error ?? '办公 Python 环境准备失败');
+    if (enabled) {
+      const needsPpt = manifest.tier === 'ppt';
+      if (needsPpt) this.pptAttempted = true;
+      if ((needsPpt && !this.pptReady) || (!needsPpt && !this.coreReady)) {
+        const prepared = await this.prepareEnv(onProgress, { includePpt: needsPpt });
+        if (prepared.env.state !== 'ready') {
+          throw new Error(prepared.env.error ?? '办公 Python 环境准备失败');
+        }
+        if (needsPpt && !this.pptReady) {
+          throw new Error(this.pptError ?? 'PPT 大师依赖环境准备失败');
+        }
       }
     }
 
     const settings = this.readSettings();
+    const prevEnabled = settings.enabled[packId] === true;
     settings.enabled[packId] = enabled;
     this.writeSettings(settings);
-    this.syncManagedSkills();
+    try {
+      await this.syncManagedSkills(onProgress);
+    } catch (error) {
+      settings.enabled[packId] = prevEnabled;
+      this.writeSettings(settings);
+      if (manifest.tier === 'ppt') {
+        this.pptAttempted = true;
+        this.pptError = error instanceof Error ? error.message : String(error);
+      }
+      this.emitChanged();
+      throw error;
+    }
+
+    if (manifest.tier === 'ppt' && !enabled && !this.pptReady) {
+      this.pptAttempted = false;
+      this.pptError = undefined;
+    }
     this.onSkillsChanged?.();
     this.emitChanged();
     return this.list();
   }
 
   async enableAll(onProgress?: (progress: SkillPackProgress) => void): Promise<SkillPackCatalogView> {
-    if (this.envState !== 'ready') {
-      const prepared = await this.prepareEnv(onProgress);
-      if (prepared.env.state !== 'ready') {
-        throw new Error(prepared.env.error ?? '办公 Python 环境准备失败');
+    // Stage 1: ensure core tier is ready and core packs are immediately enabled.
+    if (!this.coreReady) {
+      const preparedCore = await this.prepareEnv(onProgress, { includePpt: false });
+      if (preparedCore.env.state !== 'ready') {
+        throw new Error(preparedCore.env.error ?? '办公 Python 环境准备失败');
       }
     }
+
     const settings = this.readSettings();
     for (const manifest of this.manifests) {
-      settings.enabled[manifest.id] = true;
+      if (manifest.tier === 'core') settings.enabled[manifest.id] = true;
     }
     this.writeSettings(settings);
-    this.syncManagedSkills();
+    await this.syncManagedSkills(onProgress);
+
+    // Stage 2: install PPT tier + extract archive; keep core packs ready even if PPT fails.
+    const pptPacks = this.manifests.filter((manifest) => manifest.tier === 'ppt');
+    if (pptPacks.length > 0) {
+      this.pptAttempted = true;
+      if (!this.pptReady) {
+        await this.prepareEnv(onProgress, { includePpt: true });
+      }
+      if (this.pptReady) {
+        const nextSettings = this.readSettings();
+        for (const manifest of pptPacks) {
+          nextSettings.enabled[manifest.id] = true;
+        }
+        this.writeSettings(nextSettings);
+        try {
+          await this.syncManagedSkills(onProgress);
+        } catch (error) {
+          const rollback = this.readSettings();
+          for (const manifest of pptPacks) rollback.enabled[manifest.id] = false;
+          this.writeSettings(rollback);
+          this.pptError = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+
     this.onSkillsChanged?.();
     this.emitChanged();
     return this.list();
@@ -613,7 +936,11 @@ export class SkillPackService {
     fs.rmSync(this.officeVenvDir, { recursive: true, force: true });
     fs.rmSync(this.managedSkillsDir, { recursive: true, force: true });
     this.envState = 'uninstalled';
+    this.coreReady = false;
+    this.pptReady = false;
+    this.pptAttempted = false;
     this.envError = undefined;
+    this.pptError = undefined;
     this.pythonVersion = undefined;
     this.installedPackages = {};
     this.diskUsageCache.checkedAt = 0;
@@ -623,20 +950,23 @@ export class SkillPackService {
   }
 
   /**
-   * Keeps `<userData>/skills-managed/` strictly aligned with `{ ready && enabled }`.
-   * Never leaves unready skills on disk for `PiSkillHost` to advertise.
+   * Keeps `<userData>/skills-managed/` aligned with `{ tierReady && enabled }`.
+   * Uses `.pack-stamp.json` so unchanged packs (including 12k-file PPT icon assets)
+   * skip redundant recursive copies or archive extractions on startup.
    */
-  syncManagedSkills(): void {
+  async syncManagedSkills(onProgress?: (progress: SkillPackProgress) => void): Promise<void> {
     const settings = this.readSettings();
-    const envReady = this.envState === 'ready' && fs.existsSync(this.venvPythonPath());
-    if (!envReady) {
+    const python = this.venvPythonPath();
+    if (!this.coreReady || !fs.existsSync(python)) {
       fs.rmSync(this.managedSkillsDir, { recursive: true, force: true });
       return;
     }
 
     fs.mkdirSync(this.managedSkillsDir, { recursive: true });
     const wanted = new Set(
-      this.manifests.filter((item) => settings.enabled[item.id] === true).map((item) => item.id),
+      this.manifests
+        .filter((item) => settings.enabled[item.id] === true && this.isPackTierReady(item))
+        .map((item) => item.id),
     );
 
     for (const existing of fs.readdirSync(this.managedSkillsDir, { withFileTypes: true })) {
@@ -648,20 +978,77 @@ export class SkillPackService {
     for (const manifest of this.manifests) {
       if (!wanted.has(manifest.id)) continue;
       const dest = path.join(this.managedSkillsDir, manifest.id);
-      fs.rmSync(dest, { recursive: true, force: true });
-      copyPackContents(manifest.sourceDir, dest);
+      const signature = computeSourceSignature(manifest);
+      const currentStamp = readStamp(dest);
+      if (
+        fs.existsSync(path.join(dest, 'SKILL.md')) &&
+        currentStamp &&
+        currentStamp.id === manifest.id &&
+        currentStamp.version === manifest.version &&
+        currentStamp.sourceSignature === signature
+      ) {
+        continue;
+      }
+
+      if (manifest.archive) {
+        const archivePath = path.join(manifest.sourceDir, manifest.archive);
+        const tmpDir = path.join(this.managedSkillsDir, `.${manifest.id}.tmp-${Date.now()}`);
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        onProgress?.({
+          phase: 'extract',
+          percent: 88,
+          message: `正在解压内置 ${manifest.title} 技能资源…`,
+        });
+        try {
+          await this.exec(python, ['-c', SAFE_UNZIP_SCRIPT, archivePath, tmpDir], {
+            timeout: 120_000,
+            env: this.pipChildEnv(),
+          });
+          const guardScript = path.join(tmpDir, 'scripts', 'attribution_guard.py');
+          if (fs.existsSync(guardScript)) {
+            onProgress?.({
+              phase: 'verify',
+              percent: 94,
+              message: `正在校验 ${manifest.title} 完整性…`,
+            });
+            await this.exec(python, [guardScript], {
+              timeout: 20_000,
+              env: this.pipChildEnv(),
+              cwd: tmpDir,
+            });
+          }
+          fs.rmSync(dest, { recursive: true, force: true });
+          fs.renameSync(tmpDir, dest);
+          writeStamp(dest, { id: manifest.id, version: manifest.version, sourceSignature: signature });
+        } catch (error) {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          throw error;
+        }
+      } else {
+        fs.rmSync(dest, { recursive: true, force: true });
+        copyPackContents(manifest.sourceDir, dest);
+        writeStamp(dest, { id: manifest.id, version: manifest.version, sourceSignature: signature });
+      }
     }
   }
 
   /** Extra environment variables injected into `RuntimeService.envFor()` when ready. */
   envOverlay(): Record<string, string> {
-    if (this.envState !== 'ready') return {};
+    if (!this.coreReady) return {};
     const python = this.venvPythonPath();
     if (!fs.existsSync(python)) return {};
     const sites = this.sitePackagesDirs();
+    const settings = this.readSettings();
+    const pptDir = path.join(this.managedSkillsDir, 'office-ppt');
+    const pptEnabledAndSynced =
+      this.pptReady &&
+      settings.enabled['office-ppt'] === true &&
+      fs.existsSync(path.join(pptDir, 'SKILL.md'));
+
     return {
       OPC_OFFICE_PYTHON: python,
       ...(sites.length > 0 ? { PYTHONPATH: sites.join(path.delimiter) } : {}),
+      ...(pptEnabledAndSynced ? { OPC_PPT_SKILL_DIR: pptDir } : {}),
     };
   }
 
@@ -686,10 +1073,10 @@ export class SkillPackService {
 
   /** Active managed skill summaries exposed to Router for delegation decisions. */
   enabledSummaries(): Array<{ id: string; name: string; title: string; summary: string }> {
-    if (this.envState !== 'ready') return [];
+    if (!this.coreReady) return [];
     const settings = this.readSettings();
     return this.manifests
-      .filter((manifest) => settings.enabled[manifest.id] === true)
+      .filter((manifest) => settings.enabled[manifest.id] === true && this.isPackTierReady(manifest))
       .map((manifest) => ({
         id: manifest.id,
         name: manifest.name,

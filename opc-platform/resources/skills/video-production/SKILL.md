@@ -1,5 +1,8 @@
 ---
 name: video-production
+title: 视频制作工作流
+summary: 端到端 AI 视频制作工作流，串联分镜规划、关键帧锚定、图生视频、TTS 配音与 FFmpeg 质检合成。
+category: creative
 description: >
   End-to-end video production workflow combining AI video generation (generate_video),
   keyframe anchoring (generate_image), voiceover/TTS (text_to_speech), FFmpeg visual QA,

@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { FolderOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
   PiSkillCatalog,
@@ -13,30 +12,35 @@ import { cn } from '@/shared/lib/cn';
 import { FilterPills, FilterToolbar } from './CapabilityPrimitives';
 import { SkillIconTile } from './SkillIcon';
 
-type SkillFilterTab = 'all' | 'enabled' | 'builtin' | 'local';
+type SkillFilterTab = 'all' | 'enabled' | 'office' | 'creative';
+type SkillCategory = 'office' | 'creative';
 
 type UnifiedSkillItem =
   | {
       kind: 'builtin';
+      category: 'office';
       id: string;
       iconKey: string;
       title: string;
       description: string;
       enabled: boolean;
       busy: boolean;
-      sourceLabel: string;
+      categoryLabel: string;
+      error?: string;
       tooltip?: string;
       pack: SkillPackView;
     }
   | {
-      kind: 'local';
+      kind: 'bundled';
+      category: SkillCategory;
       id: string;
       iconKey: string;
       title: string;
       description: string;
       enabled: boolean;
       busy: boolean;
-      sourceLabel: string;
+      categoryLabel: string;
+      error?: string;
       tooltip?: string;
       entry: PiSkillView;
     };
@@ -70,72 +74,61 @@ export function SkillsSection({
 
   const isInstalling = skillPacks?.env.state === 'installing' || skillPackEnvBusy;
   const displayError = skillPackError || skillPacks?.env.error || skillError;
-  const localRoots = useMemo(() => skills?.roots ?? [], [skills]);
 
   const items = useMemo<UnifiedSkillItem[]>(() => {
-    const builtinItems: UnifiedSkillItem[] = (skillPacks?.packs ?? []).map((pack) => ({
+    const officeLabel = t('capabilities.ui.filterOfficeSkills');
+    const creativeLabel = t('capabilities.ui.filterCreativeSkills');
+
+    const packItems: UnifiedSkillItem[] = (skillPacks?.packs ?? []).map((pack) => ({
       kind: 'builtin',
+      category: 'office',
       id: pack.id,
       iconKey: pack.id,
       title: pack.title,
       description: pack.description,
       enabled: pack.enabled,
       busy: isInstalling || busySkillPack === pack.id,
-      sourceLabel: t('capabilities.skills.sourceBuiltin'),
+      categoryLabel: officeLabel,
+      ...(pack.error ? { error: pack.error } : {}),
       pack,
     }));
 
     const bundledItems: UnifiedSkillItem[] = (skills?.entries ?? [])
       .filter((entry) => entry.scope === 'bundled')
-      .map((entry) => ({
-        kind: 'local',
-        id: entry.id,
-        iconKey: entry.name,
-        title: entry.name,
-        description: entry.description,
-        enabled: entry.enabled,
-        busy: busySkill === entry.id,
-        sourceLabel: t('capabilities.skills.sourceBuiltin'),
-        tooltip: entry.dir,
-        entry,
-      }));
+      .map((entry) => {
+        const category: SkillCategory = entry.category === 'office' ? 'office' : 'creative';
+        return {
+          kind: 'bundled',
+          category,
+          id: entry.id,
+          iconKey: entry.name,
+          title: entry.title || entry.name,
+          description: entry.summary || entry.description,
+          enabled: entry.enabled,
+          busy: busySkill === entry.id,
+          categoryLabel: category === 'office' ? officeLabel : creativeLabel,
+          tooltip: entry.dir,
+          entry,
+        };
+      });
 
-    const localItems: UnifiedSkillItem[] = (skills?.entries ?? [])
-      .filter((entry) => entry.scope !== 'managed' && entry.scope !== 'bundled')
-      .map((entry) => ({
-        kind: 'local',
-        id: entry.id,
-        iconKey: entry.name,
-        title: entry.name,
-        description: entry.description,
-        enabled: entry.enabled,
-        busy: busySkill === entry.id,
-        sourceLabel:
-          entry.scope === 'project'
-            ? t('capabilities.external.scope.project')
-            : t('capabilities.skills.sourceLocal'),
-        tooltip: entry.dir,
-        entry,
-      }));
-
-    return [...builtinItems, ...bundledItems, ...localItems];
+    return [...packItems, ...bundledItems];
   }, [busySkill, busySkillPack, isInstalling, skillPacks, skills, t]);
 
-  const { allCount, enabledCount, builtinCount, localCount } = useMemo(() => {
+  const { allCount, enabledCount, officeCount, creativeCount } = useMemo(() => {
     let enabled = 0;
-    let builtin = 0;
-    let local = 0;
+    let office = 0;
+    let creative = 0;
     for (const item of items) {
       if (item.enabled) enabled += 1;
-      const isBuiltin = item.kind === 'builtin' || item.entry.scope === 'bundled';
-      if (isBuiltin) builtin += 1;
-      else local += 1;
+      if (item.category === 'office') office += 1;
+      else creative += 1;
     }
     return {
       allCount: items.length,
       enabledCount: enabled,
-      builtinCount: builtin,
-      localCount: local,
+      officeCount: office,
+      creativeCount: creative,
     };
   }, [items]);
 
@@ -143,17 +136,26 @@ export function SkillsSection({
 
   const filtered = useMemo(() => {
     return items.filter((item) => {
-      const isBuiltin = item.kind === 'builtin' || item.entry.scope === 'bundled';
       if (tab === 'enabled' && !item.enabled) return false;
-      if (tab === 'builtin' && !isBuiltin) return false;
-      if (tab === 'local' && isBuiltin) return false;
+      if (tab === 'office' && item.category !== 'office') return false;
+      if (tab === 'creative' && item.category !== 'creative') return false;
       if (!q) return true;
       return (
         item.title.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q)
+        item.description.toLowerCase().includes(q) ||
+        item.id.toLowerCase().includes(q)
       );
     });
   }, [items, q, tab]);
+
+  const officeFiltered = useMemo(
+    () => filtered.filter((item) => item.category === 'office'),
+    [filtered],
+  );
+  const creativeFiltered = useMemo(
+    () => filtered.filter((item) => item.category === 'creative'),
+    [filtered],
+  );
 
   const handleToggleItem = (item: UnifiedSkillItem, next: boolean) => {
     if (item.kind === 'builtin') {
@@ -162,6 +164,18 @@ export function SkillsSection({
     }
     onToggleSkill(item.entry, next);
   };
+
+  const renderGrid = (list: UnifiedSkillItem[]) => (
+    <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
+      {list.map((item) => (
+        <UnifiedSkillCard
+          key={`${item.kind}:${item.id}`}
+          item={item}
+          onToggle={handleToggleItem}
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -209,14 +223,14 @@ export function SkillsSection({
               { value: 'all', label: t('capabilities.ui.filterAll'), count: allCount },
               { value: 'enabled', label: t('capabilities.ui.filterEnabled'), count: enabledCount },
               {
-                value: 'builtin',
-                label: t('capabilities.ui.filterBuiltinSkills'),
-                count: builtinCount,
+                value: 'office',
+                label: t('capabilities.ui.filterOfficeSkills'),
+                count: officeCount,
               },
               {
-                value: 'local',
-                label: t('capabilities.ui.filterLocalSkills'),
-                count: localCount,
+                value: 'creative',
+                label: t('capabilities.ui.filterCreativeSkills'),
+                count: creativeCount,
               },
             ]}
           />
@@ -224,38 +238,28 @@ export function SkillsSection({
       />
 
       {filtered.length > 0 ? (
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-          {filtered.map((item) => (
-            <UnifiedSkillCard
-              key={`${item.kind}:${item.id}`}
-              item={item}
-              onToggle={handleToggleItem}
-            />
-          ))}
-        </div>
-      ) : tab === 'local' && localCount === 0 && !q ? (
-        <div className="rounded-2xl border border-dashed border-line bg-surface/50 px-6 py-9 text-center">
-          <div className="mx-auto mb-3 grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-tertiary">
-            <FolderOpen className="size-4.5" />
+        tab === 'all' || tab === 'enabled' ? (
+          <div className="space-y-6">
+            {officeFiltered.length > 0 ? (
+              <SkillCategorySection
+                title={t('capabilities.skills.sectionOffice')}
+                count={officeFiltered.length}
+              >
+                {renderGrid(officeFiltered)}
+              </SkillCategorySection>
+            ) : null}
+            {creativeFiltered.length > 0 ? (
+              <SkillCategorySection
+                title={t('capabilities.skills.sectionCreative')}
+                count={creativeFiltered.length}
+              >
+                {renderGrid(creativeFiltered)}
+              </SkillCategorySection>
+            ) : null}
           </div>
-          <p className="text-sm font-medium text-ink">{t('capabilities.skills.emptyLocalTitle')}</p>
-          <p className="mx-auto mt-1.5 max-w-[30rem] text-xs leading-relaxed text-ink-tertiary">
-            {t('capabilities.skills.emptyLocalHint')}
-          </p>
-          {localRoots.length > 0 ? (
-            <ul className="mt-4 flex flex-wrap justify-center gap-1.5">
-              {localRoots.map((root) => (
-                <li
-                  key={root}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-3xs text-ink-tertiary"
-                >
-                  <FolderOpen className="size-3 shrink-0 text-ink-quaternary" />
-                  <code className="truncate font-mono">{root}</code>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
+        ) : (
+          renderGrid(filtered)
+        )
       ) : (
         <div className="rounded-2xl border border-line/80 bg-surface/50 px-6 py-10 text-center">
           <p className="text-sm text-ink-tertiary">{t('capabilities.ui.noMatches')}</p>
@@ -282,19 +286,31 @@ export function SkillsSection({
               total: allCount,
             })}
           </span>
-          {localRoots.length > 0 ? (
-            <span
-              className="inline-flex max-w-full items-center gap-1.5"
-              title={localRoots.join('\n')}
-            >
-              <FolderOpen className="size-3 shrink-0" />
-              <span>{t('capabilities.skills.localDirHint')}</span>
-              <code className="truncate font-mono text-ink-tertiary">{localRoots[0]}</code>
-            </span>
-          ) : null}
         </footer>
       ) : null}
     </div>
+  );
+}
+
+function SkillCategorySection({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h3 className="text-xs font-semibold tracking-wide text-ink-secondary">{title}</h3>
+        <span className="rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[10px] leading-none text-ink-tertiary tabular-nums">
+          {count}
+        </span>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -309,7 +325,7 @@ function UnifiedSkillCard({
 
   return (
     <article
-      data-testid={item.kind === 'builtin' ? `skill-pack-${item.id}` : `skill-local-${item.id}`}
+      data-testid={item.kind === 'builtin' ? `skill-pack-${item.id}` : `skill-bundled-${item.entry.name}`}
       title={item.tooltip}
       className={cn(
         'group flex items-start gap-3.5 rounded-2xl border p-4 transition-all duration-150',
@@ -326,7 +342,7 @@ function UnifiedSkillCard({
               {item.title}
             </h4>
             <span className="shrink-0 rounded-md bg-surface-muted px-1.5 py-0.5 text-[10px] leading-none font-medium text-ink-tertiary">
-              {item.sourceLabel}
+              {item.categoryLabel}
             </span>
           </div>
           <Toggle
@@ -341,6 +357,9 @@ function UnifiedSkillCard({
           <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.55] text-ink-tertiary">
             {item.description}
           </p>
+        ) : null}
+        {item.error ? (
+          <p className="mt-1.5 line-clamp-2 text-xs text-danger">{item.error}</p>
         ) : null}
       </div>
     </article>

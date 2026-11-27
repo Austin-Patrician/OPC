@@ -7,6 +7,7 @@ type SkillKind =
   | 'word'
   | 'convert'
   | 'slides'
+  | 'video'
   | 'code'
   | 'json'
   | 'design'
@@ -38,6 +39,10 @@ const KIND_GRADIENT: Record<SkillKind, GradientSpec> = {
     stops: ['#FBBF24', '#F97316', '#C2410C'],
     shadow: 'shadow-[0_4px_12px_-3px_rgba(249,115,22,0.42)]',
   },
+  video: {
+    stops: ['#E879F9', '#C026D3', '#86198F'],
+    shadow: 'shadow-[0_4px_12px_-3px_rgba(192,38,211,0.42)]',
+  },
   code: {
     stops: ['#64748B', '#334155', '#0F172A'],
     shadow: 'shadow-[0_4px_12px_-3px_rgba(51,65,85,0.4)]',
@@ -65,6 +70,7 @@ function detectSkillKind(nameOrId: string): SkillKind {
   if (key.includes('word') || key.includes('docx')) return 'word';
   if (key.includes('convert') || key.includes('markdown')) return 'convert';
   if (key.includes('ppt') || key.includes('slide')) return 'slides';
+  if (key.includes('video') || key.includes('film') || key.includes('reel')) return 'video';
   if (key.includes('code') || key.includes('dev')) return 'code';
   if (key.includes('json') || key.includes('schema')) return 'json';
   if (key.includes('design') || key.includes('creative')) return 'design';
@@ -238,6 +244,23 @@ function renderArtwork(kind: SkillKind) {
           <rect x="24.1" y="15.5" width="3.5" height="10.5" rx="1" fill="#EA580C" />
           {/* Trend accent dot */}
           <circle cx="29.5" cy="14.8" r="1.5" fill="#F97316" />
+        </g>
+      );
+
+    case 'video':
+      return (
+        <g>
+          {/* Back slate depth layer */}
+          <rect x="11" y="9.5" width="22" height="21" rx="3" fill="#FFFFFF" fillOpacity="0.3" />
+          {/* Main cinema frame */}
+          <rect x="9.5" y="13" width="25" height="20.5" rx="3.2" fill="#FFFFFF" fillOpacity="0.96" />
+          {/* Top film sprocket header bar */}
+          <path d="M9.5 16.2a3.2 3.2 0 0 1 3.2-3.2h18.6a3.2 3.2 0 0 1 3.2 3.2v2.3H9.5v-2.3Z" fill="#C026D3" fillOpacity="0.2" />
+          <rect x="13" y="14.9" width="3" height="1.8" rx="0.8" fill="#A21CAF" fillOpacity="0.55" />
+          <rect x="20.5" y="14.9" width="3" height="1.8" rx="0.8" fill="#A21CAF" fillOpacity="0.55" />
+          <rect x="28" y="14.9" width="3" height="1.8" rx="0.8" fill="#A21CAF" fillOpacity="0.55" />
+          {/* Crisp play triangle */}
+          <path d="M19.2 21.4c0-.7.8-1.1 1.4-.7l6.4 4.1c.5.3.5 1.1 0 1.4l-6.4 4.1c-.6.4-1.4 0-1.4-.7v-8.2Z" fill="#C026D3" />
         </g>
       );
 

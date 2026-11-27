@@ -59,6 +59,8 @@ import type { ModelConfigService } from '../models/modelConfigService';
 import { scriptedBrain, type TaskBrain } from './brain';
 import { DurableWorkRunner } from './durableWorkRunner';
 import { HarnessBrain } from './harnessBrain';
+import { buildWorkerCompactionSettings, createWorkerContextHygieneExtension } from './contextHygiene';
+import { createWorkerImageProcessor } from './imageProcessor';
 import { resolveChargedCost } from './usage';
 import { OwnerQueue } from './ownerQueue';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
@@ -114,6 +116,8 @@ import type { DesktopBroker } from '../desktop/broker';
 import { summarizeWorkerTools, type RouterWorkerCapability } from '../router/routerCapabilities';
 import { createAssistantToolsExtension } from '../assistant/assistantTools';
 import type { AssistantToolsService } from '../assistant/assistantTools';
+import { createGitHubToolsExtension } from '../channels/github/githubTools';
+import type { ChannelStore } from '../channels/store';
 
 /** How many manager rework rounds a task may take before it is parked for you. */
 
@@ -201,7 +205,16 @@ export interface WorkServiceDeps {
     report: WorkReport;
     task: WorkTask;
     tool: string;
-    browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+    browser?: {
+      action: string;
+      kind?: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
+      url?: string;
+      preview?: string;
+      instructions?: string;
+      sessionId?: string;
+      screenshot?: { taskId: string; relPath: string };
+      screenshotSelector?: string;
+    };
     desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
     shell?: { command: string; cwd?: string };
   }) => void;
@@ -248,6 +261,8 @@ export interface WorkServiceDeps {
   desktop?: DesktopBroker;
   /** Shared time, weather, search, page-reading and calculation tools. */
   assistantTools?: AssistantToolsService;
+  /** Shared external channel credentials store (used for built-in GitHub tools). */
+  channelStore?: ChannelStore;
   /** Call-level AI usage ledger shared with Settings → Usage. */
   usageRepository?: UsageRepository;
   pricingMode?: () => PricingMode;
@@ -265,7 +280,6 @@ export class WorkService {
   private readonly runner: DurableWorkRunner;
   private readonly listeners = new Set<(task: WorkTask) => void>();
   private readonly progressListeners = new Set<(event: WorkerProgressEvent) => void>();
-  private readonly lastProgressAt = new Map<string, number>();
   private readonly harnesses = new Map<string, EmployeeHarness>();
   /** Employees whose stack changed while a task was running; evicted when it ends. */
   private readonly dirtyHarnesses = new Set<string>();
@@ -298,12 +312,24 @@ export class WorkService {
   private readonly mcpMountDesktop = new Map<string, boolean>();
   /** One-shot approval permits (`scope: 'once'`), keyed by `${taskId}:${tool}`. */
   private readonly oneShotPermits = new Map<string, number>();
+  /** Blocking human-in-the-loop browser takeover requests awaiting user completion, keyed by reportId. */
+  private readonly pendingTakeovers = new Map<
+    string,
+    {
+      taskId: string;
+      threadId: string;
+      resolve: (result: { completed: boolean; note?: string }) => void;
+      timer: ReturnType<typeof setTimeout>;
+      cleanupAbort?: () => void;
+    }
+  >();
   /**
    * The model-driven brain, when a model is configured. Kept as a field（不是构造
    * 函数里的临时变量）because 你中途改方向要能插进**正在跑**的那个会话，而那个
    * 会话只有 brain 自己认识。
    */
   private readonly modelBrain: HarnessBrain | null;
+  private readonly imageProcessor = createWorkerImageProcessor();
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
@@ -318,7 +344,8 @@ export class WorkService {
       const resolved = path.resolve(absolutePath);
       if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error('浏览器产物越过任务工作区');
       if (!fs.existsSync(resolved)) throw new Error('浏览器产物文件不存在');
-      this.repository.addArtifact(taskId, path.relative(root, resolved), resolved);
+      const relPath = path.relative(root, resolved).replace(/\\/g, '/');
+      this.repository.addArtifact(taskId, relPath, resolved);
     });
     this.threads = deps.threads ?? new ThreadRepository(deps.db);
 
@@ -397,7 +424,18 @@ export class WorkService {
             createTraceRecorder({
               repository: this.repository,
               taskId,
-              onRecord: (entry) => this.emitTraceProgress(taskId, entry.name, entry.argsDigest, entry.ok),
+              onToolStart: ({ name, argsDigest, at }) =>
+                this.emitTraceProgress(taskId, name, argsDigest, null, 'tool_start', undefined, at),
+              onRecord: (entry) =>
+                this.emitTraceProgress(
+                  taskId,
+                  entry.name,
+                  entry.argsDigest,
+                  entry.ok,
+                  'tool_end',
+                  entry.ms,
+                  entry.at,
+                ),
             }),
           workerConversation: (workerId) => {
             const worker = this.threads.getWorker(workerId);
@@ -422,12 +460,16 @@ export class WorkService {
             }
           },
           // 动作级审批（M3）：MCP 的 hook 按扩展装，桥按任务挂。
-          registerApproval: (conversationId, taskId) =>
-            registerApprovalBridge(conversationId, {
-              taskId: () => taskId,
-              hasPermit: (id, tool) => this.repository.hasMcpPermit(id, tool),
-              ask: (input) => this.askForApproval(input),
-            }),
+          registerApproval: (conversationId, taskId, scopeKey) =>
+            registerApprovalBridge(
+              conversationId,
+              {
+                taskId: () => taskId,
+                hasPermit: (id, tool) => this.repository.hasMcpPermit(id, tool),
+                ask: (input) => this.askForApproval(input),
+              },
+              scopeKey,
+            ),
         })
       : null;
 
@@ -484,6 +526,7 @@ export class WorkService {
               ...(task.workerId ? { workerId: task.workerId } : {}),
               title: task.title,
               toolName: 'lifecycle',
+              phase: 'lifecycle',
               summary:
                 task.status === 'cancelled'
                   ? '已中止'
@@ -633,11 +676,15 @@ export class WorkService {
      * 那一瞬间才对。
      */
     this.queue = new OwnerQueue({
-      run: (taskId) => {
-        if (this.refuseToStart(taskId)) return Promise.resolve();
+      run: async (taskId) => {
+        if (this.refuseToStart(taskId)) return;
         const task = this.repository.getTask(taskId);
         if (task) {
-          runningTaskByWorker.set(runtimeIdentityFor(task).runtimeKey, taskId);
+          const runtimeKey = runtimeIdentityFor(task).runtimeKey;
+          if (this.dirtyHarnesses.delete(runtimeKey)) {
+            await this.evictRuntime(runtimeKey, { force: true });
+          }
+          runningTaskByWorker.set(runtimeKey, taskId);
           if (task.threadId) {
             this.emitProgress({
               threadId: task.threadId,
@@ -645,6 +692,7 @@ export class WorkService {
               ...(task.workerId ? { workerId: task.workerId } : {}),
               title: task.title,
               toolName: 'lifecycle',
+              phase: 'lifecycle',
               summary: task.turnMode === 'append' ? '正在基于现有成果追加修改…' : task.turnMode === 'pivot' ? '已转向，正在重新执行…' : '开始执行…',
               ok: null,
               state: 'running',
@@ -656,6 +704,14 @@ export class WorkService {
       },
       onError: (taskId, error) => {
         if (this.deps.desktop) void this.deps.desktop.disposeTask(taskId);
+        for (const [runtimeKey, running] of runningTaskByWorker) {
+          if (running === taskId) {
+            runningTaskByWorker.delete(runtimeKey);
+            if (this.dirtyHarnesses.delete(runtimeKey)) {
+              void this.evictRuntime(runtimeKey, { force: true });
+            }
+          }
+        }
         // 记账这一步本身可能失败（库已经关了、盘满了），而它失败不该再抛一次：
         // 一次没记上的失败会以 unhandled rejection 结束整个进程，而真正的问题是
         // 原来那个 error——它就在下面这行里。
@@ -884,6 +940,15 @@ export class WorkService {
     if (!thread) return { ok: false, abortedTasks: 0, reason: `未知工作线：${threadId}` };
 
     const pending = this.repository.listPending().filter((task) => task.threadId === threadId);
+    for (const [reportId, takeover] of [...this.pendingTakeovers.entries()]) {
+      if (takeover.threadId !== threadId) continue;
+      clearTimeout(takeover.timer);
+      takeover.cleanupAbort?.();
+      this.pendingTakeovers.delete(reportId);
+      this.threads.markReportRead(reportId);
+      this.deps.onApprovalResolved?.(reportId, 'denied');
+      takeover.resolve({ completed: false, note: `任务已中止：${reason}` });
+    }
     let abortedTasks = 0;
 
     for (const task of pending) {
@@ -953,6 +1018,7 @@ export class WorkService {
         ...(task.workerId ? { workerId: task.workerId } : {}),
         title: task.title,
         toolName: 'lifecycle',
+        phase: 'lifecycle',
         summary: `已中止：${reason}`,
         ok: null,
         state: 'aborted',
@@ -1060,8 +1126,40 @@ export class WorkService {
     }
 
     this.threads.subscribe(input.threadId, worker.id);
+    const hasAcceptedHistory = this.repository
+      .listByThread(input.threadId, 20)
+      .some((entry) => entry.status === 'accepted');
+    let effectiveTurnMode: 'initial' | 'append' | 'pivot' = input.mode;
+    const latestFailed =
+      latest && (latest.status === 'failed' || latest.status === 'cancelled' || latest.status === 'rejected');
+
+    if (latestFailed) {
+      if (hasAcceptedHistory && worker.conversationId && this.modelBrain) {
+        const pruneFrom = latest.checkpointEntryId ?? worker.lastCleanEntryId ?? null;
+        if (pruneFrom != null) {
+          await this.modelBrain
+            .pruneAfterCheckpoint(
+              { runtimeKey: worker.id, ownerId: worker.ownerId ?? worker.id },
+              worker.conversationId,
+              pruneFrom,
+              '清理上一轮未成功尝试',
+            )
+            .catch(() => undefined);
+        }
+      } else {
+        // No accepted turn yet: clear the polluted conversation so the retry starts clean in the same workspace.
+        this.threads.setWorkerConversation(worker.id, null, null);
+        worker = this.threads.getWorker(worker.id) ?? worker;
+        effectiveTurnMode = 'initial';
+      }
+    } else if (input.mode === 'pivot' && pending.length === 0 && !hasAcceptedHistory) {
+      this.threads.setWorkerConversation(worker.id, null, null);
+      worker = this.threads.getWorker(worker.id) ?? worker;
+      effectiveTurnMode = 'initial';
+    }
+
     const evolvedGoal =
-      input.mode === 'pivot'
+      effectiveTurnMode === 'pivot' || effectiveTurnMode === 'initial'
         ? instruction
         : `${thread.livingGoal || thread.goal}\n[追加] ${instruction}`;
     this.threads.updateGoal(input.threadId, evolvedGoal);
@@ -1090,7 +1188,7 @@ export class WorkService {
     const nextContract: TaskContract = {
       ...baseContract,
       objective: instruction,
-      deliverable: input.mode === 'pivot' ? derivedDeliverable : baseContract.deliverable || derivedDeliverable,
+      deliverable: effectiveTurnMode === 'pivot' ? derivedDeliverable : baseContract.deliverable || derivedDeliverable,
       outputs: nextOutputs,
       ...(mergedAttachments.length > 0 ? { attachments: mergedAttachments } : {}),
       ...(input.acceptance ? { acceptance: input.acceptance } : {}),
@@ -1102,7 +1200,7 @@ export class WorkService {
       assigneeId: worker.ownerId ?? worker.id,
       workerId: worker.id,
       threadId: input.threadId,
-      turnMode: input.mode,
+      turnMode: effectiveTurnMode,
       estTokens: latest?.estTokens ?? 20_000,
       acceptanceCommand: input.acceptance?.command ?? latest?.acceptanceCommand ?? [],
       acceptanceTemplate: input.acceptance?.template ?? latest?.acceptanceTemplate ?? 'http-ok',
@@ -1134,7 +1232,16 @@ export class WorkService {
     taskId: string;
     tool: string;
     title: string;
-    browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+    browser?: {
+      action: string;
+      kind?: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
+      url?: string;
+      preview?: string;
+      instructions?: string;
+      sessionId?: string;
+      screenshot?: { taskId: string; relPath: string };
+      screenshotSelector?: string;
+    };
     desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
     shell?: { command: string; cwd?: string };
   }): void => {
@@ -1189,6 +1296,110 @@ export class WorkService {
     }
     const updated = this.repository.getTask(task.id);
     if (updated) this.emit(updated);
+  };
+
+  /**
+   * Pauses a browser tool call while the user completes login, QR scan, CAPTCHA,
+   * registration, or confirmation in the real visible browser window.
+   */
+  requestBrowserTakeover = (input: {
+    taskId: string;
+    title: string;
+    instructions: string;
+    kind: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
+    url?: string;
+    sessionId?: string;
+    screenshot?: { taskId: string; relPath: string };
+    screenshotSelector?: string;
+    signal?: AbortSignal;
+  }): Promise<{ completed: boolean; note?: string }> => {
+    const task = this.repository.getTask(input.taskId);
+    if (!task?.threadId) {
+      return Promise.resolve({ completed: false, note: '当前任务无有效工作线，无法发起人工接管' });
+    }
+    if (input.signal?.aborted) {
+      return Promise.resolve({ completed: false, note: '任务已中止' });
+    }
+
+    this.repository.addStep(task.id, `等待你接管浏览器：${input.title}`);
+    const report = this.threads.addReport({
+      threadId: task.threadId,
+      level: 'silent',
+      title: `需要你接管浏览器：${input.title}`,
+      body: input.instructions,
+      taskId: task.id,
+      subject: 'browser_takeover',
+      kind: 'approval',
+    });
+    this.threads.setState(task.threadId, 'waiting');
+    const updated = this.repository.getTask(task.id);
+    if (updated) this.emit(updated);
+
+    const browserMeta = {
+      action: 'takeover',
+      kind: input.kind,
+      ...(input.url ? { url: input.url } : {}),
+      instructions: input.instructions,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.screenshot ? { screenshot: input.screenshot } : {}),
+      ...(input.screenshotSelector ? { screenshotSelector: input.screenshotSelector } : {}),
+    };
+
+    try {
+      this.deps.onApprovalCard?.({
+        report,
+        task,
+        tool: 'browser_request_takeover',
+        browser: browserMeta,
+      });
+    } catch (error) {
+      console.warn('browser takeover card delivery failed', error);
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (outcome: { completed: boolean; note?: string }) => {
+        if (settled) return;
+        settled = true;
+        const entry = this.pendingTakeovers.get(report.id);
+        if (entry) {
+          clearTimeout(entry.timer);
+          entry.cleanupAbort?.();
+          this.pendingTakeovers.delete(report.id);
+        }
+        resolve(outcome);
+      };
+
+      const timer = setTimeout(() => {
+        this.threads.markReportRead(report.id);
+        this.deps.onApprovalResolved?.(report.id, 'denied');
+        this.repository.addStep(task.id, '浏览器接管等待超时');
+        if (task.threadId) this.threads.setState(task.threadId, 'running');
+        finish({ completed: false, note: '等待用户在浏览器中完成操作超时（10 分钟）' });
+      }, 10 * 60_000);
+      timer.unref?.();
+
+      const onAbort = () => {
+        this.threads.markReportRead(report.id);
+        this.deps.onApprovalResolved?.(report.id, 'denied');
+        finish({ completed: false, note: '任务已中止' });
+      };
+      if (input.signal) {
+        input.signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      this.pendingTakeovers.set(report.id, {
+        taskId: task.id,
+        threadId: task.threadId!,
+        resolve: finish,
+        timer,
+        ...(input.signal
+          ? {
+              cleanupAbort: () => input.signal?.removeEventListener('abort', onAbort),
+            }
+          : {}),
+      });
+    });
   };
 
   /**
@@ -1306,6 +1517,24 @@ export class WorkService {
       // to ignore the user's click.
       this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
       return { ok: true, delivered: 'next-attempt' };
+    }
+
+    const pendingTakeover = this.pendingTakeovers.get(report.id);
+    if (pendingTakeover) {
+      clearTimeout(pendingTakeover.timer);
+      pendingTakeover.cleanupAbort?.();
+      this.pendingTakeovers.delete(report.id);
+      this.threads.markReportRead(report.id);
+      this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
+      this.repository.addStep(task.id, allow ? '你完成了浏览器接管' : '你取消了浏览器接管');
+      if (task.threadId) this.threads.setState(task.threadId, 'running');
+      const updated = this.repository.getTask(task.id);
+      if (updated) this.emit(updated);
+      pendingTakeover.resolve({
+        completed: allow,
+        ...(text ? { note: text } : {}),
+      });
+      return { ok: true, delivered: 'live' };
     }
 
     if (task.status !== 'open' && task.status !== 'running') {
@@ -1699,6 +1928,13 @@ export class WorkService {
 
   dispose = async (): Promise<void> => {
     this.listeners.clear();
+    for (const [reportId, takeover] of [...this.pendingTakeovers.entries()]) {
+      clearTimeout(takeover.timer);
+      takeover.cleanupAbort?.();
+      this.pendingTakeovers.delete(reportId);
+      this.deps.onApprovalResolved?.(reportId, 'denied');
+      takeover.resolve({ completed: false, note: '工作台已关闭' });
+    }
     const context = await getBackgroundContext();
     for (const entry of this.harnesses.values()) {
       await entry.harness.close(context).catch(() => undefined);
@@ -1818,6 +2054,7 @@ export class WorkService {
     const opening = mountMcp({
       servers,
       userDataDir: this.deps.paths.userData,
+      scopeKey: workerId,
       connectServer: (config) => config.name.startsWith('agent_desktop_')
         ? desktop!.connectMcp(workerId)
         : sharedMcpConnection(config),
@@ -1873,7 +2110,7 @@ export class WorkService {
         name: 'coding-tools',
         essential: true,
         available: true,
-        extension: createCodingTools(),
+        extension: createCodingTools({ images: this.imageProcessor }),
       },
     ];
 
@@ -1884,6 +2121,15 @@ export class WorkService {
       ...(this.deps.assistantTools
         ? { extension: createAssistantToolsExtension(this.deps.assistantTools) }
         : { reason: 'assistant-tools-unavailable' }),
+    });
+
+    slots.push({
+      name: 'opc.github',
+      essential: false,
+      available: Boolean(this.deps.channelStore),
+      ...(this.deps.channelStore
+        ? { extension: createGitHubToolsExtension(this.deps.channelStore) }
+        : { reason: 'github-unavailable' }),
     });
 
     // The agent can draw, but only when a usable image provider exists.
@@ -1967,7 +2213,11 @@ export class WorkService {
         name: 'opc.ocr',
         essential: false,
         available: true,
-        extension: createOcrToolExtension({ ocr, defaultRoot: this.deps.paths.workspaceDir }),
+        extension: createOcrToolExtension({
+          ocr,
+          defaultRoot: this.deps.paths.workspaceDir,
+          scopeKey: workerKey,
+        }),
       });
     } else {
       const reason =
@@ -2075,9 +2325,8 @@ export class WorkService {
       slots.push({ name: 'opc.decompose', essential: false, available: false, reason: 'sole-executor' });
     }
 
-    // Skills (`~/.agents/skills`). One extension that contributes a prompt
-    // section plus `read_skill`, so the whole set is one switch in the dossier
-    // and one line per skill in the system prompt.
+    // Built-in OPC skills (`bundled` and `managed`). One extension that
+    // contributes a prompt section plus `read_skill`.
     const skills = this.deps.piSkills;
     if (skills) {
       const enabled = skills.enabled();
@@ -2091,7 +2340,13 @@ export class WorkService {
               name: 'opc.skills',
               essential: false,
               available: true,
-              extension: createSkillsExtension({ skills: () => skills.enabled() }),
+              extension: createSkillsExtension({
+                skills: () => skills.enabled(),
+                hasImageTool: () =>
+                  Boolean(images?.isAvailable()) && isToolActive(policy, 'opc.image', 'generate_image'),
+                hasTtsTool: () =>
+                  Boolean(speech?.isTtsAvailable()) && isToolActive(policy, 'opc.speech', 'text_to_speech'),
+              }),
             }
           : { name: 'opc.skills', essential: false, available: false, reason: 'no-skills' },
       );
@@ -2144,6 +2399,8 @@ export class WorkService {
                 const task = taskId ? this.repository.getTask(taskId) : undefined;
                 return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
               },
+              imageProcessor: this.imageProcessor,
+              requestTakeover: (req) => this.requestBrowserTakeover(req),
               authorize: (tool, title, metadata) => {
                 const taskId = currentTask();
                 if (!taskId) return false;
@@ -2177,7 +2434,9 @@ export class WorkService {
     registry.install(defineExtension({ name: 'opc.work', tasks: [WorkTaskDefinition] }));
     // 动作流（W6）：工具调用 → `task_trace`。装在这里而不是每个工具里，
     // 因为它是"所有调用的旁听者"，不该由哪个工具自己负责。
-    registry.install(createTraceExtension());
+    registry.install(createTraceExtension({ scopeKey: subject.id }));
+    // 上下文卫生：限制单次请求内联历史图片数量与字节预算，防止多轮大图滚雪球拖垮延迟。
+    registry.install(createWorkerContextHygieneExtension());
 
     /*
      * 外部能力（MCP）走槽位装（见 `toolSlots`），所以策略对它一样生效。
@@ -2205,6 +2464,7 @@ export class WorkService {
     for (const slot of slots) if (slot.essential) install(slot);
     registry.install(
       createSandboxExtension({
+        scopeKey: workerKey,
         readOnlyRoots: () => this.runtime.sandboxRoots(),
         windowsShellMode: () => this.deps.shellExecution?.get().windowsMode ?? 'ask',
         authorizeShell: ({ tool, command, cwd }) => {
@@ -2351,8 +2611,13 @@ export class WorkService {
     return this.stack(workerId);
   };
 
-  /** 关掉一个执行体的运行时。注册表在开库时固定，改工具集必须重开。 */
-  private async evictRuntime(workerId: string): Promise<void> {
+  /** 关掉一个执行体的运行时。若它此刻正在跑任务，先记为 dirty，等当前任务收敛后立刻重建，避免半路关闭导致 Harness is closed。 */
+  private async evictRuntime(workerId: string, options?: { force?: boolean }): Promise<void> {
+    if (!options?.force && (runningTaskByWorker.has(workerId) || this.queue.activeTask(workerId))) {
+      this.dirtyHarnesses.add(workerId);
+      return;
+    }
+    this.dirtyHarnesses.delete(workerId);
     // 挂载也要丢：注册表要重建，而挂载是"这个执行体看到的那份目录"——留着它，
     // 设置页改完 `mcp.json` 之后新的服务器不会出现。
     const mountOpening = this.mcpMounts.get(workerId);
@@ -2412,12 +2677,16 @@ export class WorkService {
     });
   }
 
-  private emitTraceProgress(taskId: string, toolName: string, argsDigest: string, ok: boolean | null): void {
+  private emitTraceProgress(
+    taskId: string,
+    toolName: string,
+    argsDigest: string,
+    ok: boolean | null,
+    phase: 'tool_start' | 'tool_end' = 'tool_end',
+    ms?: number,
+    at: number = Date.now(),
+  ): void {
     if (this.progressListeners.size === 0) return;
-    const now = Date.now();
-    const last = this.lastProgressAt.get(taskId) ?? 0;
-    if (now - last < 350) return;
-    this.lastProgressAt.set(taskId, now);
     const task = this.repository.getTask(taskId);
     if (!task?.threadId) return;
     this.emitProgress({
@@ -2426,10 +2695,13 @@ export class WorkService {
       ...(task.workerId ? { workerId: task.workerId } : {}),
       title: task.title,
       toolName,
+      phase,
+      argsDigest,
+      ...(ms === undefined ? {} : { ms }),
       summary: argsDigest ? `${toolName} · ${argsDigest}` : toolName,
       ok,
       state: 'running',
-      at: now,
+      at,
     });
   }
 
@@ -2605,7 +2877,7 @@ export class WorkService {
 
     // 沙箱只放行一个可写根。父任务的工作目录不在里面，所以"写不进去"是执行出来的，
     // 不是叮嘱出来的（读仍然放行）。
-    registerSandboxWorkspace(childId, scratchDir);
+    registerSandboxWorkspace(childId, scratchDir, identity.runtimeKey);
     // UI 顺着这条 details 找得到子会话：不写它，界面上就只有一个"查了一下"的黑盒。
     await api.details({ conversationId: String(childId) }, ctx);
 
@@ -2947,18 +3219,17 @@ export class WorkService {
       {
         models,
         registry,
-        // Compaction thresholds come from Settings → 工作区与压缩, so they follow
-        // the selected model's context window instead of a hard-coded number.
-        settings: this.deps.modelConfig
-          ? {
-              compaction: {
-                enabled: this.deps.modelConfig.getCompaction().enabled,
-                reserveTokens: this.deps.modelConfig.getCompaction().reserveTokens,
-                keepRecentTokens: this.deps.modelConfig.getCompaction().keepRecentTokens,
-                backgroundTokens: this.deps.modelConfig.getCompaction().backgroundTokens,
-              },
-            }
-          : undefined,
+        // Compaction thresholds come from Settings → 工作区与压缩, augmented with per-model
+        // overrides for large-context (e.g. 1M) models so background compaction runs near 90K tokens.
+        settings: () =>
+          this.deps.modelConfig
+            ? {
+                compaction: buildWorkerCompactionSettings(
+                  this.deps.modelConfig.getCompaction(),
+                  this.deps.modelConfig.listProviders(),
+                ),
+              }
+            : undefined,
         // Every tool call runs with the conversation's cwd as the workspace root
         // and the company base environment on its PATH.
         env: ({ cwd }) =>

@@ -9,9 +9,81 @@ import {
 } from '@opc/shared/domain';
 
 const MAX_USER_ATTACHMENT_SCAN_MESSAGES = 20;
-const RECENT_ATTACHMENT_WINDOW = 6;
-const FOLLOW_UP_ATTACHMENT_CUE_RE =
-  /(附件|文件|简历|原件|原文|pdf|docx?|xlsx?|pptx?|图片|截图|发给你|传给你|上传了|已上传|刚才|上面|重试|再试|继续)/i;
+const MAX_CUE_USER_MESSAGE_DISTANCE = 10;
+const GENERIC_ATTACHMENT_STEM_RE =
+  /^(?:pdf|doc|docx|xls|xlsx|ppt|pptx|png|jpg|jpeg|webp|gif|svg|txt|csv|md|json|html|zip|mp3|mp4|file|image|img|photo|pic|test|temp|tmp|output|result|report|draft|final|copy|new|untitled|新建|文件|图片|截图|报告|文档|表格|附件)$/i;
+const NEGATED_ATTACHMENT_CUE_RE =
+  /(?:没有|没|未|不带|不要|别带|无需|不用).{0,10}(?:上传|附件|文件)/i;
+
+const BACK_REF_PREFIX_SOURCE =
+  '(?:(?:刚才|刚刚|上面|前面|之前|上次)(?:传的|发的|上传的|给你的)?(?:那张|那个|那份|这张|这个|这份|那批|这批|那些|这些|的)?|(?:那张|那个|那份|这份|这张|那批|这批)(?:上传的|传的|发的)?)';
+const TYPED_CUE_PATTERNS: readonly {
+  kind: Exclude<AttachmentCueKind, 'any'>;
+  re: RegExp;
+}[] = [
+  { kind: 'image', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:图片|截图|照片|图)`, 'i') },
+  { kind: 'pdf', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}pdf`, 'i') },
+  { kind: 'word', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:docx?|word)`, 'i') },
+  { kind: 'spreadsheet', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:xlsx?|csv|表格|excel)`, 'i') },
+  { kind: 'presentation', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:pptx?|ppt|演示文稿|幻灯片)`, 'i') },
+  { kind: 'document', re: new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:简历|文档)`, 'i') },
+];
+const GENERIC_BACK_REF_RE = new RegExp(`${BACK_REF_PREFIX_SOURCE}(?:文件|材料|资料)`, 'i');
+const GENERIC_UPLOAD_CUE_RE =
+  /(?:(?<!带个|加个|附带)附件|原件|原文|(?:已|已经)?上传(?:了|过|的)|发给你|传给你)/i;
+
+type AttachmentCueKind =
+  | 'any'
+  | 'image'
+  | 'pdf'
+  | 'word'
+  | 'spreadsheet'
+  | 'presentation'
+  | 'document';
+
+function matchExplicitPriorAttachmentCue(text: string): AttachmentCueKind | null {
+  const trimmed = text.trim();
+  if (!trimmed || NEGATED_ATTACHMENT_CUE_RE.test(trimmed)) return null;
+  for (const { kind, re } of TYPED_CUE_PATTERNS) {
+    if (re.test(trimmed)) return kind;
+  }
+  if (GENERIC_BACK_REF_RE.test(trimmed) || GENERIC_UPLOAD_CUE_RE.test(trimmed)) {
+    return 'any';
+  }
+  return null;
+}
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic']);
+const WORD_EXTS = new Set(['.doc', '.docx']);
+const SPREADSHEET_EXTS = new Set(['.xls', '.xlsx', '.xlsm', '.csv', '.tsv', '.ods']);
+const PRESENTATION_EXTS = new Set(['.ppt', '.pptx']);
+const DOCUMENT_EXTS = new Set([
+  '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.csv',
+  '.md', '.txt', '.rtf', '.html', '.pages', '.odt',
+]);
+
+function matchesAttachmentCueKind(
+  attachment: ChatAttachmentRef,
+  kind: AttachmentCueKind,
+): boolean {
+  if (kind === 'any') return true;
+  const ext = path.extname(attachment.name || attachment.path).toLowerCase();
+  const mime = attachment.mimeType?.toLowerCase() ?? '';
+  switch (kind) {
+    case 'image':
+      return IMAGE_EXTS.has(ext) || mime.startsWith('image/');
+    case 'pdf':
+      return ext === '.pdf' || mime === 'application/pdf';
+    case 'word':
+      return WORD_EXTS.has(ext) || mime.includes('wordprocessingml') || mime === 'application/msword';
+    case 'spreadsheet':
+      return SPREADSHEET_EXTS.has(ext) || mime.includes('spreadsheetml') || mime === 'text/csv';
+    case 'presentation':
+      return PRESENTATION_EXTS.has(ext) || mime.includes('presentationml') || mime === 'application/vnd.ms-powerpoint';
+    case 'document':
+      return DOCUMENT_EXTS.has(ext) || mime === 'application/pdf' || mime.includes('wordprocessingml');
+  }
+}
 
 function comparableAttachmentPath(value: string): string {
   const resolved = path.resolve(value);
@@ -41,13 +113,14 @@ function textMentionsAttachment(lowerText: string, name: string): boolean {
   const lowerName = name.toLowerCase();
   if (lowerText.includes(lowerName)) return true;
   const stem = path.posix.basename(lowerName, path.posix.extname(lowerName)).trim();
-  return stem.length >= 2 && lowerText.includes(stem);
+  return stem.length >= 3 && !GENERIC_ATTACHMENT_STEM_RE.test(stem) && lowerText.includes(stem);
 }
 
 /**
  * Re-attaches valid user-uploaded files from earlier messages in the same chat
- * transcript when the current follow-up explicitly names them, uses follow-up/file
- * cues, or closely follows the most recent attachment turn.
+ * transcript when the current follow-up explicitly names them, uses an
+ * unambiguous prior-attachment reference matching the file kind, or immediately
+ * continues an unreplied / captionless upload turn.
  */
 export function referencedConversationUserAttachments(input: {
   text: string;
@@ -55,7 +128,9 @@ export function referencedConversationUserAttachments(input: {
   hasCurrentAttachments?: boolean;
 }): ChatAttachmentRef[] {
   const lowerText = input.text.trim().toLowerCase();
-  const hasCue = !input.hasCurrentAttachments && FOLLOW_UP_ATTACHMENT_CUE_RE.test(input.text);
+  const cueKind = !input.hasCurrentAttachments
+    ? matchExplicitPriorAttachmentCue(input.text)
+    : null;
   const selected: ChatAttachmentRef[] = [];
   const seen = new Set<string>();
 
@@ -84,15 +159,30 @@ export function referencedConversationUserAttachments(input: {
       .filter((item): item is ChatAttachmentRef => item !== null);
     if (validAttachments.length === 0) continue;
 
-    const isRecent = input.messages.length - 1 - i < RECENT_ATTACHMENT_WINDOW;
-    const includeEntireRecentBatch =
-      !input.hasCurrentAttachments && !capturedLatestBatch && (hasCue || isRecent);
+    const isUnrepliedConsecutiveUserUpload = input.messages
+      .slice(i + 1)
+      .every((later) => later.senderId === 'user');
+    const isImmediateFollowUpToCaptionlessUpload =
+      (message.text ?? '').trim() === '' && input.messages.length - 1 - i <= 2;
+    const allowImmediateBatch =
+      !input.hasCurrentAttachments &&
+      !capturedLatestBatch &&
+      (isUnrepliedConsecutiveUserUpload || isImmediateFollowUpToCaptionlessUpload);
+    const allowCueBatch =
+      !input.hasCurrentAttachments &&
+      !capturedLatestBatch &&
+      cueKind !== null &&
+      scannedUserMessages <= MAX_CUE_USER_MESSAGE_DISTANCE;
     if (!capturedLatestBatch) {
       capturedLatestBatch = true;
     }
 
     for (const attachment of validAttachments) {
-      if (includeEntireRecentBatch || textMentionsAttachment(lowerText, attachment.name)) {
+      if (
+        allowImmediateBatch ||
+        (allowCueBatch && matchesAttachmentCueKind(attachment, cueKind)) ||
+        textMentionsAttachment(lowerText, attachment.name)
+      ) {
         pushUnique(attachment);
       }
     }

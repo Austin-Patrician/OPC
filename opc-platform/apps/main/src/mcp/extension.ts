@@ -72,6 +72,8 @@ export async function mountMcp(input: {
   shouldCloseConnection?: (config: McpServerConfig) => boolean;
   autoApproveServers?: readonly string[];
   userDataDir?: string;
+  /** Isolates approval bridge lookups per worker/runtime SQLite file. */
+  scopeKey?: string;
   /**
    * 服务器宣布工具变了之后，重新造好的那一份扩展交给它去**就地替换**。
    *
@@ -196,7 +198,7 @@ export async function mountMcp(input: {
       })
       .join('\n');
 
-    const approval = approvalHook(gated);
+    const approval = approvalHook(gated, input.scopeKey);
     return defineExtension({
       name: 'opc.mcp',
       tools,

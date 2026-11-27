@@ -1,5 +1,5 @@
-import { memo, useEffect, useState, type ComponentProps } from 'react';
-import { Check, Download, Eye, RotateCcw, Send } from 'lucide-react';
+import { memo, useEffect, useId, useRef, useState, type ComponentProps } from 'react';
+import { Check, Download, Eye, Maximize2, RefreshCw, RotateCcw, Send, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from 'react-i18next';
 import remarkGfm from 'remark-gfm';
@@ -13,6 +13,7 @@ import { getFileIcon } from '@/shared/file-icon/file-icons';
 import { openDocPreview } from '@/shared/model/docPreviewStore';
 import { imageAspectCache, mediaUrlCache } from '../lib/renderCache';
 import { remarkChatEntities, transformMarkdownUrl } from '../lib/remarkChatEntities';
+import { remarkGuardInlineMath } from '../lib/remarkGuardInlineMath';
 import { containsExternalVegaDataUrl } from '../lib/vegaSpec';
 import {
   CodeBlock,
@@ -26,10 +27,20 @@ import {
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral' });
 
 type MarkdownComponents = ComponentProps<typeof ReactMarkdown>['components'];
+type RemarkPlugins = ComponentProps<typeof ReactMarkdown>['remarkPlugins'];
+type RehypePlugins = ComponentProps<typeof ReactMarkdown>['rehypePlugins'];
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkChatEntities];
-const REHYPE_PLUGINS_FULL = [rehypeKatex, rehypeHighlight];
-const REHYPE_PLUGINS_STREAMING = [rehypeKatex];
+const REMARK_PLUGINS: RemarkPlugins = [
+  remarkGfm,
+  remarkMath,
+  remarkGuardInlineMath,
+  remarkChatEntities,
+];
+const REHYPE_PLUGINS_FULL: RehypePlugins = [
+  [rehypeKatex, { strict: 'ignore' }],
+  rehypeHighlight,
+];
+const REHYPE_PLUGINS_STREAMING: RehypePlugins = [[rehypeKatex, { strict: 'ignore' }]];
 
 const BASE_MARKDOWN_COMPONENTS: MarkdownComponents = {
   a: (props) => <MarkdownAnchor {...props} />,
@@ -163,7 +174,8 @@ const ContentBlock = memo(function ContentBlock({
     return () => { active = false; };
   }, [block, mediaCacheKey]);
   if (block.type === 'approval') {
-    const answer = async (allow: boolean, explicitScope?: ApprovalPermitScope) => {
+    const isBrowserTakeover = block.browser?.action === 'takeover';
+    const answer = async (allow: boolean, explicitScope?: ApprovalPermitScope, customText?: string) => {
       if (approvalState !== 'pending' || approvalSubmitting) return;
       setApprovalError(null);
       setApprovalSubmitting(true);
@@ -171,11 +183,15 @@ const ContentBlock = memo(function ContentBlock({
         const bridge = window.opc;
         if (!bridge) throw new Error('桌面桥接不可用');
         const resolvedScope: ApprovalPermitScope | undefined = allow
-          ? (block.shell ? (explicitScope ?? (taskAutoAllow ? 'task' : 'once')) : 'task')
+          ? (isBrowserTakeover
+              ? 'once'
+              : block.shell
+                ? (explicitScope ?? (taskAutoAllow ? 'task' : 'once'))
+                : 'task')
           : undefined;
         await bridge.threads.answer({
           reportId: block.reportId,
-          text: allow ? '允许' : '不允许，请换一种方案',
+          text: customText?.trim() || (allow ? '允许' : '不允许，请换一种方案'),
           allow,
           ...(resolvedScope ? { scope: resolvedScope } : {}),
         });
@@ -196,6 +212,18 @@ const ContentBlock = memo(function ContentBlock({
     // This guard also prevents a stale snapshot or the local post-submit state
     // from briefly rendering an "已允许/已拒绝" card.
     if (approvalState !== 'pending') return null;
+
+    if (isBrowserTakeover) {
+      return (
+        <BrowserTakeoverCard
+          block={block}
+          approvalSubmitting={approvalSubmitting}
+          approvalError={approvalError}
+          onAnswer={answer}
+        />
+      );
+    }
+
     return (
       <section className="buddy-approval relative my-1.5 w-full max-w-[41.25rem] overflow-hidden rounded-2xl border border-line bg-surface text-sm text-ink shadow-card transition-[border-color,box-shadow,transform] duration-200 motion-safe:animate-[buddy-approval-in_.24s_ease-out]">
         <div className="flex items-start gap-3.5 px-4 py-4 sm:px-5">
@@ -285,6 +313,301 @@ const ContentBlock = memo(function ContentBlock({
   }
   if (block.type === 'video') return <video controls preload="metadata" className="max-h-[28rem] max-w-full rounded-lg" src={src}>{block.title}</video>;
   return <audio controls preload="none" className="max-w-full" src={src}>{block.title}</audio>;
+});
+
+type ApprovalBlock = Extract<ChatContentBlock, { type: 'approval' }>;
+
+const TAKEOVER_KIND_LABELS: Record<string, string> = {
+  login: '登录授权',
+  captcha: '人机验证',
+  registration: '账号注册',
+  payment: '支付确认',
+  other: '人工协助',
+};
+
+const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
+  block,
+  approvalSubmitting,
+  approvalError,
+  onAnswer,
+}: {
+  block: ApprovalBlock;
+  approvalSubmitting: boolean;
+  approvalError: string | null;
+  onAnswer: (allow: boolean, explicitScope?: ApprovalPermitScope, customText?: string) => Promise<void>;
+}) {
+  const [takeoverNote, setTakeoverNote] = useState('');
+  const [previewArtifact, setPreviewArtifact] = useState<{ taskId: string; relPath: string } | null>(
+    block.browser?.screenshot ?? null,
+  );
+  const [currentUrl, setCurrentUrl] = useState<string | undefined>(block.browser?.url);
+  const cacheKey = previewArtifact
+    ? `image:artifact:${previewArtifact.taskId}:${previewArtifact.relPath}`
+    : null;
+  const [previewSrc, setPreviewSrc] = useState<string | null>(() =>
+    cacheKey ? (mediaUrlCache.get(cacheKey) ?? null) : null,
+  );
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const zoomDialogRef = useRef<HTMLDialogElement>(null);
+  const dialogTitleId = useId();
+
+  useEffect(() => {
+    if (!previewArtifact) {
+      setPreviewSrc(null);
+      return undefined;
+    }
+    if (cacheKey) {
+      const cached = mediaUrlCache.get(cacheKey);
+      if (cached) {
+        setPreviewSrc(cached);
+        setPreviewError(null);
+        return undefined;
+      }
+    }
+    setPreviewSrc(null);
+    setPreviewError(null);
+    let active = true;
+    const bridge = window.opc?.chatMedia;
+    if (!bridge) {
+      setPreviewError('当前环境暂不支持图片预览');
+      return undefined;
+    }
+    void bridge
+      .register({ kind: 'image', taskId: previewArtifact.taskId, relPath: previewArtifact.relPath })
+      .then((result) => {
+        if (!active) return;
+        if (result.ok && result.url) {
+          if (cacheKey) mediaUrlCache.set(cacheKey, result.url);
+          setPreviewSrc(result.url);
+          setPreviewError(null);
+        } else {
+          setPreviewError(result.error || '页面截图加载失败，可点击刷新重试');
+        }
+      })
+      .catch(() => {
+        if (active) setPreviewError('页面截图加载失败，可点击刷新重试');
+      });
+    return () => {
+      active = false;
+    };
+  }, [cacheKey, previewArtifact]);
+
+  useEffect(() => {
+    const dialog = zoomDialogRef.current;
+    if (!dialog) return;
+    if (zoomOpen && !dialog.open) {
+      dialog.showModal();
+    } else if (!zoomOpen && dialog.open) {
+      dialog.close();
+    }
+  }, [zoomOpen]);
+
+  const refreshPreview = async () => {
+    const browserBridge = window.opc?.browser;
+    if (!browserBridge || refreshing || approvalSubmitting) return;
+    setRefreshing(true);
+    setPreviewError(null);
+    try {
+      const res = await browserBridge.capturePreview(block.taskId, block.browser?.screenshotSelector);
+      if (!res.ok || !res.relPath) {
+        setPreviewError(res.error || '未能截取到当前浏览器画面');
+        return;
+      }
+      setPreviewArtifact({ taskId: res.taskId ?? block.taskId, relPath: res.relPath });
+      if (res.url) setCurrentUrl(res.url);
+    } catch (caught) {
+      setPreviewError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const kindLabel = TAKEOVER_KIND_LABELS[block.browser?.kind ?? 'other'] ?? '人工协助';
+  const instructions = block.browser?.instructions || block.body;
+  const hasPreviewArea = Boolean(previewArtifact || previewError);
+
+  return (
+    <section className="buddy-approval relative my-1.5 w-full max-w-[41.25rem] overflow-hidden rounded-2xl border border-accent/35 bg-surface text-sm text-ink shadow-card transition-[border-color,box-shadow,transform] duration-200 motion-safe:animate-[buddy-approval-in_.24s_ease-out]">
+      <div className="flex items-start gap-3.5 px-4 py-4 sm:px-5">
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold tracking-[.12em] text-accent-ink uppercase">
+            <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
+            <span>浏览器人工接管</span>
+            <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] tracking-normal text-accent-ink normal-case">
+              {kindLabel}
+            </span>
+          </div>
+          <h3 className="text-[14px] leading-5 font-semibold tracking-[-.01em] text-ink">
+            {block.title.replace(/^需要你接管浏览器：/, '')}
+          </h3>
+          <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-[1.65] text-ink-secondary">
+            {instructions}
+          </p>
+
+          {hasPreviewArea ? (
+            <div className="mt-2.5 overflow-hidden rounded-xl border border-line bg-surface-muted/40">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-1.5 text-[11px] text-ink-tertiary">
+                <span>当前页面预览 · 可直接扫码或点击放大</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={refreshing || approvalSubmitting}
+                    onClick={() => void refreshPreview()}
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RefreshCw className={`size-3 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+                    <span>{refreshing ? '刷新中…' : '刷新截图'}</span>
+                  </button>
+                  {previewSrc ? (
+                    <button
+                      type="button"
+                      disabled={approvalSubmitting}
+                      onClick={() => setZoomOpen(true)}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-ink transition-colors hover:bg-surface-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Maximize2 className="size-3" aria-hidden="true" />
+                      <span>放大</span>
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {previewError ? (
+                <div className="px-3 py-3 text-[11.5px] text-danger">{previewError}</div>
+              ) : previewSrc ? (
+                <div className="flex justify-center bg-white/95 p-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setZoomOpen(true)}
+                    className="group relative block max-w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    aria-label="放大查看浏览器页面截图"
+                  >
+                    <img
+                      src={previewSrc}
+                      alt="当前浏览器页面预览（支持扫码）"
+                      className="max-h-[18rem] w-auto max-w-full rounded-md object-contain"
+                    />
+                  </button>
+                </div>
+              ) : (
+                <div className="h-36 animate-pulse bg-surface-muted/60" />
+              )}
+            </div>
+          ) : null}
+
+          {currentUrl ? (
+            <p className="mt-2 break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] text-ink-secondary">
+              {currentUrl}
+            </p>
+          ) : null}
+          <input
+            type="text"
+            value={takeoverNote}
+            disabled={approvalSubmitting}
+            onChange={(event) => setTakeoverNote(event.target.value)}
+            placeholder="可选附言（例如：已扫码登录 / 验证码已通过）"
+            className="mt-2.5 w-full rounded-lg border border-line bg-surface-muted px-3 py-1.5 text-[12px] text-ink placeholder:text-ink-quaternary outline-none focus:border-accent"
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface-muted/35 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={approvalSubmitting}
+            onClick={() => {
+              void window.opc?.browser.show(block.taskId);
+            }}
+            className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-surface-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            打开 / 聚焦浏览器
+          </button>
+          {!previewArtifact ? (
+            <button
+              type="button"
+              disabled={refreshing || approvalSubmitting}
+              onClick={() => void refreshPreview()}
+              className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`size-3 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>{refreshing ? '截图中…' : '获取页面截图'}</span>
+            </button>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            disabled={approvalSubmitting}
+            onClick={() => void onAnswer(false, undefined, takeoverNote.trim() || '用户取消浏览器接管')}
+            className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={approvalSubmitting}
+            onClick={() =>
+              void onAnswer(true, 'once', takeoverNote.trim() || '已在真实浏览器中完成操作，请继续')
+            }
+            className="inline-flex items-center rounded-lg bg-[var(--primary-btn-bg)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--primary-btn-text)] transition-[background,transform] hover:bg-[var(--primary-btn-hover)] active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            我已完成，继续执行
+          </button>
+        </div>
+      </div>
+      {approvalError ? (
+        <p role="alert" className="border-t border-danger/25 bg-danger/5 px-5 py-2 text-[11px] text-danger">
+          {approvalError}
+        </p>
+      ) : null}
+
+      <dialog
+        ref={zoomDialogRef}
+        aria-labelledby={dialogTitleId}
+        onCancel={() => setZoomOpen(false)}
+        onClose={() => setZoomOpen(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) setZoomOpen(false);
+        }}
+        className="opc-native-dialog m-auto max-h-[90vh] max-w-[92vw] overflow-hidden rounded-2xl border border-line bg-surface p-0 text-ink shadow-popover"
+      >
+        <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">
+          <h4 id={dialogTitleId} className="text-xs font-medium text-ink-secondary">
+            当前浏览器页面预览（支持直接扫码）
+          </h4>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={refreshing || approvalSubmitting}
+              onClick={() => void refreshPreview()}
+              className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-muted px-2 py-1 text-[11.5px] font-medium text-ink-secondary hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`size-3 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>{refreshing ? '刷新中…' : '刷新截图'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoomOpen(false)}
+              aria-label="关闭预览"
+              className="inline-flex size-7 items-center justify-center rounded-md text-ink-tertiary hover:bg-surface-hover hover:text-ink"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        <div className="flex max-h-[calc(90vh-3.25rem)] items-center justify-center overflow-auto bg-white p-4">
+          {previewSrc ? (
+            <img
+              src={previewSrc}
+              alt="当前浏览器页面大图预览"
+              className="max-h-[78vh] w-auto max-w-full object-contain"
+            />
+          ) : null}
+        </div>
+      </dialog>
+    </section>
+  );
 });
 
 const FileBlock = memo(function FileBlock({ block }: { block: Extract<ChatContentBlock, { type: 'file' }> }) {

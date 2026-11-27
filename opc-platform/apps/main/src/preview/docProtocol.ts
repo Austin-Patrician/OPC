@@ -1,10 +1,29 @@
-import { protocol, type Session } from 'electron';
+import { protocol, type CustomScheme, type Session } from 'electron';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { DOC_ORIGIN, DOC_PDFJS_ORIGIN, DOC_SCHEME, parseByteRange } from './docTypes';
 
 export { DOC_ORIGIN, DOC_PDFJS_ORIGIN, DOC_SCHEME };
+
+export const DOC_CUSTOM_SCHEME: CustomScheme = {
+  scheme: DOC_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+};
+
+export const DOC_CORS_HEADERS: Readonly<Record<string, string>> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+  'Access-Control-Allow-Headers': 'Range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
 
 const PDFJS_MIME: Record<string, string> = {
   '.mjs': 'text/javascript; charset=utf-8',
@@ -28,18 +47,7 @@ export interface DocProtocolOptions {
 
 /** Must run before `app.whenReady()` so `fetch()`, `Range`, and workers work cleanly. */
 export function registerDocScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: DOC_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-      },
-    },
-  ]);
+  protocol.registerSchemesAsPrivileged([DOC_CUSTOM_SCHEME]);
 }
 
 /**
@@ -87,7 +95,7 @@ function streamFileResponse(
   filePath: string,
   mimeType: string,
   rangeHeader: string | null,
-  options: { cacheControl: string; sandboxSvg?: boolean },
+  options: { cacheControl: string; sandboxSvg?: boolean; method?: string },
 ): Response {
   const stat = statSync(filePath);
   const parsedRange = parseByteRange(rangeHeader, stat.size);
@@ -96,8 +104,8 @@ function streamFileResponse(
     return new Response(null, {
       status: 416,
       headers: {
+        ...DOC_CORS_HEADERS,
         'Content-Range': `bytes */${stat.size}`,
-        'Access-Control-Allow-Origin': '*',
       },
     });
   }
@@ -108,14 +116,12 @@ function streamFileResponse(
   const contentLength = stat.size === 0 ? 0 : end - start + 1;
 
   const headers = new Headers({
+    ...DOC_CORS_HEADERS,
     'Content-Type': mimeType,
     'Content-Length': String(contentLength),
     'Accept-Ranges': 'bytes',
     'Cache-Control': options.cacheControl,
     'X-Content-Type-Options': 'nosniff',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
-    'Cross-Origin-Resource-Policy': 'cross-origin',
   });
 
   if (isPartial) {
@@ -123,6 +129,10 @@ function streamFileResponse(
   }
   if (options.sandboxSvg && (mimeType === 'image/svg+xml' || mimeType.startsWith('text/html'))) {
     headers.set('Content-Security-Policy', "sandbox; default-src 'none'");
+  }
+
+  if (options.method === 'HEAD') {
+    return new Response(null, { status: isPartial ? 206 : 200, headers });
   }
 
   if (stat.size === 0) {
@@ -141,39 +151,47 @@ export function handleDocProtocol(targetSession: Session, options: DocProtocolOp
   const assetsRoot = path.resolve(options.pdfjsAssetsDir);
 
   targetSession.protocol.handle(DOC_SCHEME, async (request) => {
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: DOC_CORS_HEADERS });
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return new Response('Method Not Allowed', { status: 405, headers: DOC_CORS_HEADERS });
+    }
+
     try {
       const url = new URL(request.url);
 
       if (url.hostname === 'pdfjs') {
         const assetFile = resolvePdfjsAssetFile(assetsRoot, url.pathname);
-        if (!assetFile) return new Response('not found', { status: 404 });
+        if (!assetFile) return new Response('not found', { status: 404, headers: DOC_CORS_HEADERS });
         const ext = path.extname(assetFile).toLowerCase();
         const mime = PDFJS_MIME[ext] ?? 'application/octet-stream';
         return streamFileResponse(assetFile, mime, request.headers.get('range'), {
           cacheControl: 'public, max-age=3600',
+          method: request.method,
         });
       }
 
       if (url.hostname === 'asset') {
         const sessionId = decodeURIComponent(url.pathname.slice(1));
         if (!sessionId || sessionId.includes('/')) {
-          return new Response('forbidden', { status: 403 });
+          return new Response('forbidden', { status: 403, headers: DOC_CORS_HEADERS });
         }
         const resolved = options.resolveSessionFile(sessionId);
         if (!resolved || !existsSync(resolved.filePath) || !statSync(resolved.filePath).isFile()) {
-          return new Response('not found', { status: 404 });
+          return new Response('not found', { status: 404, headers: DOC_CORS_HEADERS });
         }
         return streamFileResponse(
           resolved.filePath,
           resolved.mimeType,
           request.headers.get('range'),
-          { cacheControl: 'no-store', sandboxSvg: true },
+          { cacheControl: 'no-store', sandboxSvg: true, method: request.method },
         );
       }
 
-      return new Response('not found', { status: 404 });
+      return new Response('not found', { status: 404, headers: DOC_CORS_HEADERS });
     } catch {
-      return new Response('document unavailable', { status: 400 });
+      return new Response('document unavailable', { status: 400, headers: DOC_CORS_HEADERS });
     }
   });
 }

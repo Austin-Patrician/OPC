@@ -188,8 +188,9 @@ export class ObservatoryService {
         (a, b) => a.createdAt - b.createdAt,
       );
       const worker =
-        (latestTask ? workerById.get(latestTask.assigneeId) : undefined) ??
+        (latestTask?.workerId ? workerById.get(latestTask.workerId) : undefined) ??
         workerByThread.get(thread.id) ??
+        (latestTask ? workerById.get(latestTask.assigneeId) : undefined) ??
         null;
       const reports = this.deps.threads.listReportsOf(thread.id);
       const childTasks = latestTask ? (childrenByParent.get(latestTask.id) ?? []) : [];
@@ -321,7 +322,11 @@ export class ObservatoryService {
       childTasks: children,
     });
 
-    const worker = this.deps.threads.listAllWorkers().find((w) => w.id === task.assigneeId) ?? null;
+    const allWorkers = this.deps.threads.listAllWorkers();
+    const worker =
+      (task.workerId ? allWorkers.find((w) => w.id === task.workerId) : undefined) ??
+      allWorkers.find((w) => w.id === task.assigneeId) ??
+      null;
     const workspaceCandidate = resolveSafeWorkspacePath(
       this.deps.workspaceRoot,
       task.workspaceRelPath,

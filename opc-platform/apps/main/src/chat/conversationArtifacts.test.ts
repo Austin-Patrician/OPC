@@ -139,8 +139,19 @@ function userMessage(
   };
 }
 
+function assistantMessage(id: string, text: string): Message {
+  return {
+    id,
+    kind: 'text',
+    senderId: 'router',
+    senderName: '助手',
+    timestamp: '12:01',
+    text,
+  };
+}
+
 describe('conversation user attachment references', () => {
-  it('carries over prior user attachments on explicit filename/stem mention, follow-up cues, or recent turns', () => {
+  it('carries over prior user attachments on explicit filename/stem mention, explicit cues, or consecutive unreplied turns', () => {
     const folder = root();
     const resumePath = path.join(folder, 'Austin_Resume_EN.pdf');
     writeFileSync(resumePath, '%PDF-1.4 resume');
@@ -163,7 +174,7 @@ describe('conversation user attachment references', () => {
       availability: 'available',
     };
 
-    // 1. Recent turn carryover (within 6 messages) even without repeating filename
+    // 1. Consecutive unreplied user follow-up carries over immediately prior upload
     const recentRefs = referencedConversationUserAttachments({
       text: '帮我翻一下',
       messages: [userMessage('m-1', '上传了简历', [att, deletedAtt])],
@@ -171,11 +182,15 @@ describe('conversation user attachment references', () => {
     expect(recentRefs).toHaveLength(1);
     expect(recentRefs[0]?.name).toBe('Austin_Resume_EN.pdf');
 
-    // 2. Old history outside 6-message window: carried over when follow-up cue or filename/stem is mentioned
+    // 2. Old history after replies: carried over when explicit upload cue or filename/stem is mentioned
     const filler: Message[] = Array.from({ length: 8 }, (_, idx) =>
       userMessage(`filler-${idx}`, `闲聊 ${idx}`),
     );
-    const oldHistory = [userMessage('m-old', '之前发过', [att]), ...filler];
+    const oldHistory = [
+      userMessage('m-old', '之前发过', [att]),
+      assistantMessage('a-old', '已收到，帮你处理完成。'),
+      ...filler,
+    ];
 
     expect(
       referencedConversationUserAttachments({
@@ -198,5 +213,136 @@ describe('conversation user attachment references', () => {
         messages: oldHistory,
       }),
     ).toEqual([]);
+  });
+
+  it('does not leak historical resume PDF into unrelated new PPT or image requests', () => {
+    const folder = root();
+    const resumePath = path.join(folder, '【Senior .NET Engineer_上海 30-50K】张浮生 9年.pdf');
+    writeFileSync(resumePath, '%PDF-1.4 resume');
+    const resumeAtt: ChatAttachmentRef = {
+      id: 'att-resume',
+      name: '【Senior .NET Engineer_上海 30-50K】张浮生 9年.pdf',
+      path: resumePath,
+      size: 15,
+      source: 'file',
+      availability: 'available',
+    };
+    const settledHistory: Message[] = [
+      userMessage('u-1', '帮我把简历翻译成英文', [resumeAtt]),
+      assistantMessage('a-1', '英文简历已生成并保存。'),
+      userMessage('u-2', '生成一个可爱的鲸鱼娘的三视图'),
+      assistantMessage('a-2', '鲸鱼娘三视图已生成。'),
+    ];
+
+    expect(
+      referencedConversationUserAttachments({
+        text: '再给我做一个PPT, 5页，报告的内容是推荐大家订阅Gemini  Pro模型，最新比较好用，黑五性价比也高',
+        messages: settledHistory,
+      }),
+    ).toEqual([]);
+
+    // Even immediately after the assistant reply to the upload turn, unrelated prompts must not inherit it.
+    const immediatelyAfterUploadTurn: Message[] = [
+      userMessage('u-1', '帮我把简历翻译成英文', [resumeAtt]),
+      assistantMessage('a-1', '英文简历已生成并保存。'),
+    ];
+    for (const prompt of [
+      '生成一个可爱的鲸鱼娘的三视图',
+      '帮我导出一个 PDF 报告',
+      '继续',
+      '重试',
+    ]) {
+      expect(
+        referencedConversationUserAttachments({
+          text: prompt,
+          messages: immediatelyAfterUploadTurn,
+        }),
+      ).toEqual([]);
+    }
+  });
+
+  it('enforces type-aware deictic cues, negated mentions, generic stem guard, and captionless follow-up', () => {
+    const folder = root();
+    const pdfPath = path.join(folder, 'resume.pdf');
+    const pngPath = path.join(folder, 'whale_girl.png');
+    const pptPath = path.join(folder, 'ppt.pptx');
+    writeFileSync(pdfPath, '%PDF-1.4');
+    writeFileSync(pngPath, 'png');
+    writeFileSync(pptPath, 'pptx');
+
+    const pdfAtt: ChatAttachmentRef = {
+      id: 'att-pdf',
+      name: 'resume.pdf',
+      path: pdfPath,
+      size: 8,
+      mimeType: 'application/pdf',
+      source: 'file',
+      availability: 'available',
+    };
+    const pngAtt: ChatAttachmentRef = {
+      id: 'att-png',
+      name: 'whale_girl.png',
+      path: pngPath,
+      size: 3,
+      mimeType: 'image/png',
+      source: 'file',
+      availability: 'available',
+    };
+    const genericPptAtt: ChatAttachmentRef = {
+      id: 'att-ppt',
+      name: 'ppt.pptx',
+      path: pptPath,
+      size: 4,
+      source: 'file',
+      availability: 'available',
+    };
+
+    // Cross-type deictic cue isolation
+    expect(
+      referencedConversationUserAttachments({
+        text: '把刚才那张图片改一下背景',
+        messages: [userMessage('u-1', '翻译这个PDF', [pdfAtt]), assistantMessage('a-1', '好的')],
+      }),
+    ).toEqual([]);
+    expect(
+      referencedConversationUserAttachments({
+        text: '把刚才那张图片改一下背景',
+        messages: [userMessage('u-1', '看下这张图', [pngAtt]), assistantMessage('a-1', '好的')],
+      }).map((item) => item.name),
+    ).toEqual(['whale_girl.png']);
+
+    // Negated mentions never trigger carryover
+    expect(
+      referencedConversationUserAttachments({
+        text: '我没有在对话中上传附件，不要带附件',
+        messages: [userMessage('u-1', '看下这张图', [pdfAtt]), assistantMessage('a-1', '好的')],
+      }),
+    ).toEqual([]);
+
+    // Generic stem "ppt" must not match "做一个PPT", whereas exact "ppt.pptx" does
+    const pptHistory = [userMessage('u-1', '先看下', [genericPptAtt]), assistantMessage('a-1', '看过了')];
+    expect(
+      referencedConversationUserAttachments({
+        text: '再给我做一个PPT',
+        messages: pptHistory,
+      }),
+    ).toEqual([]);
+    expect(
+      referencedConversationUserAttachments({
+        text: '修改 ppt.pptx 里的第三页',
+        messages: pptHistory,
+      }).map((item) => item.name),
+    ).toEqual(['ppt.pptx']);
+
+    // Captionless upload + 1 assistant clarification + immediate answer still carries over
+    expect(
+      referencedConversationUserAttachments({
+        text: '帮我翻译成中文',
+        messages: [
+          userMessage('u-1', '', [pdfAtt]),
+          assistantMessage('a-1', '你希望我如何处理这份文件？'),
+        ],
+      }).map((item) => item.name),
+    ).toEqual(['resume.pdf']);
   });
 });

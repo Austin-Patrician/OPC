@@ -78,14 +78,31 @@ describe('generate_image tool', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('keeps the file flat even when the model asks for a path', async () => {
-    const { result, writes } = runTool(
+  it('preserves safe workspace-relative subdirectories and blocks traversal or absolute paths', async () => {
+    const { result: nestedResult, writes: nestedWrites } = runTool(
       async () => ({ ok: true, bytes: new Uint8Array([9]), model: 'm1' }),
-      '../../etc/passwd',
+      'output/whale_girl_turnaround.png',
     );
-    await result;
-    // Directories are stripped and a missing extension is completed.
-    expect(writes[0]?.path).toBe('passwd.png');
+    const nested = await nestedResult;
+    expect(nested.isError).toBeUndefined();
+    expect(nestedWrites).toEqual([{ path: 'output/whale_girl_turnaround.png', bytes: 1 }]);
+
+    const { result: directRel, writes: relWrites } = runTool(
+      async () => ({ ok: true, bytes: new Uint8Array([9]), model: 'm1' }),
+      './work/ppt/demo/images/cover',
+    );
+    await directRel;
+    expect(relWrites).toEqual([{ path: 'work/ppt/demo/images/cover.png', bytes: 1 }]);
+
+    for (const badPath of ['../../etc/passwd', '/etc/passwd', 'C:\\Windows\\evil.png']) {
+      const { result, writes } = runTool(
+        async () => ({ ok: true, bytes: new Uint8Array([9]), model: 'm1' }),
+        badPath,
+      );
+      const output = await result;
+      expect(output.isError).toBe(true);
+      expect(writes).toEqual([]);
+    }
   });
 
   it('returns an error result instead of writing when generation fails', async () => {

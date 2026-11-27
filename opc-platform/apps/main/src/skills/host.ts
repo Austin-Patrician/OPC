@@ -1,20 +1,20 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { PiSkillCatalog, PiSkillView } from '@opc/shared/ipc';
 import { scanSkills, type ScanSkillsResult, type ScannedSkill } from './scanner';
 
 /**
- * The skills OPC found on this machine, and which ones you turned off.
+ * OPC's curated built-in skills catalog (`bundled` and `managed`), and which ones
+ * the user turned off.
  *
- * There is no trust gate here, on purpose: a skill is Markdown. Reading it can
- * only cost prompt tokens, never run code. What *does* run code is a script the
- * skill tells the agent to call, and that goes through `bash` like everything
- * else — sandboxed, counted, and visible in the transcript.
+ * There is no trust gate here, on purpose: a skill is Markdown shipped with OPC.
+ * Reading it can only cost prompt tokens, never run code. What *does* run code
+ * is a script the skill tells the agent to call, and that goes through `bash`
+ * like everything else — sandboxed, counted, and visible in the transcript.
  *
- * The store keeps **disabled** ids rather than enabled ones, so a skill the user
- * installs later (with `npx skills add`, or by dropping a folder) is live on the
- * next request instead of silently ignored.
+ * External `~/.agents/skills` and `.agents/skills` folders are intentionally
+ * NOT scanned so third-party agent skills cannot conflict with OPC's curated
+ * workflows.
  */
 
 interface Store {
@@ -25,11 +25,12 @@ interface Store {
 
 export interface PiSkillHostOptions {
   userDataDir: string;
+  /** Legacy unused options kept optional for test/caller compatibility. */
   homeDir?: string;
   projectDir?: string;
-  /** Optional app-bundled zero-dependency skills directory (`resources/skills`). */
+  /** App-bundled zero-dependency skills directory (`resources/skills`). */
   bundledDir?: string;
-  /** Optional app-managed skill packs directory (`<userData>/skills-managed`). */
+  /** App-managed skill packs directory (`<userData>/skills-managed`). */
   managedDir?: string;
   scan?: typeof scanSkills;
 }
@@ -42,8 +43,6 @@ const DESCRIPTION_LIMIT = 300;
 
 export class PiSkillHost {
   private readonly storeFile: string;
-  private readonly homeDir: string;
-  private readonly projectDir: string;
   private readonly bundledDir?: string;
   private readonly managedDir?: string;
   private readonly scanFn: typeof scanSkills;
@@ -53,8 +52,6 @@ export class PiSkillHost {
 
   constructor(options: PiSkillHostOptions) {
     this.storeFile = path.join(options.userDataDir, 'pi-skills.json');
-    this.homeDir = options.homeDir ?? os.homedir();
-    this.projectDir = options.projectDir ?? process.cwd();
     this.bundledDir = options.bundledDir;
     this.managedDir = options.managedDir;
     this.scanFn = options.scan ?? scanSkills;
@@ -100,8 +97,6 @@ export class PiSkillHost {
 
   private scan(): ScanSkillsResult {
     const result = this.scanFn({
-      homeDir: this.homeDir,
-      projectDir: this.projectDir,
       ...(this.bundledDir ? { bundledDir: this.bundledDir } : {}),
       ...(this.managedDir ? { managedDir: this.managedDir } : {}),
     });
@@ -127,6 +122,9 @@ export class PiSkillHost {
     return {
       id: skill.id,
       name: skill.name,
+      ...(skill.title ? { title: skill.title } : {}),
+      ...(skill.summary ? { summary: skill.summary } : {}),
+      ...(skill.category ? { category: skill.category } : {}),
       description: skill.description,
       scope: skill.scope,
       dir: skill.dir,

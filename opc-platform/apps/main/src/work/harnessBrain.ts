@@ -8,6 +8,13 @@ import type { AcceptanceFeedback, TaskBrain } from './brain';
 import { runtimeIdentityFor, type RuntimeIdentity } from './runtimeIdentity';
 import { registerTraceRecorder, type TraceRecorder } from './trace';
 import { childStatusLabel } from './children';
+import {
+  buildCrossTurnImageEvictionEdits,
+  capWorkerThinkingLevel,
+  estimateActiveContextTokens,
+  PIVOT_COMPACT_TOKENS,
+  WORKER_SOFT_COMPACT_TOKENS,
+} from './contextHygiene';
 import { calculateTokenCost, diffCostBreakdown, diffTokenDetails } from './usage';
 import { normalizeWorkspaceRelPath, stageAttachmentsToWorkspace } from './workspace';
 
@@ -59,7 +66,7 @@ export interface HarnessBrainDeps {
    * 动作级审批（M3）。MCP 的 `beforeTool` 是按扩展装的，而"这条会话在跑哪件活"是按任务
    * 知道的——这条回调是两者之间的桥。不给我就是"这个运行时没有要审批的东西"。
    */
-  registerApproval?: (conversationId: unknown, taskId: string) => () => void;
+  registerApproval?: (conversationId: unknown, taskId: string, scopeKey?: string) => () => void;
   /** Persistent Living Worker conversation lookup by workerId. */
   workerConversation?: (workerId: string) => { conversationId: string | null; lastCleanEntryId: number | null } | null;
   /** Saves a Living Worker's persistent conversation id and optional clean checkpoint entry id. */
@@ -232,7 +239,10 @@ export class HarnessBrain implements TaskBrain {
     const { harness } = await this.deps.harnessFor(runtimeIdentityFor(task));
     const ctx = await this.deps.context();
     const configuredThinking = this.deps.thinking() || 'medium';
-    const effectiveThinkingLevel = feedback?.truncatedNoTools ? 'low' : configuredThinking;
+    const cappedThinking = capWorkerThinkingLevel(configuredThinking, {
+      uncap: process.env.OPC_WORKER_THINKING_UNCAP === '1',
+    });
+    const effectiveThinkingLevel = feedback?.truncatedNoTools ? 'low' : cappedThinking;
 
     const callStartedAt = Date.now();
     const before = await harness.usage(ctx);
@@ -302,9 +312,75 @@ export class HarnessBrain implements TaskBrain {
     if (durableTaskId) this.conversations.set(durableTaskId, conversation);
 
     // Record pre-turn checkpoint entry id so a future pivot can cleanly prune this turn.
+    // On warm reuse, also evict previous turns' inline tool images and compact oversized pivots.
     if (typeof conversation.context === 'function') {
-      const preView = await conversation.context(ctx).catch(() => undefined);
-      const lastEntry = preView?.entries[preView.entries.length - 1];
+      let checkpointView = await conversation.context(ctx).catch(() => undefined);
+      if (reusedWarmConversation && checkpointView) {
+        let contextMutated = false;
+        const evictEdits = buildCrossTurnImageEvictionEdits(checkpointView);
+        if (evictEdits.length > 0 && typeof conversation.submit === 'function') {
+          const eviction = await conversation
+            .submit(
+              {
+                type: 'write',
+                entry: {
+                  kind: 'opc.image_evict',
+                  data: { reason: task.turnMode ?? 'reuse', count: evictEdits.length, at: Date.now() },
+                  edits: evictEdits,
+                },
+              } as never,
+              ctx,
+            )
+            .catch(() => undefined);
+          if (eviction && typeof eviction.wait === 'function') {
+            await eviction.wait(ctx).catch(() => undefined);
+          }
+          contextMutated = true;
+          log(`已从热上下文卸载上一轮 ${evictEdits.length} 张历史图片以降低请求体积`);
+        }
+
+        if (!feedback && typeof conversation.compact === 'function') {
+          const estTokens = estimateActiveContextTokens(checkpointView);
+          const shouldCompactPivot =
+            task.turnMode === 'pivot' &&
+            (estTokens >= PIVOT_COMPACT_TOKENS || checkpointView.entries.length >= 24);
+          const shouldCompactAppend =
+            task.turnMode === 'append' && estTokens >= WORKER_SOFT_COMPACT_TOKENS;
+          if (shouldCompactPivot || shouldCompactAppend) {
+            const instructions = shouldCompactPivot
+              ? '保留已核实的事实/数据、工作区文件路径与核心结论，舍弃旧版被推翻的实现细节与调试过程，以便按新方向轻装重做。'
+              : '保留关键结论、当前工作区产物路径和未完成事项，压缩冗长的历史工具输出。';
+            try {
+              const compactTaskId = await conversation.compact(instructions, ctx);
+              if (compactTaskId && typeof harness.waitForTask === 'function') {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                  harness.waitForTask(compactTaskId, ctx).catch(() => undefined),
+                  new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, 45_000);
+                  }),
+                ]).finally(() => {
+                  if (timer !== undefined) clearTimeout(timer);
+                });
+              }
+              contextMutated = true;
+              log(
+                shouldCompactPivot
+                  ? `转向（pivot）前已自动压缩旧上下文（约 ${estTokens} tokens）`
+                  : `上下文已达 ${estTokens} tokens，续跑前已自动压缩历史消息`,
+              );
+            } catch {
+              // Best-effort compaction must never block task execution.
+            }
+          }
+        }
+
+        if (contextMutated) {
+          checkpointView = (await conversation.context(ctx).catch(() => undefined)) ?? checkpointView;
+        }
+      }
+
+      const lastEntry = checkpointView?.entries[checkpointView.entries.length - 1];
       const checkpointId = lastEntry ? Number(lastEntry.id) : null;
       this.deps.onTaskCheckpoint?.(task.id, checkpointId);
     }
@@ -332,9 +408,12 @@ export class HarnessBrain implements TaskBrain {
         }
       : task;
 
-    // The sandbox hook needs to know which directory this conversation may touch.
-    registerSandboxWorkspace(conversation.id, workspaceDir);
-    registerSandboxAttachments(conversation.id, staged);
+    // Scope sandbox, attachments, trace, and approval registrations by the worker's
+    // runtimeKey so concurrent Workers opening separate SQLite DBs with identical
+    // autoincrement conversation IDs (e.g. '14') never cross-contaminate.
+    const scopeKey = runtimeIdentityFor(task).runtimeKey;
+    registerSandboxWorkspace(conversation.id, workspaceDir, scopeKey);
+    registerSandboxAttachments(conversation.id, staged, scopeKey);
 
     // 动作流：从这一刻起，模型每调一个工具都会落一行（`opc.trace` 那个 hook 负责写）。
     // 这里只把"这条会话归哪件任务"挂上去，结束时撤掉。
@@ -347,16 +426,26 @@ export class HarnessBrain implements TaskBrain {
             if (input.kind === 'tool') recordedTools += 1;
             rawRecorder.record(input);
           },
+          ...(rawRecorder.onToolStart
+            ? {
+                onToolStart(input) {
+                  rawRecorder.onToolStart?.(input);
+                },
+              }
+            : {}),
         }
       : null;
-    const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder) : null;
-    const stopApproval = this.deps.registerApproval?.(conversation.id, task.id) ?? null;
+    const stopTrace = recorder ? registerTraceRecorder(conversation.id, recorder, scopeKey) : null;
+    const stopApproval = this.deps.registerApproval?.(conversation.id, task.id, scopeKey) ?? null;
 
     log(
       reusedWarmConversation
         ? `复用热上下文继续 pi 循环（${task.turnMode ?? 'append'}）：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`
         : `交给 pi 循环：${model.providerId}/${model.modelId}（工作区 ${workspaceDir}）`,
     );
+    if (!feedback?.truncatedNoTools && cappedThinking !== configuredThinking.trim().toLowerCase()) {
+      log(`全局思考强度为 ${configuredThinking}，Worker 执行循环自动限制为 ${cappedThinking} 以控制多轮工具调用耗时`);
+    }
     if (feedback) {
       log(`修复上下文：${feedback.reason}`);
       if (feedback.truncatedNoTools) {
@@ -587,6 +676,9 @@ export function buildPrompt(
     '   沙箱会阻断出网，而系统会在沙箱外用真实验收脚本启动并判定。',
     '3. 确认无误后立即结束；如果要求文本回答，把结论放在最终回答里。',
     '4. 若声明了文件输出，请直接写入对应工作区相对路径；写较大文件或脚本时请分步落盘，避免在单次思考中输出过长导致截断。',
+    '5. 最短路径直出：若当前工具清单已有专用生成工具（如 generate_image / generate_video / text_to_speech），直接一步传入目标工作区相对路径（如 output/xxx.png）生成即可；落盘成功后立即结束汇报，不要再 read 大图自检，也不要写额外脚本重复核验或格式转换。',
+    '6. 工具边界与止损：可用工具仅限当前已挂载工具与 tool_search；严禁用 bash 翻查 OPC 程序目录、数据库或扫描本机端口去寻找工具。若缺少所需能力或同一方向连续失败 2 次，立即如实汇报或改换思路，禁止无意义空转。',
+    '7. 合并批量调用、禁止串行空转：彼此独立的多个文件写入（write）、生图（generate_image）或检查命令务必在同一回合并发调用或合并进单个 bash 脚本，禁止把多个文件拆成多轮逐个 write；若确需视觉自检多页成品（如 PPT/PDF 预览），先用脚本把多页拼成 1 张 1600px 宽的 JPEG 拼图再 read 1 次，禁止逐页反复 read 多张高分辨率 PNG。',
   );
 
   /*
@@ -740,7 +832,10 @@ export function buildDeltaPrompt(
     lines.push('', '历史避坑提醒（本次增量修改也请留意）：');
     for (const tip of task.memoryPlaybook) lines.push(`- ${tip}`);
   }
-  lines.push('', '完成后请做必要的离线检查，并在最终回答里简洁说明改动与结果。');
+  lines.push(
+    '',
+    '按最短路径完成改动：多个独立 write / generate_image 请同回合并发调用或合并进单次 bash；专用生成工具落盘后无需 read 大图或重复核验。若确需视觉自检多页预览，先用脚本拼成 1 张 1600px 宽的 JPEG 拼图再调用 1 次 read，禁止逐页反复 read 高分辨率 PNG；最后简洁说明结果。',
+  );
   return lines.join('\n');
 }
 

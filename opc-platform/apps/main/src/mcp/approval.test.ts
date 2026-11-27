@@ -64,6 +64,32 @@ describe('拦截', () => {
     undo();
     expect(driveApproval(hook, call('mcp__fs__write'), 'conv-1')).toBeUndefined();
   });
+
+  it('并发 Worker 使用相同 conversationId 时，按 scopeKey 隔离审批桥', () => {
+    const askedA: string[] = [];
+    const askedB: string[] = [];
+    const undoA = registerApprovalBridge(
+      '14',
+      { taskId: () => 'task-a', hasPermit: () => false, ask: (i) => askedA.push(i.taskId) },
+      'worker-a',
+    );
+    const undoB = registerApprovalBridge(
+      '14',
+      { taskId: () => 'task-b', hasPermit: () => true, ask: (i) => askedB.push(i.taskId) },
+      'worker-b',
+    );
+
+    const hookA = approvalHook(new Map([['mcp__fs__write', '[fs] write_file']]), 'worker-a')!;
+    const hookB = approvalHook(new Map([['mcp__fs__write', '[fs] write_file']]), 'worker-b')!;
+
+    expect(driveApproval(hookA, call('mcp__fs__write'), '14')?.block).toContain('需要他点头');
+    expect(driveApproval(hookB, call('mcp__fs__write'), '14')).toBeUndefined();
+    expect(askedA).toEqual(['task-a']);
+    expect(askedB).toEqual([]);
+
+    undoA();
+    undoB();
+  });
 });
 
 describe('放行条', () => {

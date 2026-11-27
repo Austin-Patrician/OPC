@@ -229,5 +229,66 @@ describe('登记表：hook 怎么找到那个任务的记录器', () => {
     await hooks.afterTool!(call, result, api, {} as never);
     expect(rows).toHaveLength(1);
   });
+
+  it('并发 Worker 使用相同 conversationId 时，按 scopeKey 严格隔离 trace 且互不注销，并实时触发 onToolStart', async () => {
+    const pptRows: Parameters<TraceRecorder['record']>[0][] = [];
+    const whaleRows: Parameters<TraceRecorder['record']>[0][] = [];
+    const startedEvents: Array<{ name: string; argsDigest: string }> = [];
+
+    const pptRecorder: TraceRecorder = {
+      taskId: 'task-ppt',
+      record: (input) => pptRows.push(input),
+      onToolStart: ({ name, argsDigest }) => startedEvents.push({ name, argsDigest }),
+    };
+    const whaleRecorder: TraceRecorder = {
+      taskId: 'task-whale',
+      record: (input) => whaleRows.push(input),
+    };
+
+    const pptHooks = (createTraceExtension({ scopeKey: 'worker-ppt' }).hooks?.[0]?.handlers ?? {}) as ToolHooks;
+    const whaleHooks = (createTraceExtension({ scopeKey: 'worker-whale' }).hooks?.[0]?.handlers ?? {}) as ToolHooks;
+    const api = { conversationId: '14' } as never;
+
+    const undoPpt = registerTraceRecorder('14', pptRecorder, 'worker-ppt');
+    const undoWhale = registerTraceRecorder('14', whaleRecorder, 'worker-whale');
+
+    await pptHooks.beforeTool!({ id: 'c1', name: 'bash', arguments: { command: 'echo ppt' } } as never, api, {} as never);
+    await whaleHooks.beforeTool!(
+      { id: 'c1', name: 'generate_image', arguments: { filename: 'output/whale.png' } } as never,
+      api,
+      {} as never,
+    );
+
+    expect(startedEvents).toEqual([{ name: 'bash', argsDigest: 'echo ppt' }]);
+
+    await whaleHooks.afterTool!(
+      { id: 'c1', name: 'generate_image', arguments: { filename: 'output/whale.png' } } as never,
+      { output: [] } as never,
+      api,
+      {} as never,
+    );
+    await pptHooks.afterTool!(
+      { id: 'c1', name: 'bash', arguments: { command: 'echo ppt' } } as never,
+      { output: [] } as never,
+      api,
+      {} as never,
+    );
+
+    expect(pptRows.map((r) => r.name)).toEqual(['bash']);
+    expect(whaleRows.map((r) => r.name)).toEqual(['generate_image']);
+
+    // Stopping PPT recorder must NOT unregister Whale recorder on same conversationId '14'
+    undoPpt();
+    await whaleHooks.beforeTool!({ id: 'c2', name: 'read', arguments: { path: 'output/whale.png' } } as never, api, {} as never);
+    await whaleHooks.afterTool!(
+      { id: 'c2', name: 'read', arguments: { path: 'output/whale.png' } } as never,
+      { output: [] } as never,
+      api,
+      {} as never,
+    );
+    expect(whaleRows.map((r) => r.name)).toEqual(['generate_image', 'read']);
+
+    undoWhale();
+  });
 });
 

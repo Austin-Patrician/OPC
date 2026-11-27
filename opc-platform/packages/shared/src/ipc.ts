@@ -65,6 +65,11 @@ import type {
   ChannelView,
   DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
+  GitHubRepoListResult,
+  SlackChannelSettingsPatch,
+  TelegramChannelSettingsPatch,
+  WeComChannelSettingsPatch,
+  GitHubChannelSettingsPatch,
 } from "./domain";
 import type { OcrSettings } from "./ocr";
 
@@ -159,7 +164,12 @@ export const IPC = {
     list: "channels:list",
     updateFeishu: "channels:updateFeishu",
     updateDingTalk: "channels:updateDingTalk",
+    updateSlack: "channels:updateSlack",
+    updateWeCom: "channels:updateWeCom",
+    updateTelegram: "channels:updateTelegram",
+    updateGitHub: "channels:updateGitHub",
     testConnection: "channels:testConnection",
+    listGitHubRepos: "channels:listGitHubRepos",
     reconnect: "channels:reconnect",
     approvePairing: "channels:approvePairing",
     rejectPairing: "channels:rejectPairing",
@@ -197,6 +207,9 @@ export const IPC = {
     setSettings: "browser:setSettings",
     show: "browser:show",
     hide: "browser:hide",
+    capturePreview: "browser:capturePreview",
+    openWindow: "browser:openWindow",
+    testConnection: "browser:testConnection",
     resetProfile: "browser:resetProfile",
     changedEvent: "browser:changed",
     installProgressEvent: "browser:installProgress",
@@ -784,6 +797,9 @@ export interface PiSkillView {
   /** Absolute path of the SKILL.md, POSIX-normalized. */
   id: string;
   name: string;
+  title?: string;
+  summary?: string;
+  category?: "office" | "creative";
   description: string;
   scope: PiSkillScope;
   /** Folder holding the skill; its scripts and references live here. */
@@ -803,7 +819,7 @@ export interface PiSkillCatalog {
 }
 
 export interface SkillsBridge {
-  /** Every skill found under `~/.agents/skills` and `.agents/skills`. */
+  /** Every built-in curated skill shipped with OPC (`bundled` and `managed`). */
   list(): Promise<PiSkillCatalog>;
   /** Turns one skill on or off for every agent; no trust gate, a skill is text. */
   setEnabled(id: string, enabled: boolean): Promise<PiSkillCatalog>;
@@ -831,10 +847,12 @@ export interface SkillPackView {
   title: string;
   description: string;
   category: "office";
+  tier?: "core" | "ppt";
   version: string;
   envId: string;
   enabled: boolean;
   ready: boolean;
+  error?: string;
   commands: string[];
   dir: string;
   files: number;
@@ -848,7 +866,7 @@ export interface SkillPackCatalogView {
 }
 
 export interface SkillPackProgress {
-  phase: "venv" | "packages" | "verify" | "sync";
+  phase: "venv" | "packages" | "extract" | "verify" | "sync";
   percent: number;
   message: string;
 }
@@ -950,7 +968,7 @@ export interface RouterBridge {
 }
 
 /**
- * 外部应用渠道（当前内置飞书长连接与钉钉 Stream，后续可扩展 Slack / Telegram 等插件）。
+ * 外部应用渠道（内置飞书、钉钉、Slack、企业微信、Telegram 与 GitHub，后续可扩展更多插件）。
  *
  * 凭证由主进程 `safeStorage` 加密保管；渲染进程只拿到布尔标记，不回传明文密钥。
  */
@@ -958,10 +976,17 @@ export interface ChannelsBridge {
   list(): Promise<ChannelView[]>;
   updateFeishu(patch: FeishuChannelSettingsPatch): Promise<ChannelView[]>;
   updateDingTalk(patch: DingTalkChannelSettingsPatch): Promise<ChannelView[]>;
+  updateSlack(patch: SlackChannelSettingsPatch): Promise<ChannelView[]>;
+  updateWeCom(patch: WeComChannelSettingsPatch): Promise<ChannelView[]>;
+  updateTelegram(patch: TelegramChannelSettingsPatch): Promise<ChannelView[]>;
+  updateGitHub(patch: GitHubChannelSettingsPatch): Promise<ChannelView[]>;
   testConnection(
     channelId: string,
     draft?: ChannelTestDraft,
   ): Promise<ChannelConnectionTestResult>;
+  listGitHubRepos(
+    draft?: Pick<ChannelTestDraft, "token" | "apiBaseUrl">,
+  ): Promise<GitHubRepoListResult>;
   reconnect(channelId: string): Promise<ChannelView[]>;
   approvePairing(requestId: string): Promise<ChannelView[]>;
   rejectPairing(requestId: string): Promise<ChannelView[]>;
@@ -1646,9 +1671,37 @@ export interface McpBridge {
 
 export type BrowserInstallState =
   "uninstalled" | "installing" | "ready" | "disabled" | "error";
+export type BrowserMode = "managed" | "attach" | "headless";
+export type BrowserAttachMethod = "auto-connect" | "cdp";
+export type BrowserInputMode = "human" | "smooth" | "instant";
+export interface DetectedBrowser {
+  id: "chrome" | "edge" | "brave" | "chromium" | "custom";
+  name: string;
+  executablePath: string;
+}
+export interface BrowserConnectionTestResult {
+  ok: boolean;
+  mode: BrowserMode;
+  browserName?: string;
+  cdpUrl?: string;
+  tabCount?: number;
+  message: string;
+}
+export interface BrowserPreviewResult {
+  ok: boolean;
+  taskId?: string;
+  relPath?: string;
+  url?: string;
+  error?: string;
+}
 export interface BrowserStatus {
   installState: BrowserInstallState;
   enabled: boolean;
+  mode: BrowserMode;
+  detectedBrowsers: DetectedBrowser[];
+  activeBrowserName?: string;
+  managedRunning: boolean;
+  cdpPort?: number;
   version?: string;
   binary?: string;
   healthy: boolean;
@@ -1665,6 +1718,13 @@ export interface BrowserInstallProgress {
 }
 export interface BrowserSettings {
   enabled: boolean;
+  mode: BrowserMode;
+  executablePath?: string;
+  attachMethod: BrowserAttachMethod;
+  cdpEndpoint: string;
+  pinTab: boolean;
+  headed: boolean;
+  inputMode: BrowserInputMode;
   allowedDomains: string[];
   blockedDomains: string[];
   allowAllDomains: boolean;
@@ -1683,6 +1743,9 @@ export interface BrowserBridge {
   setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
   show(taskId: string): Promise<void>;
   hide(taskId?: string): Promise<void>;
+  capturePreview(taskId: string, selector?: string): Promise<BrowserPreviewResult>;
+  openWindow(url?: string): Promise<{ ok: boolean; error?: string }>;
+  testConnection(): Promise<BrowserConnectionTestResult>;
   resetProfile(userId?: string): Promise<void>;
   onChanged(listener: (status: BrowserStatus) => void): () => void;
   onInstallProgress(

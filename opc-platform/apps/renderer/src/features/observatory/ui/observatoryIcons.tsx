@@ -26,7 +26,6 @@ import mcpSvg from '@/shared/icons/common-icons/mcp.svg';
 import agentModeSvg from '@/shared/icons/common-icons/agent-mode.svg';
 import emptySvg from '@/shared/icons/common-icons/数据空空如也.svg';
 import errorSvg from '@/shared/icons/common-icons/main-loading-error.svg';
-import presentationSvg from '@/shared/icons/common-icons/presentation.svg';
 
 import webSearchColorSvg from '@/shared/icons/mcp/websearch.svg';
 import firecrawlColorSvg from '@/shared/icons/mcp/firecrawl-color.svg';
@@ -36,19 +35,13 @@ import postgresSvg from '@/shared/icons/mcp/PostgreSQL.svg';
 import feishuSvg from '@/shared/icons/mcp/飞书.svg';
 import dingtalkSvg from '@/shared/icons/mcp/钉钉.svg';
 import wecomSvg from '@/shared/icons/mcp/企业微信.svg';
+import { getFileIconForPath } from '@/shared/file-icon/file-icons';
 
-import wsFilesSvg from '@/shared/icons/workspaces/files.svg';
-import wsReportSvg from '@/shared/icons/workspaces/REPORT.svg';
-import wsSheetsSvg from '@/shared/icons/workspaces/sheets.svg';
-import wsChartsSvg from '@/shared/icons/workspaces/charts.svg';
+export type IconRenderMode = 'mask' | 'color' | 'svg';
 
-export type IconRenderMode = 'mask' | 'color';
-
-export interface ObservatoryVisual {
-  src: string;
-  mode: IconRenderMode;
-  toneClass: string;
-}
+export type ObservatoryVisual =
+  | { src: string; mode: 'mask' | 'color'; toneClass: string }
+  | { svg: string; mode: 'svg'; toneClass?: string };
 
 export const EMPTY_STATE_VISUAL: ObservatoryVisual = {
   src: emptySvg,
@@ -91,10 +84,21 @@ export function ObservatoryIcon({
   size = 15,
   className = '',
 }: {
-  visual: Pick<ObservatoryVisual, 'src' | 'mode' | 'toneClass'>;
+  visual: ObservatoryVisual;
   size?: number;
   className?: string;
 }) {
+  if (visual.mode === 'svg') {
+    return (
+      <span
+        aria-hidden="true"
+        style={{ width: size, height: size }}
+        className={`inline-flex shrink-0 items-center justify-center overflow-hidden [&_svg]:size-full ${visual.toneClass ?? ''} ${className}`}
+        dangerouslySetInnerHTML={{ __html: visual.svg }}
+      />
+    );
+  }
+
   if (visual.mode === 'color') {
     return (
       <img
@@ -264,32 +268,10 @@ export function resolveToolVisual(toolName: string, argsDigest = ''): Observator
   return { src: agentModeSvg, mode: 'mask', toneClass: 'text-ink-secondary' };
 }
 
-/** Resolves an artifact relative path into an icon visual. */
+/** Resolves an artifact relative path into an icon visual matching chat/explorer file icons. */
 export function resolveArtifactVisual(relPath: string): ObservatoryVisual {
-  const lower = relPath.toLowerCase();
-  if (lower.endsWith('.pdf')) {
-    return { src: pdfSvg, mode: 'mask', toneClass: 'text-danger' };
-  }
-  if (lower.endsWith('.docx') || lower.endsWith('.doc')) {
-    return { src: docxSvg, mode: 'mask', toneClass: 'text-accent-ink' };
-  }
-  if (lower.endsWith('.pptx') || lower.endsWith('.ppt')) {
-    return { src: presentationSvg, mode: 'mask', toneClass: 'text-warning' };
-  }
-  if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.csv')) {
-    return { src: wsSheetsSvg, mode: 'color', toneClass: '' };
-  }
-  if (lower.endsWith('.md') || lower.endsWith('.txt') || lower.endsWith('.html')) {
-    return { src: wsReportSvg, mode: 'color', toneClass: '' };
-  }
-  if (
-    lower.endsWith('.png') ||
-    lower.endsWith('.jpg') ||
-    lower.endsWith('.jpeg') ||
-    lower.endsWith('.webp') ||
-    lower.endsWith('.svg')
-  ) {
-    return { src: wsChartsSvg, mode: 'color', toneClass: '' };
-  }
-  return { src: wsFilesSvg, mode: 'color', toneClass: '' };
+  return {
+    svg: getFileIconForPath(relPath),
+    mode: 'svg',
+  };
 }

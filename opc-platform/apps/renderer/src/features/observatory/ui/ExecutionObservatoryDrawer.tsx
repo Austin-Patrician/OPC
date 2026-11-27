@@ -207,6 +207,7 @@ export function ExecutionObservatoryDrawer({
             selectedTaskId={observatory.selectedTaskId}
             selectedThread={observatory.selectedThread}
             taskDetail={observatory.taskDetail}
+            liveTool={observatory.liveToolForSelectedTask}
             loadingDetail={observatory.loadingDetail}
             actionBusy={observatory.actionBusy}
             onSelectThread={observatory.selectThread}

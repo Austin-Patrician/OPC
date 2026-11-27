@@ -43,10 +43,21 @@ export interface ApprovalBridge {
  */
 const bridges = new Map<string, ApprovalBridge>();
 
-export function registerApprovalBridge(conversationId: unknown, bridge: ApprovalBridge): () => void {
-  bridges.set(String(conversationId), bridge);
+function scopedConvKey(conversationId: unknown, scopeKey?: string): string {
+  return scopeKey ? `${scopeKey}:${String(conversationId)}` : String(conversationId);
+}
+
+export function registerApprovalBridge(
+  conversationId: unknown,
+  bridge: ApprovalBridge,
+  scopeKey?: string,
+): () => void {
+  const key = scopedConvKey(conversationId, scopeKey);
+  bridges.set(key, bridge);
   return () => {
-    bridges.delete(String(conversationId));
+    if (bridges.get(key) === bridge) {
+      bridges.delete(key);
+    }
   };
 }
 
@@ -56,7 +67,10 @@ export function registerApprovalBridge(conversationId: unknown, bridge: Approval
  * `gated` 是「工具名 → 给人看的一行」，只在需要审批的工具上出现。空表就不装 hook
  * ——没有要拦的东西时，多一个每次调用都跑的监听没有意义。
  */
-export function approvalHook(gated: ReadonlyMap<string, string>): HookRegistration | null {
+export function approvalHook(
+  gated: ReadonlyMap<string, string>,
+  scopeKey?: string,
+): HookRegistration | null {
   if (gated.size === 0) return null;
 
   return hook(ToolTask, {
@@ -64,7 +78,7 @@ export function approvalHook(gated: ReadonlyMap<string, string>): HookRegistrati
       const title = gated.get(call.name);
       if (!title) return undefined;
 
-      const bridge = bridges.get(String(api.conversationId));
+      const bridge = bridges.get(scopedConvKey(api.conversationId, scopeKey));
       if (!bridge) return undefined;
       const taskId = bridge.taskId();
       if (!taskId) return undefined;

@@ -1,0 +1,17 @@
+{
+  "id": "office-ppt",
+  "name": "ppt-master",
+  "title": "PPT 大师",
+  "description": "生成与修改原生可编辑 PPTX 演示文稿，支持矢量排版、可编辑数据图表、模板风格、自动视觉质检与往返编辑。",
+  "category": "office",
+  "tier": "ppt",
+  "archive": "payload.zip",
+  "version": "6.10.0",
+  "envId": "office-py",
+  "commands": [
+    "generate-pptx",
+    "roundtrip-edit",
+    "svg-quality-check",
+    "pptx-to-svg"
+  ]
+}

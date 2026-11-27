@@ -9,9 +9,14 @@ import type {
   ChatContentBlock,
   DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
+  GitHubChannelSettingsPatch,
+  GitHubRepoListResult,
   MessageChannelMeta,
   RouterResponse,
+  SlackChannelSettingsPatch,
+  TelegramChannelSettingsPatch,
   TriggerReplyTarget,
+  WeComChannelSettingsPatch,
 } from '@opc/shared/domain';
 import type { ThreadRepository } from '../data/threadRepository';
 import { evaluateChannelAccess } from './accessGuard';
@@ -22,6 +27,7 @@ import type {
   ChannelOutboundAttachment,
   ChannelPlugin,
   ChannelThinkingCleanup,
+  ChannelThinkingCleanupReason,
 } from './types';
 
 export interface ChannelChatMirror {
@@ -104,7 +110,7 @@ export class ChannelManager {
     this.started = false;
     for (const entry of this.pendingThinking.values()) {
       clearTimeout(entry.timer);
-      await entry.cleanup().catch(() => undefined);
+      await entry.cleanup('cancelled').catch(() => undefined);
     }
     this.pendingThinking.clear();
     await Promise.all(
@@ -158,6 +164,50 @@ export class ChannelManager {
     return this.listViews();
   }
 
+  async updateSlack(patch: SlackChannelSettingsPatch): Promise<ChannelView[]> {
+    const { connectionChanged } = this.deps.store.updateSlackConfig(patch);
+    const slack = this.plugins.get('slack');
+    if (slack && connectionChanged && this.started) {
+      await slack.start(this.buildPluginContext());
+    }
+    this.emitChanged();
+    return this.listViews();
+  }
+
+  async updateWeCom(patch: WeComChannelSettingsPatch): Promise<ChannelView[]> {
+    const { connectionChanged } = this.deps.store.updateWeComConfig(patch);
+    const wecom = this.plugins.get('wecom');
+    if (wecom && connectionChanged && this.started) {
+      await wecom.start(this.buildPluginContext());
+    }
+    this.emitChanged();
+    return this.listViews();
+  }
+
+  async updateTelegram(patch: TelegramChannelSettingsPatch): Promise<ChannelView[]> {
+    const { connectionChanged } = this.deps.store.updateTelegramConfig(patch);
+    const telegram = this.plugins.get('telegram');
+    if (telegram && connectionChanged && this.started) {
+      await telegram.start(this.buildPluginContext());
+    }
+    this.emitChanged();
+    return this.listViews();
+  }
+
+  async updateGitHub(patch: GitHubChannelSettingsPatch): Promise<ChannelView[]> {
+    const { connectionChanged, watchReposChanged } = this.deps.store.updateGitHubConfig(patch);
+    const github = this.plugins.get('github');
+    if (github && this.started) {
+      if (connectionChanged) {
+        await github.start(this.buildPluginContext());
+      } else if (watchReposChanged) {
+        github.refreshWatchRepos?.();
+      }
+    }
+    this.emitChanged();
+    return this.listViews();
+  }
+
   async testConnection(
     channelId: string,
     draft?: unknown,
@@ -167,6 +217,14 @@ export class ChannelManager {
       return { ok: false, error: `未知渠道: ${channelId}`, latencyMs: 0 };
     }
     return plugin.testConnection(draft);
+  }
+
+  async listGitHubRepos(draft?: unknown): Promise<GitHubRepoListResult> {
+    const github = this.plugins.get('github');
+    if (!github?.listGitHubRepos) {
+      return { ok: false, repos: [], error: 'GitHub 渠道未初始化' };
+    }
+    return github.listGitHubRepos(draft);
   }
 
   async reconnect(channelId: string): Promise<ChannelView[]> {
@@ -182,7 +240,7 @@ export class ChannelManager {
     const approved = this.deps.store.approvePairing(requestId);
     if (approved) {
       const plugin = this.plugins.get(approved.channelId);
-      if (plugin) {
+      if (plugin && !plugin.silentPairing) {
         const address = plugin.formatTargetAddress(approved.chatKind, {
           chatId: approved.chatId,
           senderId: approved.senderId,
@@ -228,24 +286,27 @@ export class ChannelManager {
       .find((t) => t.address === address);
   }
 
-  private async clearThinking(address: string): Promise<void> {
+  private async clearThinking(
+    address: string,
+    reason: ChannelThinkingCleanupReason = 'cancelled',
+  ): Promise<void> {
     const entry = this.pendingThinking.get(address);
     if (!entry) return;
     this.pendingThinking.delete(address);
     clearTimeout(entry.timer);
-    await entry.cleanup().catch(() => undefined);
+    await entry.cleanup(reason).catch(() => undefined);
   }
 
   private async trackThinking(plugin: ChannelPlugin, address: string, messageId: string): Promise<void> {
     if (!plugin.markThinking) return;
-    await this.clearThinking(address);
+    await this.clearThinking(address, 'cancelled');
     const cleanup = await plugin.markThinking(messageId).catch(() => undefined);
     if (!cleanup) return;
     const timer = setTimeout(() => {
       const current = this.pendingThinking.get(address);
       if (current?.cleanup === cleanup) {
         this.pendingThinking.delete(address);
-        void cleanup().catch(() => undefined);
+        void cleanup('timeout').catch(() => undefined);
       }
     }, THINKING_TIMEOUT_MS);
     timer.unref?.();
@@ -282,13 +343,15 @@ export class ChannelManager {
         createdAt: Date.now(),
       });
       if (pairing.isNew) {
-        await plugin
-          .sendMessage({
-            address: message.replyTarget.address,
-            replyToMessageId: message.messageId,
-            text: '👋 你好！这是我第一次收到你的消息。我已在桌面端「设置 → 应用渠道」提交了配对请求，请管理员点击「允许」后再试。',
-          })
-          .catch(() => undefined);
+        if (!plugin.silentPairing) {
+          await plugin
+            .sendMessage({
+              address: message.replyTarget.address,
+              replyToMessageId: message.messageId,
+              text: '👋 你好！这是我第一次收到你的消息。我已在桌面端「设置 → 应用渠道」提交了配对请求，请管理员点击「允许」后再试。',
+            })
+            .catch(() => undefined);
+        }
         this.deps.onPairingRequest?.(pairing.request, plugin.name);
       }
       this.emitChanged();
@@ -300,8 +363,8 @@ export class ChannelManager {
         ? `[${message.chatTitle ?? '群聊'}] ${message.senderName}`
         : message.senderName;
     const enqueued = this.deps.threads.enqueueOnce({
-      source: 'im',
-      kind: 'im.message',
+      source: message.source ?? 'im',
+      kind: message.eventKind ?? 'im.message',
       dedupeKey: `${message.channelId}:${message.messageId}`,
       payload: {
         channelId: message.channelId,
@@ -315,6 +378,7 @@ export class ChannelManager {
         summary: `${summaryPrefix}: ${message.text}`.slice(0, 200),
         attachments: message.attachments,
         replyTarget: message.replyTarget,
+        ...(message.threadKey ? { threadKey: message.threadKey } : {}),
       },
     });
 
@@ -410,7 +474,7 @@ export class ChannelManager {
       return { ok: false, error: `未找到渠道插件: ${target.adapterId}` };
     }
 
-    await this.clearThinking(target.address);
+    await this.clearThinking(target.address, 'replied');
 
     const attachments = this.resolveOutboundAttachments(response.blocks);
     const result = await plugin.sendMessage({

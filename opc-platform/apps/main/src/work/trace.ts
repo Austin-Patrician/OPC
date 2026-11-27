@@ -46,6 +46,7 @@ export interface TraceRecorder {
     ms?: number;
     tokens?: number;
   }): void;
+  onToolStart?(input: { name: string; argsDigest: string; at: number }): void;
 }
 
 /**
@@ -58,6 +59,7 @@ export function createTraceRecorder(deps: {
   repository: TaskRepository;
   taskId: string;
   onRecord?: (trace: TaskTrace) => void;
+  onToolStart?: (input: { name: string; argsDigest: string; at: number }) => void;
 }): TraceRecorder {
   let seq = deps.repository.maxTraceSeq(deps.taskId);
   let warned = false;
@@ -78,6 +80,17 @@ export function createTraceRecorder(deps: {
         }
       }
     },
+    ...(deps.onToolStart
+      ? {
+          onToolStart(input) {
+            try {
+              deps.onToolStart?.(input);
+            } catch {
+              // Best-effort telemetry must never interrupt tool execution.
+            }
+          },
+        }
+      : {}),
   };
 }
 
@@ -120,32 +133,50 @@ const recorders = new Map<string, TraceRecorder>();
 /** `callId` → 开始时间。`afterTool` 拿不到时长，只能自己掐表。 */
 const started = new Map<string, number>();
 
+function scopedConvKey(conversationId: unknown, scopeKey?: string): string {
+  return scopeKey ? `${scopeKey}:${String(conversationId)}` : String(conversationId);
+}
+
 /** 登记一个任务的记录器，返回撤销函数（任务结束必须调，否则表会一直长）。 */
-export function registerTraceRecorder(conversationId: unknown, recorder: TraceRecorder): () => void {
-  recorders.set(String(conversationId), recorder);
+export function registerTraceRecorder(
+  conversationId: unknown,
+  recorder: TraceRecorder,
+  scopeKey?: string,
+): () => void {
+  const key = scopedConvKey(conversationId, scopeKey);
+  recorders.set(key, recorder);
   return () => {
-    recorders.delete(String(conversationId));
+    if (recorders.get(key) === recorder) {
+      recorders.delete(key);
+    }
   };
 }
 
 /**
  * 动作流扩展：`hook(ToolTask, { beforeTool, afterTool })`。
  *
- * 以前这里接的是 pi 的**事件流**（`watchEvents`），1.5.0 把它删了，理由写在它的
- * CHANGELOG 里：渲染状态，而不是用事件把它拼出来。对我们来说 hook 反而更好——
- * 一个工具调用正好一次 `afterTool`，不需要"start 先到、end 后到"的配对，也不会
- * 因为崩在中间而留下一行永远等不到结尾的轨迹。
- *
- * 代价照实说：`afterTool` 不含时长，所以自己掐秒；pi 自己写的错误结果（参数非法、
- * 被拦、被中止）也走这里，所以"工具没跑成"仍然看得见。
+ * `scopeKey` 按工作区/执行体隔离会话键：每个独立的 Worker SQLite 库都可能从同一
+ * 自增 `conversationId`（如 `'14'`）起步，不按 `scopeKey` 隔离会让并发执行体的
+ * 动作流互相覆盖串线。
  */
-export function createTraceExtension(): Extension {
+export function createTraceExtension(options?: { scopeKey?: string }): Extension {
+  const scopeKey = options?.scopeKey;
   return defineExtension({
     name: 'opc.trace',
     hooks: [
       hook(ToolTask, {
         beforeTool: (call: ToolHookCall, api: HookApi) => {
-          started.set(`${api.conversationId}:${call.id}`, Date.now());
+          const convKey = scopedConvKey(api.conversationId, scopeKey);
+          const now = Date.now();
+          started.set(`${convKey}:${call.id}`, now);
+          const recorder = recorders.get(convKey);
+          if (recorder?.onToolStart) {
+            const desktopTool = isDesktopTool(call.name);
+            const args = call.arguments as Record<string, unknown> | undefined;
+            const argsDigest = desktopTool ? digestDesktopArgs(args) : digestArgs(args);
+            const name = call.parent ? `${call.name}（嵌套）` : call.name;
+            recorder.onToolStart({ name, argsDigest, at: now });
+          }
           return undefined;
         },
         afterTool: (
@@ -153,10 +184,11 @@ export function createTraceExtension(): Extension {
           result: ToolExecutionResult,
           api: HookApi,
         ) => {
-          const key = `${api.conversationId}:${call.id}`;
+          const convKey = scopedConvKey(api.conversationId, scopeKey);
+          const key = `${convKey}:${call.id}`;
           const at = started.get(key);
           started.delete(key);
-          const recorder = recorders.get(String(api.conversationId));
+          const recorder = recorders.get(convKey);
           // 没有登记 = 这条会话不是一件正在被记录的任务（子代理、探针、Router）。
           if (!recorder) return undefined;
           recorder.record(

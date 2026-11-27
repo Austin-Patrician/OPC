@@ -9,6 +9,8 @@ const SHELL_TOOLS = new Set(['bash', 'powershell']);
 
 export interface SandboxExtensionOptions {
   enforce?: boolean;
+  /** Isolates `conversationId` workspace lookups per worker/runtime SQLite file. */
+  scopeKey?: string;
   readOnlyRoots?: () => readonly string[];
   /** Windows shell execution policy; defaults to `'ask'` when omitted. */
   windowsShellMode?: () => WindowsShellMode;
@@ -74,7 +76,7 @@ export function createSandboxExtension(options: SandboxExtensionOptions = {}) {
         beforeTool: (call, api) => {
           if (!enforce) return undefined;
 
-          const workspace = workspaceOf(api.conversationId);
+          const workspace = workspaceOf(api.conversationId, options.scopeKey);
           if (!workspace) {
             return { block: '沙箱未就绪：该会话没有登记工作区，拒绝执行工具' };
           }

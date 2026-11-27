@@ -195,7 +195,9 @@ describe('Living Worker：共享线程工作区、热上下文复用与安全转
     expect(createdCount).toBe(1);
     expect(submitted[1]?.content).toContain('加一个 --json 参数');
     expect(submitted[1]?.content).toContain('增量要求');
-    expect(buildDeltaPrompt({ ...turn2, turnMode: 'pivot' })).toContain('调整了方向');
+    const pivotPrompt = buildDeltaPrompt({ ...turn2, turnMode: 'pivot' });
+    expect(pivotPrompt).toContain('调整了方向');
+    expect(pivotPrompt).toContain('1600px 宽的 JPEG 拼图');
 
     // Prune Turn 2 entries (4, 5) back to clean Turn 1 checkpoint (3)
     const pruned = await brain.pruneAfterCheckpoint(
@@ -207,6 +209,109 @@ describe('Living Worker：共享线程工作区、热上下文复用与安全转
     expect(pruned).toBe(2);
     const pruneEntry = submitted.find((s) => s.entry?.kind === 'opc.worker_prune');
     expect(pruneEntry?.entry?.edits).toHaveLength(2);
+  });
+
+  it('复用热上下文时自动卸载上一轮残留图片，并在 pivot 且上下文超阈值时自动压实历史', async () => {
+    const submitted: Array<{ type: string; content?: string; entry?: { kind: string; edits?: unknown[] } }> = [];
+    const compactCalls: string[] = [];
+    const imgToolResult = {
+      role: 'toolResult',
+      toolCallId: 'call-img-1',
+      toolName: 'read',
+      content: [{ type: 'image', data: 'a'.repeat(120_000), mimeType: 'image/png' }],
+      isError: false,
+      timestamp: 2,
+    };
+    const bigAssistant = {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call-img-1', name: 'read', arguments: { path: 'output/page_1.png' } }],
+      usage: { input: 25_000, cacheRead: 5_000, output: 400, cacheWrite: 0, totalTokens: 30_400 },
+      stopReason: 'toolUse',
+      timestamp: 1,
+    };
+    const conversation = {
+      id: 99,
+      configure: async () => undefined,
+      context: async () => ({
+        head: undefined,
+        entries: [
+          { id: 10 as EntryId, kind: 'pi.assistant' },
+          { id: 11 as EntryId, kind: 'pi.tool-result' },
+        ],
+        contributions: [[bigAssistant], [imgToolResult]],
+        messages: [bigAssistant, imgToolResult],
+      }),
+      submit: async (draft: { type: string; content?: string; entry?: { kind: string; edits?: unknown[] } }) => {
+        submitted.push(draft);
+        return {
+          wait: async () => ({ type: draft.type, status: 'done', answer: 12 as EntryId }),
+        };
+      },
+      compact: async (instructions: string) => {
+        compactCalls.push(instructions);
+        return 'compact-task-1';
+      },
+      commit: async (fn: (tx: { entry: () => Promise<{ model: unknown[] }> }) => unknown) =>
+        fn({ entry: async () => ({ model: [{ role: 'assistant', content: [{ type: 'text', text: '完成' }] }] }) }),
+    };
+    const harness = {
+      createConversation: async () => conversation,
+      conversation: async () => conversation,
+      waitForTask: async () => ({ state: { status: 'terminal' } }),
+      usage: async () => ({}),
+    };
+
+    const brain = new HarnessBrain({
+      harnessFor: async () => ({ harness: harness as never }),
+      context: async () => ({}) as never,
+      model: () => ({ providerId: 'p', modelId: 'm' }),
+      thinking: () => 'medium',
+      price: () => ({ inputUsdPerM: 0, outputUsdPerM: 0 }),
+      onTokens: () => undefined,
+      workerConversation: () => ({ conversationId: '99', lastCleanEntryId: 11 }),
+      onWorkerConversation: () => undefined,
+    });
+
+    await brain.execute({
+      task: {
+        id: 't-pivot',
+        title: '重做 PPT',
+        brief: '改高级风格',
+        deliverableSpec: 'output/deck.pptx',
+        contract: { objective: '改高级风格', deliverable: 'output/deck.pptx', outputs: [] },
+        assigneeId: 'tpl-1',
+        assigneeName: '助手',
+        workerId: 'w-pivot-1',
+        turnMode: 'pivot',
+        priority: 'P2',
+        labels: [],
+        blockedBy: [],
+        isReview: false,
+        depth: 0,
+        childCount: 0,
+        estTokens: 1_000,
+        acceptanceCommand: [],
+        acceptanceTemplate: 'http-ok',
+        status: 'running',
+        workspaceRelPath: 'threads/th-pivot',
+        createdAt: 0,
+        updatedAt: 0,
+        artifacts: [],
+        attempts: 1,
+        tokensUsed: 0,
+        costUsd: 0,
+        steps: [],
+      },
+      workspaceDir: dir,
+      log: () => undefined,
+    });
+
+    expect(submitted[0]?.type).toBe('write');
+    expect(submitted[0]?.entry?.kind).toBe('opc.image_evict');
+    expect(submitted[0]?.entry?.edits).toHaveLength(1);
+    expect(compactCalls).toHaveLength(1);
+    expect(compactCalls[0]).toContain('舍弃旧版被推翻的实现细节');
+    expect(submitted[1]?.type).toBe('input');
   });
 });
 
@@ -386,6 +491,67 @@ describe('联动修复 #2：浏览器截图多模态图像块与线程级会话�
     expect(names).toContain('resume-v2.pdf');
 
     await work.abortThread(thread.id, '测试清理');
+    await work.dispose();
+  });
+
+  it('上一轮任务失败且无已验收历史时，continueThread 自动清空脏会话指针并以 initial 模式干净重启，同时保留同一工作区', async () => {
+    const template = threads.createWorker({ name: '画图执行体', template: 'research', skills: [] });
+    const work = new WorkService({
+      db,
+      threads,
+      paths: makePaths() as never,
+      upsertTaskCard: () => undefined,
+    });
+
+    const thread = threads.createThread({ title: '鲸鱼娘三视图', goal: '画三视图' });
+    const first = work.createTask({
+      title: thread.title,
+      contract: {
+        objective: '画一张角色三视图',
+        deliverable: 'output/turnaround.png',
+        outputs: [{ kind: 'file', path: 'output/turnaround.png', description: '三视图' }],
+      },
+      assigneeId: template.id,
+      threadId: thread.id,
+      estTokens: 5_000,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Simulate failed attempt that left a dirty conversation id on the worker.
+    const workerId = first.task.workerId!;
+    threads.setWorkerConversation(workerId, 'conv-dirty-99', 88);
+    tasks.setStatus(first.task.id, 'failed', { finishedAt: Date.now(), error: 'run failed' });
+    threads.setState(thread.id, 'done');
+
+    const retried = await work.continueThread({
+      threadId: thread.id,
+      instruction: '直接调用 generate_image 一次出图',
+      mode: 'append',
+    });
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+
+    const refreshedWorker = threads.getWorker(workerId);
+    expect(refreshedWorker?.conversationId ?? null).toBeNull();
+    expect(refreshedWorker?.lastCleanEntryId ?? null).toBeNull();
+
+    const retryTask = work.getTask(retried.taskId!);
+    expect(retryTask?.turnMode).toBe('initial');
+    expect(retryTask?.workspaceRelPath).toBe(first.task.workspaceRelPath);
+
+    await work.abortThread(thread.id, '测试清理');
+    await work.dispose();
+  });
+
+  it('evictRuntime 在任务运行中延迟到 dirtyHarnesses，不中途关闭 live harness；完成后可正常重建', async () => {
+    const work = new WorkService({
+      db,
+      threads,
+      paths: makePaths() as never,
+      upsertTaskCard: () => undefined,
+    });
+    await expect(work.invalidateAllHarnesses()).resolves.toBeUndefined();
     await work.dispose();
   });
 });

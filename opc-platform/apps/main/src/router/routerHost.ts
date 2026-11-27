@@ -35,6 +35,7 @@ import { createRouterTraceExtension, RouterTraceCollector } from "./routerTrace"
 import { openRouterStorage } from "./routerStorage";
 import { createRouterTools, type LineSummary } from "./routerTools";
 import type { AssistantToolsService } from "../assistant/assistantTools";
+import type { ChannelStore } from "../channels/store";
 import {
   createDecisionGate,
   keepAll,
@@ -171,6 +172,7 @@ export interface RouterHostDeps {
     | readonly RouterWorkerCapability[]
     | Promise<readonly RouterWorkerCapability[]>;
   assistantTools?: AssistantToolsService;
+  channelStore?: ChannelStore;
   usageRepository?: UsageRepository;
   pricingMode?: () => PricingMode;
   schedules?: RouterScheduleRepository;
@@ -610,28 +612,19 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
   };
 
   const openLine = (input: OpenLineInput): OpenLineResult => {
-    const explicit = input.contract.attachments ?? [];
-    const authorized = new Map(
-      activeInputAttachments.map((attachment) => [attachment.path, attachment]),
+    const resolved = resolveOpenLineAttachments(
+      input.contract.attachments,
+      activeInputAttachments,
     );
-    const unauthorized = explicit.find(
-      (attachment) => !authorized.has(attachment.path),
-    );
-    if (unauthorized) {
-      return {
-        ok: false,
-        reason: `附件未获当前输入授权：${unauthorized.name}`,
-      };
-    }
-    const byPath = new Map<string, ChatAttachmentRef>();
-    for (const attachment of [...activeInputAttachments, ...explicit]) {
-      if (!byPath.has(attachment.path)) byPath.set(attachment.path, attachment);
-    }
+    if (!resolved.ok) return resolved;
+    const { attachments: _ignored, ...restContract } = input.contract;
     const result = dispatchLine({
       ...input,
       contract: {
-        ...input.contract,
-        ...(byPath.size > 0 ? { attachments: [...byPath.values()] } : {}),
+        ...restContract,
+        ...(resolved.attachments.length > 0
+          ? { attachments: resolved.attachments }
+          : {}),
       },
     });
     if (result.ok) {
@@ -793,6 +786,7 @@ export function createRouterHost(deps: RouterHostDeps): RouterHost {
         } : undefined,
         channels: deps.channels,
         assistantTools: deps.assistantTools,
+        channelStore: deps.channelStore,
       }),
     );
     return built;
@@ -1213,6 +1207,47 @@ function formatExternalReplyFromBlocks(
   blocks: readonly ChatContentBlock[],
 ): string {
   return formatExternalReply("", blocks);
+}
+
+/**
+ * Resolves `open_line_of_work` contract attachments against the attachments
+ * authorized for the current input batch.
+ *
+ * When `explicit` is omitted (`undefined`), all authorized input attachments
+ * are carried forward so routine single-task dispatches stay ergonomic.
+ * When `explicit` is supplied (including `[]`), only the requested authorized
+ * subset is attached — preventing unrelated background attachments from leaking
+ * into a new worker contract.
+ */
+export function resolveOpenLineAttachments(
+  explicit: readonly ChatAttachmentRef[] | undefined,
+  authorizedInput: readonly ChatAttachmentRef[],
+): { ok: true; attachments: ChatAttachmentRef[] } | { ok: false; reason: string } {
+  const authorized = new Map(
+    authorizedInput.map((attachment) => [attachment.path, attachment]),
+  );
+  if (explicit !== undefined) {
+    const unauthorized = explicit.find(
+      (attachment) => !authorized.has(attachment.path),
+    );
+    if (unauthorized) {
+      return {
+        ok: false,
+        reason: `附件未获当前输入授权：${unauthorized.name}`,
+      };
+    }
+    const deduped = new Map<string, ChatAttachmentRef>();
+    for (const attachment of explicit) {
+      const canonical = authorized.get(attachment.path) ?? attachment;
+      if (!deduped.has(canonical.path)) deduped.set(canonical.path, canonical);
+    }
+    return { ok: true, attachments: [...deduped.values()] };
+  }
+  const deduped = new Map<string, ChatAttachmentRef>();
+  for (const attachment of authorizedInput) {
+    if (!deduped.has(attachment.path)) deduped.set(attachment.path, attachment);
+  }
+  return { ok: true, attachments: [...deduped.values()] };
 }
 
 function attachmentsForPayload(

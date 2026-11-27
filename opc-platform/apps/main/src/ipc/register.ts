@@ -20,6 +20,10 @@ import type {
   DecisionClassifyInput,
   DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
+  SlackChannelSettingsPatch,
+  TelegramChannelSettingsPatch,
+  WeComChannelSettingsPatch,
+  GitHubChannelSettingsPatch,
   ModelOption,
   ModelRef,
   ProviderDraft,
@@ -650,30 +654,33 @@ export function registerIpc({
     const { getCatalog } = await import("../models/catalog");
     return getCatalog();
   });
-  ipcMain.handle(IPC.models.saveProvider, (_event, draft: unknown) => {
+  ipcMain.handle(IPC.models.saveProvider, async (_event, draft: unknown) => {
     if (!isProviderDraft(draft))
       throw new Error("models:saveProvider 参数非法");
     const saved = models.saveProvider(draft);
     // Watchdog 手里有一份 provider 副本（含钥匙）：改了地址/接口就要重发。
     watchdog.onModelChanged?.();
+    await work.invalidateAllHarnesses();
     return saved;
   });
-  ipcMain.handle(IPC.models.removeProvider, (_event, providerId: unknown) => {
+  ipcMain.handle(IPC.models.removeProvider, async (_event, providerId: unknown) => {
     if (typeof providerId !== "string")
       throw new Error("models:removeProvider 参数非法");
     const removed = models.removeProvider(providerId);
     watchdog.onModelChanged?.();
+    await work.invalidateAllHarnesses();
     return removed;
   });
   ipcMain.handle(
     IPC.models.setKey,
-    (_event, providerId: unknown, apiKey: unknown) => {
+    async (_event, providerId: unknown, apiKey: unknown) => {
       if (typeof providerId !== "string" || typeof apiKey !== "string") {
         throw new Error("models:setKey 参数非法");
       }
       const saved = models.setKey(providerId, apiKey);
       // 钥匙换了但子进程还拿着旧的：不发这一下，判断会一直用旧钥匙直到重启。
       watchdog.onModelChanged?.();
+      await work.invalidateAllHarnesses();
       return saved;
     },
   );
@@ -688,7 +695,7 @@ export function registerIpc({
   });
   ipcMain.handle(
     IPC.models.addModel,
-    (_event, providerId: unknown, input: unknown) => {
+    async (_event, providerId: unknown, input: unknown) => {
       if (
         typeof providerId !== "string" ||
         typeof input !== "object" ||
@@ -714,7 +721,7 @@ export function registerIpc({
         typeof value === "number" && Number.isFinite(value) && value >= 0
           ? value
           : undefined;
-      return models.addModel(providerId, {
+      const updated = models.addModel(providerId, {
         id,
         name: typeof name === "string" ? name : undefined,
         contextWindow:
@@ -735,6 +742,8 @@ export function registerIpc({
         cacheWriteUsdPerM: price(cacheWriteUsdPerM),
         usdPerSecond: price(usdPerSecond),
       });
+      await work.invalidateAllHarnesses();
+      return updated;
     },
   );
   ipcMain.handle(IPC.models.supportsOauth, (_event, providerId: unknown) => {
@@ -751,7 +760,7 @@ export function registerIpc({
   ipcMain.handle(IPC.models.getDefaults, () => models.getDefaults());
   ipcMain.handle(
     IPC.models.setDefault,
-    (_event, role: unknown, ref: unknown) => {
+    async (_event, role: unknown, ref: unknown) => {
       // 名单只有一份（`MODEL_ROLES`）：手写这串判断漏一个角色，界面上就是
       // “改了但没保存”，而且不会报错。
       if (
@@ -765,6 +774,7 @@ export function registerIpc({
       const saved = models.setDefault(role as ModelRole, ref);
       // 没配 `watchdog.model` 时，判断跟随默认 LLM——默认换了也要重发。
       if (role === "llm") watchdog.onModelChanged?.();
+      await work.invalidateAllHarnesses();
       return saved;
     },
   );
@@ -772,11 +782,13 @@ export function registerIpc({
   ipcMain.handle(IPC.models.getCompaction, () => models.getCompaction());
   ipcMain.handle(
     IPC.models.setModels,
-    (_event, providerId: unknown, modelList: unknown) => {
+    async (_event, providerId: unknown, modelList: unknown) => {
       if (typeof providerId !== "string" || !Array.isArray(modelList)) {
         throw new Error("models:setModels 参数非法");
       }
-      return models.setModels(providerId, modelList as ModelOption[]);
+      const updated = models.setModels(providerId, modelList as ModelOption[]);
+      await work.invalidateAllHarnesses();
+      return updated;
     },
   );
 
@@ -1035,6 +1047,30 @@ export function registerIpc({
     }
     return channels.updateDingTalk(raw as DingTalkChannelSettingsPatch);
   });
+  ipcMain.handle(IPC.channels.updateSlack, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateSlack 参数非法");
+    }
+    return channels.updateSlack(raw as SlackChannelSettingsPatch);
+  });
+  ipcMain.handle(IPC.channels.updateWeCom, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateWeCom 参数非法");
+    }
+    return channels.updateWeCom(raw as WeComChannelSettingsPatch);
+  });
+  ipcMain.handle(IPC.channels.updateTelegram, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateTelegram 参数非法");
+    }
+    return channels.updateTelegram(raw as TelegramChannelSettingsPatch);
+  });
+  ipcMain.handle(IPC.channels.updateGitHub, (_event, raw: unknown) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new Error("channels:updateGitHub 参数非法");
+    }
+    return channels.updateGitHub(raw as GitHubChannelSettingsPatch);
+  });
   ipcMain.handle(
     IPC.channels.testConnection,
     (_event, channelId: unknown, draft?: unknown) => {
@@ -1045,6 +1081,16 @@ export function registerIpc({
         channelId.trim(),
         typeof draft === "object" && draft !== null
           ? (draft as ChannelTestDraft)
+          : undefined,
+      );
+    },
+  );
+  ipcMain.handle(
+    IPC.channels.listGitHubRepos,
+    (_event, draft?: unknown) => {
+      return channels.listGitHubRepos(
+        typeof draft === "object" && draft !== null
+          ? (draft as Pick<ChannelTestDraft, "token" | "apiBaseUrl">)
           : undefined,
       );
     },
@@ -1380,6 +1426,30 @@ export function registerIpc({
       return browser.show(taskId);
     });
     ipcMain.handle(IPC.browser.hide, (_event, taskId: unknown) => browser.hide(typeof taskId === 'string' ? taskId : undefined));
+    ipcMain.handle(IPC.browser.capturePreview, async (_event, request: unknown) => {
+      const taskId =
+        typeof request === 'string'
+          ? request
+          : request && typeof request === 'object' && typeof (request as { taskId?: unknown }).taskId === 'string'
+            ? (request as { taskId: string }).taskId
+            : '';
+      if (!taskId.trim()) throw new Error('browser:capturePreview 需要 taskId');
+      const selector =
+        request && typeof request === 'object' && typeof (request as { selector?: unknown }).selector === 'string'
+          ? (request as { selector: string }).selector.trim() || undefined
+          : undefined;
+      return browser.capturePreview(taskId.trim(), selector);
+    });
+    ipcMain.handle(IPC.browser.openWindow, async (_event, url: unknown) => {
+      const result = await browser.openWindow(typeof url === 'string' && url.trim() ? url.trim() : undefined);
+      browserBroadcast();
+      return result;
+    });
+    ipcMain.handle(IPC.browser.testConnection, async () => {
+      const result = await browser.testConnection();
+      browserBroadcast();
+      return result;
+    });
     ipcMain.handle(IPC.browser.resetProfile, (_event, userId: unknown) => browser.resetProfile(typeof userId === 'string' && userId.trim() ? userId : 'user'));
   }
 
@@ -1864,7 +1934,12 @@ export function registerIpc({
       IPC.channels.list,
       IPC.channels.updateFeishu,
       IPC.channels.updateDingTalk,
+      IPC.channels.updateSlack,
+      IPC.channels.updateWeCom,
+      IPC.channels.updateTelegram,
+      IPC.channels.updateGitHub,
       IPC.channels.testConnection,
+      IPC.channels.listGitHubRepos,
       IPC.channels.reconnect,
       IPC.channels.approvePairing,
       IPC.channels.rejectPairing,

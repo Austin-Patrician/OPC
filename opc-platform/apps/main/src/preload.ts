@@ -67,6 +67,11 @@ import type {
   ChannelView,
   DingTalkChannelSettingsPatch,
   FeishuChannelSettingsPatch,
+  SlackChannelSettingsPatch,
+  TelegramChannelSettingsPatch,
+  WeComChannelSettingsPatch,
+  GitHubChannelSettingsPatch,
+  GitHubRepoListResult,
 } from "@opc/shared/domain";
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
@@ -238,6 +243,13 @@ const bridge: OpcBridge = {
     setSettings: (patch: unknown) => ipcRenderer.invoke(IPC.browser.setSettings, patch),
     show: (taskId: string) => ipcRenderer.invoke(IPC.browser.show, taskId),
     hide: (taskId?: string) => ipcRenderer.invoke(IPC.browser.hide, taskId),
+    capturePreview: (taskId: string, selector?: string) =>
+      ipcRenderer.invoke(IPC.browser.capturePreview, {
+        taskId,
+        ...(selector ? { selector } : {}),
+      }),
+    openWindow: (url?: string) => ipcRenderer.invoke(IPC.browser.openWindow, url),
+    testConnection: () => ipcRenderer.invoke(IPC.browser.testConnection),
     resetProfile: (userId?: string) => ipcRenderer.invoke(IPC.browser.resetProfile, userId),
     onChanged: (listener: (status: BrowserStatus) => void) => {
       const handler = (_event: IpcRendererEvent, status: BrowserStatus) => listener(status);
@@ -359,6 +371,14 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.channels.updateFeishu, patch) as Promise<ChannelView[]>,
     updateDingTalk: (patch: DingTalkChannelSettingsPatch) =>
       ipcRenderer.invoke(IPC.channels.updateDingTalk, patch) as Promise<ChannelView[]>,
+    updateSlack: (patch: SlackChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateSlack, patch) as Promise<ChannelView[]>,
+    updateWeCom: (patch: WeComChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateWeCom, patch) as Promise<ChannelView[]>,
+    updateTelegram: (patch: TelegramChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateTelegram, patch) as Promise<ChannelView[]>,
+    updateGitHub: (patch: GitHubChannelSettingsPatch) =>
+      ipcRenderer.invoke(IPC.channels.updateGitHub, patch) as Promise<ChannelView[]>,
     testConnection: (
       channelId: string,
       draft?: ChannelTestDraft,
@@ -368,6 +388,13 @@ const bridge: OpcBridge = {
         channelId,
         draft,
       ) as Promise<ChannelConnectionTestResult>,
+    listGitHubRepos: (
+      draft?: Pick<ChannelTestDraft, "token" | "apiBaseUrl">,
+    ) =>
+      ipcRenderer.invoke(
+        IPC.channels.listGitHubRepos,
+        draft,
+      ) as Promise<GitHubRepoListResult>,
     reconnect: (channelId: string) =>
       ipcRenderer.invoke(IPC.channels.reconnect, channelId) as Promise<ChannelView[]>,
     approvePairing: (requestId: string) =>

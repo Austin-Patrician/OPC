@@ -5,42 +5,47 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { execFilePlatform } from '../process/execFilePlatform';
-import type { BrowserInstallProgress, BrowserInstallPhase } from '@opc/shared/ipc';
+import type {
+  BrowserAttachMethod,
+  BrowserConnectionTestResult,
+  BrowserInputMode,
+  BrowserInstallPhase,
+  BrowserInstallProgress,
+  BrowserInstallState,
+  BrowserMode,
+  BrowserSettings,
+  BrowserStatus,
+  DetectedBrowser,
+} from '@opc/shared/ipc';
 import type { CompanyDatabase } from '../data/companyDatabase';
+import { detectInstalledBrowsers, resolvePreferredBrowser } from './detectBrowser';
+
+export type {
+  BrowserAttachMethod,
+  BrowserConnectionTestResult,
+  BrowserInputMode,
+  BrowserInstallState,
+  BrowserMode,
+  BrowserSettings,
+  BrowserStatus,
+  DetectedBrowser,
+};
 
 const execFileAsync = promisify(execFile);
 export const AGENT_BROWSER_VERSION = '0.41.2';
 const SETTINGS_KEY = 'browser.settings';
-
-export type BrowserInstallState = 'uninstalled' | 'installing' | 'ready' | 'disabled' | 'error';
-
-export interface BrowserSettings {
-  enabled: boolean;
-  allowedDomains: string[];
-  blockedDomains: string[];
-  allowAllDomains: boolean;
-  requireApprovalFor: string[];
-  maxOutputBytes: number;
-}
-
-export interface BrowserStatus {
-  installState: BrowserInstallState;
-  enabled: boolean;
-  version?: string;
-  binary?: string;
-  healthy: boolean;
-  downloadEstimateBytes: number;
-  diskUsageBytes?: number;
-  error?: string;
-  profilePath: string;
-}
-
-const DOWNLOAD_ESTIMATE_BYTES = 180 * 1024 * 1024;
+const CLI_DOWNLOAD_ESTIMATE_BYTES = 18 * 1024 * 1024;
+const BUNDLED_CHROME_DOWNLOAD_ESTIMATE_BYTES = 180 * 1024 * 1024;
 
 function npmCommand(): { executable: string; prefixArgs: string[] } {
   if (process.platform !== 'win32') return { executable: 'npm', prefixArgs: [] };
 
-  const directories = new Set((process.env.PATH ?? '').split(path.delimiter).map((entry) => entry.trim().replace(/^"|"$/g, '')).filter(Boolean));
+  const directories = new Set(
+    (process.env.PATH ?? '')
+      .split(path.delimiter)
+      .map((entry) => entry.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean),
+  );
   const programFiles = process.env.ProgramW6432 ?? process.env.ProgramFiles ?? 'C:\\Program Files';
   directories.add(path.join(programFiles, 'nodejs'));
   if (process.env['ProgramFiles(x86)']) directories.add(path.join(process.env['ProgramFiles(x86)']!, 'nodejs'));
@@ -57,9 +62,7 @@ function npmCommand(): { executable: string; prefixArgs: string[] } {
 }
 
 function installBrowserRuntime(binary: string) {
-  const args = ['install'];
-  const options = { timeout: 300_000, maxBuffer: 2_000_000 };
-  return execFilePlatform(binary, args, options);
+  return execFilePlatform(binary, ['install'], { timeout: 300_000, maxBuffer: 2_000_000 });
 }
 
 function directoryBytes(root: string): number {
@@ -69,13 +72,19 @@ function directoryBytes(root: string): number {
   while (pending.length) {
     const current = pending.pop()!;
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
     for (const entry of entries) {
       const target = path.join(current, entry.name);
       try {
         if (entry.isDirectory()) pending.push(target);
         else if (entry.isFile()) total += fs.statSync(target).size;
-      } catch { /* A concurrently changing cache entry is omitted. */ }
+      } catch {
+        /* A concurrently changing cache entry is omitted. */
+      }
     }
   }
   return total;
@@ -83,6 +92,12 @@ function directoryBytes(root: string): number {
 
 const DEFAULT_SETTINGS: BrowserSettings = {
   enabled: false,
+  mode: 'managed',
+  attachMethod: 'auto-connect',
+  cdpEndpoint: '9222',
+  pinTab: true,
+  headed: true,
+  inputMode: 'human',
   allowedDomains: [],
   blockedDomains: [],
   allowAllDomains: false,
@@ -91,22 +106,52 @@ const DEFAULT_SETTINGS: BrowserSettings = {
 };
 
 function readSetting(db: CompanyDatabase): string | undefined {
-  return (db.prepare('SELECT value FROM app_setting WHERE key = ?').get(SETTINGS_KEY) as { value?: string } | undefined)?.value;
+  return (db.prepare('SELECT value FROM app_setting WHERE key = ?').get(SETTINGS_KEY) as { value?: string } | undefined)
+    ?.value;
+}
+
+function normalizeMode(value: unknown): BrowserMode {
+  return value === 'managed' || value === 'attach' || value === 'headless' ? value : DEFAULT_SETTINGS.mode;
+}
+
+function normalizeAttachMethod(value: unknown): BrowserAttachMethod {
+  return value === 'auto-connect' || value === 'cdp' ? value : DEFAULT_SETTINGS.attachMethod;
+}
+
+function normalizeInputMode(value: unknown): BrowserInputMode {
+  return value === 'human' || value === 'smooth' || value === 'instant' ? value : DEFAULT_SETTINGS.inputMode;
 }
 
 export function normalizeBrowserSettings(value: unknown): BrowserSettings {
   if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
   const raw = value as Record<string, unknown>;
-  const strings = (input: unknown) => Array.isArray(input) ? [...new Set(input.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim()))] : [];
-  const max = typeof raw.maxOutputBytes === 'number' && Number.isFinite(raw.maxOutputBytes)
-    ? Math.max(4_000, Math.min(256_000, Math.floor(raw.maxOutputBytes)))
-    : DEFAULT_SETTINGS.maxOutputBytes;
+  const strings = (input: unknown) =>
+    Array.isArray(input)
+      ? [...new Set(input.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim()))]
+      : [];
+  const max =
+    typeof raw.maxOutputBytes === 'number' && Number.isFinite(raw.maxOutputBytes)
+      ? Math.max(4_000, Math.min(256_000, Math.floor(raw.maxOutputBytes)))
+      : DEFAULT_SETTINGS.maxOutputBytes;
+  const executablePath = typeof raw.executablePath === 'string' && raw.executablePath.trim() ? raw.executablePath.trim() : undefined;
+  const cdpEndpoint =
+    typeof raw.cdpEndpoint === 'string' && raw.cdpEndpoint.trim() ? raw.cdpEndpoint.trim() : DEFAULT_SETTINGS.cdpEndpoint;
+
   return {
     enabled: raw.enabled === true,
+    mode: normalizeMode(raw.mode),
+    ...(executablePath ? { executablePath } : {}),
+    attachMethod: normalizeAttachMethod(raw.attachMethod),
+    cdpEndpoint,
+    pinTab: raw.pinTab !== false,
+    headed: raw.headed !== false,
+    inputMode: normalizeInputMode(raw.inputMode),
     allowedDomains: strings(raw.allowedDomains),
     blockedDomains: strings(raw.blockedDomains),
     allowAllDomains: raw.allowAllDomains === true,
-    requireApprovalFor: Array.isArray(raw.requireApprovalFor) ? strings(raw.requireApprovalFor) : [...DEFAULT_SETTINGS.requireApprovalFor],
+    requireApprovalFor: Array.isArray(raw.requireApprovalFor)
+      ? strings(raw.requireApprovalFor)
+      : [...DEFAULT_SETTINGS.requireApprovalFor],
     maxOutputBytes: max,
   };
 }
@@ -126,17 +171,51 @@ export class BrowserInstallService {
   settings = (): BrowserSettings => {
     const raw = readSetting(this.db);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    try { return normalizeBrowserSettings(JSON.parse(raw)); } catch { return { ...DEFAULT_SETTINGS }; }
+    try {
+      return normalizeBrowserSettings(JSON.parse(raw));
+    } catch {
+      return { ...DEFAULT_SETTINGS };
+    }
   };
 
   setSettings = (patch: Partial<BrowserSettings>): BrowserSettings => {
-    const next = normalizeBrowserSettings({ ...this.settings(), ...patch });
-    this.db.prepare(`INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+    const merged: Record<string, unknown> = { ...this.settings(), ...patch };
+    if ('executablePath' in patch && (!patch.executablePath || !patch.executablePath.trim())) {
+      delete merged.executablePath;
+    }
+    const next = normalizeBrowserSettings(merged);
+    this.db
+      .prepare(
+        `INSERT INTO app_setting (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
       .run(SETTINGS_KEY, JSON.stringify(next), Date.now());
     this.refresh();
     return next;
   };
+
+  detectedBrowsers = (): DetectedBrowser[] => detectInstalledBrowsers();
+
+  resolvedBrowser = (): DetectedBrowser | undefined =>
+    resolvePreferredBrowser(this.detectedBrowsers(), this.settings().executablePath);
+
+  resolvedExecutablePath = (): string | undefined => this.resolvedBrowser()?.executablePath;
+
+  activeBrowserName = (): string => {
+    const current = this.settings();
+    if (current.mode === 'attach') {
+      return current.attachMethod === 'auto-connect' ? '日常 Chrome (Auto-Connect)' : '日常 Chrome (CDP)';
+    }
+    return this.resolvedBrowser()?.name ?? 'Chrome for Testing';
+  };
+
+  personalProfilePath = (): string => {
+    const profile = path.join(this.userDataDir, 'browser', 'profiles', 'personal');
+    fs.mkdirSync(profile, { recursive: true });
+    return profile;
+  };
+
+  managedRuntimeFile = (): string => path.join(this.userDataDir, 'browser', 'managed-runtime.json');
 
   profilePath = (userId: string): string => {
     const safe = userId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'default';
@@ -147,16 +226,36 @@ export class BrowserInstallService {
 
   binaryPath = (): string | undefined => this.binary;
 
-  status = (): BrowserStatus => ({
-    installState: this.state,
-    enabled: this.settings().enabled,
-    ...(this.binary ? { binary: this.binary, version: AGENT_BROWSER_VERSION } : {}),
-    healthy: Boolean(this.binary) && (this.state === 'ready' || this.state === 'disabled'),
-    downloadEstimateBytes: DOWNLOAD_ESTIMATE_BYTES,
-    ...(this.state === 'ready' || this.state === 'disabled' ? { diskUsageBytes: this.diskUsageBytes() } : {}),
-    ...(this.error ? { error: this.error } : {}),
-    profilePath: path.join(this.userDataDir, 'browser', 'profiles'),
-  });
+  status = (): BrowserStatus => {
+    const current = this.settings();
+    const detected = this.detectedBrowsers();
+    const resolved = resolvePreferredBrowser(detected, current.executablePath);
+    const activeBrowserName =
+      current.mode === 'attach'
+        ? current.attachMethod === 'auto-connect'
+          ? '日常 Chrome (Auto-Connect)'
+          : '日常 Chrome (CDP)'
+        : resolved?.name ?? 'Chrome for Testing';
+
+    return {
+      installState: this.state,
+      enabled: current.enabled,
+      mode: current.mode,
+      detectedBrowsers: detected,
+      activeBrowserName,
+      managedRunning: false,
+      ...(this.binary ? { binary: this.binary, version: AGENT_BROWSER_VERSION } : {}),
+      healthy: Boolean(this.binary) && (this.state === 'ready' || this.state === 'disabled'),
+      downloadEstimateBytes:
+        detected.length > 0 ? CLI_DOWNLOAD_ESTIMATE_BYTES : BUNDLED_CHROME_DOWNLOAD_ESTIMATE_BYTES,
+      ...(this.state === 'ready' || this.state === 'disabled' ? { diskUsageBytes: this.diskUsageBytes() } : {}),
+      ...(this.error ? { error: this.error } : {}),
+      profilePath:
+        current.mode === 'managed'
+          ? path.join(this.userDataDir, 'browser', 'profiles', 'personal')
+          : path.join(this.userDataDir, 'browser', 'profiles'),
+    };
+  };
 
   private diskUsageBytes(): number {
     const now = Date.now();
@@ -183,7 +282,14 @@ export class BrowserInstallService {
     return this.status();
   };
 
-  install = async (onProgress?: (progress: BrowserInstallProgress) => void): Promise<BrowserStatus> => {
+  install = async (
+    onProgress?: (progress: BrowserInstallProgress) => void,
+    options?: {
+      includeBundledChromium?: boolean;
+      hasSystemBrowser?: () => boolean;
+      downloadRuntime?: (binary: string) => Promise<unknown>;
+    },
+  ): Promise<BrowserStatus> => {
     this.state = 'installing';
     this.error = undefined;
     let phase: BrowserInstallPhase = 'dependencies';
@@ -192,7 +298,6 @@ export class BrowserInstallService {
     let phaseEndPercent = 32;
     let phaseDurationMs = 45_000;
     let browserPhaseStarted = false;
-    // The installer commands expose completion, not byte-level progress; keep this estimate below each phase ceiling until it resolves.
     const reportProgress = () => {
       const elapsed = Date.now() - phaseStartedAt;
       const fraction = 1 - Math.exp(-elapsed / phaseDurationMs);
@@ -210,6 +315,12 @@ export class BrowserInstallService {
     };
     reportProgress();
     const progressTimer = setInterval(reportProgress, 800);
+    const hasSystemBrowser = options?.hasSystemBrowser
+      ? options.hasSystemBrowser()
+      : this.detectedBrowsers().length > 0;
+    const needsBundledChrome = options?.includeBundledChromium === true || !hasSystemBrowser;
+    const downloadRuntime = options?.downloadRuntime ?? installBrowserRuntime;
+
     try {
       const existing = this.findBinary();
       if (!existing) {
@@ -219,11 +330,17 @@ export class BrowserInstallService {
         fs.mkdirSync(stagingDir, { recursive: true });
         try {
           const npm = npmCommand();
-          await execFileAsync(npm.executable, [...npm.prefixArgs, 'install', '--prefix', stagingDir, '--no-save', `agent-browser@${AGENT_BROWSER_VERSION}`], { timeout: 180_000, maxBuffer: 2_000_000 });
+          await execFileAsync(
+            npm.executable,
+            [...npm.prefixArgs, 'install', '--prefix', stagingDir, '--no-save', `agent-browser@${AGENT_BROWSER_VERSION}`],
+            { timeout: 180_000, maxBuffer: 2_000_000 },
+          );
           const stagedBinary = this.findBinary(stagingDir);
           if (!stagedBinary) throw new Error('agent-browser 安装完成但未找到可执行文件');
-          startPhase('browser', 35, 90, 180_000);
-          await installBrowserRuntime(stagedBinary);
+          if (needsBundledChrome) {
+            startPhase('browser', 35, 90, 180_000);
+            await downloadRuntime(stagedBinary);
+          }
           fs.rmSync(backupDir, { recursive: true, force: true });
           if (fs.existsSync(this.runtimeDir)) fs.renameSync(this.runtimeDir, backupDir);
           try {
@@ -236,14 +353,16 @@ export class BrowserInstallService {
         } finally {
           fs.rmSync(stagingDir, { recursive: true, force: true });
         }
-      } else {
+      } else if (needsBundledChrome) {
         startPhase('browser', 35, 90, 180_000);
       }
       const binary = this.findBinary();
       if (!binary) throw new Error('agent-browser 安装完成但未找到可执行文件');
-      if (!browserPhaseStarted) startPhase('browser', 35, 90, 180_000);
-      await installBrowserRuntime(binary);
-      startPhase('finalizing', 95, 99, 30_000);
+      if (needsBundledChrome) {
+        if (!browserPhaseStarted) startPhase('browser', 35, 90, 180_000);
+        await downloadRuntime(binary);
+      }
+      startPhase('finalizing', 95, 99, 10_000);
       this.binary = binary;
       this.setSettings({ enabled: true });
       this.diskUsageCache.checkedAt = 0;
@@ -261,6 +380,7 @@ export class BrowserInstallService {
   uninstall = (deleteProfile = false, deleteBrowserCache = false): BrowserStatus => {
     this.setSettings({ enabled: false });
     fs.rmSync(this.runtimeDir, { recursive: true, force: true });
+    fs.rmSync(this.managedRuntimeFile(), { force: true });
     if (deleteBrowserCache) fs.rmSync(this.browserCachePath(), { recursive: true, force: true });
     if (deleteProfile) fs.rmSync(path.join(this.userDataDir, 'browser', 'profiles'), { recursive: true, force: true });
     this.diskUsageCache.checkedAt = 0;
@@ -290,4 +410,3 @@ export class BrowserInstallService {
     return undefined;
   }
 }
-

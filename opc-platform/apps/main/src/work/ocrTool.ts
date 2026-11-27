@@ -14,6 +14,8 @@ export interface OcrToolDeps {
   ocr: OcrEngine;
   /** Fallback when the conversation has no cwd of its own. */
   defaultRoot: string;
+  /** Isolates staged attachment lookups per worker/runtime SQLite file. */
+  scopeKey?: string;
 }
 
 /**
@@ -47,7 +49,10 @@ export function createOcrToolExtension(deps: OcrToolDeps) {
           const agent = await api.agent(context);
           const root = path.resolve(agent.cwd ?? deps.defaultRoot);
           const requestedPath = args.path.trim();
-          const attachment = resolveAttachment(requestedPath, attachmentRefsOf(api.conversationId));
+          const attachment = resolveAttachment(
+            requestedPath,
+            attachmentRefsOf(api.conversationId, deps.scopeKey),
+          );
           const target = attachment ? path.resolve(attachment.path) : path.resolve(root, requestedPath);
 
           if (!attachment && !contains(root, target)) {

@@ -11,6 +11,8 @@ import { recallView } from './inline';
 import { renderRouterWorkerCapabilities, type RouterWorkerCapability } from './routerCapabilities';
 import { createAssistantToolsExtension } from '../assistant/assistantTools';
 import type { AssistantToolsService } from '../assistant/assistantTools';
+import { createGitHubToolsExtension } from '../channels/github/githubTools';
+import type { ChannelStore } from '../channels/store';
 
 /**
  * Router 的工具带。
@@ -143,6 +145,7 @@ export interface RouterToolDeps {
   /** Dynamic metadata-only view of tools available to Workers. */
   workerCapabilities?: () => readonly RouterWorkerCapability[] | Promise<readonly RouterWorkerCapability[]>;
   assistantTools?: AssistantToolsService;
+  channelStore?: ChannelStore;
   schedules?: {
     create(draft: RouterScheduleDraft): RouterSchedule;
     list(): RouterSchedule[];
@@ -175,6 +178,7 @@ const fail = (text: string) => ({
 });
 
 export function createRouterTools(deps: RouterToolDeps) {
+  const githubExtension = deps.channelStore ? createGitHubToolsExtension(deps.channelStore) : undefined;
   return defineExtension({
     name: 'opc.router',
     sections: [
@@ -199,7 +203,7 @@ export function createRouterTools(deps: RouterToolDeps) {
           '用户通过聊天上传的附件，在调用 open_line_of_work / continue_line / steer_line 时系统会自动复制文件本体到目标工作区的 inputs/ 目录，执行体可直接读取；不要向用户声称“只收到本地路径/无法访问 D 盘”或要求用户手动拖文件到工作区。',
           '用户明确要求未来某个时间提醒或重复检查时，用 create_schedule 建立计划；用户没有给出必要日期、时间或时区时先询问。',
           '定时请求到期后视作用户预先安排的输入，结合届时上下文决定是否 open_line_of_work；不要只因为计划到期就盲目执行过时或失去意义的请求。',
-          '收到来自飞书、钉钉等外部渠道的消息且带有 reply_target 时，调用 reply_to_user 并传入对应的 reply_target 即可原路回复该会话；如需主动向外部群或联系人推送消息（例如定时汇报），先用 channel_list_targets 查询真实已知地址，再用 channel_send_message 发送，禁止编造外部会话地址。',
+          '收到来自飞书、钉钉、Slack 等外部渠道的消息且带有 reply_target 时，调用 reply_to_user 并传入对应的 reply_target 即可原路回复该会话；如需主动向外部群/频道或联系人推送消息（例如定时汇报），先用 channel_list_targets 查询真实已知地址，再用 channel_send_message 发送，禁止编造外部会话地址。',
           '',
           '## 你要记得',
           '你的系统上下文里每轮都带有用户画像（USER.md）、长期铁律（RULES.md）和专题目录，输入里也会自动附带相关的避坑提醒（PLAYBOOK.md）与专题片段。',
@@ -278,9 +282,11 @@ export function createRouterTools(deps: RouterToolDeps) {
             }),
           ]
         : []),
+      ...(githubExtension?.sections ?? []),
     ],
     tools: [
       ...(deps.assistantTools ? createAssistantToolsExtension(deps.assistantTools).tools ?? [] : []),
+      ...(githubExtension?.tools ?? []),
       ...(deps.schedules ? scheduleTools(deps.schedules) : []),
       ...(deps.channels ? channelTools(deps.channels) : []),
       defineTool({
@@ -291,7 +297,10 @@ export function createRouterTools(deps: RouterToolDeps) {
           '任务结束或需要用户输入时再反馈。返回的 id 是内部引用，不能原样放进用户回复。',
         parameters: Type.Object({
           contract: Type.Object({
-            objective: Type.String({ description: '要解决的问题或要达成的目标。' }),
+            objective: Type.String({
+              description:
+                '要解决的问题或要达成的目标。写清目标、事实与交付标准即可，不要替执行体规定逐页 read 大图或串行步骤等内部实现方式。',
+            }),
             deliverable: Type.String({ description: '完成后交付物的一句话概括，简洁明了，不要照抄 objective 全文。' }),
             outputs: Type.Optional(
               Type.Array(
@@ -319,7 +328,7 @@ export function createRouterTools(deps: RouterToolDeps) {
             attachments: Type.Optional(Type.Array(Type.Object({
               id: Type.String(), name: Type.String(), path: Type.String(), size: Type.Number(),
               mimeType: Type.Optional(Type.String()), source: Type.Union([Type.Literal('file'), Type.Literal('clipboard')]),
-            }), { description: '用户上传的附件引用；系统会自动将文件本体复制到执行体工作区的 inputs/ 目录供安全读取。' })),
+            }), { description: '可选：用户上传的附件引用；省略时默认附带当前输入里的附件，如果该新任务与当前输入附件无关请显式传 []。系统会自动将文件本体复制到执行体工作区的 inputs/ 目录供安全读取。' })),
             acceptance: Type.Optional(
               Type.Object({
                 command: Type.Array(Type.String(), { minItems: 1, description: 'argv 形式的验收命令。' }),
@@ -529,7 +538,10 @@ export function createRouterTools(deps: RouterToolDeps) {
                 '不要为了增量改动去 open_line_of_work。',
               parameters: Type.Object({
                 thread_id: Type.String({ description: '已有工作线的 id。' }),
-                instruction: Type.String({ description: '这次追加的新要求或转向后的具体指令。' }),
+                instruction: Type.String({
+                  description:
+                    '这次追加的新要求或转向后的具体指令。写清目标、事实与交付标准即可，不要替执行体规定逐页 read 大图或串行步骤等内部实现方式。',
+                }),
                 mode: Type.Optional(
                   Type.Union([Type.Literal('append'), Type.Literal('pivot')], {
                     description: 'append（默认）：在当前成果上增量修改；pivot：中止旧路线并从干净检查点转向。',
@@ -836,16 +848,16 @@ function channelTools(service: NonNullable<RouterToolDeps['channels']>) {
     defineTool({
       name: 'channel_list_targets',
       description:
-        '列出已连接的外部应用渠道（如飞书、钉钉）近期活跃的会话目标，返回真实可用的 address（例如 feishu:chat:oc_...、dingtalk:dm:...、dingtalk:group:...）、会话类型与标题。',
+        '列出已连接的外部应用渠道（如飞书、钉钉、Slack、企业微信、Telegram、GitHub）近期活跃的会话目标，返回真实可用的 address（例如 feishu:chat:oc_...、dingtalk:dm:...、slack:channel:C...、wecom:dm:...、telegram:chat:...、github:owner/repo#12）、会话类型与标题。',
       parameters: Type.Object({}),
       execute: async () => {
         const targets = service.listTargets();
         if (targets.length === 0) {
-          return ok('暂无外部渠道会话记录。请先让用户在飞书或钉钉里向机器人发送一条消息，或确认应用渠道已开启连接。');
+          return ok('暂无外部渠道会话记录。请先让用户在飞书、钉钉、Slack、企业微信、Telegram 或 GitHub 里向机器人发送一条消息，或确认应用渠道已开启连接。');
         }
         const lines = targets.map(
           (t) =>
-            `- ${t.address} · ${t.channelId} · ${t.chatKind === 'group' ? '群聊' : '私聊'} · ${t.title} · 最近活跃：${new Date(t.lastActiveAt).toLocaleString('zh-CN')}`,
+            `- ${t.address} · ${t.channelId} · ${t.chatKind === 'group' ? '群聊/频道' : '私聊'} · ${t.title} · 最近活跃：${new Date(t.lastActiveAt).toLocaleString('zh-CN')}`,
         );
         return ok(lines.join('\n'));
       },
@@ -853,11 +865,11 @@ function channelTools(service: NonNullable<RouterToolDeps['channels']>) {
     defineTool({
       name: 'channel_send_message',
       description:
-        '主动向外部应用渠道（如飞书、钉钉私聊或群聊）发送消息，可选附带工作区内的文件。address 必须来自 channel_list_targets 或当前事件的 reply_target。',
+        '主动向外部应用渠道（如飞书、钉钉、Slack、企业微信、Telegram 或 GitHub Issue/PR）发送消息，可选附带工作区内的文件。address 必须来自 channel_list_targets 或当前事件的 reply_target。',
       parameters: Type.Object({
         address: Type.String({
           description:
-            '目标会话地址，例如 feishu:chat:oc_xxx、dingtalk:dm:staff123 或 dingtalk:group:cid_xxx。',
+            '目标会话地址，例如 feishu:chat:oc_xxx、dingtalk:dm:staff123、slack:channel:Cxxx、wecom:dm:userid、telegram:chat:123456 或 github:owner/repo#12。',
         }),
         text: Type.String({ description: '要发送的文本或 Markdown 内容。' }),
         file_paths: Type.Optional(

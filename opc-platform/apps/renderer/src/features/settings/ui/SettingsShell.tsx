@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import type { ChannelView } from '@opc/shared/domain';
 import { AboutPage } from './pages/AboutPage';
 import { AppearancePage } from './pages/AppearancePage';
 import { ChannelsPage } from './pages/ChannelsPage';
@@ -28,6 +29,7 @@ import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
 import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, Share2 } from 'lucide-react';
+import { ChannelBrandIcon } from '@/shared/icons/ChannelBrandIcon';
 import { cn } from '@/shared/lib/cn';
 
 const PAGE_IDS = [
@@ -45,7 +47,12 @@ const PAGE_IDS = [
   'runtime',
   'capabilitiesSkills',
   'capabilitiesExtensions',
-  'channels',
+  'channelFeishu',
+  'channelDingtalk',
+  'channelSlack',
+  'channelWecom',
+  'channelTelegram',
+  'channelGitHub',
   'llm',
   'image',
   'video',
@@ -68,7 +75,21 @@ interface Group {
   label: string;
   icon: typeof Settings2;
   color: string;
-  pages: { id: PageId; label: string }[];
+  pages: { id: PageId; label: string; channelId?: ChannelView['id'] }[];
+}
+
+function channelDotColor(state: ChannelView['status']['state']): string | null {
+  switch (state) {
+    case 'connected':
+      return 'bg-emerald-500';
+    case 'connecting':
+    case 'reconnecting':
+      return 'bg-amber-500';
+    case 'error':
+      return 'bg-rose-500';
+    default:
+      return null;
+  }
 }
 
 /**
@@ -82,10 +103,44 @@ export function SettingsShell() {
   // the sidebar keeps the address honest (no `?page=` for the default page).
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('page');
-  const page: PageId = requested === 'selfcheck' ? 'about' : isPageId(requested) ? requested : 'appearance';
+  const page: PageId =
+    requested === 'selfcheck'
+      ? 'about'
+      : requested === 'channels'
+        ? 'channelFeishu'
+        : isPageId(requested)
+          ? requested
+          : 'appearance';
   const setPage = (next: PageId) => {
     setSearchParams(next === 'appearance' ? {} : { page: next }, { replace: true });
   };
+
+  const [channelViews, setChannelViews] = useState<ChannelView[]>([]);
+  const [channelsLoaded, setChannelsLoaded] = useState(false);
+
+  useEffect(() => {
+    const api = window.opc?.channels;
+    if (!api) {
+      setChannelsLoaded(true);
+      return;
+    }
+    let active = true;
+    void api
+      .list()
+      .then((views) => {
+        if (active) setChannelViews(views);
+      })
+      .finally(() => {
+        if (active) setChannelsLoaded(true);
+      });
+    const unsub = api.onChanged((views) => {
+      if (active) setChannelViews(views);
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
 
   const groups: Group[] = [
     {
@@ -156,7 +211,14 @@ export function SettingsShell() {
       label: t('settings.group.channels'),
       icon: Share2,
       color: '#0A84FF',
-      pages: [{ id: 'channels', label: t('settings.page.channels') }],
+      pages: [
+        { id: 'channelFeishu', label: t('settings.page.channelFeishu'), channelId: 'feishu' },
+        { id: 'channelDingtalk', label: t('settings.page.channelDingtalk'), channelId: 'dingtalk' },
+        { id: 'channelSlack', label: t('settings.page.channelSlack'), channelId: 'slack' },
+        { id: 'channelWecom', label: t('settings.page.channelWecom'), channelId: 'wecom' },
+        { id: 'channelTelegram', label: t('settings.page.channelTelegram'), channelId: 'telegram' },
+        { id: 'channelGitHub', label: t('settings.page.channelGitHub'), channelId: 'github' },
+      ],
     },
     {
       // Outgoing traffic is infrastructure, not a model concern: its own group
@@ -227,8 +289,60 @@ export function SettingsShell() {
         return <CapabilitiesExtensionsPage />;
       case 'capabilitiesSkills':
         return <CapabilitiesSkillsPage />;
-      case 'channels':
-        return <ChannelsPage />;
+      case 'channelFeishu':
+        return (
+          <ChannelsPage
+            channelId="feishu"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
+      case 'channelDingtalk':
+        return (
+          <ChannelsPage
+            channelId="dingtalk"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
+      case 'channelSlack':
+        return (
+          <ChannelsPage
+            channelId="slack"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
+      case 'channelWecom':
+        return (
+          <ChannelsPage
+            channelId="wecom"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
+      case 'channelTelegram':
+        return (
+          <ChannelsPage
+            channelId="telegram"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
+      case 'channelGitHub':
+        return (
+          <ChannelsPage
+            channelId="github"
+            channels={channelViews}
+            loading={!channelsLoaded}
+            onChannelsUpdate={setChannelViews}
+          />
+        );
       case 'llm':
         return <LlmPage />;
       case 'image':
@@ -321,24 +435,46 @@ export function SettingsShell() {
 
                 {open ? (
                   <div className="mt-0.5 mb-1.5 ml-[1.0625rem] space-y-px border-l border-line pl-2.5">
-                    {group.pages.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        data-testid={`settings-page-${entry.id}`}
-                        onClick={() => setPage(entry.id)}
-                        aria-current={entry.id === page ? 'page' : undefined}
-                        title={entry.label}
-                        className={cn(
-                          'flex h-7 w-full min-w-0 items-center rounded-md px-2 text-left text-sm-plus transition-colors',
-                          entry.id === page
-                            ? 'bg-surface-active font-medium text-ink'
-                            : 'text-ink-tertiary hover:bg-ink/5 hover:text-ink',
-                        )}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                      </button>
-                    ))}
+                    {group.pages.map((entry) => {
+                      const channelView = entry.channelId
+                        ? channelViews.find((item) => item.id === entry.channelId)
+                        : undefined;
+                      const dotClass = channelView ? channelDotColor(channelView.status.state) : null;
+                      const pendingCount = channelView?.pendingPairings.length ?? 0;
+
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          data-testid={`settings-page-${entry.id}`}
+                          onClick={() => setPage(entry.id)}
+                          aria-current={entry.id === page ? 'page' : undefined}
+                          title={entry.label}
+                          className={cn(
+                            'flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm-plus transition-colors',
+                            entry.id === page
+                              ? 'bg-surface-active font-medium text-ink'
+                              : 'text-ink-tertiary hover:bg-ink/5 hover:text-ink',
+                          )}
+                        >
+                          {entry.channelId ? (
+                            <ChannelBrandIcon channelId={entry.channelId} className="size-4 shrink-0" />
+                          ) : null}
+                          <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                          {pendingCount > 0 ? (
+                            <span className="shrink-0 rounded-full bg-accent px-1.5 py-px text-[10px] font-medium leading-none text-white">
+                              {pendingCount}
+                            </span>
+                          ) : null}
+                          {dotClass ? (
+                            <span
+                              className={cn('size-1.5 shrink-0 rounded-full', dotClass)}
+                              title={t(`settings.channels.state.${channelView!.status.state}`)}
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    })}
                   </div>
                 ) : null}
               </div>

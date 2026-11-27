@@ -1,5 +1,4 @@
-import { protocol } from 'electron';
-import type { Session } from 'electron';
+import { protocol, type CustomScheme, type Session } from 'electron';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { createReadStream, realpathSync, statSync } from 'node:fs';
@@ -15,8 +14,19 @@ const MIME_EXT: Record<string, string[]> = {
   video: ['.mp4', '.webm', '.ogv'], audio: ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm'],
 };
 
+export const CHAT_MEDIA_CUSTOM_SCHEME: CustomScheme = {
+  scheme: CHAT_MEDIA_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+};
+
 export function registerChatMediaScheme(): void {
-  protocol.registerSchemesAsPrivileged([{ scheme: CHAT_MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
+  protocol.registerSchemesAsPrivileged([CHAT_MEDIA_CUSTOM_SCHEME]);
 }
 
 export function handleChatMediaProtocol(session: Session, _workspaceRoot: string): void {

@@ -98,7 +98,16 @@ export type ChatContentBlock =
       threadId: string;
       taskId: string;
       tool: string;
-      browser?: { action: string; url?: string; preview?: string; sessionId?: string };
+      browser?: {
+        action: string;
+        kind?: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
+        url?: string;
+        preview?: string;
+        instructions?: string;
+        sessionId?: string;
+        screenshot?: { taskId: string; relPath: string };
+        screenshotSelector?: string;
+      };
       desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
       shell?: { command: string; cwd?: string };
       title: string;
@@ -1486,6 +1495,9 @@ export interface WorkerProgressEvent {
   title: string;
   toolName: string;
   summary: string;
+  phase?: 'tool_start' | 'tool_end' | 'lifecycle';
+  argsDigest?: string;
+  ms?: number;
   ok: boolean | null;
   state: 'running' | 'completed' | 'aborted' | 'failed';
   at: number;
@@ -1808,6 +1820,107 @@ export interface DingTalkChannelSettingsPatch {
   access?: Partial<ChannelAccessConfig>;
 }
 
+export interface SlackChannelSettingsView {
+  enabled: boolean;
+  hasBotToken: boolean;
+  hasAppToken: boolean;
+  mirrorToDesktop: boolean;
+  thinkingReaction: boolean;
+  replyInThread: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface SlackChannelSettingsPatch {
+  enabled?: boolean;
+  /** Empty string clears the saved Bot Token (xoxb-); omitted keeps existing. */
+  botToken?: string;
+  /** Empty string clears the saved App-Level Token (xapp-); omitted keeps existing. */
+  appToken?: string;
+  mirrorToDesktop?: boolean;
+  thinkingReaction?: boolean;
+  replyInThread?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+export interface WeComChannelSettingsView {
+  enabled: boolean;
+  botId: string;
+  hasSecret: boolean;
+  mirrorToDesktop: boolean;
+  thinkingStream: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface WeComChannelSettingsPatch {
+  enabled?: boolean;
+  botId?: string;
+  /** Empty string clears the saved Secret; omitted keeps the existing secret. */
+  secret?: string;
+  mirrorToDesktop?: boolean;
+  thinkingStream?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+export interface TelegramChannelSettingsView {
+  enabled: boolean;
+  hasBotToken: boolean;
+  apiBaseUrl: string;
+  mirrorToDesktop: boolean;
+  typingAction: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface TelegramChannelSettingsPatch {
+  enabled?: boolean;
+  /** Empty string clears the saved Bot Token; omitted keeps existing. */
+  botToken?: string;
+  apiBaseUrl?: string;
+  mirrorToDesktop?: boolean;
+  typingAction?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
+export type GitHubPollingMode = 'notifications_and_repos' | 'repos_only';
+
+export interface GitHubEventToggles {
+  mention: boolean;
+  reviewRequested: boolean;
+  assigned: boolean;
+  repoActivity: boolean;
+}
+
+export interface GitHubChannelSettingsView {
+  enabled: boolean;
+  hasToken: boolean;
+  hasNotificationsToken: boolean;
+  apiBaseUrl: string;
+  pollIntervalSec: number;
+  watchRepos: string[];
+  events: GitHubEventToggles;
+  wakeWord: string;
+  autoReplyToGitHub: boolean;
+  thinkingReaction: boolean;
+  mirrorToDesktop: boolean;
+  access: ChannelAccessConfig;
+}
+
+export interface GitHubChannelSettingsPatch {
+  enabled?: boolean;
+  /** Empty string clears the saved PAT; omitted keeps existing. */
+  token?: string;
+  /** Empty string clears the saved notifications Classic PAT; omitted keeps existing. */
+  notificationsToken?: string;
+  apiBaseUrl?: string;
+  pollIntervalSec?: number;
+  watchRepos?: string[];
+  events?: Partial<GitHubEventToggles>;
+  wakeWord?: string;
+  autoReplyToGitHub?: boolean;
+  thinkingReaction?: boolean;
+  mirrorToDesktop?: boolean;
+  access?: Partial<ChannelAccessConfig>;
+}
+
 export interface ChannelTestDraft {
   appId?: string;
   appSecret?: string;
@@ -1815,6 +1928,13 @@ export interface ChannelTestDraft {
   clientId?: string;
   clientSecret?: string;
   robotCode?: string;
+  botToken?: string;
+  appToken?: string;
+  botId?: string;
+  secret?: string;
+  apiBaseUrl?: string;
+  token?: string;
+  notificationsToken?: string;
 }
 
 export interface ChannelRuntimeStatus {
@@ -1823,6 +1943,7 @@ export interface ChannelRuntimeStatus {
   state: ChannelConnectionState;
   botName?: string;
   botOpenId?: string;
+  pollingMode?: GitHubPollingMode;
   connectedAt?: number;
   lastEventAt?: number;
   lastError?: string;
@@ -1848,14 +1969,56 @@ export interface DingTalkChannelView extends ChannelViewBase {
   settings: DingTalkChannelSettingsView;
 }
 
-export type ChannelView = FeishuChannelView | DingTalkChannelView;
+export interface SlackChannelView extends ChannelViewBase {
+  id: 'slack';
+  settings: SlackChannelSettingsView;
+}
+
+export interface WeComChannelView extends ChannelViewBase {
+  id: 'wecom';
+  settings: WeComChannelSettingsView;
+}
+
+export interface TelegramChannelView extends ChannelViewBase {
+  id: 'telegram';
+  settings: TelegramChannelSettingsView;
+}
+
+export interface GitHubChannelView extends ChannelViewBase {
+  id: 'github';
+  settings: GitHubChannelSettingsView;
+}
+
+export type ChannelView =
+  | FeishuChannelView
+  | DingTalkChannelView
+  | SlackChannelView
+  | WeComChannelView
+  | TelegramChannelView
+  | GitHubChannelView;
 
 export interface ChannelConnectionTestResult {
   ok: boolean;
   botName?: string;
   botOpenId?: string;
+  detail?: string;
   error?: string;
   latencyMs: number;
+}
+
+export interface GitHubRepoOption {
+  fullName: string;
+  private: boolean;
+  description?: string;
+  pushedAt?: string;
+  archived?: boolean;
+}
+
+export interface GitHubRepoListResult {
+  ok: boolean;
+  repos: GitHubRepoOption[];
+  hasMore?: boolean;
+  error?: string;
 }
 
 

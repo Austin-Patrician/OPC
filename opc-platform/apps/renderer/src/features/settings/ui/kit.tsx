@@ -11,11 +11,13 @@ import type { ReactNode as ReactNodeType } from 'react';
 export function PageHeader({
   crumbs,
   title,
+  icon,
   description,
   actions,
 }: {
   crumbs: string[];
   title: string;
+  icon?: ReactNodeType;
   description?: ReactNodeType;
   actions?: ReactNodeType;
 }) {
@@ -30,7 +32,10 @@ export function PageHeader({
             </span>
           ))}
         </div>
-        <h2 className="mt-1 text-xl leading-tight font-bold tracking-tight text-ink">{title}</h2>
+        <div className="mt-1 flex items-center gap-2.5">
+          {icon ? <span className="flex shrink-0 items-center">{icon}</span> : null}
+          <h2 className="text-xl leading-tight font-bold tracking-tight text-ink">{title}</h2>
+        </div>
         {description ? (
           <p className="mt-1.5 max-w-[42.5rem] text-sm-plus leading-relaxed text-ink-tertiary">
             {description}
@@ -310,12 +315,14 @@ export function SelectField({
   onChange,
   ariaLabel,
   children,
+  disabled = false,
   className = '',
 }: {
   value: string;
   onChange: (next: string) => void;
   ariaLabel: string;
   children: ReactNodeType;
+  disabled?: boolean;
   className?: string;
 }) {
   const options = Children.toArray(children).flatMap((child) => {
@@ -331,6 +338,7 @@ export function SelectField({
       value={value}
       onValueChange={onChange}
       options={options}
+      disabled={disabled}
       className={className}
     />
   );

@@ -4,9 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { scanSkills, splitFrontmatter, type ScanSkillsOptions } from './scanner';
 
 /**
- * Skills are the one capability OPC reads eagerly, so the parser has to survive
- * whatever people actually put in a SKILL.md — no frontmatter, quoted values,
- * folded blocks, a folder that is not a skill at all.
+ * OPC uses a pure built-in curated skills catalog: only `bundledDir` and
+ * `managedDir` are scanned, never external `~/.agents/skills`.
  */
 
 interface FakeEntry {
@@ -78,14 +77,13 @@ function fakeIo(entries: Record<string, FakeEntry>): Required<Pick<ScanSkillsOpt
 
 const home = 'C:/home';
 const project = 'C:/work/app';
-const globalRoot = `${home}/.agents/skills`;
-const projectRoot = `${project}/.agents/skills`;
+const bundledRoot = 'C:/app/resources/skills';
+const managedRoot = 'C:/userData/skills-managed';
+const externalGlobalRoot = `${home}/.agents/skills`;
+const externalProjectRoot = `${project}/.agents/skills`;
 
 const skill = (body: string, frontmatter?: string) =>
   frontmatter === undefined ? body : `---\n${frontmatter}\n---\n\n${body}`;
-
-const scan = (entries: Record<string, FakeEntry>, managedDir?: string) =>
-  scanSkills({ homeDir: home, projectDir: project, ...(managedDir ? { managedDir } : {}), ...fakeIo(entries) });
 
 describe('splitFrontmatter', () => {
   it('reads name and description and keeps the body', () => {
@@ -112,33 +110,60 @@ describe('splitFrontmatter', () => {
 });
 
 describe('scanSkills', () => {
-  it('finds a skill, its description and its bundled files', () => {
-    const result = scan({
-      [`${globalRoot}/pdf/SKILL.md`]: {
-        kind: 'file',
-        text: skill('# PDF guide\n\nStep one.', 'name: pdf\ndescription: PDF toolkit'),
-      },
-      [`${globalRoot}/pdf/scripts/fill.py`]: { kind: 'file' },
-      [`${globalRoot}/pdf/references/forms.md`]: { kind: 'file' },
+  it('ignores external ~/.agents/skills and .agents/skills completely', () => {
+    const result = scanSkills({
+      homeDir: home,
+      projectDir: project,
+      bundledDir: bundledRoot,
+      managedDir: managedRoot,
+      ...fakeIo({
+        [`${externalGlobalRoot}/pdf/SKILL.md`]: {
+          kind: 'file',
+          text: skill('External PDF', 'name: pdf\ndescription: external pdf'),
+        },
+        [`${externalProjectRoot}/custom/SKILL.md`]: {
+          kind: 'file',
+          text: skill('Project custom', 'name: custom\ndescription: external project'),
+        },
+        [`${bundledRoot}/video-production/SKILL.md`]: {
+          kind: 'file',
+          text: skill(
+            '# Video',
+            'name: video-production\ntitle: 视频制作工作流\nsummary: 端到端视频工作流\ncategory: creative\ndescription: bundled video workflow',
+          ),
+        },
+        [`${managedRoot}/office-pdf/SKILL.md`]: {
+          kind: 'file',
+          text: skill('# PDF', 'name: office-pdf\ndescription: OPC PDF'),
+        },
+      }),
     });
 
-    expect(result.roots.map(posix)).toEqual([globalRoot, projectRoot]);
-    expect(result.entries).toHaveLength(1);
+    expect(result.roots.map(posix)).toEqual([bundledRoot, managedRoot]);
+    expect(result.entries.map((e) => e.name)).toEqual(['office-pdf', 'video-production']);
+    expect(result.entries[1]).toMatchObject({
+      name: 'video-production',
+      title: '视频制作工作流',
+      summary: '端到端视频工作流',
+      category: 'creative',
+      scope: 'bundled',
+    });
     expect(result.entries[0]).toMatchObject({
-      name: 'pdf',
-      description: 'PDF toolkit',
-      scope: 'global',
-      files: ['references/forms.md', 'scripts/fill.py'],
-      body: '# PDF guide\n\nStep one.',
+      name: 'office-pdf',
+      category: 'office',
+      scope: 'managed',
     });
   });
 
   it('falls back to the folder name and the first sentence', () => {
-    const result = scan({
-      [`${globalRoot}/notes/SKILL.md`]: {
-        kind: 'file',
-        text: '# Notes\n\nSummarise meeting notes into decisions. Then file them.',
-      },
+    const result = scanSkills({
+      bundledDir: bundledRoot,
+      ...fakeIo({
+        [`${bundledRoot}/notes/SKILL.md`]: {
+          kind: 'file',
+          text: '# Notes\n\nSummarise meeting notes into decisions. Then file them.',
+        },
+      }),
     });
 
     expect(result.entries[0]).toMatchObject({
@@ -148,102 +173,63 @@ describe('scanSkills', () => {
   });
 
   it('ignores folders without SKILL.md, hidden folders and node_modules', () => {
-    const result = scan({
-      [`${globalRoot}/empty/README.md`]: { kind: 'file' },
-      [`${globalRoot}/.git/SKILL.md`]: { kind: 'file' },
-      [`${globalRoot}/node_modules/SKILL.md`]: { kind: 'file' },
-      [`${globalRoot}/real/SKILL.md`]: { kind: 'file', text: skill('Body.', 'name: real') },
+    const result = scanSkills({
+      bundledDir: bundledRoot,
+      ...fakeIo({
+        [`${bundledRoot}/empty/README.md`]: { kind: 'file' },
+        [`${bundledRoot}/.git/SKILL.md`]: { kind: 'file' },
+        [`${bundledRoot}/node_modules/SKILL.md`]: { kind: 'file' },
+        [`${bundledRoot}/real/SKILL.md`]: { kind: 'file', text: skill('Body.', 'name: real') },
+      }),
     });
 
     expect(result.entries.map((entry) => entry.name)).toEqual(['real']);
   });
 
-  it('lets a project skill replace a global one with the same name', () => {
-    const result = scan({
-      [`${globalRoot}/deploy/SKILL.md`]: { kind: 'file', text: skill('global.', 'name: deploy\ndescription: global one') },
-      [`${projectRoot}/deploy/SKILL.md`]: { kind: 'file', text: skill('project.', 'name: deploy\ndescription: project one') },
-    });
-
-    expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]).toMatchObject({ description: 'project one', scope: 'project' });
-  });
-
-  it('caps the file listing instead of walking a huge tree', () => {
-    const entries: Record<string, FakeEntry> = {
-      [`${globalRoot}/big/SKILL.md`]: { kind: 'file', text: skill('Body.', 'name: big') },
-    };
-    for (let index = 0; index < 260; index += 1) {
-      entries[`${globalRoot}/big/assets/file-${index}.txt`] = { kind: 'file' };
-    }
-
-    expect(scan(entries).entries[0]!.files).toHaveLength(200);
-  });
-
-  it('reads the newest mtime so edits invalidate the cache', () => {
-    const result = scan({
-      [`${globalRoot}/fresh/SKILL.md`]: { kind: 'file', mtime: 7, text: skill('Body.', 'name: fresh') },
-      [`${globalRoot}/fresh`]: { kind: 'dir', mtime: 11 },
-    });
-
-    expect(result.entries[0]!.mtime).toBe(11);
-  });
-
-  it('scans managedDir first and lets global or project skills override it', () => {
-    const managedRoot = 'C:/userData/skills-managed';
-    const result = scan(
-      {
-        [`${managedRoot}/office-pdf/SKILL.md`]: {
-          kind: 'file',
-          text: skill('managed.', 'name: office-pdf\ndescription: managed desc'),
-        },
-        [`${managedRoot}/office-excel/SKILL.md`]: {
-          kind: 'file',
-          text: skill('managed excel.', 'name: office-excel\ndescription: excel desc'),
-        },
-        [`${globalRoot}/office-pdf/SKILL.md`]: {
-          kind: 'file',
-          text: skill('global.', 'name: office-pdf\ndescription: global override'),
-        },
-      },
-      managedRoot,
-    );
-
-    expect(result.roots.map(posix)).toEqual([managedRoot, globalRoot, projectRoot]);
-    expect(result.entries.find((e) => e.name === 'office-excel')).toMatchObject({ scope: 'managed' });
-    expect(result.entries.find((e) => e.name === 'office-pdf')).toMatchObject({
-      scope: 'global',
-      description: 'global override',
-    });
-  });
-
-  it('scans bundledDir first and lets global or project skills override it', () => {
-    const bundledRoot = 'C:/app/resources/skills';
+  it('lets managedDir override bundledDir on name collision', () => {
     const result = scanSkills({
-      homeDir: home,
-      projectDir: project,
       bundledDir: bundledRoot,
+      managedDir: managedRoot,
       ...fakeIo({
-        [`${bundledRoot}/video-production/SKILL.md`]: {
-          kind: 'file',
-          text: skill('bundled.', 'name: video-production\ndescription: bundled video workflow'),
-        },
-        [`${bundledRoot}/video-production/references/model-prompting.md`]: {
-          kind: 'file',
-          text: '# prompts',
-        },
-        [`${projectRoot}/video-production/SKILL.md`]: {
-          kind: 'file',
-          text: skill('project.', 'name: video-production\ndescription: custom override'),
-        },
+        [`${bundledRoot}/shared/SKILL.md`]: { kind: 'file', text: skill('bundled.', 'name: shared\ndescription: b') },
+        [`${managedRoot}/shared/SKILL.md`]: { kind: 'file', text: skill('managed.', 'name: shared\ndescription: m') },
       }),
     });
 
-    expect(result.roots.map(posix)).toEqual([bundledRoot, globalRoot, projectRoot]);
     expect(result.entries).toHaveLength(1);
-    expect(result.entries[0]).toMatchObject({
-      name: 'video-production',
-      scope: 'project',
-      description: 'custom override',
-    });
+    expect(result.entries[0]).toMatchObject({ description: 'm', scope: 'managed' });
+  });
+
+  it('prunes deep templates/icons subdirs so workflows and scripts stay visible within MAX_FILES', () => {
+    const entries: Record<string, FakeEntry> = {
+      [`${managedRoot}/office-ppt/SKILL.md`]: { kind: 'file', text: skill('Body.', 'name: ppt-master') },
+      [`${managedRoot}/office-ppt/scripts/svg_to_pptx.py`]: { kind: 'file' },
+      [`${managedRoot}/office-ppt/workflows/generate-pptx.md`]: { kind: 'file' },
+      [`${managedRoot}/office-ppt/templates/icons/README.md`]: { kind: 'file' },
+    };
+    for (let i = 0; i < 250; i += 1) {
+      entries[`${managedRoot}/office-ppt/templates/icons/tabler-outline/icon-${i}.svg`] = { kind: 'file' };
+    }
+
+    const files = scanSkills({ managedDir: managedRoot, ...fakeIo(entries) }).entries[0]!.files;
+    expect(files).toContain('scripts/svg_to_pptx.py');
+    expect(files).toContain('workflows/generate-pptx.md');
+    expect(files).toContain('templates/icons/README.md');
+    expect(files).toContain('templates/icons/tabler-outline/');
+    expect(files.some((f) => f.endsWith('.svg'))).toBe(false);
+  });
+
+  it('caps huge directories cleanly and tracks newest mtime', () => {
+    const entries: Record<string, FakeEntry> = {
+      [`${bundledRoot}/big/SKILL.md`]: { kind: 'file', mtime: 7, text: skill('Body.', 'name: big') },
+      [`${bundledRoot}/big`]: { kind: 'dir', mtime: 11 },
+    };
+    for (let index = 0; index < 260; index += 1) {
+      entries[`${bundledRoot}/big/assets/file-${index}.txt`] = { kind: 'file' };
+    }
+
+    const result = scanSkills({ bundledDir: bundledRoot, ...fakeIo(entries) });
+    expect(result.entries[0]!.files).toHaveLength(200);
+    expect(result.entries[0]!.mtime).toBe(11);
   });
 });

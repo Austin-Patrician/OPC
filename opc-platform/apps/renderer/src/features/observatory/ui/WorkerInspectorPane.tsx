@@ -33,6 +33,7 @@ import {
   shortModelName,
 } from '../model/formatters';
 import { openDocPreview } from '@/shared/model/docPreviewStore';
+import type { LiveWorkerToolActivity } from '../model/useObservatory';
 import { CompactMarkdown } from './CompactMarkdown';
 import {
   APPROVAL_VISUAL,
@@ -51,6 +52,7 @@ interface WorkerInspectorPaneProps {
   selectedTaskId: string | null;
   selectedThread: ObservatoryThreadItem | null;
   taskDetail: ObservatoryTaskDetail | null;
+  liveTool?: LiveWorkerToolActivity | null;
   loadingDetail: boolean;
   actionBusy: boolean;
   onSelectThread: (threadId: string) => void;
@@ -617,6 +619,7 @@ export function WorkerInspectorPane({
   selectedTaskId,
   selectedThread,
   taskDetail,
+  liveTool = null,
   loadingDetail,
   actionBusy,
   onSelectThread,
@@ -633,6 +636,8 @@ export function WorkerInspectorPane({
   const [stepsExpanded, setStepsExpanded] = useState(false);
   const [intermediateExpanded, setIntermediateExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const traceViewportRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
 
   const activeRunning = useMemo(() => {
     const status = taskDetail?.task.status ?? selectedThread?.latestTask?.status;
@@ -666,7 +671,17 @@ export function WorkerInspectorPane({
   const activeViewedTaskId = selectedTaskId ?? task?.id ?? selectedThread?.latestTask?.id ?? null;
   useEffect(() => {
     setIntermediateExpanded(false);
+    pinnedToBottomRef.current = true;
   }, [activeViewedTaskId]);
+
+  const traceLength = taskDetail?.trace.length ?? 0;
+  useEffect(() => {
+    if (subTab !== 'trace' || !activeRunning || !pinnedToBottomRef.current) return;
+    const viewport = traceViewportRef.current;
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
+    }
+  }, [activeRunning, liveTool, subTab, traceLength]);
 
   const partitionedArtifacts = useMemo(
     () => partitionTaskArtifacts(task?.artifacts ?? [], task?.contract?.outputs),
@@ -922,13 +937,20 @@ export function WorkerInspectorPane({
           </div>
 
           {/* Layer 4: Primary Viewport (Trace Rail / Artifacts / Contract) */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2.5">
+          <div
+            ref={traceViewportRef}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            }}
+            className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2.5"
+          >
             {loadingDetail && !taskDetail ? (
               <div className="py-10 text-center text-xs text-ink-tertiary">
                 {t('common.loading')}
               </div>
             ) : subTab === 'trace' ? (
-              foldedTrace.length > 0 ? (
+              foldedTrace.length > 0 || (activeRunning && liveTool) ? (
                 <div className="space-y-1">
                   {!activeRunning && !hasRealActionsInTrace ? (
                     <div className="rounded-md bg-surface-muted/60 px-2.5 py-1.5 text-[11px] text-ink-tertiary">
@@ -974,7 +996,35 @@ export function WorkerInspectorPane({
                     }
                     return <StepRailRow key={item.id} entry={item.entry} />;
                   })}
-                  {activeRunning ? (
+                  {activeRunning && liveTool ? (
+                    <div className="relative pl-6">
+                      <div className="flex items-start justify-between gap-2 rounded-md bg-accent-soft/45 px-1.5 py-1">
+                        <span className="observatory-rail-node absolute left-[1px] top-[5px] flex h-[18px] w-[18px] items-center justify-center rounded bg-panel">
+                          <ObservatoryIcon
+                            visual={resolveToolVisual(liveTool.toolName, liveTool.argsDigest)}
+                            size={14}
+                            className="!text-accent-ink"
+                          />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="shrink-0 font-mono text-[11.5px] font-medium text-accent-ink">
+                              {liveTool.toolName}
+                            </span>
+                            {liveTool.argsDigest ? (
+                              <span className="truncate font-mono text-[11px] text-ink-secondary">
+                                {liveTool.argsDigest}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5 pt-0.5 font-mono text-[10.5px] tabular-nums text-accent-ink">
+                          <span>{formatDurationCompact(Math.max(0, now - liveTool.startedAt))}</span>
+                          <span className="h-1.5 w-1.5 rounded-full bg-accent observatory-dot-pulse" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : activeRunning ? (
                     <div className="relative flex items-center gap-2 py-1.5 pl-6 text-[11px] text-accent-ink">
                       <span className="absolute left-[6px] h-2 w-2 rounded-full bg-accent observatory-dot-pulse" />
                       <span>{t('observatory.workerLiveRunning')}</span>
@@ -1102,7 +1152,10 @@ export function WorkerInspectorPane({
                           key={att.id}
                           className="flex items-center justify-between gap-2 font-mono text-[11px] text-ink-secondary"
                         >
-                          <span className="truncate">{att.name}</span>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <ObservatoryIcon visual={resolveArtifactVisual(att.name)} size={14} />
+                            <span className="truncate">{att.name}</span>
+                          </span>
                           <span className="shrink-0 tabular-nums text-ink-tertiary">
                             {formatBytes(att.size)}
                           </span>

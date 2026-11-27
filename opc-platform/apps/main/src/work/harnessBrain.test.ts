@@ -455,4 +455,56 @@ describe('把话插进正在跑的活', () => {
     expect(String(submitted[1]?.content)).toContain('output/b.pdf');
     expect(String(submitted[1]?.content)).not.toContain('你要完成下面的交付契约');
   });
+
+  it('包含最短路径直出交付与工具边界止损纪律', () => {
+    const prompt = buildPrompt(task());
+    expect(prompt).toContain('最短路径直出');
+    expect(prompt).toContain('不要再 read 大图自检');
+    expect(prompt).toContain('工具边界与止损');
+    expect(prompt).toContain('严禁用 bash 翻查 OPC 程序目录');
+    expect(prompt).toContain('合并批量调用');
+    expect(prompt).toContain('1600px 宽的 JPEG 拼图');
+  });
+
+  it('正常回合将全局 high 思考强度封顶为 medium，且保留截断重试时降级为 low 的能力', async () => {
+    const createdThinking: Array<string | undefined> = [];
+    const logs: string[] = [];
+    const conversation = {
+      id: 'conv-cap',
+      submit: async () => ({
+        wait: async () => ({ type: 'input', status: 'done', answer: 'ans-1' }),
+      }),
+      commit: async (fn: (tx: { entry: () => Promise<{ model: unknown[] }> }) => unknown) =>
+        fn({
+          entry: async () => ({
+            model: [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }],
+          }),
+        }),
+    };
+    const harness = {
+      createConversation: async (opts: { agent?: { thinkingLevel?: string } }) => {
+        createdThinking.push(opts.agent?.thinkingLevel);
+        return conversation;
+      },
+      usage: async () => ({}),
+    };
+
+    const brain = new HarnessBrain({
+      harnessFor: async () => ({ harness: harness as never }),
+      context: async () => ({}) as never,
+      model: () => ({ providerId: 'p', modelId: 'm' }),
+      thinking: () => 'high',
+      price: () => ({ inputUsdPerM: 0, outputUsdPerM: 0 }),
+      onTokens: () => undefined,
+    });
+
+    await brain.execute({
+      task: task(),
+      workspaceDir: tmpdir(),
+      log: (msg) => logs.push(msg),
+    });
+
+    expect(createdThinking).toEqual(['medium']);
+    expect(logs.some((msg) => msg.includes('自动限制为 medium'))).toBe(true);
+  });
 });

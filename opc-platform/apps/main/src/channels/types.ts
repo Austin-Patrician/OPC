@@ -8,13 +8,21 @@ import type {
   ChannelView,
   ChatAttachmentRef,
   ChatContentBlock,
+  GitHubRepoListResult,
   TriggerReplyTarget,
+  TriggerSource,
 } from '@opc/shared/domain';
 
 export interface ChannelInboundMessage {
   channelId: string;
   channelName: string;
   transport: ChannelTransportKind;
+  /** Defaults to `'im'` for chat channels; non-IM sources (e.g. GitHub) override cleanly. */
+  source?: TriggerSource;
+  /** Defaults to `'im.message'`. */
+  eventKind?: string;
+  /** Optional external thread identity (e.g. `github:owner/repo#12`) for fast-path routing. */
+  threadKey?: string;
   messageId: string;
   chatId: string;
   chatKind: 'p2p' | 'group';
@@ -49,7 +57,9 @@ export interface ChannelSendResult {
   error?: string;
 }
 
-export type ChannelThinkingCleanup = () => Promise<void>;
+export type ChannelThinkingCleanupReason = 'replied' | 'timeout' | 'cancelled';
+
+export type ChannelThinkingCleanup = (reason?: ChannelThinkingCleanupReason) => Promise<void>;
 
 export interface ChannelPluginContext {
   onInboundMessage: (message: ChannelInboundMessage) => Promise<void>;
@@ -58,9 +68,11 @@ export interface ChannelPluginContext {
 }
 
 export interface ChannelPlugin {
-  readonly id: 'feishu' | 'dingtalk';
+  readonly id: 'feishu' | 'dingtalk' | 'slack' | 'wecom' | 'telegram' | 'github';
   readonly name: string;
   readonly transport: ChannelTransportKind;
+  /** When true, pairing requests appear on desktop without sending external prompts. */
+  readonly silentPairing?: boolean;
   isConfigured(): boolean;
   isEnabled(): boolean;
   shouldMirrorToDesktop(): boolean;
@@ -80,6 +92,8 @@ export interface ChannelPlugin {
   stop(): Promise<void>;
   reconnect(): Promise<void>;
   testConnection(draft?: unknown): Promise<ChannelConnectionTestResult>;
+  listGitHubRepos?(draft?: unknown): Promise<GitHubRepoListResult>;
+  refreshWatchRepos?(): void;
   sendMessage(payload: ChannelSendPayload): Promise<ChannelSendResult>;
   markThinking?(messageId: string): Promise<ChannelThinkingCleanup | undefined>;
 }

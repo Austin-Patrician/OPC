@@ -122,7 +122,7 @@ export function getFileIcon(extension?: string, fileName?: string): string {
     return icons.icon_file;
   }
 
-  const ext = extension.toLowerCase();
+  const ext = extension.replace(/^\./, '').toLowerCase();
   const iconMap: Record<string, string> = {
     // 编程语言 - 主流
     ts: icons.icon_typescript,
@@ -294,6 +294,10 @@ export function getFileIcon(extension?: string, fileName?: string): string {
     webp: icons.icon_image,
     ico: icons.icon_image,
     bmp: icons.icon_image,
+    avif: icons.icon_image,
+    tif: icons.icon_image,
+    tiff: icons.icon_image,
+    heic: icons.icon_image,
     svg: icons.icon_svg,
     pdf: icons.icon_pdf,
     mp4: icons.icon_video,
@@ -305,22 +309,32 @@ export function getFileIcon(extension?: string, fileName?: string): string {
     wav: icons.icon_audio,
     ogg: icons.icon_audio,
     flac: icons.icon_audio,
+    m4a: icons.icon_audio,
+    aac: icons.icon_audio,
+    wma: icons.icon_audio,
     ttf: icons.icon_font,
     otf: icons.icon_font,
     woff: icons.icon_font,
     woff2: icons.icon_font,
     eot: icons.icon_font,
 
-    // 文档
+    // 文档与表格
     doc: icons.icon_word,
     docx: icons.icon_word,
     ppt: icons.icon_powerpoint,
     pptx: icons.icon_powerpoint,
+    xls: icons.icon_table,
+    xlsx: icons.icon_table,
+    xlsm: icons.icon_table,
+    ods: icons.icon_table,
 
     // 压缩/二进制
     zip: icons.icon_zip,
     tar: icons.icon_zip,
     gz: icons.icon_zip,
+    tgz: icons.icon_zip,
+    bz2: icons.icon_zip,
+    xz: icons.icon_zip,
     rar: icons.icon_zip,
     '7z': icons.icon_zip,
     exe: icons.icon_exe,
@@ -424,6 +438,17 @@ export function getFileIcon(extension?: string, fileName?: string): string {
   };
 
   return iconMap[ext] || icons.icon_file;
+}
+
+/**
+ * Resolves a file-type SVG icon from a relative or absolute file path.
+ */
+export function getFileIconForPath(filePath: string): string {
+  const normalized = filePath.replaceAll('\\', '/').trim();
+  const fileName = normalized.split('/').pop() || normalized;
+  const dot = fileName.lastIndexOf('.');
+  const extension = dot > 0 && dot < fileName.length - 1 ? fileName.slice(dot + 1) : undefined;
+  return getFileIcon(extension, fileName);
 }
 
 /**

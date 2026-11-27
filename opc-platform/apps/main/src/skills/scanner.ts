@@ -14,8 +14,8 @@ import path from 'node:path';
  * agent deciding to run a script it was told about, and that goes through the
  * normal `bash` tool and its sandbox.
  *
- * Layout: `<root>/<name>/SKILL.md`, one level deep, `~/.agents/skills` (global)
- * then `<project>/.agents/skills` (project, wins on name collisions).
+ * Layout: `<root>/<name>/SKILL.md`, one level deep, scanning only OPC's
+ * curated built-in roots (`resources/skills` and `<userData>/skills-managed`).
  */
 
 const SKILL_FILE = 'SKILL.md';
@@ -23,11 +23,15 @@ const MAX_FILES = 200;
 const MAX_DEPTH = 4;
 
 export type SkillScope = 'bundled' | 'managed' | 'global' | 'project';
+export type SkillCategory = 'office' | 'creative';
 
 export interface ScannedSkill {
   /** Absolute path of the SKILL.md, POSIX-normalized: stable across scans. */
   id: string;
   name: string;
+  title?: string;
+  summary?: string;
+  category?: SkillCategory;
   description: string;
   scope: SkillScope;
   /** Folder that owns the skill; its scripts/references live here. */
@@ -43,11 +47,12 @@ export interface ScannedSkill {
 }
 
 export interface ScanSkillsOptions {
-  homeDir: string;
-  projectDir: string;
-  /** Optional app-bundled zero-dependency skills directory (`resources/skills`). */
+  /** Legacy unused external roots kept optional for test/caller compatibility. */
+  homeDir?: string;
+  projectDir?: string;
+  /** App-bundled zero-dependency skills directory (`resources/skills`). */
   bundledDir?: string;
-  /** Optional app-managed skills directory, scanned before global/project so users can override. */
+  /** App-managed skills directory (`<userData>/skills-managed`). */
   managedDir?: string;
   readDir?: (dir: string) => fs.Dirent[];
   readText?: (file: string) => string | undefined;
@@ -76,16 +81,14 @@ export function resolveBundledSkillsDir(input: {
 }
 
 export function skillRoots(
-  homeDir: string,
-  projectDir: string,
+  _homeDir?: string,
+  _projectDir?: string,
   managedDir?: string,
   bundledDir?: string,
 ): { scope: SkillScope; dir: string }[] {
   return [
     ...(bundledDir ? [{ scope: 'bundled' as const, dir: bundledDir }] : []),
     ...(managedDir ? [{ scope: 'managed' as const, dir: managedDir }] : []),
-    { scope: 'global', dir: path.join(homeDir, '.agents', 'skills') },
-    { scope: 'project', dir: path.join(projectDir, '.agents', 'skills') },
   ];
 }
 
@@ -97,8 +100,7 @@ export function scanSkills(options: ScanSkillsOptions): ScanSkillsResult {
   };
   const roots = skillRoots(options.homeDir, options.projectDir, options.managedDir, options.bundledDir);
 
-  // Keyed by name: a project skill replaces the global one of the same name,
-  // which is the same precedence Pi and Claude Code use.
+  // Keyed by name so a managed skill overrides a bundled skill of the same name.
   const byName = new Map<string, ScannedSkill>();
 
   for (const root of roots) {
@@ -133,11 +135,23 @@ function describe(
 
   const { frontmatter, body } = splitFrontmatter(raw);
   const name = (frontmatter.name ?? path.basename(dir)).trim() || path.basename(dir);
+  const title = frontmatter.title?.trim() || undefined;
+  const summary = frontmatter.summary?.trim() || undefined;
+  const rawCategory = frontmatter.category?.trim();
+  const category: SkillCategory =
+    rawCategory === 'office' || rawCategory === 'creative'
+      ? rawCategory
+      : scope === 'managed'
+        ? 'office'
+        : 'creative';
   const description = (frontmatter.description ?? firstParagraph(body)).trim();
 
   return {
     id: toPosix(file),
     name,
+    ...(title ? { title } : {}),
+    ...(summary ? { summary } : {}),
+    category,
     description,
     scope,
     dir,
@@ -216,15 +230,21 @@ function listFiles(
     if (depth > MAX_DEPTH || found.length >= MAX_FILES) return;
     for (const dirent of io.readDir(current)) {
       if (found.length >= MAX_FILES) return;
-      if (dirent.name === 'node_modules' || dirent.name === '.git') continue;
+      if (dirent.name === 'node_modules' || dirent.name === '.git' || dirent.name === '__pycache__') continue;
       const target = path.join(current, dirent.name);
       const info = io.stat(target);
       if (!info) continue;
+      const relative = toPosix(path.relative(dir, target));
       if (info.isDirectory()) {
+        // Summarize huge icon libraries (`templates/icons/<pack>/`) instead of
+        // exhausting `MAX_FILES` with 12,000 individual `.svg` entries.
+        if (relative.startsWith('templates/icons/') && relative.split('/').length === 3) {
+          found.push(`${relative}/`);
+          continue;
+        }
         walk(target, depth + 1);
         continue;
       }
-      const relative = toPosix(path.relative(dir, target));
       if (relative === SKILL_FILE) continue;
       found.push(relative);
     }

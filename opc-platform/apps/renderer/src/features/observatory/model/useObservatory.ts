@@ -17,6 +17,13 @@ export interface ObservatoryBadgeSummary {
   routerBusy: boolean;
 }
 
+export interface LiveWorkerToolActivity {
+  taskId: string;
+  toolName: string;
+  argsDigest: string;
+  startedAt: number;
+}
+
 function pickInitialThreadId(
   items: readonly ObservatoryThreadItem[],
   currentId: string | null,
@@ -45,6 +52,7 @@ export function useObservatory(open: boolean) {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [taskDetail, setTaskDetail] = useState<ObservatoryTaskDetail | null>(null);
+  const [liveToolsByTask, setLiveToolsByTask] = useState<Record<string, LiveWorkerToolActivity>>({});
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -68,14 +76,22 @@ export function useObservatory(open: boolean) {
   selectedThreadIdRef.current = selectedThreadId;
   const selectedTaskIdRef = useRef(selectedTaskId);
   selectedTaskIdRef.current = selectedTaskId;
+  const detailSeqRef = useRef(0);
   const refreshTimerRef = useRef<number | null>(null);
+  const detailTimerRef = useRef<number | null>(null);
   const wasOpenRef = useRef(false);
   const pendingFocusRef = useRef<{ threadId: string; taskId?: string } | null>(null);
 
   const loadDetailForThread = useCallback(
-    async (snap: ObservatorySnapshot, threadId: string | null, preferredTaskId?: string | null) => {
+    async (
+      snap: ObservatorySnapshot,
+      threadId: string | null,
+      preferredTaskId?: string | null,
+      options?: { silent?: boolean },
+    ) => {
       const bridge = window.opc?.observatory;
       if (!bridge || !threadId) {
+        selectedTaskIdRef.current = null;
         setSelectedTaskId(null);
         setTaskDetail(null);
         return;
@@ -86,35 +102,65 @@ export function useObservatory(open: boolean) {
           ? preferredTaskId
           : null;
       const taskId = validExplicit ?? item?.latestTask?.id ?? null;
+      selectedTaskIdRef.current = taskId;
       setSelectedTaskId(taskId);
       if (!taskId) {
         setTaskDetail(null);
         return;
       }
-      setLoadingDetail(true);
+      const seq = ++detailSeqRef.current;
+      if (!options?.silent) setLoadingDetail(true);
       try {
         const detail = await bridge.taskDetail(taskId);
-        if (selectedThreadIdRef.current === threadId) {
+        if (
+          detailSeqRef.current === seq &&
+          selectedThreadIdRef.current === threadId &&
+          selectedTaskIdRef.current === taskId
+        ) {
           setTaskDetail(detail);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (detailSeqRef.current === seq) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setLoadingDetail(false);
+        if (!options?.silent && detailSeqRef.current === seq) {
+          setLoadingDetail(false);
+        }
       }
     },
     [],
   );
+
+  const refreshTaskDetailDirect = useCallback((taskId: string) => {
+    const bridge = window.opc?.observatory;
+    if (!bridge || !openRef.current || detailTimerRef.current !== null) return;
+    // Coalesce without resetting so continuous tool completions flush promptly.
+    detailTimerRef.current = window.setTimeout(() => {
+      detailTimerRef.current = null;
+      if (!openRef.current || selectedTaskIdRef.current !== taskId) return;
+      const seq = ++detailSeqRef.current;
+      void bridge
+        .taskDetail(taskId)
+        .then((detail) => {
+          if (detailSeqRef.current === seq && selectedTaskIdRef.current === taskId) {
+            setTaskDetail(detail);
+          }
+        })
+        .catch(() => undefined);
+    }, 90);
+  }, []);
 
   const refresh = useCallback(
     async (options?: {
       focusPriority?: boolean;
       targetThreadId?: string;
       targetTaskId?: string | null;
+      silent?: boolean;
     }) => {
       const bridge = window.opc?.observatory;
       if (!bridge) return;
-      if (openRef.current) setLoading(true);
+      if (openRef.current && !options?.silent) setLoading(true);
       try {
         const next = await bridge.snapshot();
         setSnapshot(next);
@@ -132,6 +178,7 @@ export function useObservatory(open: boolean) {
             ? pickInitialThreadId(next.threads, null)
             : pickInitialThreadId(next.threads, selectedThreadIdRef.current);
 
+        selectedThreadIdRef.current = preferredThreadId;
         setSelectedThreadId(preferredThreadId);
 
         if (
@@ -152,28 +199,30 @@ export function useObservatory(open: boolean) {
             : options?.focusPriority
               ? null
               : selectedTaskIdRef.current;
-          await loadDetailForThread(next, preferredThreadId, targetTaskId);
+          await loadDetailForThread(next, preferredThreadId, targetTaskId, {
+            silent: options?.silent,
+          });
         } else if (!preferredThreadId) {
+          selectedTaskIdRef.current = null;
           setSelectedTaskId(null);
           setTaskDetail(null);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (!options?.silent) setLoading(false);
       }
     },
     [loadDetailForThread],
   );
 
   const scheduleRefresh = useCallback(
-    (delayMs = 240) => {
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
+    (delayMs = 200) => {
+      // Never cancel an already-scheduled refresh on continuous bursts (prevents starvation).
+      if (refreshTimerRef.current !== null) return;
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
-        void refresh();
+        void refresh({ silent: true });
       }, delayMs);
     },
     [refresh],
@@ -206,8 +255,36 @@ export function useObservatory(open: boolean) {
     const onProgress = window.opc?.work?.onProgress;
     if (onProgress) {
       unsubs.push(
-        onProgress(() => {
-          scheduleRefresh(openRef.current ? 180 : 500);
+        onProgress((event) => {
+          const isToolStart =
+            event.phase === 'tool_start' ||
+            (event.phase === undefined &&
+              event.state === 'running' &&
+              event.ok === null &&
+              event.toolName !== 'lifecycle');
+
+          setLiveToolsByTask((prev) => {
+            if (isToolStart) {
+              return {
+                ...prev,
+                [event.taskId]: {
+                  taskId: event.taskId,
+                  toolName: event.toolName,
+                  argsDigest: event.argsDigest ?? event.summary,
+                  startedAt: event.at,
+                },
+              };
+            }
+            if (!(event.taskId in prev)) return prev;
+            const next = { ...prev };
+            delete next[event.taskId];
+            return next;
+          });
+
+          if (openRef.current && event.taskId === selectedTaskIdRef.current && !isToolStart) {
+            refreshTaskDetailDirect(event.taskId);
+          }
+          scheduleRefresh(openRef.current ? 280 : 600);
         }),
       );
     }
@@ -215,8 +292,19 @@ export function useObservatory(open: boolean) {
     const onTaskChanged = window.opc?.work?.onTaskChanged;
     if (onTaskChanged) {
       unsubs.push(
-        onTaskChanged(() => {
-          scheduleRefresh(openRef.current ? 180 : 500);
+        onTaskChanged((task) => {
+          if (task.status !== 'running') {
+            setLiveToolsByTask((prev) => {
+              if (!(task.id in prev)) return prev;
+              const next = { ...prev };
+              delete next[task.id];
+              return next;
+            });
+          }
+          if (openRef.current && task.id === selectedTaskIdRef.current) {
+            refreshTaskDetailDirect(task.id);
+          }
+          scheduleRefresh(openRef.current ? 220 : 500);
         }),
       );
     }
@@ -266,6 +354,10 @@ export function useObservatory(open: boolean) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
+      if (detailTimerRef.current !== null) {
+        window.clearTimeout(detailTimerRef.current);
+        detailTimerRef.current = null;
+      }
       for (const unsub of unsubs) {
         try {
           unsub();
@@ -274,12 +366,15 @@ export function useObservatory(open: boolean) {
         }
       }
     };
-  }, [scheduleRefresh]);
+  }, [refreshTaskDetailDirect, scheduleRefresh]);
 
   const selectThread = useCallback(
     (threadId: string) => {
+      selectedThreadIdRef.current = threadId;
+      selectedTaskIdRef.current = null;
       setSelectedThreadId(threadId);
       setSelectedTaskId(null);
+      setTaskDetail(null);
       if (snapshot) {
         void loadDetailForThread(snapshot, threadId, null);
       }
@@ -289,6 +384,7 @@ export function useObservatory(open: boolean) {
 
   const selectTask = useCallback(
     (taskId: string) => {
+      selectedTaskIdRef.current = taskId;
       setSelectedTaskId(taskId);
       if (snapshot && selectedThreadIdRef.current) {
         void loadDetailForThread(snapshot, selectedThreadIdRef.current, taskId);
@@ -300,8 +396,11 @@ export function useObservatory(open: boolean) {
   const jumpToThread = useCallback(
     (threadId: string) => {
       setSelectedTab('workers');
+      selectedThreadIdRef.current = threadId;
+      selectedTaskIdRef.current = null;
       setSelectedThreadId(threadId);
       setSelectedTaskId(null);
+      setTaskDetail(null);
       if (snapshot) {
         void loadDetailForThread(snapshot, threadId, null);
       } else {
@@ -439,6 +538,11 @@ export function useObservatory(open: boolean) {
     [snapshot, selectedThreadId],
   );
 
+  const liveToolForSelectedTask = useMemo(() => {
+    const activeId = selectedTaskId ?? selectedThread?.latestTask?.id ?? null;
+    return activeId ? (liveToolsByTask[activeId] ?? null) : null;
+  }, [liveToolsByTask, selectedTaskId, selectedThread]);
+
   return {
     snapshot,
     selectedTab,
@@ -447,6 +551,7 @@ export function useObservatory(open: boolean) {
     selectedTaskId,
     selectedThread,
     taskDetail,
+    liveToolForSelectedTask,
     loading,
     loadingDetail,
     actionBusy,

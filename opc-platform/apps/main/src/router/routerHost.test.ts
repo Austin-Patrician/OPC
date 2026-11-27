@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { DEFAULT_SEMANTIC_PROMPT, DEFAULT_TRIAGE_POLICY, type TriagePolicy } from '@opc/shared/domain';
+import { DEFAULT_SEMANTIC_PROMPT, DEFAULT_TRIAGE_POLICY, type ChatAttachmentRef, type TriagePolicy } from '@opc/shared/domain';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCompanyDatabase, type CompanyDatabase } from '../data/companyDatabase';
 import { ThreadRepository } from '../data/threadRepository';
-import { createRouterHost, shouldRepairMissingReply } from './routerHost';
+import { createRouterHost, resolveOpenLineAttachments, shouldRepairMissingReply } from './routerHost';
 
 /**
  * Router 装起来之后**真的能跑**。
@@ -54,6 +54,58 @@ describe('静默派活回复契约', () => {
     expect(shouldRepairMissingReply(false, false)).toBe(true);
     expect(shouldRepairMissingReply(false, true)).toBe(false);
     expect(shouldRepairMissingReply(true, true)).toBe(false);
+  });
+});
+
+describe('open_line_of_work 附件选择解析', () => {
+  const attA: ChatAttachmentRef = {
+    id: 'att-a',
+    name: 'a.pdf',
+    path: '/tmp/a.pdf',
+    size: 100,
+    source: 'file',
+  };
+  const attB: ChatAttachmentRef = {
+    id: 'att-b',
+    name: 'b.png',
+    path: '/tmp/b.png',
+    size: 200,
+    source: 'file',
+  };
+  const unauthorized: ChatAttachmentRef = {
+    id: 'att-x',
+    name: 'secret.txt',
+    path: '/tmp/secret.txt',
+    size: 10,
+    source: 'file',
+  };
+
+  it('省略 explicit 时继承并去重当前输入附件', () => {
+    expect(resolveOpenLineAttachments(undefined, [attA, attA, attB])).toEqual({
+      ok: true,
+      attachments: [attA, attB],
+    });
+  });
+
+  it('显式传空数组 [] 时清空输入附件，不强行塞入新契约', () => {
+    expect(resolveOpenLineAttachments([], [attA, attB])).toEqual({
+      ok: true,
+      attachments: [],
+    });
+  });
+
+  it('显式指定子集时仅保留所选附件', () => {
+    expect(resolveOpenLineAttachments([attA], [attA, attB])).toEqual({
+      ok: true,
+      attachments: [attA],
+    });
+  });
+
+  it('拒绝未获当前输入授权的附件路径', () => {
+    expect(resolveOpenLineAttachments([unauthorized], [attA])).toEqual({
+      ok: false,
+      reason: '附件未获当前输入授权：secret.txt',
+    });
   });
 });
 
