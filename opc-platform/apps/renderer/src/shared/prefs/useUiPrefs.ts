@@ -16,7 +16,10 @@ const DEFAULT_BUDDY_COMPANION: BuddyCompanionPref = {
   size: 'md',
   dock: 'floating',
   bubbles: true,
+  desktopFloat: true,
+  alwaysOnTop: true,
   position: null,
+  screenPosition: null,
 };
 
 function sanitizeBackgroundPref(raw: unknown): BackgroundPref {
@@ -96,7 +99,12 @@ export const useUiPrefs = create<UiPrefsState>()(
         })),
       resetBuddyPosition: () =>
         set((state) => ({
-          buddyCompanion: { ...state.buddyCompanion, dock: 'floating', position: null },
+          buddyCompanion: {
+            ...state.buddyCompanion,
+            dock: 'floating',
+            position: null,
+            screenPosition: null,
+          },
         })),
       resetAppearance: () =>
         set({

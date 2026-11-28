@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import {
   Check,
-  CheckCircle2,
   Copy,
   Download,
   ExternalLink,
   EyeOff,
   Globe2,
-  HardDrive,
-  PanelsTopLeft,
+  Loader2,
+  MoreHorizontal,
   PlugZap,
+  Power,
   RefreshCw,
+  RotateCcw,
   Shield,
   Trash2,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import type {
   BrowserSettings,
   BrowserStatus,
 } from '@opc/shared/ipc';
+import { cn } from '@/shared/lib/cn';
 import { buttonClass, PageHeader, Row, Section, SelectField, StatusBadge, Toggle } from '../kit';
 
 const REMOTE_DEBUGGING_URL = 'chrome://inspect/#remote-debugging';
@@ -112,6 +114,8 @@ export function BrowserPage() {
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const bridge = window.opc?.browser;
 
   const showSavedIndicator = useCallback(() => {
@@ -158,7 +162,26 @@ export function BrowserPage() {
     [],
   );
 
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
+
   const install = async () => {
+    setMenuOpen(false);
     if (!bridge) return;
     setBusy(true);
     setError(null);
@@ -254,6 +277,7 @@ export function BrowserPage() {
   };
 
   const uninstall = async () => {
+    setMenuOpen(false);
     if (!bridge || !window.confirm(t('settings.browser.confirmStop'))) return;
     setBusy(true);
     setError(null);
@@ -268,6 +292,7 @@ export function BrowserPage() {
   };
 
   const removeRuntime = async () => {
+    setMenuOpen(false);
     if (!bridge || !window.confirm(t('settings.browser.confirmRemove'))) return;
     setBusy(true);
     setError(null);
@@ -282,6 +307,7 @@ export function BrowserPage() {
   };
 
   const resetProfile = async () => {
+    setMenuOpen(false);
     if (!bridge || !window.confirm(t('settings.browser.confirmReset'))) return;
     setBusy(true);
     try {
@@ -343,31 +369,11 @@ export function BrowserPage() {
     return t('settings.browser.installPhase.verify');
   };
 
-  const formatBytes = (bytes: number | undefined): string => {
-    if (bytes === undefined) return t('settings.browser.calculating');
-    if (bytes < 1024 ** 3) return `${Math.max(1, Math.round(bytes / (1024 ** 2)))} MB`;
-    return `${(bytes / (1024 ** 3)).toFixed(1)} GB`;
-  };
-
   const runtimeReady =
     Boolean(status?.healthy) || status?.installState === 'ready' || status?.installState === 'disabled';
   const installed = runtimeReady;
-  const installLabel =
-    status?.installState === 'installing'
-      ? t('settings.browser.installing')
-      : runtimeReady || status?.installState === 'error'
-        ? t('settings.browser.reinstall')
-        : t('settings.browser.install');
 
   const detectedBrowsers = status?.detectedBrowsers ?? [];
-  const runModeDisplay =
-    settings.mode === 'attach'
-      ? t('settings.browser.modeLabel.attach')
-      : settings.mode === 'headless'
-        ? t('settings.browser.modeLabel.headless')
-        : settings.headed
-          ? t('settings.browser.modeLabel.managed')
-          : t('settings.browser.modeLabel.managedHidden');
 
   const handleModeTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, currentIndex: number) => {
     let nextIndex: number | null = null;
@@ -386,9 +392,9 @@ export function BrowserPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[55rem] px-6 py-6">
+    <>
       <PageHeader
-        crumbs={[t('settings.page.browser')]}
+        crumbs={[t('settings.group.computerUse'), t('settings.page.browser')]}
         title={t('settings.browser.title')}
         description={t('settings.browser.description')}
         actions={
@@ -414,10 +420,73 @@ export function BrowserPage() {
               <ExternalLink className="size-3.5" />
               {openingWindow ? t('settings.browser.openingWindow') : t('settings.browser.openWindow')}
             </button>
-            <button type="button" className={buttonClass.secondary} onClick={() => void load()}>
-              <RefreshCw className="size-3.5" />
-              {t('settings.browser.refresh')}
-            </button>
+            {installed || status?.installState === 'error' ? (
+              <div ref={menuRef} className="relative">
+                <button
+                  type="button"
+                  aria-label={t('settings.browser.moreActions')}
+                  aria-expanded={menuOpen}
+                  aria-haspopup="menu"
+                  disabled={busy}
+                  onClick={() => setMenuOpen((prev) => !prev)}
+                  className={buttonClass.icon}
+                >
+                  <MoreHorizontal className="size-4 shrink-0" />
+                </button>
+
+                {menuOpen ? (
+                  <div
+                    role="menu"
+                    className="absolute top-full right-0 z-20 mt-1.5 w-48 rounded-xl border border-line bg-surface p-1 shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)]"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={busy || status?.installState === 'installing'}
+                      onClick={() => void install()}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:bg-surface-muted disabled:opacity-50"
+                    >
+                      <RefreshCw className="size-3.5 text-ink-tertiary" />
+                      <span>{t('settings.browser.reinstall')}</span>
+                    </button>
+                    {installed ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={busy}
+                        onClick={() => void uninstall()}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:bg-surface-muted disabled:opacity-50"
+                      >
+                        <Power className="size-3.5 text-ink-tertiary" />
+                        <span>{t('settings.browser.stop')}</span>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={() => void resetProfile()}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:bg-surface-muted disabled:opacity-50"
+                    >
+                      <RotateCcw className="size-3.5 text-ink-tertiary" />
+                      <span>{t('settings.browser.resetProfile')}</span>
+                    </button>
+                    {installed ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={busy}
+                        onClick={() => void removeRuntime()}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                      >
+                        <Trash2 className="size-3.5" />
+                        <span>{t('settings.browser.removeRuntime')}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         }
       />
@@ -432,154 +501,97 @@ export function BrowserPage() {
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
-        <div className="relative overflow-hidden px-5 py-5 sm:px-6 sm:py-6">
-          <div className="pointer-events-none absolute -top-24 -right-20 size-64 rounded-full bg-accent/[0.045] blur-3xl" />
-          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-start sm:gap-6">
-            <div className="relative flex size-[4.25rem] shrink-0 items-center justify-center rounded-[1.25rem] bg-ink text-surface shadow-[0_10px_24px_-14px_rgba(0,0,0,0.5)]">
-              <PanelsTopLeft className="size-8 stroke-[1.35]" aria-hidden="true" />
-              <span className="absolute right-2.5 bottom-2.5 flex size-5 items-center justify-center rounded-md bg-surface/15 text-surface/80">
-                <Globe2 className="size-3.5" strokeWidth={1.7} aria-hidden="true" />
-              </span>
-              <span
-                className={`absolute -right-1 -bottom-1 size-3 rounded-full border-2 border-surface ${
-                  statusMeta.tone === 'green'
-                    ? 'bg-success'
-                    : statusMeta.tone === 'red'
-                      ? 'bg-danger'
-                      : statusMeta.tone === 'amber'
-                        ? 'bg-warning'
-                        : 'bg-ink-quaternary'
-                }`}
-              />
+      <div className="space-y-5">
+        <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+          <div className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div className="flex min-w-0 items-start gap-4">
+              <div className="relative grid size-12 shrink-0 place-items-center rounded-2xl border border-accent/25 bg-accent-soft text-accent-ink">
+                <Globe2 className="size-6" strokeWidth={1.75} aria-hidden="true" />
+                <span
+                  className={cn(
+                    'absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-surface',
+                    statusMeta.tone === 'green'
+                      ? 'bg-success'
+                      : statusMeta.tone === 'red'
+                        ? 'bg-danger'
+                        : statusMeta.tone === 'amber'
+                          ? 'bg-warning'
+                          : 'bg-ink-quaternary',
+                  )}
+                />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h3 className="text-base font-semibold text-ink">
+                    {t('settings.browser.heroTitle')}
+                  </h3>
+                  <StatusBadge tone={statusMeta.tone} label={statusMeta.label} />
+                </div>
+                <p className="mt-1 text-sm text-ink-secondary">
+                  {t('settings.browser.enableHint')}
+                </p>
+                <p className="mt-0.5 text-xs text-ink-tertiary">{statusMeta.detail}</p>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-2xs font-medium tracking-[0.14em] text-ink-tertiary uppercase">
-                  {t('settings.browser.nativeCapability')}
+
+            <div className="flex shrink-0 items-center gap-3 self-end sm:self-center">
+              {!installed || status?.installState === 'error' || status?.installState === 'installing' ? (
+                <button
+                  type="button"
+                  className={buttonClass.primary}
+                  disabled={busy || status?.installState === 'installing' || !bridge}
+                  onClick={() => void install()}
+                >
+                  {status?.installState === 'installing' ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Download className="size-3.5" />
+                  )}
+                  {status?.installState === 'installing'
+                    ? t('settings.browser.installing')
+                    : t('settings.browser.install')}
+                </button>
+              ) : (
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xs font-medium text-ink-secondary">
+                    {settings.enabled
+                      ? t('settings.browser.switchOn')
+                      : t('settings.browser.switchOff')}
+                  </span>
+                  <Toggle
+                    checked={settings.enabled}
+                    disabled={!installed || busy}
+                    label={t('settings.browser.enable')}
+                    onChange={(enabled) => void saveSettings({ enabled })}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {installProgress ? (
+            <div className="border-t border-line bg-surface-muted/35 px-5 py-3.5 sm:px-6">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium text-ink">
+                  {installPhaseLabel(installProgress.phase)}
                 </span>
-                <span className="size-1 rounded-full bg-ink-quaternary" />
-                <span className="font-mono text-2xs text-ink-quaternary">opc.browser</span>
+                <span className="font-mono text-2xs text-ink-tertiary tabular-nums">
+                  {installProgress.percent}%
+                </span>
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-                <h3 className="text-xl font-semibold tracking-tight text-ink">
-                  {status?.activeBrowserName || 'Google Chrome'}
-                </h3>
-                <StatusBadge tone={statusMeta.tone} label={statusMeta.label} />
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-muted">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-300"
+                  style={{ width: `${Math.max(4, Math.min(100, installProgress.percent))}%` }}
+                />
               </div>
-              <p className="mt-2 max-w-[38rem] text-sm leading-relaxed text-ink-secondary">
-                {t('settings.browser.subtitle')}
+              <p className="mt-1.5 text-2xs text-ink-tertiary">
+                {t('settings.browser.progressNote')}
               </p>
-              <p className="mt-1.5 text-xs-plus text-ink-tertiary">{statusMeta.detail}</p>
             </div>
-            <div className="flex shrink-0 items-center gap-2 self-start rounded-lg border border-line bg-surface/80 px-2.5 py-2 sm:flex-col sm:items-end sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
-              <span className="text-2xs font-medium tracking-wide text-ink-quaternary uppercase">
-                {t('settings.browser.runtime')}
-              </span>
-              <span className="font-mono text-xs-plus text-ink-secondary">
-                {status?.version ? `v${status.version}` : t('settings.browser.versionPending')}
-              </span>
-            </div>
-          </div>
-        </div>
+          ) : null}
+        </section>
 
-        <div className="grid border-t border-line bg-surface-muted/35 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5 sm:border-r sm:border-b-0 sm:px-6">
-            <Globe2 className="size-4 text-ink-tertiary" strokeWidth={1.7} aria-hidden="true" />
-            <div className="min-w-0">
-              <div className="text-2xs text-ink-quaternary">{t('settings.browser.runtimeEnvironment')}</div>
-              <div className="mt-0.5 truncate text-xs-plus font-medium text-ink-secondary">
-                {status?.activeBrowserName ?? 'Chrome / Edge'}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5 sm:border-r sm:border-b-0 sm:px-6">
-            <Shield className="size-4 text-ink-tertiary" strokeWidth={1.7} aria-hidden="true" />
-            <div className="min-w-0">
-              <div className="text-2xs text-ink-quaternary">{t('settings.browser.sessionProfile')}</div>
-              <div className="mt-0.5 truncate text-xs-plus font-medium text-ink-secondary" title={status?.profilePath}>
-                {settings.mode === 'attach'
-                  ? t('settings.browser.attachProfileLabel')
-                  : t('settings.browser.persistentLogin')}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5 xl:border-r xl:border-b-0 sm:px-6">
-            <CheckCircle2 className="size-4 text-ink-tertiary" strokeWidth={1.7} aria-hidden="true" />
-            <div className="min-w-0">
-              <div className="text-2xs text-ink-quaternary">{t('settings.browser.runMode')}</div>
-              <div className="mt-0.5 truncate text-xs-plus font-medium text-ink-secondary">{runModeDisplay}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2.5 px-5 py-3.5 sm:px-6">
-            <HardDrive className="size-4 text-ink-tertiary" strokeWidth={1.7} aria-hidden="true" />
-            <div className="min-w-0">
-              <div className="text-2xs text-ink-quaternary">
-                {runtimeReady ? t('settings.browser.diskUsage') : t('settings.browser.estimatedDownload')}
-              </div>
-              <div
-                className="mt-0.5 truncate text-xs-plus font-medium text-ink-secondary"
-                title={runtimeReady ? t('settings.browser.diskUsageHint') : t('settings.browser.downloadEstimateHint')}
-              >
-                {runtimeReady
-                  ? formatBytes(status?.diskUsageBytes)
-                  : t('settings.browser.approx', { size: formatBytes(status?.downloadEstimateBytes) })}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 border-t border-line px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div className="flex items-center gap-3">
-            <Toggle
-              checked={settings.enabled}
-              disabled={!installed || busy}
-              label={t('settings.browser.enable')}
-              onChange={(enabled) => void saveSettings({ enabled })}
-            />
-            <div>
-              <div className="text-sm font-medium text-ink">{t('settings.browser.enable')}</div>
-              <div className="text-xs-plus text-ink-tertiary">{t('settings.browser.enableHint')}</div>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={buttonClass.primary}
-              disabled={busy || status?.installState === 'installing' || !bridge}
-              onClick={() => void install()}
-            >
-              <Download className="size-3.5" />
-              {installLabel}
-            </button>
-            <button type="button" className={buttonClass.secondary} disabled={busy || !installed} onClick={uninstall}>
-              <Trash2 className="size-3.5" />
-              {t('settings.browser.stop')}
-            </button>
-            <button
-              type="button"
-              className={buttonClass.danger}
-              disabled={busy || !installed}
-              onClick={() => void removeRuntime()}
-            >
-              <Trash2 className="size-3.5" />
-              {t('settings.browser.removeRuntime')}
-            </button>
-          </div>
-        </div>
-
-        {installProgress ? (
-          <div className="flex items-center gap-3.5 border-t border-line bg-surface-muted/35 px-5 py-3.5 sm:px-6">
-            <InstallProgressRing percent={installProgress.percent} label={t('settings.browser.progressAria')} />
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-ink">{installPhaseLabel(installProgress.phase)}</div>
-              <div className="mt-0.5 text-xs-plus text-ink-tertiary">{t('settings.browser.progressNote')}</div>
-            </div>
-          </div>
-        ) : null}
-      </section>
-
-      <div className="mt-4">
         <Section title={t('settings.browser.modeSectionTitle')} description={t('settings.browser.modeSectionDesc')}>
           <div
             role="tablist"
@@ -784,9 +796,7 @@ export function BrowserPage() {
             </button>
           </div>
         </Section>
-      </div>
 
-      <div className="mt-4">
         <Section title={t('settings.browser.domainTitle')} description={t('settings.browser.domainDesc')}>
           <Row label={t('settings.browser.allowAll')} hint={t('settings.browser.allowAllHint')}>
             <Toggle
@@ -833,9 +843,7 @@ export function BrowserPage() {
             />
           </div>
         </Section>
-      </div>
 
-      <div className="mt-4">
         <Section title={t('settings.browser.approvalTitle')} description={t('settings.browser.approvalDesc')}>
           {APPROVAL_OPTIONS.map(([key, labelKey]) => (
             <Row
@@ -856,19 +864,13 @@ export function BrowserPage() {
             </Row>
           ))}
         </Section>
-      </div>
 
-      <div className="mt-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 text-xs-plus text-ink-tertiary">
-          <Shield className="size-3.5" />
-          {t('settings.browser.footer')}
+          <Shield className="size-3.5 shrink-0" />
+          <span>{t('settings.browser.footer')}</span>
         </div>
-        <button type="button" className={buttonClass.secondary} disabled={busy} onClick={() => void resetProfile()}>
-          <Trash2 className="size-3.5" />
-          {t('settings.browser.resetProfile')}
-        </button>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -960,40 +962,6 @@ function CopyableSnippet({
       <span role="status" className="sr-only">
         {announcement}
       </span>
-    </div>
-  );
-}
-
-function InstallProgressRing({ percent, label }: { percent: number; label: string }) {
-  const radius = 20;
-  const circumference = 2 * Math.PI * radius;
-  const safePercent = Math.max(0, Math.min(100, percent));
-
-  return (
-    <div
-      className="relative flex size-12 shrink-0 items-center justify-center"
-      role="progressbar"
-      aria-label={label}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={safePercent}
-    >
-      <svg viewBox="0 0 48 48" className="absolute inset-0 size-full -rotate-90" aria-hidden="true">
-        <circle cx="24" cy="24" r={radius} fill="none" stroke="currentColor" strokeWidth="3.5" className="text-line" />
-        <circle
-          cx="24"
-          cy="24"
-          r={radius}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3.5"
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference * (1 - safePercent / 100)}
-          className="text-accent transition-[stroke-dashoffset] duration-500 ease-out"
-        />
-      </svg>
-      <span className="font-mono text-[10px] font-semibold tabular-nums text-ink">{safePercent}%</span>
     </div>
   );
 }

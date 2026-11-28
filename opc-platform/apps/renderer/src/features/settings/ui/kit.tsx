@@ -244,6 +244,8 @@ export const buttonClass = {
     'inline-flex h-[30px] shrink-0 items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-3 text-sm-plus whitespace-nowrap text-ink transition-colors hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-60',
   danger:
     'inline-flex h-[30px] shrink-0 items-center justify-center gap-1.5 rounded-md border border-danger/40 bg-surface px-3 text-sm-plus whitespace-nowrap text-danger transition-colors hover:bg-danger/10',
+  icon:
+    'inline-flex size-[30px] shrink-0 items-center justify-center rounded-md border border-line bg-surface text-ink-secondary transition-colors hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60',
 } as const;
 
 export function StatusBadge({ tone, label }: { tone: 'green' | 'blue' | 'amber' | 'red' | 'gray'; label: string }) {

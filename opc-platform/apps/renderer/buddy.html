@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN" class="buddy-overlay-root" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Buddy</title>
+    <style>
+      html,
+      body,
+      #root {
+        background: transparent !important;
+        background-color: transparent !important;
+      }
+    </style>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('opc.ui.v1');
+          var prefs = raw ? (JSON.parse(raw).state || {}) : {};
+          var mode = prefs.themeMode || 'system';
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+          if (prefs.locale) document.documentElement.lang = prefs.locale;
+        } catch (error) {
+          /* ignore storage probe failures */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/buddy/main.tsx"></script>
+  </body>
+</html>

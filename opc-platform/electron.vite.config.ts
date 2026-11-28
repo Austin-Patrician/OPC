@@ -109,6 +109,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'apps/renderer/index.html'),
+          buddy: resolve(__dirname, 'apps/renderer/buddy.html'),
           ocr: resolve(__dirname, 'apps/renderer/ocr.html'),
         },
         output: {

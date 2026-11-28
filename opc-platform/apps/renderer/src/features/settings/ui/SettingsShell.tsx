@@ -28,7 +28,7 @@ import { CapabilitiesExtensionsPage } from './pages/CapabilitiesExtensionsPage';
 import { CapabilitiesSkillsPage } from './pages/CapabilitiesSkillsPage';
 import { UsagePage } from './pages/UsagePage';
 import { useTranslation } from 'react-i18next';
-import { AppWindow, Boxes, Brain, Cpu, Globe, Info, Settings2, Share2 } from 'lucide-react';
+import { Boxes, Brain, Cpu, Globe, Info, Monitor, Settings2, Share2 } from 'lucide-react';
 import { ChannelBrandIcon } from '@/shared/icons/ChannelBrandIcon';
 import { cn } from '@/shared/lib/cn';
 
@@ -233,18 +233,14 @@ export function SettingsShell() {
       ],
     },
     {
-      id: 'browser',
-      label: t('settings.group.browser'),
-      icon: Globe,
+      id: 'computerUse',
+      label: t('settings.group.computerUse'),
+      icon: Monitor,
       color: '#1D7AFC',
-      pages: [{ id: 'browser', label: t('settings.page.browser') }],
-    },
-    {
-      id: 'desktop',
-      label: t('settings.group.desktop'),
-      icon: AppWindow,
-      color: '#5856D6',
-      pages: [{ id: 'desktop', label: t('settings.page.desktop') }],
+      pages: [
+        { id: 'desktop', label: t('settings.page.desktop') },
+        { id: 'browser', label: t('settings.page.browser') },
+      ],
     },
     {
       id: 'about',

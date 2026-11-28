@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import {
-  ArrowUpRight,
   Check,
   Copy,
   Folder,
-  FolderOpen,
-  Globe,
   Mail,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +13,7 @@ import {
   type FilePathEntityMeta,
 } from '@/shared/lib/chatEntities';
 import { cn } from '@/shared/lib/cn';
+import { SiteFavicon } from './SiteFavicon';
 
 /**
  * Shared accessible copy state with live announcement differentiation across rapid re-clicks.
@@ -108,7 +106,7 @@ function InlineCopyControl({
   );
 }
 
-/** Styled inline URL badge highlighting domain + copy button, routing click via Electron bridge. */
+/** Styled inline URL badge with site favicon, routing clicks through Electron's external opener. */
 export function ChatUrlChip({
   href,
   rawText,
@@ -118,37 +116,32 @@ export function ChatUrlChip({
   rawText?: string;
   children?: ReactNode;
 }) {
-  const { t } = useTranslation();
   const meta = normalizeExternalUrl(href);
   const childStr = typeof children === 'string' ? children : undefined;
   const isAutolink =
     !childStr || childStr === href || childStr === rawText || childStr === meta?.raw;
 
   return (
-    <span className="inline-flex max-w-full items-center gap-0.5 rounded-md border border-line/85 bg-surface-muted/55 py-px pr-0.5 pl-1.5 align-baseline text-[0.92em] leading-[1.45] transition-colors hover:border-accent/45 hover:bg-accent-soft/40">
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer noopener"
-        onClick={(event) => openExternalSafely(event, href)}
-        title={href}
-        className="inline-flex min-w-0 items-center gap-1 break-all text-accent-ink hover:text-accent hover:underline focus-visible:outline-none focus-visible:underline"
-      >
-        <Globe className="size-3 shrink-0 opacity-80" aria-hidden="true" />
-        {isAutolink && meta ? (
-          <span className="min-w-0 truncate">
-            <span className="font-medium">{meta.domain}</span>
-            {meta.displayPath ? (
-              <span className="text-ink-tertiary">{meta.displayPath}</span>
-            ) : null}
-          </span>
-        ) : (
-          <span className="min-w-0">{children ?? href}</span>
-        )}
-        <ArrowUpRight className="size-3 shrink-0 opacity-65" aria-hidden="true" />
-      </a>
-      <InlineCopyControl value={href} label={t('chat.entity.copyUrl')} />
-    </span>
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      onClick={(event) => openExternalSafely(event, href)}
+      title={href}
+      className="inline-flex max-w-full items-center gap-1 rounded-md border border-line/85 bg-surface-muted/55 px-1.5 py-px align-baseline text-[0.92em] leading-[1.45] break-all text-accent-ink transition-colors hover:border-accent/45 hover:bg-accent-soft/40 hover:text-accent hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+    >
+      <SiteFavicon href={href} domain={meta?.domain} />
+      {isAutolink && meta ? (
+        <span className="min-w-0 truncate">
+          <span className="font-medium">{meta.domain}</span>
+          {meta.displayPath ? (
+            <span className="text-ink-tertiary">{meta.displayPath}</span>
+          ) : null}
+        </span>
+      ) : (
+        <span className="min-w-0">{children ?? href}</span>
+      )}
+    </a>
   );
 }
 
@@ -191,7 +184,7 @@ export function ChatEmailChip({
 
 /**
  * Interactive inline file/folder path chip:
- * always supports 1-click path copy, plus desktop "reveal in folder" and safe "open".
+ * click directly to open (falling back to reveal-in-folder for blocked executables or Alt/Option+click).
  */
 export function ChatFilePathChip({
   file,
@@ -201,9 +194,11 @@ export function ChatFilePathChip({
   children?: ReactNode;
 }) {
   const { t } = useTranslation();
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ text: string; tone: 'error' | 'success' } | null>(null);
   const timerRef = useRef<number | null>(null);
-  const hasDesktopBridge = Boolean(window.opc?.app?.revealLocalPath);
+  const hasDesktopBridge = Boolean(
+    window.opc?.app?.openLocalPath || window.opc?.app?.revealLocalPath,
+  );
 
   useEffect(
     () => () => {
@@ -212,131 +207,102 @@ export function ChatFilePathChip({
     [],
   );
 
-  const showTransientFeedback = (message: string) => {
-    setFeedback(message);
+  const showTransientFeedback = (text: string, tone: 'error' | 'success' = 'error') => {
+    setFeedback({ text, tone });
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       setFeedback(null);
       timerRef.current = null;
-    }, 3200);
+    }, tone === 'success' ? 1800 : 3200);
   };
 
-  const reveal = async (event: MouseEvent<HTMLButtonElement>) => {
+  const handleClick = async (event: MouseEvent<HTMLButtonElement>) => {
+    if (window.getSelection()?.toString().trim()) return;
     event.preventDefault();
     event.stopPropagation();
-    const fn = window.opc?.app?.revealLocalPath;
-    if (!fn) return;
+
+    const openLocalPath = window.opc?.app?.openLocalPath;
+    const revealLocalPath = window.opc?.app?.revealLocalPath;
+
     try {
-      const res = await fn(file.path);
-      if (!res.ok && res.error) showTransientFeedback(res.error);
+      if (event.altKey && revealLocalPath) {
+        const revealed = await revealLocalPath(file.path);
+        if (!revealed.ok && revealed.error) showTransientFeedback(revealed.error, 'error');
+        return;
+      }
+
+      if (openLocalPath) {
+        const res = await openLocalPath(file.path);
+        if (!res.ok && res.blockedExecutable && revealLocalPath) {
+          const revealed = await revealLocalPath(file.path);
+          if (!revealed.ok && revealed.error) showTransientFeedback(revealed.error, 'error');
+          return;
+        }
+        if (!res.ok && res.error) showTransientFeedback(res.error, 'error');
+        return;
+      }
+
+      if (revealLocalPath) {
+        const revealed = await revealLocalPath(file.path);
+        if (!revealed.ok && revealed.error) showTransientFeedback(revealed.error, 'error');
+        return;
+      }
+
+      const copied = await copyTextToClipboard(file.path);
+      showTransientFeedback(
+        copied ? t('chat.entity.pathCopied') : t('chat.entity.copyFailed'),
+        copied ? 'success' : 'error',
+      );
     } catch (error) {
-      showTransientFeedback(error instanceof Error ? error.message : String(error));
+      showTransientFeedback(error instanceof Error ? error.message : String(error), 'error');
     }
   };
-
-  const openPath = async (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const fn = window.opc?.app?.openLocalPath;
-    if (!fn) return;
-    try {
-      const res = await fn(file.path);
-      if (!res.ok && res.error) showTransientFeedback(res.error);
-    } catch (error) {
-      showTransientFeedback(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const { state: copyState, announcement, triggerCopy } = useCopyFeedback(
-    t('chat.entity.pathCopied'),
-    t('chat.entity.copyFailed'),
-  );
 
   const displayLabel =
-    typeof children === 'string' && children.trim() ? children : file.raw;
+    typeof children === 'string'
+      ? children.trim() || file.raw
+      : (children ?? file.raw);
 
   return (
-    <span className="inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-md border border-line bg-[var(--inline-code-bg)] py-px pr-0.5 pl-1.5 align-baseline font-mono text-[0.86em] leading-[1.45] text-ink transition-colors hover:border-line-strong">
-      <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
-        {file.isDirectory ? (
-          <Folder
-            className="size-3.5 text-amber-600 [[data-theme='dark']_&]:text-amber-400"
-            aria-hidden="true"
-          />
-        ) : (
-          <span
-            className="inline-flex size-3.5 items-center justify-center [&_svg]:size-3.5"
-            dangerouslySetInnerHTML={{ __html: getFileIcon(file.ext, file.fileName) }}
-            aria-hidden="true"
-          />
-        )}
-      </span>
-
+    <span className="inline-flex max-w-full flex-wrap items-center gap-1 align-baseline">
       <button
         type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void triggerCopy(file.path);
-        }}
-        title={`${file.raw} — ${t('chat.entity.clickToCopyPath')}`}
-        className="min-w-0 cursor-pointer break-all px-0.5 text-left hover:text-accent-ink focus-visible:outline-none focus-visible:underline"
+        onClick={(event) => void handleClick(event)}
+        title={
+          hasDesktopBridge
+            ? `${file.path} — ${t('chat.entity.clickToOpenPath')}`
+            : `${file.path} — ${t('chat.entity.clickToCopyPath')}`
+        }
+        className="inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border border-line bg-[var(--inline-code-bg)] px-1.5 py-px text-left font-mono text-[0.86em] leading-[1.45] text-ink select-text transition-colors hover:border-accent/45 hover:bg-accent-soft/35 hover:text-accent-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        {displayLabel}
+        <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
+          {file.isDirectory ? (
+            <Folder
+              className="size-3.5 text-amber-600 [[data-theme='dark']_&]:text-amber-400"
+              aria-hidden="true"
+            />
+          ) : (
+            <span
+              className="inline-flex size-3.5 items-center justify-center [&_svg]:size-3.5"
+              dangerouslySetInnerHTML={{ __html: getFileIcon(file.ext, file.fileName) }}
+              aria-hidden="true"
+            />
+          )}
+        </span>
+        <span className="min-w-0 break-all">{displayLabel}</span>
       </button>
-
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void triggerCopy(file.path);
-        }}
-        data-copied={copyState === 'copied' ? '' : undefined}
-        data-failed={copyState === 'failed' ? '' : undefined}
-        aria-label={t('chat.entity.copyPath')}
-        title={copyState === 'copied' ? t('chat.entity.pathCopied') : t('chat.entity.copyPath')}
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-      >
-        {copyState === 'copied' ? (
-          <Check className="size-3 text-success" aria-hidden="true" />
-        ) : (
-          <Copy className="size-3" aria-hidden="true" />
-        )}
-      </button>
-
-      {hasDesktopBridge ? (
-        <>
-          <button
-            type="button"
-            onClick={(event) => void reveal(event)}
-            aria-label={t('chat.entity.revealPath')}
-            title={t('chat.entity.revealPath')}
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          >
-            <FolderOpen className="size-3" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={(event) => void openPath(event)}
-            aria-label={t('chat.entity.openPath')}
-            title={t('chat.entity.openPath')}
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-tertiary transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          >
-            <ArrowUpRight className="size-3" aria-hidden="true" />
-          </button>
-        </>
-      ) : null}
 
       {feedback ? (
-        <span className="px-1 font-sans text-[11px] font-medium text-danger" role="status">
-          {feedback}
+        <span
+          className={cn(
+            'font-sans text-[11px] font-medium',
+            feedback.tone === 'success' ? 'text-success' : 'text-danger',
+          )}
+          role="status"
+        >
+          {feedback.text}
         </span>
       ) : null}
-
-      <span className="sr-only" role="status">
-        {announcement}
-      </span>
     </span>
   );
 }

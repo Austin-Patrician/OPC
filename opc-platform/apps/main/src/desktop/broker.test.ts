@@ -6,6 +6,7 @@ import {
   desktopSessionId,
   desktopSessionName,
   extractExecErrorOutput,
+  indexSnapshotRefs,
   parseCurrentUserSid,
 } from './broker';
 
@@ -17,6 +18,7 @@ describe('desktop CLI behavior', () => {
   it('places application and window selectors only on commands that support them', () => {
     expect(desktopCommandOptions('snapshot', 'TextEdit', 'window-1')).toEqual(['--app', 'TextEdit', '--window-id', 'window-1']);
     expect(desktopCommandOptions('focus-window', 'TextEdit', 'window-1')).toEqual(['--app', 'TextEdit', '--window-id', 'window-1']);
+    expect(desktopCommandOptions('press', 'Code', 'window-1')).toEqual(['--app', 'Code', '--window-id', 'window-1']);
     expect(desktopCommandOptions('click', 'TextEdit', 'window-1')).toEqual([]);
   });
 
@@ -155,5 +157,34 @@ describe('desktop CLI behavior', () => {
     expect(generation).toBe(2);
     expect(closedFlags[0]).toBe(true);
     await proxy.close();
+  });
+
+  it('indexes snapshot tree refs with role, name, app, and bounds', () => {
+    const index = indexSnapshotRefs(
+      {
+        app: 'Slack',
+        window_id: 'w-42',
+        tree: {
+          children: [
+            {
+              ref_id: '@s9:e1',
+              role: 'button',
+              name: '发送',
+              bounds: { x: 100, y: 200, width: 60, height: 32 },
+            },
+          ],
+        },
+      },
+      'FallbackApp',
+    );
+
+    expect(index.get('@s9:e1')).toEqual({
+      ref: '@s9:e1',
+      role: 'button',
+      name: '发送',
+      app: 'Slack',
+      windowId: 'w-42',
+      bounds: { x: 100, y: 200, width: 60, height: 32 },
+    });
   });
 });

@@ -46,6 +46,8 @@ import { handleWallpaperProtocol } from './appearance/wallpaperProtocol';
 import { WallpaperService } from './appearance/wallpaperService';
 import { NotificationSettingsStore } from './notifications/settings';
 import { NotificationService } from './notifications/notificationService';
+import { FaviconService } from './system/faviconService';
+import { BuddyWindowService } from './buddy/buddyWindowService';
 import { handleDocProtocol, resolvePdfjsAssetsDir } from './preview/docProtocol';
 import { registerAppSchemes } from './protocols/registerSchemes';
 import { DocPreviewService } from './preview/docPreviewService';
@@ -157,6 +159,7 @@ const isImageLoopProbe = process.env.OPC_IMAGE_LOOP_PROBE === "1";
 /** `OPC_CRASH_PROBE=start|resume`: kill the app mid-run, then prove it resumes. */
 const crashProbe = process.env.OPC_CRASH_PROBE;
 let mainWindow: BrowserWindow | null = null;
+let buddyWindowService: BuddyWindowService | null = null;
 let chat: ChatService | null = null;
 let work: WorkService | null = null;
 let ocrService: OcrService | null = null;
@@ -231,6 +234,9 @@ function createMainWindow() {
 	if (isSmoke) attachSmokeTest(window);
 	if (isDev && process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL);
 	else window.loadFile(path.join(mainDir, "../renderer/index.html"));
+	window.on("closed", () => {
+		if (mainWindow === window) mainWindow = null;
+	});
 	return window;
 }
 /**
@@ -645,7 +651,7 @@ async function bootstrap(): Promise<void> {
   const browserInstall = new BrowserInstallService(db, appPaths.userData);
   browserBroker = new BrowserBroker(browserInstall, appPaths.artifactsDir);
   const desktopInstall = new DesktopInstallService(db, appPaths.userData);
-  desktopBroker = new DesktopBroker(desktopInstall);
+  desktopBroker = new DesktopBroker(desktopInstall, appPaths.artifactsDir);
   await desktopBroker.initialize();
 
   const ocrSettings = new OcrSettingsStore(db);
@@ -1094,6 +1100,16 @@ async function bootstrap(): Promise<void> {
 
   const wallpapersDir = appPaths.wallpapersDir ?? path.join(appPaths.userData, 'wallpapers');
   const wallpaperService = new WallpaperService(wallpapersDir);
+  const faviconService = new FaviconService({
+    cacheDir: path.join(appPaths.cacheDir, 'favicons'),
+    network: networkClient,
+  });
+  buddyWindowService = new BuddyWindowService({
+    mainDir,
+    isDev,
+    ...(process.env.ELECTRON_RENDERER_URL ? { rendererUrl: process.env.ELECTRON_RENDERER_URL } : {}),
+    isSmoke,
+  });
 
   disposeIpc = registerIpc({
     chat,
@@ -1107,6 +1123,8 @@ async function bootstrap(): Promise<void> {
     memoryReflector,
     browser: browserBroker,
     desktop: desktopBroker,
+    favicons: faviconService,
+    buddy: buddyWindowService,
     triage,
     schedules,
     watchdog: {
@@ -1510,6 +1528,7 @@ async function bootstrap(): Promise<void> {
     resolveSessionFile: (id) => docPreview.resolveProtocolFile(id),
   });
   mainWindow = createMainWindow();
+  buddyWindowService.attachMainWindow(mainWindow);
 
   const onWindowFocus = () => {
     publishWallpaperPowerState({ windowFocused: true, windowMinimized: false, windowVisible: true });
@@ -2627,7 +2646,14 @@ if (!hasLock) {
     await bootstrap();
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        mainWindow = createMainWindow();
+        buddyWindowService?.attachMainWindow(mainWindow);
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
     });
   });
 
@@ -2639,6 +2665,8 @@ if (!hasLock) {
   app.on('before-quit', () => {
     disposeIpc?.();
     disposeIpc = null;
+    buddyWindowService?.dispose();
+    buddyWindowService = null;
     chat?.dispose();
     chat = null;
     void ocrService?.dispose();

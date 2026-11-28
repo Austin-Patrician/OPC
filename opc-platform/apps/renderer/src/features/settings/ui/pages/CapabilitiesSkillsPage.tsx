@@ -95,9 +95,9 @@ export function CapabilitiesSkillsPage() {
                   aria-haspopup="menu"
                   disabled={isInstalling}
                   onClick={() => setMenuOpen((prev) => !prev)}
-                  className={cn(buttonClass.secondary, 'size-[30px] px-0')}
+                  className={buttonClass.icon}
                 >
-                  <MoreHorizontal className="size-3.5" />
+                  <MoreHorizontal className="size-4 shrink-0" />
                 </button>
 
                 {menuOpen ? (

@@ -1,10 +1,11 @@
 import { useLocation, useNavigate, useOutlet } from 'react-router-dom';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { AssistantActivity } from '@opc/shared/ipc';
+import type { AssistantActivity, BuddyOverlayState } from '@opc/shared/ipc';
 import { useCompanySync } from '@/entities/company/model/useCompany';
 import { useBillingSync } from '@/entities/billing/model/useBilling';
 import { BackgroundLayer } from '@/shared/ui/BackgroundLayer';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
+import { subscribeBuddySignal } from '@/shared/ui/buddyEvents';
 import { NavRail } from '@/widgets/nav-rail/NavRail';
 import { TitleBar } from '@/widgets/title-bar/TitleBar';
 import { BuddyCompanion } from '@/widgets/buddy-companion/BuddyCompanion';
@@ -13,6 +14,8 @@ import { NewChatConfirmModal } from '@/features/chat/ui/NewChatConfirmModal';
 import { useObservatory } from '@/features/observatory/model/useObservatory';
 import { ExecutionObservatoryDrawer } from '@/features/observatory/ui/ExecutionObservatoryDrawer';
 import { OfficePreviewModal } from '@/features/doc-preview/ui/OfficePreviewModal';
+
+const DARK_MEDIA_QUERY = '(prefers-color-scheme: dark)';
 
 /**
  * One rounded desktop window contains the navigation rail and routed content.
@@ -35,12 +38,84 @@ export function AppShell() {
   useCompanySync();
   useBillingSync();
   const background = useUiPrefs((state) => state.background);
+  const themeMode = useUiPrefs((state) => state.themeMode);
   const locale = useUiPrefs((state) => state.locale);
+  const buddyCompanion = useUiPrefs((state) => state.buddyCompanion);
+  const updateBuddyCompanion = useUiPrefs((state) => state.updateBuddyCompanion);
+  const [prefersDark, setPrefersDark] = useState(
+    () => typeof window !== 'undefined' && Boolean(window.matchMedia?.(DARK_MEDIA_QUERY).matches),
+  );
   const observatory = useObservatory(observatoryOpen);
   const isChatRef = useRef(isChat);
   isChatRef.current = isChat;
   const focusTargetRef = useRef(observatory.focusTarget);
   focusTargetRef.current = observatory.focusTarget;
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const media = window.matchMedia(DARK_MEDIA_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  const resolvedTheme: 'light' | 'dark' =
+    themeMode === 'dark' || (themeMode === 'system' && prefersDark) ? 'dark' : 'light';
+  const useDesktopBuddyOverlay = Boolean(window.opc?.buddy) && buddyCompanion.desktopFloat;
+
+  useEffect(() => {
+    const bridge = window.opc?.buddy;
+    if (!bridge) return;
+    const payload: BuddyOverlayState = {
+      enabled: buddyCompanion.enabled,
+      desktopFloat: buddyCompanion.desktopFloat,
+      alwaysOnTop: buddyCompanion.alwaysOnTop,
+      size: buddyCompanion.size,
+      dock: buddyCompanion.dock,
+      bubbles: buddyCompanion.bubbles,
+      screenPosition: buddyCompanion.screenPosition,
+      hidden: isChat && welcomeVisible,
+      isOnChatPage: isChat,
+      ...(chatActivity ? { activity: chatActivity } : {}),
+      theme: resolvedTheme,
+      locale,
+    };
+    void bridge.syncState(payload);
+  }, [buddyCompanion, chatActivity, isChat, locale, resolvedTheme, welcomeVisible]);
+
+  useEffect(() => {
+    if (!useDesktopBuddyOverlay) return undefined;
+    const bridge = window.opc?.buddy;
+    if (!bridge) return undefined;
+    return subscribeBuddySignal((signal) => {
+      if (
+        signal.kind === 'typing' ||
+        signal.kind === 'file-drag' ||
+        signal.kind === 'file-drop' ||
+        signal.kind === 'sent' ||
+        signal.kind === 'brand-summon'
+      ) {
+        void bridge.emitSignal(signal);
+      }
+    });
+  }, [useDesktopBuddyOverlay]);
+
+  useEffect(() => {
+    const bridge = window.opc?.buddy;
+    if (!bridge) return undefined;
+    const unsubPrefs = bridge.onPrefsPatch((patch) => {
+      updateBuddyCompanion(patch);
+    });
+    const unsubNav = bridge.onNavigate((route) => {
+      if (route && route !== location.pathname) {
+        navigate(route);
+      }
+    });
+    return () => {
+      unsubPrefs();
+      unsubNav();
+    };
+  }, [location.pathname, navigate, updateBuddyCompanion]);
 
   useEffect(() => {
     void window.opc?.notifications?.setContext({
@@ -126,11 +201,13 @@ export function AppShell() {
             </div>
           </div>
         </div>
-        <BuddyCompanion
-          activity={chatActivity}
-          hidden={isChat && welcomeVisible}
-          isOnChatPage={isChat}
-        />
+        {!useDesktopBuddyOverlay ? (
+          <BuddyCompanion
+            activity={chatActivity}
+            hidden={isChat && welcomeVisible}
+            isOnChatPage={isChat}
+          />
+        ) : null}
       </div>
       {searchOpen ? <ChatSearchModal onClose={() => setSearchOpen(false)} /> : null}
       {newChatOpen ? <NewChatConfirmModal onClose={() => setNewChatOpen(false)} /> : null}

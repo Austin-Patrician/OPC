@@ -8,6 +8,9 @@ import {
   type ChatSearchInput,
   type UsageFilter,
   type DocPreviewSource,
+  type BuddyOverlayState,
+  type BuddyOverlaySignalPayload,
+  type BuddyOverlayPrefsPatch,
 } from "@opc/shared/ipc";
 import type {
   ApprovalPermitScope,
@@ -109,6 +112,8 @@ import type { RouterScheduleRepository } from "../data/routerScheduleRepository"
 import type { ObservatoryService } from "../observatory/observatoryService";
 import type { WallpaperService } from "../appearance/wallpaperService";
 import type { NotificationService } from "../notifications/notificationService";
+import type { FaviconService } from "../system/faviconService";
+import type { BuddyWindowService } from "../buddy/buddyWindowService";
 
 interface RegisterOptions {
   chat: ChatService;
@@ -196,6 +201,8 @@ interface RegisterOptions {
     listener: (state: WallpaperPowerState) => void,
   ) => () => void;
   notifications?: NotificationService;
+  favicons?: FaviconService;
+  buddy?: BuddyWindowService;
 }
 
 /** Thin transport adapters: validate, delegate, broadcast. No business logic here. */
@@ -239,6 +246,8 @@ export function registerIpc({
   getWallpaperPowerState,
   subscribeWallpaperPowerState,
   notifications,
+  favicons,
+  buddy,
 }: RegisterOptions): () => void {
   // Pending interactive prompts, keyed by prompt id; answered from the renderer.
   const pending = new Map<string, (value: string | null) => void>();
@@ -266,6 +275,14 @@ export function registerIpc({
       );
     }
     return undefined;
+  };
+
+  const resolveDialogWindow = (sender: Electron.WebContents): BrowserWindow | undefined => {
+    const direct = BrowserWindow.fromWebContents(sender);
+    if (direct && !direct.isDestroyed() && !buddy?.isBuddyWindow(direct)) return direct;
+    return BrowserWindow.getAllWindows().find(
+      (win) => !win.isDestroyed() && !buddy?.isBuddyWindow(win),
+    );
   };
 
   const authBridge = {
@@ -402,6 +419,45 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.app.getFavicon, (_event, raw: unknown) =>
+    typeof raw === "string" && favicons ? favicons.getFavicon(raw) : Promise.resolve(null),
+  );
+
+  ipcMain.handle(IPC.buddy.getState, () => buddy?.getState() ?? null);
+  ipcMain.handle(IPC.buddy.syncState, (_event, raw: unknown) => {
+    if (buddy && raw && typeof raw === "object") {
+      buddy.syncState(raw as BuddyOverlayState);
+    }
+  });
+  ipcMain.handle(IPC.buddy.emitSignal, (_event, raw: unknown) => {
+    if (buddy && raw && typeof raw === "object") {
+      buddy.emitSignal(raw as BuddyOverlaySignalPayload);
+    }
+  });
+  ipcMain.handle(IPC.buddy.setInteractive, (_event, interactive: unknown) => {
+    if (buddy && typeof interactive === "boolean") {
+      buddy.setInteractive(interactive);
+    }
+  });
+  ipcMain.handle(IPC.buddy.dragStart, () => {
+    buddy?.dragStart();
+  });
+  ipcMain.handle(IPC.buddy.dragMove, () => {
+    buddy?.dragMove();
+  });
+  ipcMain.handle(IPC.buddy.dragEnd, () => buddy?.dragEnd() ?? null);
+  ipcMain.handle(IPC.buddy.resetPosition, () => {
+    buddy?.resetPosition();
+  });
+  ipcMain.handle(IPC.buddy.updatePrefs, (_event, raw: unknown) => {
+    if (buddy && raw && typeof raw === "object") {
+      buddy.updatePrefsFromOverlay(raw as BuddyOverlayPrefsPatch);
+    }
+  });
+  ipcMain.handle(IPC.buddy.focusMain, (_event, route: unknown) => {
+    buddy?.focusMain(typeof route === "string" ? route : undefined);
+  });
+
   ipcMain.handle(IPC.window.minimize, (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
   });
@@ -454,9 +510,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.runtime.chooseBinary, async (event, kind: unknown) => {
     if (!isRuntimeKind(kind)) throw new Error("runtime:chooseBinary kind 非法");
-    const window =
-      BrowserWindow.fromWebContents(event.sender) ??
-      BrowserWindow.getAllWindows()[0];
+    const window = resolveDialogWindow(event.sender);
     const options = {
       title: kind === "node" ? "选择 Node 解释器" : "选择 Python 解释器",
       // Interpreters have no stable extension; let the user pick any executable.
@@ -543,7 +597,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.chat.chooseAttachments, async (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const window = resolveDialogWindow(event.sender);
     const result = window
       ? await dialog.showOpenDialog(window, { title: '选择附件', properties: ['openFile', 'multiSelections'] })
       : await dialog.showOpenDialog({ title: '选择附件', properties: ['openFile', 'multiSelections'] });
@@ -1476,11 +1530,10 @@ export function registerIpc({
     ipcMain.handle(IPC.desktop.getSettings, () => desktop.settings());
     ipcMain.handle(IPC.desktop.setSettings, async (_event, patch: unknown) => {
       if (!patch || typeof patch !== 'object') throw new Error('desktop:setSettings 参数非法');
-      desktop.setSettings(patch as Record<string, unknown>);
-      const result = await desktop.probeMcp();
+      const next = desktop.setSettings(patch as Record<string, unknown>);
       await work.invalidateAllHarnesses();
       desktopBroadcast();
-      return result;
+      return next;
     });
     ipcMain.handle(IPC.desktop.listApps, () => desktop.listApps());
     ipcMain.handle(IPC.desktop.listWindows, () => desktop.listWindows());
@@ -1490,6 +1543,20 @@ export function registerIpc({
     });
     ipcMain.handle(IPC.desktop.show, (_event, taskId: unknown) => desktop.show(typeof taskId === 'string' ? taskId : ''));
     ipcMain.handle(IPC.desktop.hide, (_event, taskId: unknown) => desktop.hide(typeof taskId === 'string' ? taskId : undefined));
+    ipcMain.handle(IPC.desktop.capturePreview, (_event, request: unknown) => {
+      const taskId =
+        typeof request === 'string'
+          ? request
+          : request && typeof request === 'object' && typeof (request as { taskId?: unknown }).taskId === 'string'
+            ? (request as { taskId: string }).taskId
+            : '';
+      if (!taskId.trim()) throw new Error('desktop:capturePreview 需要 taskId');
+      const appId =
+        request && typeof request === 'object' && typeof (request as { appId?: unknown }).appId === 'string'
+          ? (request as { appId: string }).appId.trim() || undefined
+          : undefined;
+      return desktop.capturePreview(taskId.trim(), appId);
+    });
   }
 
   ipcMain.handle(IPC.threads.answer, async (_event, raw: unknown) => {
@@ -1965,7 +2032,9 @@ export function registerIpc({
     ipcMain.removeHandler(IPC.work.abortThread);
     for (const channel of Object.values(IPC.mcp)) ipcMain.removeHandler(channel);
     for (const channel of Object.values(IPC.browser)) ipcMain.removeHandler(channel);
+    for (const channel of Object.values(IPC.buddy)) ipcMain.removeHandler(channel);
     ipcMain.removeHandler(IPC.app.getInfo);
+    ipcMain.removeHandler(IPC.app.getFavicon);
     ipcMain.removeHandler(IPC.company.get);
     ipcMain.removeHandler(IPC.company.update);
     ipcMain.removeHandler(IPC.diagnostics.report);

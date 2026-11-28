@@ -175,6 +175,8 @@ const ContentBlock = memo(function ContentBlock({
   }, [block, mediaCacheKey]);
   if (block.type === 'approval') {
     const isBrowserTakeover = block.browser?.action === 'takeover';
+    const isDesktopTakeover = block.desktop?.action === 'takeover';
+    const isTakeover = isBrowserTakeover || isDesktopTakeover;
     const answer = async (allow: boolean, explicitScope?: ApprovalPermitScope, customText?: string) => {
       if (approvalState !== 'pending' || approvalSubmitting) return;
       setApprovalError(null);
@@ -183,7 +185,7 @@ const ContentBlock = memo(function ContentBlock({
         const bridge = window.opc;
         if (!bridge) throw new Error('桌面桥接不可用');
         const resolvedScope: ApprovalPermitScope | undefined = allow
-          ? (isBrowserTakeover
+          ? (isTakeover
               ? 'once'
               : block.shell
                 ? (explicitScope ?? (taskAutoAllow ? 'task' : 'once'))
@@ -213,10 +215,11 @@ const ContentBlock = memo(function ContentBlock({
     // from briefly rendering an "已允许/已拒绝" card.
     if (approvalState !== 'pending') return null;
 
-    if (isBrowserTakeover) {
+    if (isTakeover) {
       return (
-        <BrowserTakeoverCard
+        <TakeoverCard
           block={block}
+          mode={isDesktopTakeover ? 'desktop' : 'browser'}
           approvalSubmitting={approvalSubmitting}
           approvalError={approvalError}
           onAnswer={answer}
@@ -321,26 +324,32 @@ const TAKEOVER_KIND_LABELS: Record<string, string> = {
   login: '登录授权',
   captcha: '人机验证',
   registration: '账号注册',
+  confirm: '人工确认',
   payment: '支付确认',
   other: '人工协助',
 };
 
-const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
+const TakeoverCard = memo(function TakeoverCard({
   block,
+  mode,
   approvalSubmitting,
   approvalError,
   onAnswer,
 }: {
   block: ApprovalBlock;
+  mode: 'browser' | 'desktop';
   approvalSubmitting: boolean;
   approvalError: string | null;
   onAnswer: (allow: boolean, explicitScope?: ApprovalPermitScope, customText?: string) => Promise<void>;
 }) {
+  const isDesktop = mode === 'desktop';
   const [takeoverNote, setTakeoverNote] = useState('');
   const [previewArtifact, setPreviewArtifact] = useState<{ taskId: string; relPath: string } | null>(
-    block.browser?.screenshot ?? null,
+    (isDesktop ? block.desktop?.screenshot : block.browser?.screenshot) ?? null,
   );
-  const [currentUrl, setCurrentUrl] = useState<string | undefined>(block.browser?.url);
+  const [currentTarget, setCurrentTarget] = useState<string | undefined>(
+    isDesktop ? block.desktop?.appId : block.browser?.url,
+  );
   const cacheKey = previewArtifact
     ? `image:artifact:${previewArtifact.taskId}:${previewArtifact.relPath}`
     : null;
@@ -383,11 +392,11 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
           setPreviewSrc(result.url);
           setPreviewError(null);
         } else {
-          setPreviewError(result.error || '页面截图加载失败，可点击刷新重试');
+          setPreviewError(result.error || '画面截图加载失败，可点击刷新重试');
         }
       })
       .catch(() => {
-        if (active) setPreviewError('页面截图加载失败，可点击刷新重试');
+        if (active) setPreviewError('画面截图加载失败，可点击刷新重试');
       });
     return () => {
       active = false;
@@ -405,18 +414,31 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
   }, [zoomOpen]);
 
   const refreshPreview = async () => {
-    const browserBridge = window.opc?.browser;
-    if (!browserBridge || refreshing || approvalSubmitting) return;
+    if (refreshing || approvalSubmitting) return;
     setRefreshing(true);
     setPreviewError(null);
     try {
-      const res = await browserBridge.capturePreview(block.taskId, block.browser?.screenshotSelector);
-      if (!res.ok || !res.relPath) {
-        setPreviewError(res.error || '未能截取到当前浏览器画面');
-        return;
+      if (isDesktop) {
+        const desktopBridge = window.opc?.desktop;
+        if (!desktopBridge) return;
+        const res = await desktopBridge.capturePreview(block.taskId, block.desktop?.appId);
+        if (!res.ok || !res.relPath) {
+          setPreviewError(res.error || '未能截取到当前桌面画面');
+          return;
+        }
+        setPreviewArtifact({ taskId: res.taskId ?? block.taskId, relPath: res.relPath });
+        if (res.appId) setCurrentTarget(res.appId);
+      } else {
+        const browserBridge = window.opc?.browser;
+        if (!browserBridge) return;
+        const res = await browserBridge.capturePreview(block.taskId, block.browser?.screenshotSelector);
+        if (!res.ok || !res.relPath) {
+          setPreviewError(res.error || '未能截取到当前浏览器画面');
+          return;
+        }
+        setPreviewArtifact({ taskId: res.taskId ?? block.taskId, relPath: res.relPath });
+        if (res.url) setCurrentTarget(res.url);
       }
-      setPreviewArtifact({ taskId: res.taskId ?? block.taskId, relPath: res.relPath });
-      if (res.url) setCurrentUrl(res.url);
     } catch (caught) {
       setPreviewError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -424,9 +446,11 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
     }
   };
 
-  const kindLabel = TAKEOVER_KIND_LABELS[block.browser?.kind ?? 'other'] ?? '人工协助';
-  const instructions = block.browser?.instructions || block.body;
+  const kind = (isDesktop ? block.desktop?.kind : block.browser?.kind) ?? 'other';
+  const kindLabel = TAKEOVER_KIND_LABELS[kind] ?? '人工协助';
+  const instructions = (isDesktop ? block.desktop?.instructions : block.browser?.instructions) || block.body;
   const hasPreviewArea = Boolean(previewArtifact || previewError);
+  const titleText = block.title.replace(/^需要你接管(?:浏览器|桌面应用)：/, '');
 
   return (
     <section className="buddy-approval relative my-1.5 w-full max-w-[41.25rem] overflow-hidden rounded-2xl border border-accent/35 bg-surface text-sm text-ink shadow-card transition-[border-color,box-shadow,transform] duration-200 motion-safe:animate-[buddy-approval-in_.24s_ease-out]">
@@ -434,13 +458,13 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold tracking-[.12em] text-accent-ink uppercase">
             <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
-            <span>浏览器人工接管</span>
+            <span>{isDesktop ? '桌面人工接管' : '浏览器人工接管'}</span>
             <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] tracking-normal text-accent-ink normal-case">
               {kindLabel}
             </span>
           </div>
           <h3 className="text-[14px] leading-5 font-semibold tracking-[-.01em] text-ink">
-            {block.title.replace(/^需要你接管浏览器：/, '')}
+            {titleText}
           </h3>
           <p className="mt-1.5 whitespace-pre-wrap text-[12.5px] leading-[1.65] text-ink-secondary">
             {instructions}
@@ -449,7 +473,7 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
           {hasPreviewArea ? (
             <div className="mt-2.5 overflow-hidden rounded-xl border border-line bg-surface-muted/40">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-1.5 text-[11px] text-ink-tertiary">
-                <span>当前页面预览 · 可直接扫码或点击放大</span>
+                <span>{isDesktop ? '当前应用画面预览 · 支持放大查看' : '当前页面预览 · 可直接扫码或点击放大'}</span>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -481,11 +505,11 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
                     type="button"
                     onClick={() => setZoomOpen(true)}
                     className="group relative block max-w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                    aria-label="放大查看浏览器页面截图"
+                    aria-label={isDesktop ? '放大查看桌面应用截图' : '放大查看浏览器页面截图'}
                   >
                     <img
                       src={previewSrc}
-                      alt="当前浏览器页面预览（支持扫码）"
+                      alt={isDesktop ? '当前桌面应用预览' : '当前浏览器页面预览（支持扫码）'}
                       className="max-h-[18rem] w-auto max-w-full rounded-md object-contain"
                     />
                   </button>
@@ -496,9 +520,9 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
             </div>
           ) : null}
 
-          {currentUrl ? (
+          {currentTarget ? (
             <p className="mt-2 break-all rounded-lg border border-line bg-surface-muted px-3 py-2 font-mono text-[11.5px] text-ink-secondary">
-              {currentUrl}
+              {currentTarget}
             </p>
           ) : null}
           <input
@@ -506,7 +530,7 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
             value={takeoverNote}
             disabled={approvalSubmitting}
             onChange={(event) => setTakeoverNote(event.target.value)}
-            placeholder="可选附言（例如：已扫码登录 / 验证码已通过）"
+            placeholder="可选附言（例如：已扫码登录 / 已完成确认）"
             className="mt-2.5 w-full rounded-lg border border-line bg-surface-muted px-3 py-1.5 text-[12px] text-ink placeholder:text-ink-quaternary outline-none focus:border-accent"
           />
         </div>
@@ -517,11 +541,15 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
             type="button"
             disabled={approvalSubmitting}
             onClick={() => {
-              void window.opc?.browser.show(block.taskId);
+              if (isDesktop) {
+                void window.opc?.desktop.show(block.taskId);
+              } else {
+                void window.opc?.browser.show(block.taskId);
+              }
             }}
             className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-accent-ink transition-colors hover:bg-surface-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
-            打开 / 聚焦浏览器
+            {isDesktop ? '聚焦目标应用' : '打开 / 聚焦浏览器'}
           </button>
           {!previewArtifact ? (
             <button
@@ -531,7 +559,7 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
               className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw className={`size-3 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
-              <span>{refreshing ? '截图中…' : '获取页面截图'}</span>
+              <span>{refreshing ? '截图中…' : '获取画面截图'}</span>
             </button>
           ) : null}
         </div>
@@ -539,7 +567,13 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
           <button
             type="button"
             disabled={approvalSubmitting}
-            onClick={() => void onAnswer(false, undefined, takeoverNote.trim() || '用户取消浏览器接管')}
+            onClick={() =>
+              void onAnswer(
+                false,
+                undefined,
+                takeoverNote.trim() || (isDesktop ? '用户取消桌面接管' : '用户取消浏览器接管'),
+              )
+            }
             className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary transition-colors hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             取消
@@ -548,7 +582,12 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
             type="button"
             disabled={approvalSubmitting}
             onClick={() =>
-              void onAnswer(true, 'once', takeoverNote.trim() || '已在真实浏览器中完成操作，请继续')
+              void onAnswer(
+                true,
+                'once',
+                takeoverNote.trim() ||
+                  (isDesktop ? '已在桌面应用中完成操作，请继续' : '已在真实浏览器中完成操作，请继续'),
+              )
             }
             className="inline-flex items-center rounded-lg bg-[var(--primary-btn-bg)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--primary-btn-text)] transition-[background,transform] hover:bg-[var(--primary-btn-hover)] active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -574,7 +613,7 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
       >
         <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">
           <h4 id={dialogTitleId} className="text-xs font-medium text-ink-secondary">
-            当前浏览器页面预览（支持直接扫码）
+            {isDesktop ? '当前桌面应用预览' : '当前浏览器页面预览（支持直接扫码）'}
           </h4>
           <div className="flex items-center gap-2">
             <button
@@ -600,7 +639,7 @@ const BrowserTakeoverCard = memo(function BrowserTakeoverCard({
           {previewSrc ? (
             <img
               src={previewSrc}
-              alt="当前浏览器页面大图预览"
+              alt={isDesktop ? '当前桌面应用大图预览' : '当前浏览器页面大图预览'}
               className="max-h-[78vh] w-auto max-w-full object-contain"
             />
           ) : null}

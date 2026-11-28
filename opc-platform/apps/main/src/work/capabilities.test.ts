@@ -98,6 +98,12 @@ describe('WorkService.capabilities', () => {
       'opc.escalate',
       'opc.handback',
     ]);
+    // Ensure a disabled/absent desktop capability renders an explicit reason instead of polluting opc.mcp.
+    const stack = await workWith().stack(workerId);
+    expect(stack.extensions.find((extension) => extension.name === 'opc.desktop')).toMatchObject({
+      available: false,
+      reason: 'desktop-not-installed-or-disabled',
+    });
     // 三个「嘴」之外的执行体能力：`recall` 回源头（§3.3），`escalate` 请示、
     // `hand_back` 交回（§2.2 / §3.2）——它们以前都不在，执行体卡住时只能猜或失败。
     expect(agent.tools.map((tool) => tool.name).sort()).toEqual([

@@ -66,15 +66,15 @@ describe('Router Worker capability directory', () => {
     expect(text).not.toContain('desktop_snapshot(');
   });
 
-  it('includes dynamically named agent-desktop MCP tools in the directory', () => {
-    const tool = 'mcp__agent_desktop_opc_task_abc123__screenshot';
-    const result = summarizeWorkerTools(['internal_tool', tool]);
-    expect(result.tools).toContain(tool);
+  it('includes first-class opc.desktop and legacy agent-desktop tools in the directory', () => {
+    const legacyTool = 'mcp__agent_desktop_opc_task_abc123__screenshot';
+    const result = summarizeWorkerTools(['internal_tool', 'desktop_observe', 'desktop_visual_act', legacyTool]);
+    expect(result.tools).toEqual(['desktop_observe', 'desktop_visual_act', legacyTool]);
     const text = renderRouterWorkerCapabilities([
       { name: '桌面助手', template: 'code', tools: result.tools, desktop: true },
     ]);
-    expect(text).toContain('agent-desktop 桌面 CLI 能力');
-    expect(text).toContain(tool);
+    expect(text).toContain('桌面应用控制能力');
+    expect(text).toContain('desktop_observe');
   });
 
   it('renders enabled office productivity skills in the directory', () => {

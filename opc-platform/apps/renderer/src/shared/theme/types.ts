@@ -48,8 +48,14 @@ export interface BuddyCompanionPref {
   size: BuddySizeId;
   dock: BuddyDockMode;
   bubbles: boolean;
-  /** null = automatic default corner (right: 24, bottom: 24). */
+  /** Render as a standalone click-through desktop window draggable outside main window. */
+  desktopFloat: boolean;
+  /** Keep the floating companion above other desktop windows. */
+  alwaysOnTop: boolean;
+  /** null = automatic default corner (right: 24, bottom: 24) inside the main window. */
   position: BuddyPosition | null;
+  /** Free desktop DIP top-left coordinates when dragged outside main window (`null` = anchored). */
+  screenPosition: { x: number; y: number } | null;
 }
 
 export interface AppearancePrefs {

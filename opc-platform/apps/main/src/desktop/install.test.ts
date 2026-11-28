@@ -32,14 +32,29 @@ describe('agent-desktop release selection', () => {
 });
 
 describe('desktop settings migration', () => {
-  it('drops legacy app allowlists and approval rules while preserving the master switch', () => {
+  it('drops legacy app allowlists and applies safe defaults while preserving enabled switch', () => {
     expect(normalizeDesktopSettings({
       enabled: true,
       allowedApps: [{ id: 'Chrome', enabled: false }],
-      requireApprovalFor: ['external-submit'],
+      requireApprovalFor: ['send-message', 'invalid-cat'],
+      controlMode: 'background',
+      cursorOverlay: false,
+      blockedApps: [' 钥匙串访问 ', '钥匙串访问', 'WeChat'],
       maxOutputBytes: 12,
-    })).toEqual({ enabled: true });
-    expect(normalizeDesktopSettings(undefined)).toEqual({ enabled: false });
+    })).toEqual({
+      enabled: true,
+      controlMode: 'background',
+      cursorOverlay: false,
+      blockedApps: ['钥匙串访问', 'WeChat'],
+      requireApprovalFor: ['send-message'],
+    });
+    expect(normalizeDesktopSettings(undefined)).toEqual({
+      enabled: false,
+      controlMode: 'hybrid',
+      cursorOverlay: true,
+      blockedApps: [],
+      requireApprovalFor: ['send-message', 'destructive', 'payment', 'quit-app'],
+    });
   });
 });
 
@@ -58,13 +73,23 @@ describe('global desktop settings migration', () => {
 
     try {
       const service = new DesktopInstallService(db, userDataDir);
-      expect(service.settings()).toEqual({ enabled: true });
-      expect((db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings') as { value: string }).value)
-        .toBe('{"enabled":true}');
+      expect(service.settings()).toEqual({
+        enabled: true,
+        controlMode: 'hybrid',
+        cursorOverlay: true,
+        blockedApps: [],
+        requireApprovalFor: ['send-message', 'destructive', 'payment', 'quit-app'],
+      });
       expect(db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings.user')).toBeUndefined();
       expect(db.prepare('SELECT value FROM app_setting WHERE key = ?').get('desktop.settings.person-1')).toBeUndefined();
-      service.setSettings({ enabled: false });
-      expect(service.settings()).toEqual({ enabled: false });
+      service.setSettings({ enabled: false, blockedApps: ['钥匙串访问'] });
+      expect(service.settings()).toEqual({
+        enabled: false,
+        controlMode: 'hybrid',
+        cursorOverlay: true,
+        blockedApps: ['钥匙串访问'],
+        requireApprovalFor: ['send-message', 'destructive', 'payment', 'quit-app'],
+      });
     } finally {
       db.close();
       rmSync(userDataDir, { recursive: true, force: true });

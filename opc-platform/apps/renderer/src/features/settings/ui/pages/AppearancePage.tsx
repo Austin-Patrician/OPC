@@ -470,6 +470,30 @@ export function AppearancePage() {
           </Row>
 
           <Row
+            label={t('settings.buddyDesktopFloat')}
+            hint={t('settings.buddyDesktopFloatHint')}
+            disabled={!prefs.buddyCompanion.enabled}
+          >
+            <Toggle
+              checked={prefs.buddyCompanion.desktopFloat}
+              onChange={(desktopFloat) => prefs.updateBuddyCompanion({ desktopFloat })}
+              label={t('settings.buddyDesktopFloat')}
+            />
+          </Row>
+
+          <Row
+            label={t('settings.buddyAlwaysOnTop')}
+            hint={t('settings.buddyAlwaysOnTopHint')}
+            disabled={!prefs.buddyCompanion.enabled || !prefs.buddyCompanion.desktopFloat}
+          >
+            <Toggle
+              checked={prefs.buddyCompanion.alwaysOnTop}
+              onChange={(alwaysOnTop) => prefs.updateBuddyCompanion({ alwaysOnTop })}
+              label={t('settings.buddyAlwaysOnTop')}
+            />
+          </Row>
+
+          <Row
             label={t('settings.buddySize')}
             hint={t('settings.buddySizeHint')}
             disabled={!prefs.buddyCompanion.enabled}
@@ -504,7 +528,10 @@ export function AppearancePage() {
           >
             <button
               type="button"
-              onClick={prefs.resetBuddyPosition}
+              onClick={() => {
+                prefs.resetBuddyPosition();
+                void window.opc?.buddy?.resetPosition();
+              }}
               className={buttonClass.secondary}
             >
               {t('settings.buddyResetPosAction')}

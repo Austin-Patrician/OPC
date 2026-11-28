@@ -113,6 +113,7 @@ import type { SkillPackService } from '../skills/packs';
 import type { BrowserBroker } from '../browser/broker';
 import { createBrowserToolExtension } from './browserTool';
 import type { DesktopBroker } from '../desktop/broker';
+import { createDesktopToolExtension, type DesktopApprovalMetadata } from './desktopTool';
 import { summarizeWorkerTools, type RouterWorkerCapability } from '../router/routerCapabilities';
 import { createAssistantToolsExtension } from '../assistant/assistantTools';
 import type { AssistantToolsService } from '../assistant/assistantTools';
@@ -215,7 +216,7 @@ export interface WorkServiceDeps {
       screenshot?: { taskId: string; relPath: string };
       screenshotSelector?: string;
     };
-    desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+    desktop?: DesktopApprovalMetadata;
     shell?: { command: string; cwd?: string };
   }) => void;
   onApprovalResolved?: (reportId: string, state: 'allowed' | 'denied') => void;
@@ -309,7 +310,6 @@ export class WorkService {
    * 而连接本身是进程级共享的——真正要省的是"每次重新读一遍目录"。
    */
   private readonly mcpMounts = new Map<string, Promise<McpMount>>();
-  private readonly mcpMountDesktop = new Map<string, boolean>();
   /** One-shot approval permits (`scope: 'once'`), keyed by `${taskId}:${tool}`. */
   private readonly oneShotPermits = new Map<string, number>();
   /** Blocking human-in-the-loop browser takeover requests awaiting user completion, keyed by reportId. */
@@ -333,20 +333,24 @@ export class WorkService {
 
   constructor(private readonly deps: WorkServiceDeps) {
     this.repository = new TaskRepository(deps.db);
-    deps.browser?.setTaskWorkspaceResolver((taskId) => {
-      const task = this.repository.getTask(taskId);
-      return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
-    });
-    deps.browser?.setArtifactRegistrar((taskId, absolutePath) => {
+    const registerTaskArtifact = (taskId: string, absolutePath: string, label: string) => {
       const task = this.repository.getTask(taskId);
       if (!task) return;
       const root = path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath);
       const resolved = path.resolve(absolutePath);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error('浏览器产物越过任务工作区');
-      if (!fs.existsSync(resolved)) throw new Error('浏览器产物文件不存在');
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error(`${label}产物越过任务工作区`);
+      if (!fs.existsSync(resolved)) throw new Error(`${label}产物文件不存在`);
       const relPath = path.relative(root, resolved).replace(/\\/g, '/');
       this.repository.addArtifact(taskId, relPath, resolved);
-    });
+    };
+    const resolveTaskWorkspace = (taskId: string) => {
+      const task = this.repository.getTask(taskId);
+      return task ? path.resolve(this.deps.paths.workspaceDir, task.workspaceRelPath) : undefined;
+    };
+    deps.browser?.setTaskWorkspaceResolver(resolveTaskWorkspace);
+    deps.browser?.setArtifactRegistrar((taskId, absolutePath) => registerTaskArtifact(taskId, absolutePath, '浏览器'));
+    deps.desktop?.setTaskWorkspaceResolver(resolveTaskWorkspace);
+    deps.desktop?.setArtifactRegistrar((taskId, absolutePath) => registerTaskArtifact(taskId, absolutePath, '桌面'));
     this.threads = deps.threads ?? new ThreadRepository(deps.db);
 
     // One environment for the whole company: every tool call and acceptance
@@ -1242,7 +1246,7 @@ export class WorkService {
       screenshot?: { taskId: string; relPath: string };
       screenshotSelector?: string;
     };
-    desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+    desktop?: DesktopApprovalMetadata;
     shell?: { command: string; cwd?: string };
   }): void => {
     const task = this.repository.getTask(input.taskId);
@@ -1302,17 +1306,35 @@ export class WorkService {
    * Pauses a browser tool call while the user completes login, QR scan, CAPTCHA,
    * registration, or confirmation in the real visible browser window.
    */
-  requestBrowserTakeover = (input: {
+  /** Consumes an existing task-wide or one-shot permit for a guarded tool call. */
+  private consumeToolPermit(taskId: string, tool: string): boolean {
+    if (this.repository.hasMcpPermit(taskId, tool)) return true;
+    const oneShotKey = `${taskId}:${tool}`;
+    const remaining = this.oneShotPermits.get(oneShotKey) ?? 0;
+    if (remaining <= 0) return false;
+    if (remaining === 1) this.oneShotPermits.delete(oneShotKey);
+    else this.oneShotPermits.set(oneShotKey, remaining - 1);
+    return true;
+  }
+
+  /**
+   * Pauses a browser or desktop tool call while the user completes login, QR scan,
+   * CAPTCHA, confirmation, or payment in the real window.
+   */
+  private requestTakeoverApproval(input: {
     taskId: string;
+    subject: 'browser_takeover' | 'desktop_takeover';
+    tool: string;
+    label: string;
+    stepPrefix: string;
+    titlePrefix: string;
     title: string;
     instructions: string;
-    kind: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
-    url?: string;
-    sessionId?: string;
-    screenshot?: { taskId: string; relPath: string };
-    screenshotSelector?: string;
+    timeoutNote: string;
+    browser?: NonNullable<WorkServiceDeps['onApprovalCard']> extends (arg: infer T) => void ? T extends { browser?: infer B } ? B : never : never;
+    desktop?: DesktopApprovalMetadata;
     signal?: AbortSignal;
-  }): Promise<{ completed: boolean; note?: string }> => {
+  }): Promise<{ completed: boolean; note?: string }> {
     const task = this.repository.getTask(input.taskId);
     if (!task?.threadId) {
       return Promise.resolve({ completed: false, note: '当前任务无有效工作线，无法发起人工接管' });
@@ -1321,39 +1343,30 @@ export class WorkService {
       return Promise.resolve({ completed: false, note: '任务已中止' });
     }
 
-    this.repository.addStep(task.id, `等待你接管浏览器：${input.title}`);
+    this.repository.addStep(task.id, `${input.stepPrefix}：${input.title}`);
     const report = this.threads.addReport({
       threadId: task.threadId,
       level: 'silent',
-      title: `需要你接管浏览器：${input.title}`,
+      title: `${input.titlePrefix}：${input.title}`,
       body: input.instructions,
       taskId: task.id,
-      subject: 'browser_takeover',
+      subject: input.subject,
       kind: 'approval',
     });
     this.threads.setState(task.threadId, 'waiting');
     const updated = this.repository.getTask(task.id);
     if (updated) this.emit(updated);
 
-    const browserMeta = {
-      action: 'takeover',
-      kind: input.kind,
-      ...(input.url ? { url: input.url } : {}),
-      instructions: input.instructions,
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      ...(input.screenshot ? { screenshot: input.screenshot } : {}),
-      ...(input.screenshotSelector ? { screenshotSelector: input.screenshotSelector } : {}),
-    };
-
     try {
       this.deps.onApprovalCard?.({
         report,
         task,
-        tool: 'browser_request_takeover',
-        browser: browserMeta,
+        tool: input.tool,
+        ...(input.browser ? { browser: input.browser } : {}),
+        ...(input.desktop ? { desktop: input.desktop } : {}),
       });
     } catch (error) {
-      console.warn('browser takeover card delivery failed', error);
+      console.warn(`${input.label} takeover card delivery failed`, error);
     }
 
     return new Promise((resolve) => {
@@ -1373,9 +1386,9 @@ export class WorkService {
       const timer = setTimeout(() => {
         this.threads.markReportRead(report.id);
         this.deps.onApprovalResolved?.(report.id, 'denied');
-        this.repository.addStep(task.id, '浏览器接管等待超时');
+        this.repository.addStep(task.id, `${input.label}等待超时`);
         if (task.threadId) this.threads.setState(task.threadId, 'running');
-        finish({ completed: false, note: '等待用户在浏览器中完成操作超时（10 分钟）' });
+        finish({ completed: false, note: input.timeoutNote });
       }, 10 * 60_000);
       timer.unref?.();
 
@@ -1400,7 +1413,73 @@ export class WorkService {
           : {}),
       });
     });
-  };
+  }
+
+  requestBrowserTakeover = (input: {
+    taskId: string;
+    title: string;
+    instructions: string;
+    kind: 'login' | 'captcha' | 'registration' | 'payment' | 'other';
+    url?: string;
+    sessionId?: string;
+    screenshot?: { taskId: string; relPath: string };
+    screenshotSelector?: string;
+    signal?: AbortSignal;
+  }): Promise<{ completed: boolean; note?: string }> =>
+    this.requestTakeoverApproval({
+      taskId: input.taskId,
+      subject: 'browser_takeover',
+      tool: 'browser_request_takeover',
+      label: '浏览器接管',
+      stepPrefix: '等待你接管浏览器',
+      titlePrefix: '需要你接管浏览器',
+      title: input.title,
+      instructions: input.instructions,
+      timeoutNote: '等待用户在浏览器中完成操作超时（10 分钟）',
+      ...(input.signal ? { signal: input.signal } : {}),
+      browser: {
+        action: 'takeover',
+        kind: input.kind,
+        ...(input.url ? { url: input.url } : {}),
+        instructions: input.instructions,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.screenshot ? { screenshot: input.screenshot } : {}),
+        ...(input.screenshotSelector ? { screenshotSelector: input.screenshotSelector } : {}),
+      },
+    });
+
+  requestDesktopTakeover = (input: {
+    taskId: string;
+    title: string;
+    instructions: string;
+    kind: 'login' | 'captcha' | 'confirm' | 'payment' | 'other';
+    appId?: string;
+    windowId?: string;
+    sessionId?: string;
+    screenshot?: { taskId: string; relPath: string };
+    signal?: AbortSignal;
+  }): Promise<{ completed: boolean; note?: string }> =>
+    this.requestTakeoverApproval({
+      taskId: input.taskId,
+      subject: 'desktop_takeover',
+      tool: 'desktop_request_takeover',
+      label: '桌面接管',
+      stepPrefix: '等待你接管桌面应用',
+      titlePrefix: '需要你接管桌面应用',
+      title: input.title,
+      instructions: input.instructions,
+      timeoutNote: '等待用户在桌面应用中完成操作超时（10 分钟）',
+      ...(input.signal ? { signal: input.signal } : {}),
+      desktop: {
+        action: 'takeover',
+        kind: input.kind,
+        ...(input.appId ? { appId: input.appId } : {}),
+        ...(input.windowId ? { windowId: input.windowId } : {}),
+        instructions: input.instructions,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.screenshot ? { screenshot: input.screenshot } : {}),
+      },
+    });
 
   /**
    * 回答执行体的请示（W3）。
@@ -1526,7 +1605,8 @@ export class WorkService {
       this.pendingTakeovers.delete(report.id);
       this.threads.markReportRead(report.id);
       this.deps.onApprovalResolved?.(report.id, allow ? 'allowed' : 'denied');
-      this.repository.addStep(task.id, allow ? '你完成了浏览器接管' : '你取消了浏览器接管');
+      const takeoverLabel = report.subject === 'desktop_takeover' ? '桌面接管' : '浏览器接管';
+      this.repository.addStep(task.id, allow ? `你完成了${takeoverLabel}` : `你取消了${takeoverLabel}`);
       if (task.threadId) this.threads.setState(task.threadId, 'running');
       const updated = this.repository.getTask(task.id);
       if (updated) this.emit(updated);
@@ -1942,7 +2022,6 @@ export class WorkService {
     this.harnesses.clear();
     for (const [workerId, opening] of this.mcpMounts) {
       this.mcpMounts.delete(workerId);
-      this.mcpMountDesktop.delete(workerId);
       await opening.then((mount) => mount.close()).catch(() => undefined);
       this.mcpServers.delete(workerId);
     }
@@ -2013,13 +2092,16 @@ export class WorkService {
     const activeSkills = [...packSkills, ...bundledSkills];
     return catalog.agents
       .filter((agent) => agent.status !== 'retired')
-      .map((agent) => ({
-        name: agent.name,
-        template: agent.template,
-        ...summarizeWorkerTools(agent.tools.map((tool) => tool.name)),
-        desktop: agent.tools.some((tool) => tool.name.startsWith('mcp__agent_desktop_')),
-        ...(activeSkills && activeSkills.length > 0 ? { skills: activeSkills } : {}),
-      }));
+      .map((agent) => {
+        const hasDesktop = agent.tools.some((tool) => tool.name.startsWith('desktop_'));
+        return {
+          name: agent.name,
+          template: agent.template,
+          ...summarizeWorkerTools(agent.tools.map((tool) => tool.name)),
+          ...(hasDesktop ? { desktop: true } : {}),
+          ...(activeSkills && activeSkills.length > 0 ? { skills: activeSkills } : {}),
+        };
+      });
   };
 
   // ── internals ──────────────────────────────────────────────────────────
@@ -2033,36 +2115,19 @@ export class WorkService {
    */
   /** 这个执行体的 MCP 挂载；没有配置就是 null。 */
   private async mcpMountFor(workerId: string): Promise<McpMount | null> {
-    const desktop = this.deps.desktop;
-    const desktopEnabled = desktop?.status().runtimeHealthy === true && desktop.settings().enabled === true;
-    const servers = [
-      ...(this.deps.mcp?.() ?? []),
-      ...(desktopEnabled ? [{ name: `agent_desktop_${workerId.replace(/[^A-Za-z0-9_]/g, '_')}`, command: desktop!.status().binary!, args: ['mcp'], autoApprove: true, description: 'agent-desktop 提供的完整桌面操作命令集' }] : []),
-    ];
+    const servers = [...(this.deps.mcp?.() ?? [])];
     if (servers.length === 0) return null;
 
     const cached = this.mcpMounts.get(workerId);
-    const cachedDesktop = this.mcpMountDesktop.get(workerId);
-    if (cached && cachedDesktop === desktopEnabled) return cached;
-    if (cached && cachedDesktop !== desktopEnabled) {
-      this.mcpMounts.delete(workerId);
-      this.mcpMountDesktop.delete(workerId);
-      this.mcpServers.delete(workerId);
-      void cached.then((mount) => mount.close()).catch(() => undefined);
-    }
+    if (cached) return cached;
 
     const opening = mountMcp({
       servers,
       userDataDir: this.deps.paths.userData,
       scopeKey: workerId,
-      connectServer: (config) => config.name.startsWith('agent_desktop_')
-        ? desktop!.connectMcp(workerId)
-        : sharedMcpConnection(config),
-      shouldCloseConnection: (config) => config.name.startsWith('agent_desktop_'),
-      autoApproveServers: servers.filter((config) => config.name.startsWith('agent_desktop_')).map((config) => config.name),
+      connectServer: (config) => sharedMcpConnection(config),
     });
     this.mcpMounts.set(workerId, opening);
-    this.mcpMountDesktop.set(workerId, desktopEnabled);
     try {
       const mount = await opening;
       for (const server of mount.servers) {
@@ -2078,20 +2143,14 @@ export class WorkService {
         });
       }
       this.mcpServers.set(workerId, mount.servers);
-      if (desktopEnabled && desktop) {
-        const desktopServer = mount.servers.find((server) => server.name.startsWith('agent_desktop_'));
-        desktop.setMcpStatus({ healthy: Boolean(desktopServer && !desktopServer.error), toolCount: desktopServer?.tools, error: desktopServer?.error });
-      }
       // 一个都没连上就别占着一个槽：它会让界面显示"有 MCP"，而实际什么都没有。
       if (!mount.extension) {
         this.mcpMounts.delete(workerId);
-        this.mcpMountDesktop.delete(workerId);
         return null;
       }
       return mount;
     } catch (error) {
       this.mcpMounts.delete(workerId);
-      this.mcpMountDesktop.delete(workerId);
       console.warn('[mcp] 挂载失败', error);
       return null;
     }
@@ -2413,6 +2472,32 @@ export class WorkService {
         : { name: 'opc.browser', essential: false, available: false, reason: 'browser-not-installed-or-disabled' },
     );
 
+    const desktop = this.deps.desktop;
+    const desktopAvailable = desktop?.status().runtimeHealthy === true && desktop.settings().enabled === true;
+    slots.push(
+      desktopAvailable && desktop
+        ? {
+            name: 'opc.desktop',
+            essential: false,
+            available: true,
+            extension: createDesktopToolExtension({
+              broker: desktop,
+              taskId: currentTask,
+              workerId: subject.id,
+              imageProcessor: this.imageProcessor,
+              requestTakeover: (req) => this.requestDesktopTakeover(req),
+              authorize: (tool, title, metadata) => {
+                const taskId = currentTask();
+                if (!taskId) return false;
+                if (this.consumeToolPermit(taskId, tool)) return true;
+                this.askForApproval({ taskId, tool, title, ...(metadata ? { desktop: metadata } : {}) });
+                return false;
+              },
+            }),
+          }
+        : { name: 'opc.desktop', essential: false, available: false, reason: 'desktop-not-installed-or-disabled' },
+    );
+
     return slots;
   }
 
@@ -2470,14 +2555,7 @@ export class WorkService {
         authorizeShell: ({ tool, command, cwd }) => {
           const taskId = currentTaskIdFor(workerKey, personId);
           if (!taskId) return true;
-          if (this.repository.hasMcpPermit(taskId, tool)) return true;
-          const oneShotKey = `${taskId}:${tool}`;
-          const remaining = this.oneShotPermits.get(oneShotKey) ?? 0;
-          if (remaining > 0) {
-            if (remaining === 1) this.oneShotPermits.delete(oneShotKey);
-            else this.oneShotPermits.set(oneShotKey, remaining - 1);
-            return true;
-          }
+          if (this.consumeToolPermit(taskId, tool)) return true;
           this.askForApproval({
             taskId,
             tool,
@@ -2622,7 +2700,6 @@ export class WorkService {
     // 设置页改完 `mcp.json` 之后新的服务器不会出现。
     const mountOpening = this.mcpMounts.get(workerId);
     this.mcpMounts.delete(workerId);
-    this.mcpMountDesktop.delete(workerId);
     this.mcpServers.delete(workerId);
     if (mountOpening) {
       try {

@@ -5,8 +5,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { app as electronApp, nativeImage } from 'electron';
-import type { DesktopAppView, DesktopInstallProgress, DesktopSettings, DesktopWindowView } from '@opc/shared/ipc';
+import type {
+  DesktopAppView,
+  DesktopInstallProgress,
+  DesktopPreviewResult,
+  DesktopSettings,
+  DesktopWindowView,
+} from '@opc/shared/ipc';
 import type { DesktopInstallService } from './install';
+import { isAppBlocked, type DesktopRefMeta } from './policy';
+import type { DesktopCaptureFrame } from './vision';
 import { execFilePlatform } from '../process/execFilePlatform';
 import { connectMcp, type McpConnection } from '../mcp/connection';
 import type { McpServerConfig } from '../mcp/contract';
@@ -252,6 +260,27 @@ export interface DesktopSessionInput { taskId: string; workerId: string; appId?:
 export interface DesktopResult { ok: boolean; text: string; data?: unknown; details?: Record<string, unknown>; }
 interface Session extends DesktopSessionInput { id: string; lastUsedAt: number; headed: boolean; }
 
+export interface DesktopWindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DesktopWindowDetail extends DesktopWindowView {
+  visible?: boolean;
+  accessible?: boolean;
+  focused?: boolean;
+  bounds?: DesktopWindowBounds;
+}
+
+export interface DesktopDisplayDetail {
+  id: string;
+  isPrimary: boolean;
+  scale: number;
+  bounds: DesktopWindowBounds;
+}
+
 /** A native session is only valid when the runtime returned its real id. */
 export function desktopSessionId(result: DesktopResult): string | undefined {
   if (!result.ok || !result.data || typeof result.data !== 'object') return undefined;
@@ -295,21 +324,141 @@ function toStringEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string>
   return result;
 }
 
-
 function parseEnvelope(text: string): { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } } | undefined {
   try { return JSON.parse(text) as { ok: boolean; data?: unknown; error?: { code?: string; message?: string; disposition?: unknown } }; } catch { return undefined; }
+}
+
+const APP_SCOPED_COMMANDS = new Set([
+  'snapshot',
+  'find',
+  'screenshot',
+  'press',
+  'focus-window',
+  'list-surfaces',
+  'resize-window',
+  'move-window',
+  'minimize',
+  'maximize',
+  'restore',
+]);
+
+const WINDOW_SCOPED_COMMANDS = new Set([
+  'snapshot',
+  'find',
+  'screenshot',
+  'press',
+  'focus-window',
+  'list-surfaces',
+  'resize-window',
+  'move-window',
+  'minimize',
+  'maximize',
+  'restore',
+]);
+
+/** Translates raw driver screenshot errors into actionable OS permission instructions. */
+export function formatDesktopScreenshotError(
+  rawText: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const trimmed = rawText.trim();
+  if (/screen\s*recording/i.test(trimmed)) {
+    if (platform === 'darwin') {
+      return '桌面截图失败：尚未授予 macOS「屏幕录制」权限。请打开「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」，勾选「OPC Agent 工作台」（若从开发终端/IDE 启动，请同时勾选对应的终端/IDE 与 Electron），然后完全退出并重启应用后重试。';
+    }
+    return `桌面截图失败：缺少系统屏幕录制权限（${trimmed}）。请在系统权限设置中授权并重启应用后重试。`;
+  }
+  return trimmed || '桌面截图失败';
 }
 
 export function desktopCommandOptions(command: string, appId?: string, windowId?: string): string[] {
   // agent-desktop treats these as subcommand options. Ref actions already carry
   // their snapshot scope and reject unrelated --app/--window-id flags.
-  if (command === 'snapshot' || command === 'find' || command === 'screenshot') {
-    return [...(appId ? ['--app', appId] : []), ...(windowId ? ['--window-id', windowId] : [])];
+  const out: string[] = [];
+  if (appId && APP_SCOPED_COMMANDS.has(command)) {
+    out.push('--app', appId);
   }
-  if (command === 'focus-window') {
-    return [...(appId ? ['--app', appId] : []), ...(windowId ? ['--window-id', windowId] : [])];
+  if (windowId && WINDOW_SCOPED_COMMANDS.has(command)) {
+    out.push('--window-id', windowId);
   }
-  return [];
+  return out;
+}
+
+function parseBounds(raw: unknown): DesktopWindowBounds | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  const x = typeof value.x === 'number' ? value.x : NaN;
+  const y = typeof value.y === 'number' ? value.y : NaN;
+  const width = typeof value.width === 'number' ? value.width : NaN;
+  const height = typeof value.height === 'number' ? value.height : NaN;
+  if (![x, y, width, height].every(Number.isFinite)) return undefined;
+  return { x, y, width, height };
+}
+
+/**
+ * Walks an `agent-desktop snapshot` JSON envelope and indexes every addressable `@ref_id`
+ * so downstream risk guards and trace summaries know which control a ref points to.
+ */
+export function indexSnapshotRefs(
+  data: unknown,
+  fallbackApp?: string,
+  fallbackWindowId?: string,
+): Map<string, DesktopRefMeta> {
+  const index = new Map<string, DesktopRefMeta>();
+  if (!data || typeof data !== 'object') return index;
+
+  const record = data as Record<string, unknown>;
+  const app = typeof record.app === 'string' && record.app.trim() ? record.app.trim() : fallbackApp;
+  const windowId =
+    typeof record.window_id === 'string' && record.window_id.trim()
+      ? record.window_id.trim()
+      : fallbackWindowId;
+
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const entry of node) visit(entry);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    const ref =
+      typeof obj.ref_id === 'string' && obj.ref_id.trim()
+        ? obj.ref_id.trim()
+        : typeof obj.ref === 'string' && obj.ref.trim()
+          ? obj.ref.trim()
+          : undefined;
+
+    if (ref) {
+      const role = typeof obj.role === 'string' ? obj.role : undefined;
+      const name =
+        typeof obj.name === 'string' && obj.name.trim()
+          ? obj.name.trim()
+          : typeof obj.title === 'string' && obj.title.trim()
+            ? obj.title.trim()
+            : typeof obj.label === 'string' && obj.label.trim()
+              ? obj.label.trim()
+              : undefined;
+      const value = typeof obj.value === 'string' && obj.value.trim() ? obj.value.trim() : undefined;
+      const bounds = parseBounds(obj.bounds);
+      const nodeApp = typeof obj.app === 'string' && obj.app.trim() ? obj.app.trim() : app;
+      index.set(ref, {
+        ref,
+        ...(role ? { role } : {}),
+        ...(name ? { name } : {}),
+        ...(value ? { value } : {}),
+        ...(nodeApp ? { app: nodeApp } : {}),
+        ...(windowId ? { windowId } : {}),
+        ...(bounds ? { bounds } : {}),
+      });
+    }
+
+    if (Array.isArray(obj.children)) {
+      for (const child of obj.children) visit(child);
+    }
+  };
+
+  visit(record.tree ?? record.root ?? record.elements ?? record.nodes ?? record);
+  return index;
 }
 
 function isMcpDisconnectError(error: unknown): boolean {
@@ -322,7 +471,7 @@ function isMcpDisconnectError(error: unknown): boolean {
 /**
  * Wraps an `agent-desktop` MCP session with automatic single-flight reconnect
  * so an unexpected stdio pipe drop or native session timeout mid-task does not
- * permanently wedge the worker's desktop tools.
+ * permanently wedge a connection wrapper.
  */
 export function createReconnectingDesktopMcpConnection(options: {
   open: () => Promise<McpConnection>;
@@ -425,7 +574,6 @@ export function createReconnectingDesktopMcpConnection(options: {
         return () => { toolChangedListeners.delete(listener); };
       },
       onClose: (listener) => {
-        // Expose manual closure only; unexpected disconnects are recovered transparently.
         void listener;
         return () => undefined;
       },
@@ -460,57 +608,69 @@ export class DesktopBroker {
   private readonly sessions = new Map<string, Session>();
   /** The exact tree that minted refs. Never validate a ref against a newer tree. */
   private readonly snapshots = new Map<string, { data: unknown; appId?: string; windowId?: string }>();
+  private readonly refIndex = new Map<string, Map<string, DesktopRefMeta>>();
+  private readonly captureFrames = new Map<string, DesktopCaptureFrame>();
+  private readonly cursorOverlayApplied = new Set<string>();
   private readonly locks = new Map<string, Promise<void>>();
   private visibleTask?: string;
   private mcpHealthy = false;
-  private mcpToolCount = 0;
+  private mcpToolCount = 11;
   private mcpError?: string;
   private cleanupTimer: ReturnType<typeof setInterval>;
   private desktopEnvPromise?: Promise<NodeJS.ProcessEnv | undefined>;
+  private taskWorkspaceResolver?: (taskId: string) => string | undefined;
+  private artifactRegistrar?: (taskId: string, absolutePath: string) => void;
 
-  constructor(private readonly install: DesktopInstallService) {
+  constructor(
+    private readonly install: DesktopInstallService,
+    private readonly artifactsDir = os.tmpdir(),
+  ) {
     this.cleanupTimer = setInterval(() => { void this.cleanupIdle(); }, 10 * 60_000);
     this.cleanupTimer.unref?.();
   }
 
+  setTaskWorkspaceResolver(resolver: (taskId: string) => string | undefined): void {
+    this.taskWorkspaceResolver = resolver;
+  }
+
+  setArtifactRegistrar(registrar: (taskId: string, absolutePath: string) => void): void {
+    this.artifactRegistrar = registrar;
+  }
+
   status = () => {
     const runtime = this.install.status();
-    const mcpHealthy = runtime.enabled ? this.mcpHealthy : false;
+    const active = runtime.enabled && runtime.runtimeHealthy;
     return {
       ...runtime,
-      runtimeHealthy: runtime.healthy,
-      healthy: runtime.healthy && (!runtime.enabled || mcpHealthy),
-      mcpHealthy,
+      runtimeHealthy: runtime.runtimeHealthy,
+      healthy: runtime.runtimeHealthy && (!runtime.enabled || active),
+      mcpHealthy: this.mcpHealthy || active,
       mcpToolCount: this.mcpToolCount,
       ...(this.mcpError ? { mcpError: this.mcpError } : {}),
     };
   };
+
   settings = () => this.install.settings();
   setSettings = (patch: Partial<DesktopSettings>) => this.install.setSettings(patch);
   installRuntime = (onProgress?: (progress: DesktopInstallProgress) => void) => this.install.install(onProgress);
+
   initialize = async () => {
     await this.install.initialize();
-    return this.probeMcp();
-  };
-  probeMcp = async () => {
-    if (!this.install.settings().enabled) {
-      this.setMcpStatus({ healthy: false });
-      return this.status();
-    }
-    if (!this.install.status().healthy) {
-      this.setMcpStatus({ healthy: false, error: this.install.status().error });
-      return this.status();
-    }
-    try {
-      const probe = await this.connectMcp('healthcheck');
-      const toolCount = probe.tools.length;
-      await probe.close();
-      this.setMcpStatus({ healthy: toolCount > 0, toolCount, ...(toolCount > 0 ? {} : { error: 'agent-desktop MCP 未发现工具' }) });
-    } catch (error) {
-      this.setMcpStatus({ healthy: false, error: error instanceof Error ? error.message : String(error) });
-    }
+    this.syncExtensionStatus();
     return this.status();
   };
+
+  probeMcp = async () => {
+    this.syncExtensionStatus();
+    return this.status();
+  };
+
+  private syncExtensionStatus(): void {
+    const runtime = this.install.status();
+    const active = runtime.enabled && runtime.runtimeHealthy;
+    this.setMcpStatus({ healthy: active, toolCount: 11 });
+  }
+
   uninstallRuntime = async (deleteRuntime = true) => { await this.disposeSessions(); return this.install.uninstall(deleteRuntime); };
   doctor = () => this.install.refresh();
   permissions = () => this.install.permissions();
@@ -518,8 +678,39 @@ export class DesktopBroker {
 
   setMcpStatus(input: { healthy: boolean; toolCount?: number; error?: string }): void {
     this.mcpHealthy = input.healthy;
-    this.mcpToolCount = input.toolCount ?? 0;
+    this.mcpToolCount = input.toolCount ?? 11;
     this.mcpError = input.error;
+  }
+
+  assertAppAllowed(target: { app?: string; bundleId?: string; process?: string } | string | undefined): void {
+    if (!target) return;
+    const blocked = this.settings().blockedApps;
+    if (isAppBlocked(target, blocked)) {
+      const label = typeof target === 'string'
+        ? target
+        : (target.app ?? target.bundleId ?? target.process ?? '目标应用');
+      throw new Error(`应用「${label}」在受保护黑名单中，已拒绝访问（可在「设置 → 电脑操作 → 桌面应用」调整）。`);
+    }
+  }
+
+  lookupRefMeta(taskId: string, refId: string): DesktopRefMeta | undefined {
+    return this.refIndex.get(taskId)?.get(refId.trim());
+  }
+
+  lastCaptureFrame(taskId: string): DesktopCaptureFrame | undefined {
+    return this.captureFrames.get(taskId);
+  }
+
+  async connectMcp(workerId: string): Promise<McpConnection> {
+    return createReconnectingDesktopMcpConnection({
+      open: () => this.openMcpSession(workerId),
+      onDisconnect: () => {
+        this.setMcpStatus({ healthy: false, error: 'agent-desktop MCP 连接已断开，将在下次调用时自动重连' });
+      },
+      onReconnect: (fresh) => {
+        this.setMcpStatus({ healthy: true, toolCount: fresh.tools.length });
+      },
+    });
   }
 
   private async openMcpSession(workerId: string): Promise<McpConnection> {
@@ -556,80 +747,341 @@ export class DesktopBroker {
     }
   }
 
-  async connectMcp(workerId: string): Promise<McpConnection> {
-    return createReconnectingDesktopMcpConnection({
-      open: () => this.openMcpSession(workerId),
-      onDisconnect: () => {
-        this.setMcpStatus({ healthy: false, error: 'agent-desktop MCP 连接已断开，将在下次调用时自动重连' });
-      },
-      onReconnect: (fresh) => {
-        this.setMcpStatus({ healthy: true, toolCount: fresh.tools.length });
-      },
-    });
-  }
-
   async listApps(): Promise<DesktopAppView[]> {
     const result = await this.raw(['list-apps'], undefined, undefined, true);
     if (!result.ok) throw new Error(result.text || '无法读取当前运行应用');
     const data = result.data as Record<string, unknown> | undefined;
-    const apps = Array.isArray(data?.apps) ? (await Promise.all(data.apps.map(async (item) => {
+    if (!Array.isArray(data?.apps)) return [];
+
+    const enriched = await Promise.all(data.apps.map(async (item) => {
       const value = item as Record<string, unknown>;
       const name = String(value.name ?? value.app ?? value.application_name ?? value.display_name ?? value.process_name ?? '');
       const bundleId = [value.bundle_id, value.bundle_identifier, value.bundleIdentifier]
-        .find((item): item is string => typeof item === 'string' && Boolean(item.trim()))?.trim() ?? '';
+        .find((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))?.trim() ?? '';
       const executablePath = [value.path, value.app_path, value.application_path, value.executable_path]
-        .find((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+        .find((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()));
       const pid = value.pid ?? value.process_id;
-      return { name, ...(typeof value.process === 'string' ? { process: value.process } : typeof value.process_name === 'string' ? { process: value.process_name } : typeof pid === 'number' || typeof pid === 'string' ? { process: String(pid) } : {}), ...(bundleId ? { bundleId } : {}), ...(name ? { icon: await applicationIcon(bundleId, name, executablePath, pid) } : {}) };
-    }))).filter((item) => item.name).map(({ icon, ...item }) => ({ ...item, ...(icon ? { icon } : {}) })) : [];
-    console.warn(`[desktop] app scan: ${apps.length} apps, ${apps.filter((item) => Boolean(item.icon)).length} real icons, ${apps.filter((item) => !item.icon).length} initial fallbacks`);
+      const presentation = typeof value.presentation === 'string' ? value.presentation : '';
+      const process = typeof value.process === 'string'
+        ? value.process
+        : typeof value.process_name === 'string'
+          ? value.process_name
+          : typeof pid === 'number' || typeof pid === 'string'
+            ? String(pid)
+            : undefined;
+      const icon = name ? await applicationIcon(bundleId, name, executablePath, pid) : undefined;
+      return {
+        name,
+        ...(process ? { process } : {}),
+        ...(bundleId ? { bundleId } : {}),
+        ...(icon ? { icon } : {}),
+        presentation,
+      };
+    }));
+
+    const filtered = enriched.filter((item) => item.name);
+    filtered.sort((left, right) => {
+      const leftFg = left.presentation === 'foreground' ? 0 : 1;
+      const rightFg = right.presentation === 'foreground' ? 0 : 1;
+      if (leftFg !== rightFg) return leftFg - rightFg;
+      return left.name.localeCompare(right.name, 'zh-CN');
+    });
+
+    const apps: DesktopAppView[] = filtered.map(({ presentation: _presentation, ...item }) => item);
+    console.warn(`[desktop] app scan: ${apps.length} apps, ${apps.filter((item) => Boolean(item.icon)).length} real icons`);
     return apps;
   }
 
-  async listWindows(): Promise<DesktopWindowView[]> {
-    const result = await this.raw(['list-windows'], undefined, undefined, true);
+  async listWindowDetails(appFilter?: string): Promise<DesktopWindowDetail[]> {
+    const args = ['list-windows', ...(appFilter ? ['--app', appFilter] : [])];
+    const result = await this.raw(args, undefined, undefined, true);
     if (!result.ok) throw new Error(result.text || '无法读取当前桌面窗口');
     const data = result.data;
-    return Array.isArray(data) ? data.map((item) => {
+    if (!Array.isArray(data)) return [];
+    return data.map((item) => {
       const value = item as Record<string, unknown>;
-      return { id: String(value.id ?? value.window_id ?? ''), ...(typeof value.title === 'string' ? { title: value.title } : {}), ...(typeof value.app_name === 'string' ? { app: value.app_name } : {}), ...(typeof value.pid === 'number' ? { process: String(value.pid) } : {}) };
-    }).filter((item) => item.id) : [];
+      const bounds = parseBounds(value.bounds);
+      return {
+        id: String(value.id ?? value.window_id ?? ''),
+        ...(typeof value.title === 'string' ? { title: value.title } : {}),
+        ...(typeof value.app_name === 'string'
+          ? { app: value.app_name }
+          : typeof value.app === 'string'
+            ? { app: value.app }
+            : {}),
+        ...(typeof value.pid === 'number' ? { process: String(value.pid) } : {}),
+        ...(typeof value.visible === 'boolean' ? { visible: value.visible } : {}),
+        ...(typeof value.accessible === 'boolean' ? { accessible: value.accessible } : {}),
+        ...(typeof value.is_focused === 'boolean' ? { focused: value.is_focused } : {}),
+        ...(bounds ? { bounds } : {}),
+      };
+    }).filter((item) => item.id);
   }
 
-  async execute(input: DesktopSessionInput, command: string, args: readonly string[] = [], options: { appId?: string; windowId?: string; stdin?: string } = {}): Promise<DesktopResult> {
+  async listWindows(): Promise<DesktopWindowView[]> {
+    const details = await this.listWindowDetails();
+    return details.map(({ visible: _v, accessible: _a, focused: _f, bounds: _b, ...view }) => view);
+  }
+
+  async listDisplays(): Promise<DesktopDisplayDetail[]> {
+    const result = await this.raw(['list-displays'], undefined, undefined, true);
+    if (!result.ok) return [];
+    const data = result.data;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((item): DesktopDisplayDetail | null => {
+        const value = item as Record<string, unknown>;
+        const bounds = parseBounds(value.bounds);
+        if (!bounds) return null;
+        return {
+          id: String(value.id ?? ''),
+          isPrimary: value.is_primary === true,
+          scale: typeof value.scale === 'number' && value.scale > 0 ? value.scale : 1,
+          bounds,
+        };
+      })
+      .filter((entry): entry is DesktopDisplayDetail => entry !== null);
+  }
+
+  async execute(
+    input: DesktopSessionInput,
+    command: string,
+    args: readonly string[] = [],
+    options: { appId?: string; windowId?: string; stdin?: string; headed?: boolean } = {},
+  ): Promise<DesktopResult> {
     const appId = options.appId ?? input.appId;
+    const windowId = options.windowId ?? input.windowId;
+    this.assertAppAllowed(appId);
+
+    const currentSettings = this.settings();
+    if (options.headed && currentSettings.controlMode === 'background') {
+      return {
+        ok: false,
+        text: '当前桌面控制处于「纯后台无打扰模式」，已禁用物理鼠标/坐标点击与拖拽。可在「设置 → 电脑操作 → 桌面应用」切换为「混合全能模式」。',
+      };
+    }
+
     return this.withLock(input.taskId, async () => {
       const session = await this.session(input);
-      const commandFlags = desktopCommandOptions(command, appId, options.windowId ?? input.windowId);
-      const result = await this.raw([command, ...args, ...commandFlags], session.id, options.stdin);
-      if (command === 'snapshot' && result.ok && result.data !== undefined) this.snapshots.set(input.taskId, {
-        data: result.data,
-        ...(appId ? { appId } : {}),
-        ...((options.windowId ?? input.windowId) ? { windowId: options.windowId ?? input.windowId } : {}),
-      });
+      if (appId) session.appId = appId;
+      if (windowId) session.windowId = windowId;
+
+      if (currentSettings.cursorOverlay && !this.cursorOverlayApplied.has(session.id)) {
+        this.cursorOverlayApplied.add(session.id);
+        await this.raw(
+          ['cursor-overlay', 'enable', '--accent', '#2563EB', '--label', 'AI 助手操作中'],
+          session.id,
+          undefined,
+          false,
+          false,
+        ).catch(() => undefined);
+      }
+
+      const rawFlags = desktopCommandOptions(command, appId, windowId);
+      const commandFlags: string[] = [];
+      for (let i = 0; i < rawFlags.length; i += 2) {
+        const flag = rawFlags[i]!;
+        const val = rawFlags[i + 1]!;
+        if (!args.includes(flag)) commandFlags.push(flag, val);
+      }
+
+      const headed = Boolean(options.headed && currentSettings.controlMode === 'hybrid');
+      const result = await this.raw([command, ...args, ...commandFlags], session.id, options.stdin, false, headed);
+      if (command === 'snapshot' && result.ok && result.data !== undefined) {
+        this.snapshots.set(input.taskId, {
+          data: result.data,
+          ...(appId ? { appId } : {}),
+          ...(windowId ? { windowId } : {}),
+        });
+        this.refIndex.set(input.taskId, indexSnapshotRefs(result.data, appId, windowId));
+      }
       return result;
     });
+  }
+
+  async captureScreenshot(
+    input: DesktopSessionInput,
+    options: { app?: string; windowId?: string; screen?: number } = {},
+  ): Promise<{
+    ok: boolean;
+    text: string;
+    path?: string;
+    relPath?: string;
+    frame?: DesktopCaptureFrame;
+  }> {
+    const appId = options.app ?? input.appId;
+    const windowId = options.windowId ?? input.windowId;
+    this.assertAppAllowed(appId);
+
+    const workspaceRoot = this.taskWorkspaceResolver?.(input.taskId);
+    const targetRoot = workspaceRoot
+      ? workspaceRoot
+      : path.join(this.artifactsDir, 'desktop', desktopSessionName(input.taskId));
+    const shotsDir = path.join(targetRoot, 'desktop-shots');
+    fs.mkdirSync(shotsDir, { recursive: true });
+    const fileName = `shot-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.png`;
+    const targetPath = path.join(shotsDir, fileName);
+
+    const args = [targetPath];
+    if (options.screen !== undefined && Number.isInteger(options.screen)) {
+      args.push('--screen', String(options.screen));
+    }
+
+    const result = await this.execute(input, 'screenshot', args, {
+      ...(appId ? { appId } : {}),
+      ...(windowId ? { windowId } : {}),
+    });
+    if (!result.ok || !fs.existsSync(targetPath)) {
+      return { ok: false, text: formatDesktopScreenshotError(result.text) };
+    }
+
+    let relPath: string | undefined;
+    if (workspaceRoot) {
+      relPath = path.relative(path.resolve(workspaceRoot), path.resolve(targetPath)).replace(/\\/g, '/');
+      try {
+        this.artifactRegistrar?.(input.taskId, targetPath);
+      } catch {
+        // Non-fatal if task row is absent during a standalone preview test
+      }
+    }
+
+    const frame = await this.resolveCaptureFrame(result.data, {
+      ...(appId ? { appId } : {}),
+      ...(windowId ? { windowId } : {}),
+      ...(options.screen !== undefined ? { screen: options.screen } : {}),
+    });
+    if (frame) {
+      this.captureFrames.set(input.taskId, frame);
+    }
+
+    return {
+      ok: true,
+      text: result.text,
+      path: targetPath,
+      ...(relPath ? { relPath } : {}),
+      ...(frame ? { frame } : {}),
+    };
+  }
+
+  private async resolveCaptureFrame(
+    data: unknown,
+    target: { appId?: string; windowId?: string; screen?: number },
+  ): Promise<DesktopCaptureFrame | undefined> {
+    const meta = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    const rawScale = typeof meta.scale_factor === 'number' && meta.scale_factor > 0 ? meta.scale_factor : undefined;
+    const rawW = typeof meta.width === 'number' && meta.width > 0 ? meta.width : undefined;
+    const rawH = typeof meta.height === 'number' && meta.height > 0 ? meta.height : undefined;
+
+    if (target.windowId || target.appId) {
+      const windows = await this.listWindowDetails(target.appId).catch(() => []);
+      const matched = target.windowId
+        ? windows.find((win) => win.id === target.windowId)
+        : windows.find((win) => win.focused && win.visible !== false && win.bounds) ??
+          windows.find((win) => win.accessible && win.visible !== false && win.bounds) ??
+          windows.find((win) => win.visible !== false && win.bounds) ??
+          windows.find((win) => Boolean(win.bounds));
+      if (matched?.bounds && matched.bounds.width > 0 && matched.bounds.height > 0) {
+        return {
+          originX: matched.bounds.x,
+          originY: matched.bounds.y,
+          width: matched.bounds.width,
+          height: matched.bounds.height,
+          scaleFactor: rawScale ?? 1,
+          ...(matched.app || target.appId ? { app: matched.app ?? target.appId } : {}),
+          windowId: matched.id,
+          capturedAt: Date.now(),
+        };
+      }
+    }
+
+    const displays = await this.listDisplays().catch(() => []);
+    const picked = target.screen !== undefined && displays[target.screen]
+      ? displays[target.screen]
+      : displays.find((item) => item.isPrimary) ?? displays[0];
+    if (picked) {
+      return {
+        originX: picked.bounds.x,
+        originY: picked.bounds.y,
+        width: picked.bounds.width,
+        height: picked.bounds.height,
+        scaleFactor: rawScale ?? picked.scale,
+        capturedAt: Date.now(),
+      };
+    }
+
+    if (rawW && rawH) {
+      const scale = rawScale ?? 1;
+      return {
+        originX: 0,
+        originY: 0,
+        width: Math.round(rawW / scale),
+        height: Math.round(rawH / scale),
+        scaleFactor: scale,
+        ...(target.appId ? { app: target.appId } : {}),
+        ...(target.windowId ? { windowId: target.windowId } : {}),
+        capturedAt: Date.now(),
+      };
+    }
+    return undefined;
+  }
+
+  async capturePreview(taskId: string, appId?: string): Promise<DesktopPreviewResult> {
+    const active = [...this.sessions.values()].find((entry) => entry.taskId === taskId);
+    const targetApp = appId?.trim() || active?.appId;
+    try {
+      const shot = await this.captureScreenshot(
+        {
+          taskId,
+          workerId: active?.workerId ?? 'preview',
+          ...(targetApp ? { appId: targetApp } : {}),
+          ...(active?.windowId ? { windowId: active.windowId } : {}),
+        },
+        targetApp ? { app: targetApp } : {},
+      );
+      if (!shot.ok || !shot.relPath) {
+        return { ok: false, error: shot.text || '无法截取当前桌面画面' };
+      }
+      return {
+        ok: true,
+        taskId,
+        relPath: shot.relPath,
+        ...(targetApp ? { appId: targetApp } : {}),
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async inspect(input: DesktopSessionInput): Promise<DesktopResult> {
     const session = [...this.sessions.values()].find((entry) => entry.taskId === input.taskId);
     if (!session) return { ok: false, text: '当前任务没有活动的桌面 session' };
+    this.assertAppAllowed(session.appId);
     session.lastUsedAt = Date.now();
     const result = await this.raw(['snapshot', '-i', ...desktopCommandOptions('snapshot', session.appId, session.windowId)], session.id);
-    if (result.ok && result.data !== undefined) this.snapshots.set(input.taskId, {
-      data: result.data,
-      ...(session.appId ? { appId: session.appId } : {}),
-      ...(session.windowId ? { windowId: session.windowId } : {}),
-    });
+    if (result.ok && result.data !== undefined) {
+      this.snapshots.set(input.taskId, {
+        data: result.data,
+        ...(session.appId ? { appId: session.appId } : {}),
+        ...(session.windowId ? { windowId: session.windowId } : {}),
+      });
+      this.refIndex.set(input.taskId, indexSnapshotRefs(result.data, session.appId, session.windowId));
+    }
     return result;
   }
 
-  async show(taskId: string): Promise<void> {
+  async show(taskId: string, appId?: string): Promise<void> {
     this.visibleTask = taskId;
     const session = [...this.sessions.values()].find((entry) => entry.taskId === taskId);
+    const targetApp = appId?.trim() || session?.appId;
+    if (targetApp) this.assertAppAllowed(targetApp);
     if (!session) return;
-    session.headed = true;
-    await this.raw(['focus-window', ...desktopCommandOptions('focus-window', session.appId, session.windowId)], session.id).catch(() => undefined);
+    await this.raw(
+      ['focus-window', ...desktopCommandOptions('focus-window', targetApp, session.windowId)],
+      session.id,
+      undefined,
+      false,
+      false,
+    ).catch(() => undefined);
   }
 
   async hide(taskId?: string): Promise<void> {
@@ -638,7 +1090,7 @@ export class DesktopBroker {
     const session = [...this.sessions.values()].find((entry) => entry.taskId === target);
     if (!session) return;
     session.headed = false;
-    await this.raw(['snapshot', '-i'], session.id).catch(() => undefined);
+    await this.raw(['snapshot', '-i'], session.id, undefined, false, false).catch(() => undefined);
   }
 
   /** End the native session as soon as its durable task reaches a terminal state. */
@@ -648,14 +1100,23 @@ export class DesktopBroker {
       await this.raw(['session', 'end'], session.id).catch(() => undefined);
       this.sessions.delete(key);
       this.snapshots.delete(taskId);
+      this.refIndex.delete(taskId);
+      this.captureFrames.delete(taskId);
+      this.cursorOverlayApplied.delete(session.id);
       if (this.visibleTask === taskId) this.visibleTask = undefined;
     }
   }
 
   async disposeSessions(): Promise<void> {
     for (const session of [...this.sessions.values()]) { await this.raw(['session', 'end'], session.id).catch(() => undefined); }
-    this.sessions.clear(); this.snapshots.clear(); this.visibleTask = undefined;
+    this.sessions.clear();
+    this.snapshots.clear();
+    this.refIndex.clear();
+    this.captureFrames.clear();
+    this.cursorOverlayApplied.clear();
+    this.visibleTask = undefined;
   }
+
   async dispose(): Promise<void> { clearInterval(this.cleanupTimer); await this.disposeSessions(); }
 
   private async session(input: DesktopSessionInput): Promise<Session> {
@@ -714,15 +1175,22 @@ export class DesktopBroker {
     return this.desktopEnvPromise;
   }
 
-  private async raw(args: readonly string[], sessionId?: string, stdin?: string, allowDisabled = false): Promise<DesktopResult> {
+  private async raw(
+    args: readonly string[],
+    sessionId?: string,
+    stdin?: string,
+    allowDisabled = false,
+    headedOverride?: boolean,
+  ): Promise<DesktopResult> {
     const binary = this.install.binaryPath();
     const session = sessionId ? [...this.sessions.values()].find((entry) => entry.id === sessionId) : undefined;
     const settings = this.install.settings();
     if (!binary || !this.install.status().healthy || (!allowDisabled && !settings.enabled)) return { ok: false, text: '桌面运行时未安装、未启用或权限不足' };
     const desktopEnv = await this.ensureDesktopEnv();
+    const useHeaded = headedOverride !== undefined ? headedOverride : Boolean(session?.headed);
     const commandArgs = [
       ...(sessionId ? ['--session', sessionId] : []),
-      ...(session?.headed ? ['--headed'] : []),
+      ...(useHeaded ? ['--headed'] : []),
       ...args,
     ];
     const outputLimit = 2_000_000;
@@ -746,6 +1214,9 @@ export class DesktopBroker {
       await this.raw(['session', 'end'], session.id).catch(() => undefined);
       this.sessions.delete(key);
       this.snapshots.delete(session.taskId);
+      this.refIndex.delete(session.taskId);
+      this.captureFrames.delete(session.taskId);
+      this.cursorOverlayApplied.delete(session.id);
       if (this.visibleTask === session.taskId) this.visibleTask = undefined;
     }
   }

@@ -208,6 +208,32 @@ describe('一次工具调用 → 一行动作', () => {
     expect(row.argsDigest).not.toContain('@example.com');
     expect(row.argsDigest).not.toContain('完整错误');
   });
+
+  it('first-class opc.desktop 工具同样脱敏正文并摘要结果', () => {
+    const observeRow = traceRowFor(
+      call({
+        name: 'desktop_observe',
+        arguments: { mode: 'skeleton', app: 'Notes', text: '私人笔记敏感内容' },
+      }),
+      {
+        output: [{ type: 'text', text: JSON.stringify({ data: { complete: true, ref_count: 18 } }) }],
+      } as unknown as ToolExecutionResult,
+    );
+    expect(observeRow.argsDigest).toContain('mode=skeleton');
+    expect(observeRow.argsDigest).toContain('app=Notes');
+    expect(observeRow.argsDigest).toContain('refs=18');
+    expect(observeRow.argsDigest).not.toContain('私人笔记');
+
+    const visualRow = traceRowFor(
+      call({
+        name: 'desktop_visual_act',
+        arguments: { action: 'click', nx: 500, ny: 300, app: 'Notes' },
+      }),
+      { output: [{ type: 'text', text: '{"ok":true}' }] } as unknown as ToolExecutionResult,
+    );
+    expect(visualRow.argsDigest).toContain('action=click');
+    expect(visualRow.argsDigest).toContain('nx=500');
+  });
 });
 
 describe('登记表：hook 怎么找到那个任务的记录器', () => {

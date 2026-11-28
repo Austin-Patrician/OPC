@@ -108,7 +108,16 @@ export type ChatContentBlock =
         screenshot?: { taskId: string; relPath: string };
         screenshotSelector?: string;
       };
-      desktop?: { action: string; appId?: string; windowId?: string; preview?: string; sessionId?: string };
+      desktop?: {
+        action: string;
+        kind?: 'login' | 'captcha' | 'confirm' | 'payment' | 'other';
+        appId?: string;
+        windowId?: string;
+        preview?: string;
+        instructions?: string;
+        sessionId?: string;
+        screenshot?: { taskId: string; relPath: string };
+      };
       shell?: { command: string; cwd?: string };
       title: string;
       body: string;

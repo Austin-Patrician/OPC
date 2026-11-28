@@ -22,6 +22,16 @@ const ROUTER_VISIBLE_TOOLS = new Set([
   'browser_click',
   'browser_tabs',
   'browser_screenshot',
+  'desktop_list',
+  'desktop_observe',
+  'desktop_screenshot',
+  'desktop_act',
+  'desktop_type',
+  'desktop_hotkey',
+  'desktop_visual_act',
+  'desktop_batch',
+  'desktop_app',
+  'desktop_request_takeover',
   'desktop_list_apps',
   'desktop_list_windows',
   'desktop_snapshot',
@@ -29,7 +39,6 @@ const ROUTER_VISIBLE_TOOLS = new Set([
   'desktop_get',
   'desktop_click',
   'desktop_scroll',
-  'desktop_screenshot',
   'ocr_image',
   'generate_image',
   'generate_video',
@@ -46,6 +55,12 @@ const ROUTER_TOOL_PRIORITY = [
   'browser_click',
   'browser_tabs',
   'browser_screenshot',
+  'desktop_list',
+  'desktop_observe',
+  'desktop_act',
+  'desktop_visual_act',
+  'desktop_batch',
+  'desktop_app',
   'desktop_list_apps',
   'desktop_list_windows',
   'desktop_snapshot',
@@ -68,13 +83,16 @@ const ROUTER_TOOL_RANK: ReadonlyMap<string, number> = new Map(ROUTER_TOOL_PRIORI
 
 export function summarizeWorkerTools(toolNames: readonly string[]): Pick<RouterWorkerCapability, 'tools' | 'omittedTools'> {
   const unique = [...new Set(toolNames)];
-  const desktopTools = unique.filter((name) => name.startsWith('mcp__agent_desktop_'));
+  const legacyDesktopMcp = unique.filter((name) => name.startsWith('mcp__agent_desktop_'));
   const tools = unique
     .filter((name) => ROUTER_VISIBLE_TOOLS.has(name))
-    .concat(desktopTools.slice(0, ROUTER_DESKTOP_TOOL_LIMIT))
-    .sort((left, right) => (ROUTER_TOOL_RANK.get(left) ?? (left.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)) - (ROUTER_TOOL_RANK.get(right) ?? (right.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)));
+    .concat(legacyDesktopMcp.slice(0, ROUTER_DESKTOP_TOOL_LIMIT))
+    .sort((left, right) =>
+      (ROUTER_TOOL_RANK.get(left) ?? (left.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)) -
+      (ROUTER_TOOL_RANK.get(right) ?? (right.startsWith('mcp__agent_desktop_') ? ROUTER_TOOL_PRIORITY.length - 1 : ROUTER_TOOL_PRIORITY.length)),
+    );
   const visible = tools.slice(0, ROUTER_TOOL_LIMIT);
-  const omitted = tools.length - visible.length + Math.max(0, desktopTools.length - ROUTER_DESKTOP_TOOL_LIMIT);
+  const omitted = tools.length - visible.length + Math.max(0, legacyDesktopMcp.length - ROUTER_DESKTOP_TOOL_LIMIT);
   return omitted > 0 ? { tools: visible, omittedTools: omitted } : { tools: visible };
 }
 
@@ -93,13 +111,14 @@ export function renderRouterWorkerCapabilities(capabilities: readonly RouterWork
     const tools = capability.tools.length > 0 ? capability.tools.join('、') : '无可展示工具';
     const suffix = capability.omittedTools ? `（另有 ${capability.omittedTools} 个工具未列出）` : '';
     const desktop = capability.desktop || capability.tools.some((tool) => tool.startsWith('mcp__agent_desktop_'));
-    lines.push(`- ${capability.name} · ${capability.template}${desktop ? '（含 agent-desktop 桌面 CLI 能力）' : ''}：${tools}${suffix}`);
+    lines.push(`- ${capability.name} · ${capability.template}${desktop ? '（含桌面应用控制能力）' : ''}：${tools}${suffix}`);
     if (capability.skills && capability.skills.length > 0) {
       const skillLabels = capability.skills.map((skill) => skill.name).join('、');
       lines.push(`  已启用办公技能（可通过 read_skill 读取说明书并用内置 Python 离线执行）：${skillLabels}`);
     }
   }
   lines.push(
+    '职责边界：文档/表格读写优先用办公技能或 bash；网页自动化用 browser_*；仅本机桌面软件操作用 desktop_*。',
     '用户请求匹配这些能力时，应调用 open_line_of_work 交给 Worker；能力目录不授予 Router 本身执行权限。',
   );
   return lines.join('\n');

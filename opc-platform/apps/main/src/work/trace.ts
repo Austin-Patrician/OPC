@@ -232,7 +232,21 @@ export function traceRowFor(
 }
 
 const SAFE_DESKTOP_ARGUMENTS = new Set([
-  'action', 'app', 'app_id', 'combo', 'ref', 'ref_id', 'role', 'surface', 'window_id',
+  'action',
+  'app',
+  'app_id',
+  'combo',
+  'grid',
+  'kind',
+  'mode',
+  'nx',
+  'ny',
+  'physical',
+  'ref',
+  'ref_id',
+  'role',
+  'surface',
+  'window_id',
 ]);
 
 function isDesktopTool(name: string): boolean {
@@ -249,19 +263,33 @@ function digestDesktopArgs(args: Record<string, unknown> | undefined): string {
 }
 
 function desktopOutcome(name: string, result: ToolExecutionResult): string {
-  const marker = name.toLowerCase().lastIndexOf('__desktop_');
-  const tool = marker >= 0 ? name.slice(marker + '__desktop_'.length).replace(/（嵌套）$/, '').toLowerCase() : '';
+  const lower = name.toLowerCase().replace(/（嵌套）$/, '');
+  const marker = lower.lastIndexOf('__desktop_');
+  const tool = marker >= 0
+    ? lower.slice(marker + '__desktop_'.length)
+    : lower.startsWith('desktop_')
+      ? lower.slice('desktop_'.length)
+      : '';
   const value = desktopResultData(result);
-  if (tool === 'snapshot') {
+  if (tool === 'snapshot' || tool === 'observe') {
     const complete = typeof value?.complete === 'boolean' ? `complete=${value.complete}` : '';
     const refs = typeof value?.ref_count === 'number' ? `refs=${value.ref_count}` : '';
-    return ['snapshot returned', complete, refs].filter(Boolean).join('; ');
+    const summary = [tool === 'observe' ? 'observe returned' : 'snapshot returned', complete, refs].filter(Boolean);
+    return summary.join('; ');
   }
-  if (tool === 'list_apps' || tool === 'list_windows' || tool === 'list_surfaces') {
-    const key = tool === 'list_apps' ? 'apps' : tool === 'list_windows' ? 'windows' : 'surfaces';
+  if (tool === 'list' || tool === 'list_apps' || tool === 'list_windows' || tool === 'list_surfaces') {
+    const key = tool === 'list_apps'
+      ? 'apps'
+      : tool === 'list_windows'
+        ? 'windows'
+        : tool === 'list_surfaces'
+          ? 'surfaces'
+          : (['apps', 'windows', 'displays', 'surfaces'].find((candidate) => Array.isArray(value?.[candidate])) ?? 'items');
     const entries = value?.[key];
-    return Array.isArray(entries) ? `${key}=${entries.length}` : `${key} returned`;
+    return Array.isArray(entries) ? `${key}=${entries.length}` : `${tool} returned`;
   }
+  if (tool === 'screenshot') return 'screenshot captured';
+  if (tool === 'clipboard') return 'clipboard accessed';
   if (tool === 'status' || tool === 'version' || tool === 'permissions') return `${tool} returned`;
   return 'tool returned successfully; effect unverified';
 }

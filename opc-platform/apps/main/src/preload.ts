@@ -13,6 +13,9 @@ import {
   type DesktopInstallProgress,
   type AssistantToolsSettings,
   type AssistantSearchProvider,
+  type BuddyOverlayPrefsPatch,
+  type BuddyOverlaySignalPayload,
+  type BuddyOverlayState,
   type UsageFilter,
   type UsageReport,
 } from "@opc/shared/ipc";
@@ -90,6 +93,8 @@ const bridge: OpcBridge = {
       ipcRenderer.invoke(IPC.app.openLocalPath, rawPath),
     revealLocalPath: (rawPath: string) =>
       ipcRenderer.invoke(IPC.app.revealLocalPath, rawPath),
+    getFavicon: (rawUrlOrDomain: string) =>
+      ipcRenderer.invoke(IPC.app.getFavicon, rawUrlOrDomain),
   },
   window: {
     minimize: () => ipcRenderer.invoke(IPC.window.minimize),
@@ -276,6 +281,11 @@ const bridge: OpcBridge = {
     inspect: (taskId: string) => ipcRenderer.invoke(IPC.desktop.inspect, taskId),
     show: (taskId: string) => ipcRenderer.invoke(IPC.desktop.show, taskId),
     hide: (taskId?: string) => ipcRenderer.invoke(IPC.desktop.hide, taskId),
+    capturePreview: (taskId: string, appId?: string) =>
+      ipcRenderer.invoke(IPC.desktop.capturePreview, {
+        taskId,
+        ...(appId ? { appId } : {}),
+      }),
     onChanged: (listener: (status: DesktopStatus) => void) => {
       const handler = (_event: IpcRendererEvent, status: DesktopStatus) => listener(status);
       ipcRenderer.on(IPC.desktop.changedEvent, handler);
@@ -757,6 +767,55 @@ const bridge: OpcBridge = {
   },
   diagnostics: {
     report: () => ipcRenderer.invoke(IPC.diagnostics.report),
+  },
+  buddy: {
+    getState: () =>
+      ipcRenderer.invoke(IPC.buddy.getState) as Promise<BuddyOverlayState | null>,
+    syncState: (state: BuddyOverlayState) =>
+      ipcRenderer.invoke(IPC.buddy.syncState, state) as Promise<void>,
+    emitSignal: (signal: BuddyOverlaySignalPayload) =>
+      ipcRenderer.invoke(IPC.buddy.emitSignal, signal) as Promise<void>,
+    setInteractive: (interactive: boolean) =>
+      ipcRenderer.invoke(IPC.buddy.setInteractive, interactive) as Promise<void>,
+    dragStart: () => ipcRenderer.invoke(IPC.buddy.dragStart) as Promise<void>,
+    dragMove: () => ipcRenderer.invoke(IPC.buddy.dragMove) as Promise<void>,
+    dragEnd: () =>
+      ipcRenderer.invoke(IPC.buddy.dragEnd) as Promise<{ x: number; y: number } | null>,
+    resetPosition: () => ipcRenderer.invoke(IPC.buddy.resetPosition) as Promise<void>,
+    updatePrefs: (patch: BuddyOverlayPrefsPatch) =>
+      ipcRenderer.invoke(IPC.buddy.updatePrefs, patch) as Promise<void>,
+    focusMain: (route?: string) =>
+      ipcRenderer.invoke(IPC.buddy.focusMain, route) as Promise<void>,
+    onState: (listener: (state: BuddyOverlayState) => void) => {
+      const handler = (_event: IpcRendererEvent, state: BuddyOverlayState) => listener(state);
+      ipcRenderer.on(IPC.buddy.stateEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.buddy.stateEvent, handler);
+      };
+    },
+    onSignal: (listener: (signal: BuddyOverlaySignalPayload) => void) => {
+      const handler = (_event: IpcRendererEvent, signal: BuddyOverlaySignalPayload) =>
+        listener(signal);
+      ipcRenderer.on(IPC.buddy.signalEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.buddy.signalEvent, handler);
+      };
+    },
+    onPrefsPatch: (listener: (patch: BuddyOverlayPrefsPatch) => void) => {
+      const handler = (_event: IpcRendererEvent, patch: BuddyOverlayPrefsPatch) =>
+        listener(patch);
+      ipcRenderer.on(IPC.buddy.prefsPatchEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.buddy.prefsPatchEvent, handler);
+      };
+    },
+    onNavigate: (listener: (route: string) => void) => {
+      const handler = (_event: IpcRendererEvent, route: string) => listener(route);
+      ipcRenderer.on(IPC.buddy.navigateEvent, handler);
+      return () => {
+        ipcRenderer.off(IPC.buddy.navigateEvent, handler);
+      };
+    },
   },
 };
 

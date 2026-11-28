@@ -4,9 +4,18 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import type { AssistantActivity, AssistantActivityPhase } from '@opc/shared/ipc';
 import { useUiPrefs } from '@/shared/prefs/useUiPrefs';
-import type { BuddyPosition, BuddySizeId } from '@/shared/theme/types';
+import type { BuddyPosition } from '@/shared/theme/types';
 import { subscribeBuddySignal } from '@/shared/ui/buddyEvents';
-import { BuddyMark, type BuddyClipKey } from '@/shared/ui/BuddyMark';
+import { BuddyMark } from '@/shared/ui/BuddyMark';
+import {
+  AMBIENT_BUBBLE_KEYS,
+  BUSY_PHASES,
+  NEXT_SIZE,
+  POKE_BUBBLE_KEYS,
+  resolveBuddyClip,
+  SIZE_PIXELS,
+  type BuddyBubble,
+} from './buddyLogic';
 
 interface BuddyCompanionProps {
   activity?: AssistantActivity;
@@ -16,46 +25,7 @@ interface BuddyCompanionProps {
   isOnChatPage: boolean;
 }
 
-interface BuddyBubble {
-  text: string;
-  actionRoute?: string;
-}
-
-const SIZE_PIXELS: Record<BuddySizeId, number> = {
-  sm: 116,
-  md: 156,
-  lg: 196,
-};
-
-const NEXT_SIZE: Record<BuddySizeId, BuddySizeId> = {
-  sm: 'md',
-  md: 'lg',
-  lg: 'sm',
-};
-
 const DEFAULT_POSITION: BuddyPosition = { right: 24, bottom: 24 };
-
-const BUSY_PHASES: ReadonlySet<AssistantActivityPhase> = new Set([
-  'thinking',
-  'organizing',
-  'delegating',
-  'working',
-  'typing',
-  'waiting_user',
-]);
-
-const POKE_BUBBLE_KEYS = [
-  'buddy.bubble.poke1',
-  'buddy.bubble.poke2',
-  'buddy.bubble.poke3',
-  'buddy.bubble.poke4',
-] as const;
-
-const AMBIENT_BUBBLE_KEYS = [
-  'buddy.bubble.ambient1',
-  'buddy.bubble.ambient2',
-  'buddy.bubble.ambient3',
-] as const;
 
 function clampPosition(
   pos: BuddyPosition,
@@ -313,26 +283,13 @@ export function BuddyCompanion({ activity, hidden = false, isOnChatPage }: Buddy
     }
   }, [phase, runningWorkerCount, isOnChatPage, showBubble, triggerCelebration, t]);
 
-  // Resolved animation clip according to priority engine.
-  let resolvedClip: BuddyClipKey = 'idle';
-  if (flustered) {
-    resolvedClip = 'error';
-  } else if (poked || celebrating) {
-    resolvedClip = 'completed';
-  } else if (phase === 'error') {
-    resolvedClip = 'error';
-  } else if (phase === 'thinking' || phase === 'organizing' || phase === 'waiting_user') {
-    resolvedClip = 'thinking';
-  } else if (
-    runningWorkerCount > 0 ||
-    phase === 'working' ||
-    phase === 'delegating' ||
-    phase === 'typing'
-  ) {
-    resolvedClip = 'working';
-  } else if (phase === 'completed' || phase === 'delivered') {
-    resolvedClip = 'completed';
-  }
+  const resolvedClip = resolveBuddyClip({
+    flustered,
+    poked,
+    celebrating,
+    phase,
+    runningWorkerCount,
+  });
 
   // Low-frequency ambient greeting when staying idle for a while.
   useEffect(() => {

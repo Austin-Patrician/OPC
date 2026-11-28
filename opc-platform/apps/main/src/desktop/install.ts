@@ -6,12 +6,14 @@ import { promisify } from 'node:util';
 import { execFilePlatform } from '../process/execFilePlatform';
 import type { CompanyDatabase } from '../data/companyDatabase';
 import type {
+  DesktopApprovalCategory,
   DesktopInstallState,
   DesktopInstallProgress,
   DesktopPermissionStatus,
   DesktopSettings,
   DesktopStatus,
 } from '@opc/shared/ipc';
+import { DEFAULT_DESKTOP_APPROVALS, DESKTOP_APPROVAL_CATEGORIES } from './policy';
 
 const execFileAsync = promisify(execFile);
 export const AGENT_DESKTOP_VERSION = '1.2.0';
@@ -27,8 +29,14 @@ const PACKAGE_BYTES_BY_ASSET: Record<string, number> = {
   'agent-desktop-v1.2.0-x86_64-unknown-linux-gnu.tar.gz': 3_458_001,
 };
 const RELEASE_BASE = `https://github.com/vercel-labs/agent-desktop/releases/download/v${AGENT_DESKTOP_VERSION}`;
+const VALID_APPROVALS = new Set<DesktopApprovalCategory>(DESKTOP_APPROVAL_CATEGORIES);
+
 const DEFAULT_SETTINGS: DesktopSettings = {
   enabled: false,
+  controlMode: 'hybrid',
+  cursorOverlay: true,
+  blockedApps: [],
+  requireApprovalFor: [...DEFAULT_DESKTOP_APPROVALS],
 };
 
 function directoryBytes(root: string): number {
@@ -78,10 +86,53 @@ function migrateLegacySettings(db: CompanyDatabase): string | undefined {
   })();
 }
 
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function normalizeApprovalCategories(value: unknown): DesktopApprovalCategory[] {
+  if (!Array.isArray(value)) return [...DEFAULT_DESKTOP_APPROVALS];
+  const seen = new Set<DesktopApprovalCategory>();
+  const out: DesktopApprovalCategory[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    if (!VALID_APPROVALS.has(entry as DesktopApprovalCategory)) continue;
+    const cat = entry as DesktopApprovalCategory;
+    if (seen.has(cat)) continue;
+    seen.add(cat);
+    out.push(cat);
+  }
+  return out;
+}
+
 export function normalizeDesktopSettings(value: unknown): DesktopSettings {
-  if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
+  if (!value || typeof value !== 'object') {
+    return {
+      ...DEFAULT_SETTINGS,
+      blockedApps: [...DEFAULT_SETTINGS.blockedApps],
+      requireApprovalFor: [...DEFAULT_SETTINGS.requireApprovalFor],
+    };
+  }
   const raw = value as Record<string, unknown>;
-  return { enabled: raw.enabled === true };
+  return {
+    enabled: raw.enabled === true,
+    controlMode: raw.controlMode === 'background' ? 'background' : 'hybrid',
+    cursorOverlay: raw.cursorOverlay !== false,
+    blockedApps: normalizeStringList(raw.blockedApps),
+    requireApprovalFor: normalizeApprovalCategories(raw.requireApprovalFor),
+  };
 }
 
 const UNKNOWN_PERMISSIONS: DesktopPermissionStatus = {
@@ -186,7 +237,13 @@ export class DesktopInstallService {
 
   settings = (): DesktopSettings => {
     const raw = migrateLegacySettings(this.db);
-    if (!raw) return { ...DEFAULT_SETTINGS };
+    if (!raw) {
+      return {
+        ...DEFAULT_SETTINGS,
+        blockedApps: [...DEFAULT_SETTINGS.blockedApps],
+        requireApprovalFor: [...DEFAULT_SETTINGS.requireApprovalFor],
+      };
+    }
     try {
       const parsed: unknown = JSON.parse(raw);
       const normalized = normalizeDesktopSettings(parsed);
@@ -196,7 +253,13 @@ export class DesktopInstallService {
           .run(canonical, Date.now(), SETTINGS_KEY);
       }
       return normalized;
-    } catch { return { ...DEFAULT_SETTINGS }; }
+    } catch {
+      return {
+        ...DEFAULT_SETTINGS,
+        blockedApps: [...DEFAULT_SETTINGS.blockedApps],
+        requireApprovalFor: [...DEFAULT_SETTINGS.requireApprovalFor],
+      };
+    }
   };
 
   setSettings = (patch: Partial<DesktopSettings>): DesktopSettings => {
@@ -208,21 +271,28 @@ export class DesktopInstallService {
     return next;
   };
 
-  status = (): DesktopStatus => ({
-    installState: this.state,
-    enabled: this.settings().enabled,
-    ...(this.binary ? { version: AGENT_DESKTOP_VERSION, binary: this.binary } : {}),
-    runtimeHealthy: Boolean(this.binary) && this.runtimeHealthy && (this.state === 'ready' || this.state === 'disabled'),
-    healthy: Boolean(this.binary) && this.runtimeHealthy && (this.state === 'ready' || this.state === 'disabled'),
-    packageBytes: this.packageBytes ?? packageBytesForCurrentPlatform(),
-    ...(this.state !== 'uninstalled' ? { diskUsageBytes: this.diskUsage() } : {}),
-    permissions: this.permissionsState,
-    supportedSurfaces: this.supportedSurfaces,
-    mcpHealthy: false,
-    mcpToolCount: 0,
-    ...(this.runtimeError ? { error: this.runtimeError } : {}),
-    ...(this.error ? { error: this.error } : {}),
-  });
+  status = (): DesktopStatus => {
+    const current = this.settings();
+    const runtimeHealthy =
+      Boolean(this.binary) &&
+      this.runtimeHealthy &&
+      (this.state === 'ready' || this.state === 'disabled');
+    return {
+      installState: this.state,
+      enabled: current.enabled,
+      ...(this.binary ? { version: AGENT_DESKTOP_VERSION, binary: this.binary } : {}),
+      runtimeHealthy,
+      healthy: runtimeHealthy && (!current.enabled || current.enabled),
+      packageBytes: this.packageBytes ?? packageBytesForCurrentPlatform(),
+      ...(this.state !== 'uninstalled' ? { diskUsageBytes: this.diskUsage() } : {}),
+      permissions: this.permissionsState,
+      supportedSurfaces: this.supportedSurfaces,
+      mcpHealthy: runtimeHealthy && current.enabled,
+      mcpToolCount: 11,
+      ...(this.runtimeError ? { error: this.runtimeError } : {}),
+      ...(this.error ? { error: this.error } : {}),
+    };
+  };
 
   binaryPath = (): string | undefined => this.binary;
 

@@ -228,6 +228,7 @@ export const IPC = {
     inspect: "desktop:inspect",
     show: "desktop:show",
     hide: "desktop:hide",
+    capturePreview: "desktop:capturePreview",
     changedEvent: "desktop:changed",
     installProgressEvent: "desktop:installProgress",
   },
@@ -291,6 +292,7 @@ export const IPC = {
     openExternal: "app:openExternal",
     openLocalPath: "app:openLocalPath",
     revealLocalPath: "app:revealLocalPath",
+    getFavicon: "app:getFavicon",
   },
   window: {
     minimize: "window:minimize",
@@ -369,6 +371,22 @@ export const IPC = {
     test: "notifications:test",
     setContext: "notifications:setContext",
     actionEvent: "notifications:action",
+  },
+  buddy: {
+    getState: "buddy:getState",
+    syncState: "buddy:syncState",
+    emitSignal: "buddy:emitSignal",
+    setInteractive: "buddy:setInteractive",
+    dragStart: "buddy:dragStart",
+    dragMove: "buddy:dragMove",
+    dragEnd: "buddy:dragEnd",
+    resetPosition: "buddy:resetPosition",
+    updatePrefs: "buddy:updatePrefs",
+    focusMain: "buddy:focusMain",
+    stateEvent: "buddy:state",
+    signalEvent: "buddy:signal",
+    prefsPatchEvent: "buddy:prefsPatch",
+    navigateEvent: "buddy:navigate",
   },
 } as const;
 
@@ -1392,6 +1410,7 @@ export interface OpcBridge {
     openExternal(url: string): Promise<{ ok: boolean; error?: string }>;
     openLocalPath(rawPath: string): Promise<LocalPathActionResult>;
     revealLocalPath(rawPath: string): Promise<LocalPathActionResult>;
+    getFavicon(rawUrlOrDomain: string): Promise<string | null>;
   };
   window: {
     minimize(): Promise<void>;
@@ -1426,6 +1445,7 @@ export interface OpcBridge {
   mcp: McpBridge;
   browser: BrowserBridge;
   desktop: DesktopBridge;
+  buddy: BuddyBridge;
   watchdog: WatchdogBridge;
   observatory: ObservatoryBridge;
   wallpaper: WallpaperBridge;
@@ -1433,6 +1453,63 @@ export interface OpcBridge {
   diagnostics: {
     report(): Promise<DiagnosticsReport>;
   };
+}
+
+export type BuddyOverlaySize = "sm" | "md" | "lg";
+export type BuddyOverlayDock = "floating" | "peek";
+
+export interface BuddyScreenPosition {
+  x: number;
+  y: number;
+}
+
+export type BuddyOverlayPrefsPatch = Partial<{
+  enabled: boolean;
+  size: BuddyOverlaySize;
+  dock: BuddyOverlayDock;
+  bubbles: boolean;
+  desktopFloat: boolean;
+  alwaysOnTop: boolean;
+  screenPosition: BuddyScreenPosition | null;
+}>;
+
+export type BuddyOverlaySignalPayload =
+  | { kind: "typing" }
+  | { kind: "file-drag"; active: boolean }
+  | { kind: "file-drop" }
+  | { kind: "sent" }
+  | { kind: "brand-summon" };
+
+export interface BuddyOverlayState {
+  enabled: boolean;
+  desktopFloat: boolean;
+  alwaysOnTop: boolean;
+  size: BuddyOverlaySize;
+  dock: BuddyOverlayDock;
+  bubbles: boolean;
+  screenPosition: BuddyScreenPosition | null;
+  hidden: boolean;
+  isOnChatPage: boolean;
+  activity?: AssistantActivity;
+  theme: "light" | "dark";
+  locale: string;
+}
+
+export interface BuddyBridge {
+  getState(): Promise<BuddyOverlayState | null>;
+  syncState(state: BuddyOverlayState): Promise<void>;
+  emitSignal(signal: BuddyOverlaySignalPayload): Promise<void>;
+  setInteractive(interactive: boolean): Promise<void>;
+  dragStart(): Promise<void>;
+  dragMove(): Promise<void>;
+  dragEnd(): Promise<BuddyScreenPosition | null>;
+  resetPosition(): Promise<void>;
+  updatePrefs(patch: BuddyOverlayPrefsPatch): Promise<void>;
+  focusMain(route?: string): Promise<void>;
+  onState(listener: (state: BuddyOverlayState) => void): () => void;
+  onSignal(listener: (signal: BuddyOverlaySignalPayload) => void): () => void;
+  onPrefsPatch(listener: (patch: BuddyOverlayPrefsPatch) => void): () => void;
+  onNavigate(listener: (route: string) => void): () => void;
 }
 
 export type UsageCapability =
@@ -1765,8 +1842,26 @@ export interface DesktopPermissionStatus {
   screenRecording: "granted" | "denied" | "unknown" | "not_required";
   automation: "granted" | "denied" | "unknown" | "not_required";
 }
+export type DesktopControlMode = 'hybrid' | 'background';
+export type DesktopApprovalCategory =
+  | 'send-message'
+  | 'destructive'
+  | 'payment'
+  | 'quit-app'
+  | 'system-settings';
 export interface DesktopSettings {
   enabled: boolean;
+  controlMode: DesktopControlMode;
+  cursorOverlay: boolean;
+  blockedApps: string[];
+  requireApprovalFor: DesktopApprovalCategory[];
+}
+export interface DesktopPreviewResult {
+  ok: boolean;
+  taskId?: string;
+  relPath?: string;
+  appId?: string;
+  error?: string;
 }
 export interface DesktopStatus {
   installState: DesktopInstallState;
@@ -1820,6 +1915,7 @@ export interface DesktopBridge {
   inspect(taskId: string): Promise<unknown>;
   show(taskId: string): Promise<void>;
   hide(taskId?: string): Promise<void>;
+  capturePreview(taskId: string, appId?: string): Promise<DesktopPreviewResult>;
   onChanged(listener: (status: DesktopStatus) => void): () => void;
   onInstallProgress(
     listener: (progress: DesktopInstallProgress | null) => void,
